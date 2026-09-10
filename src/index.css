@@ -1,0 +1,13 @@
+@import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: #0f1115;
+  color: #d4d4d8;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.xterm { height: 100%; }
