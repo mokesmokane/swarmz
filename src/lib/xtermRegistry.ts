@@ -86,3 +86,10 @@ export function dispose(id: string): void {
 }
 
 beforeSpawn.hook = prepare;
+
+useStore.subscribe((state, prev) => {
+  if (state.terminals === prev.terminals) return;
+  for (const id of Array.from(entries.keys())) {
+    if (!(id in state.terminals)) dispose(id);
+  }
+});
