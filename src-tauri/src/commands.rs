@@ -3,13 +3,27 @@ use crate::registry::{TerminalInfo, TerminalRegistry};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Default)]
 pub struct AppState {
     pub registry: Mutex<TerminalRegistry>,
-    pub sessions: Mutex<HashMap<String, Arc<PtySession>>>,
+    pub sessions: Mutex<HashMap<String, (u64, Arc<PtySession>)>>,
+    pub next_gen: AtomicU64,
+}
+
+/// Removes the session for `id` only if its recorded generation matches `gen`.
+/// Returns true if it removed the entry (i.e. this caller's session was the live one).
+fn take_if_current(sessions: &mut HashMap<String, (u64, Arc<PtySession>)>, id: &str, gen: u64) -> bool {
+    if let Some((g, _)) = sessions.get(id) {
+        if *g == gen {
+            sessions.remove(id);
+            return true;
+        }
+    }
+    false
 }
 
 #[derive(Serialize, Clone)]
@@ -33,6 +47,8 @@ fn spawn_for(app: &AppHandle, state: &AppState, info: &TerminalInfo, cols: u16, 
         rows,
     };
 
+    let gen = state.next_gen.fetch_add(1, Ordering::SeqCst);
+
     let data_app = app.clone();
     let data_topic = format!("pty:data:{}", info.id);
     let exit_app = app.clone();
@@ -45,14 +61,17 @@ fn spawn_for(app: &AppHandle, state: &AppState, info: &TerminalInfo, cols: u16, 
         },
         move |code| {
             if let Some(st) = exit_app.try_state::<AppState>() {
+                let mine = take_if_current(&mut st.sessions.lock().unwrap(), &exit_id, gen);
+                if !mine {
+                    return;
+                }
                 st.registry.lock().unwrap().set_exited(&exit_id, code, None);
-                st.sessions.lock().unwrap().remove(&exit_id);
             }
             let _ = exit_app.emit(&format!("pty:exit:{exit_id}"), ExitPayload { code });
         },
     )?;
 
-    state.sessions.lock().unwrap().insert(info.id.clone(), Arc::new(session));
+    state.sessions.lock().unwrap().insert(info.id.clone(), (gen, Arc::new(session)));
     Ok(())
 }
 
@@ -92,14 +111,14 @@ pub fn write_terminal(state: State<'_, AppState>, id: String, data: String) -> R
         .lock()
         .unwrap()
         .get(&id)
-        .cloned()
+        .map(|(_, s)| s.clone())
         .ok_or_else(|| format!("terminal {id} is not running"))?;
     session.write(data.as_bytes())
 }
 
 #[tauri::command]
 pub fn resize_terminal(state: State<'_, AppState>, id: String, cols: u16, rows: u16) -> Result<(), String> {
-    let session = state.sessions.lock().unwrap().get(&id).cloned();
+    let session = state.sessions.lock().unwrap().get(&id).map(|(_, s)| s.clone());
     match session {
         Some(s) => s.resize(cols, rows),
         None => Ok(()),
@@ -113,7 +132,7 @@ pub fn rename_terminal(state: State<'_, AppState>, id: String, name: String) -> 
 
 #[tauri::command]
 pub fn close_terminal(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    if let Some(session) = state.sessions.lock().unwrap().remove(&id) {
+    if let Some((_, session)) = state.sessions.lock().unwrap().remove(&id) {
         session.kill();
     }
     state.registry.lock().unwrap().remove(&id);
@@ -135,14 +154,53 @@ pub fn restart_terminal(
             return Err("terminal is still running".to_string());
         }
         reg.clear_exited(&id);
-        reg.get(&id).cloned().unwrap()
+        TerminalInfo { exited: None, error: None, ..current }
     };
     match spawn_for(&app, &state, &info, cols, rows) {
         Ok(()) => Ok(info),
         Err(e) => {
             let mut reg = state.registry.lock().unwrap();
             reg.set_exited(&id, Some(-1), Some(e));
-            Ok(reg.get(&id).cloned().unwrap())
+            Ok(reg.get(&id).cloned().unwrap_or(info))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pty::SpawnSpec;
+
+    fn dummy_session() -> Arc<PtySession> {
+        let spec = SpawnSpec {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "sleep 5".to_string()],
+            cwd: "/".to_string(),
+            env: vec![],
+            cols: 80,
+            rows: 24,
+        };
+        Arc::new(PtySession::spawn(spec, |_| {}, |_| {}).unwrap())
+    }
+
+    #[test]
+    fn take_if_current_only_removes_matching_generation() {
+        let mut sessions: HashMap<String, (u64, Arc<PtySession>)> = HashMap::new();
+        let session = dummy_session();
+        sessions.insert("a".to_string(), (1, session.clone()));
+
+        // A stale generation (e.g. an old spawn's exit callback firing after a
+        // restart replaced the entry) must not remove the current session.
+        assert!(!take_if_current(&mut sessions, "a", 0));
+        assert!(sessions.contains_key("a"));
+
+        // The current generation is allowed to remove its own entry.
+        assert!(take_if_current(&mut sessions, "a", 1));
+        assert!(!sessions.contains_key("a"));
+
+        // A missing id never reports itself as "mine".
+        assert!(!take_if_current(&mut sessions, "missing", 1));
+
+        session.kill();
     }
 }
