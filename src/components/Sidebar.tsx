@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
@@ -16,6 +16,7 @@ function Row({ id }: { id: string }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const suppressBlur = useRef(false);
 
   if (!t) return null;
   const exited = t.exited !== null;
@@ -27,6 +28,7 @@ function Row({ id }: { id: string }) {
       return;
     }
     setError(null);
+    suppressBlur.current = true;
     setEditing(false);
   };
 
@@ -39,6 +41,7 @@ function Row({ id }: { id: string }) {
       onDoubleClick={() => {
         setDraft(t.name);
         setEditing(true);
+        setError(null);
       }}
       className={`group flex cursor-default select-none items-center gap-2 rounded px-2 py-1.5 text-sm ${
         focused ? "bg-neutral-800 text-neutral-100" : "text-neutral-300 hover:bg-neutral-800/60"
@@ -56,11 +59,18 @@ function Row({ id }: { id: string }) {
               onKeyDown={(e) => {
                 if (e.key === "Enter") void commit();
                 if (e.key === "Escape") {
+                  suppressBlur.current = true;
                   setEditing(false);
                   setError(null);
                 }
               }}
-              onBlur={() => void commit()}
+              onBlur={() => {
+                if (suppressBlur.current) {
+                  suppressBlur.current = false;
+                  return;
+                }
+                void commit();
+              }}
               onClick={(e) => e.stopPropagation()}
               className="w-full rounded border border-neutral-600 bg-neutral-900 px-1 text-sm text-neutral-100 outline-none focus:border-blue-500"
             />

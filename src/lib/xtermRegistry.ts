@@ -89,7 +89,7 @@ beforeSpawn.hook = prepare;
 
 useStore.subscribe((state, prev) => {
   if (state.terminals === prev.terminals) return;
-  for (const id of Array.from(entries.keys())) {
+  for (const id of Object.keys(prev.terminals)) {
     if (!(id in state.terminals)) dispose(id);
   }
 });
