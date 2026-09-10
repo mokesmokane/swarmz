@@ -1,3 +1,4 @@
+pub mod pty;
 pub mod registry;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
