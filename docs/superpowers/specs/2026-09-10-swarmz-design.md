@@ -21,7 +21,7 @@ survive an app restart, any agent runtime other than Claude Code.
 ## 2. Stack
 
 - Tauri 2 with a Rust backend.
-- React 18, TypeScript, Vite, Tailwind, zustand for state.
+- React 19, TypeScript, Vite, Tailwind 4, zustand for state.
 - xterm.js for terminal rendering, react-resizable-panels for split handles.
 - Rust crates: portable-pty (PTYs), axum (HTTP), rmcp (MCP server), serde,
   tokio.
@@ -47,7 +47,7 @@ is a view over Tauri commands and events.
 ### 3.1 Rust modules
 
 **`pty`**
-- `create(name, cwd) -> TerminalId`: spawns the user's login shell in `cwd`
+- `create(id, name, cwd)`: the frontend generates the id so it can subscribe to output events before the spawn; spawns the user's login shell in `cwd`
   with `SWARMZ_TERMINAL_ID` and `SWARMZ_TERMINAL_NAME` in its environment.
 - `write(id, bytes)`, `resize(id, cols, rows)`, `kill(id)`.
 - Output is streamed to the frontend as Tauri events `pty:data:<id>`. Exit is
