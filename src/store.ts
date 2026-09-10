@@ -3,6 +3,7 @@ import { ipc, type TerminalInfo } from "./lib/ipc";
 import {
   addTab,
   allGroups,
+  findGroup,
   findGroupOf,
   moveToGroup,
   removeTerminal,
@@ -79,9 +80,14 @@ export const useStore = create<WorkbenchState>((set) => ({
     set((s) => {
       const terminals = { ...s.terminals };
       delete terminals[id];
+      const homeGroupId = findGroupOf(s.layout, id)?.id ?? null;
       const layout = removeTerminal(s.layout, id);
       const stillFocused = s.focusedTerminalId && s.focusedTerminalId !== id ? s.focusedTerminalId : null;
-      const fallback = stillFocused ?? findGroupOf(layout, s.order.find((t) => t !== id) ?? "")?.active ?? null;
+      const fallback =
+        stillFocused ??
+        (homeGroupId && findGroup(layout, homeGroupId)?.active) ??
+        allGroups(layout)[0]?.active ??
+        null;
       return {
         terminals,
         order: s.order.filter((t) => t !== id),

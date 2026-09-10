@@ -87,6 +87,19 @@ describe("closeTerminal and markExited", () => {
     await useStore.getState().restartTerminal(id);
     expect(useStore.getState().terminals[id].exited).toBeNull();
   });
+
+  it("closing a focused tab keeps focus in the same group", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    const c = await useStore.getState().createTerminal("/tmp/c");
+    const g1 = findGroupOf(useStore.getState().layout, b)!.id;
+    useStore.getState().splitTerminal(a, g1, "right");
+    useStore.getState().focusTerminal(b);
+    await useStore.getState().closeTerminal(b);
+    const s = useStore.getState();
+    expect(s.focusedTerminalId).toBe(c);
+    expect(s.focusedGroupId).toBe(g1);
+  });
 });
 
 describe("renameTerminal", () => {
