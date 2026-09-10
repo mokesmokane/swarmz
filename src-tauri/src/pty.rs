@@ -41,14 +41,20 @@ impl PtySession {
             .map_err(|e| format!("spawn {} failed: {e}", spec.program))?;
         drop(pair.slave);
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| format!("clone reader failed: {e}"))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| format!("take writer failed: {e}"))?;
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("clone reader failed: {e}"));
+            }
+        };
+        let writer = match pair.master.take_writer() {
+            Ok(w) => w,
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("take writer failed: {e}"));
+            }
+        };
         let killer = child.clone_killer();
 
         std::thread::spawn(move || {
