@@ -29,6 +29,11 @@ export const beforeSpawn: {
   size: () => null,
 };
 
+/** Where a new terminal goes: a tab in a tile, or a new tile beside one. */
+export type Placement =
+  | { kind: "tab"; groupId: string }
+  | { kind: "split"; groupId: string; side: Side };
+
 export interface WorkbenchState {
   terminals: Record<string, TerminalInfo>;
   order: string[];
@@ -38,7 +43,7 @@ export interface WorkbenchState {
   draggingTerminalId: string | null;
   lastCwd: string | null;
 
-  createTerminal(cwd: string): Promise<string>;
+  createTerminal(cwd: string, placement?: Placement): Promise<string>;
   closeTerminal(id: string): Promise<void>;
   restartTerminal(id: string): Promise<void>;
   renameTerminal(id: string, name: string): Promise<string | null>;
@@ -66,13 +71,17 @@ export const useStore = create<WorkbenchState>((set) => ({
   draggingTerminalId: null,
   lastCwd: null,
 
-  async createTerminal(cwd) {
+  async createTerminal(cwd, placement) {
     const id = crypto.randomUUID();
     await beforeSpawn.hook(id);
     const dims = beforeSpawn.size(id) ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
     const info = await ipc.createTerminal(id, cwd, dims.cols, dims.rows);
     set((s) => {
-      const layout = addTab(s.layout, info.id, s.focusedGroupId);
+      const groupId = placement?.groupId ?? s.focusedGroupId;
+      let layout = addTab(s.layout, info.id, groupId);
+      if (placement?.kind === "split") {
+        layout = splitWith(layout, placement.groupId, info.id, placement.side);
+      }
       return {
         terminals: { ...s.terminals, [info.id]: info },
         order: [...s.order, info.id],

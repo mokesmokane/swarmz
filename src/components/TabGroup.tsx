@@ -31,9 +31,19 @@ export function TabGroup({ group }: { group: GroupNode }) {
   const closeTerminal = useStore((s) => s.closeTerminal);
   const moveTerminal = useStore((s) => s.moveTerminal);
   const splitTerminal = useStore((s) => s.splitTerminal);
+  const createTerminal = useStore((s) => s.createTerminal);
   const [hoverZone, setHoverZone] = useState<Side | "center" | null>(null);
 
   const isFocused = focusedGroupId === group.id;
+  const activeCwd = terminals[group.active]?.cwd;
+  const openBeside = (side: Side) => {
+    if (!activeCwd) return;
+    createTerminal(activeCwd, { kind: "split", groupId: group.id, side }).catch(() => {});
+  };
+  const openTab = () => {
+    if (!activeCwd) return;
+    createTerminal(activeCwd, { kind: "tab", groupId: group.id }).catch(() => {});
+  };
   const showZones = dragging !== null && !(group.tabs.length === 1 && group.tabs[0] === dragging);
 
   const allowDrop = (e: DragEvent) => {
@@ -102,6 +112,29 @@ export function TabGroup({ group }: { group: GroupNode }) {
             </div>
           );
         })}
+        <div className="ml-auto flex shrink-0 items-center gap-0.5 px-1">
+          <button
+            className="rounded px-1.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+            title="New tab in this tile (same directory)"
+            onClick={openTab}
+          >
+            +
+          </button>
+          <button
+            className="rounded px-1.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+            title="Split right: new terminal in a tile to the right (⌘\\)"
+            onClick={() => openBeside("right")}
+          >
+            ◫
+          </button>
+          <button
+            className="rounded px-1.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+            title="Split down: new terminal in a tile below (⌘⇧\\)"
+            onClick={() => openBeside("bottom")}
+          >
+            ⊟
+          </button>
+        </div>
       </div>
       <div className="relative min-h-0 flex-1">
         <TerminalPane key={group.active} id={group.active} />

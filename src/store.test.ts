@@ -91,6 +91,36 @@ describe("createTerminal", () => {
   });
 });
 
+describe("createTerminal placement", () => {
+  it("adds a tab into the named tile", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    const g1 = (useStore.getState().layout as GroupNode).id;
+    useStore.getState().splitTerminal(b, g1, "right");
+    const g2 = findGroupOf(useStore.getState().layout, b)!.id;
+    useStore.getState().focusTerminal(a);
+    const c = await useStore.getState().createTerminal("/tmp/c", { kind: "tab", groupId: g2 });
+    const s = useStore.getState();
+    expect(findGroup(s.layout, g2)?.tabs).toEqual([b, c]);
+    expect(s.focusedGroupId).toBe(g2);
+    expect(s.focusedTerminalId).toBe(c);
+  });
+
+  it("opens a new tile beside the named one for a split placement", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const g1 = (useStore.getState().layout as GroupNode).id;
+    const b = await useStore.getState().createTerminal("/tmp/a", { kind: "split", groupId: g1, side: "bottom" });
+    const s = useStore.getState();
+    const root = s.layout as SplitNode;
+    expect(root.kind).toBe("split");
+    expect(root.dir).toBe("col");
+    expect((root.children[0] as GroupNode).tabs).toEqual([a]);
+    expect((root.children[1] as GroupNode).tabs).toEqual([b]);
+    expect(s.focusedTerminalId).toBe(b);
+    expect(s.focusedGroupId).toBe((root.children[1] as GroupNode).id);
+  });
+});
+
 describe("closeTerminal and markExited", () => {
   it("removes the terminal from state and layout", async () => {
     const id = await useStore.getState().createTerminal("/tmp/a");
