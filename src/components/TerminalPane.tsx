@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
 import { attach, fitAndFocus } from "../lib/xtermRegistry";
 
@@ -7,6 +7,7 @@ export function TerminalPane({ id }: { id: string }) {
   const info = useStore((s) => s.terminals[id]);
   const focused = useStore((s) => s.focusedTerminalId === id);
   const restart = useStore((s) => s.restartTerminal);
+  const [restartError, setRestartError] = useState<string | null>(null);
 
   useEffect(() => {
     const el = ref.current;
@@ -44,10 +45,15 @@ export function TerminalPane({ id }: { id: string }) {
           <span>
             Process exited with code {info.exited}
             {info.error ? `: ${info.error}` : ""}
+            {restartError && <span className="text-red-400"> — {restartError}</span>}
           </span>
           <button
             className="rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-500"
-            onClick={() => void restart(id)}
+            onClick={() =>
+              restart(id)
+                .then(() => setRestartError(null))
+                .catch((e) => setRestartError(typeof e === "string" ? e : String(e)))
+            }
           >
             Restart shell
           </button>

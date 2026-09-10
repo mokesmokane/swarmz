@@ -27,6 +27,7 @@ vi.mock("./lib/ipc", () => {
   };
 });
 
+import { ipc } from "./lib/ipc";
 import { beforeSpawn, useStore } from "./store";
 import { findGroup, findGroupOf, type GroupNode, type SplitNode } from "./lib/layout";
 
@@ -41,6 +42,7 @@ beforeEach(() => {
     lastCwd: null,
   });
   beforeSpawn.hook = async () => {};
+  beforeSpawn.size = () => null;
 });
 
 describe("createTerminal", () => {
@@ -67,6 +69,25 @@ describe("createTerminal", () => {
     };
     const id = await useStore.getState().createTerminal("/tmp/a");
     expect(seen).toEqual([id]);
+  });
+
+  it("uses beforeSpawn.size for dimensions when creating and restarting", async () => {
+    beforeSpawn.size = () => ({ cols: 120, rows: 40 });
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    const createCalls = vi.mocked(ipc.createTerminal).mock.calls;
+    const createCall = createCalls[createCalls.length - 1];
+    expect(createCall[2]).toBe(120);
+    expect(createCall[3]).toBe(40);
+
+    useStore.getState().markExited(id, 1);
+    await useStore.getState().restartTerminal(id);
+    const restartCalls = vi.mocked(ipc.restartTerminal).mock.calls;
+    const restartCall = restartCalls[restartCalls.length - 1];
+    expect(restartCall[1]).toBe(120);
+    expect(restartCall[2]).toBe(40);
+    const resizeCalls = vi.mocked(ipc.resizeTerminal).mock.calls;
+    const resizeCall = resizeCalls[resizeCalls.length - 1];
+    expect(resizeCall).toEqual([id, 120, 40]);
   });
 });
 

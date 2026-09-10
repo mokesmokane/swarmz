@@ -1,7 +1,16 @@
-# Tauri + React + Typescript
+# swarmz
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+swarmz is a Tauri 2 desktop app for hosting many terminal sessions at once, organized as a split tree of tab groups. It pairs a Rust core (PTY spawning, terminal registry) with a React/TypeScript frontend (xterm.js panes, drag-and-drop layout, a sidebar of running terminals).
 
-## Recommended IDE Setup
+## Development
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+```bash
+npm install         # on npm 10.9.x an Arborist bug may require `npx npm@11 install` instead
+npm run tauri dev    # launch the app in dev mode
+npm test             # frontend unit tests (vitest)
+cd src-tauri && cargo test   # Rust unit tests
+```
+
+## Docs
+
+Specs live in `docs/superpowers/specs`, and implementation plans live in `docs/superpowers/plans`.

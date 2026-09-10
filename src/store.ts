@@ -17,8 +17,16 @@ import {
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 
-export const beforeSpawn: { hook: (id: string) => Promise<void> } = {
+// Note: this store does NOT import xtermRegistry directly (that would create
+// an import cycle, since xtermRegistry imports beforeSpawn/useStore from
+// here). Instead xtermRegistry registers its `size` function onto this
+// object at module load time, mirroring the existing `hook` pattern.
+export const beforeSpawn: {
+  hook: (id: string) => Promise<void>;
+  size: (id: string) => { cols: number; rows: number } | null;
+} = {
   hook: async () => {},
+  size: () => null,
 };
 
 export interface WorkbenchState {
@@ -61,7 +69,8 @@ export const useStore = create<WorkbenchState>((set) => ({
   async createTerminal(cwd) {
     const id = crypto.randomUUID();
     await beforeSpawn.hook(id);
-    const info = await ipc.createTerminal(id, cwd, DEFAULT_COLS, DEFAULT_ROWS);
+    const dims = beforeSpawn.size(id) ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
+    const info = await ipc.createTerminal(id, cwd, dims.cols, dims.rows);
     set((s) => {
       const layout = addTab(s.layout, info.id, s.focusedGroupId);
       return {
@@ -98,8 +107,13 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   async restartTerminal(id) {
-    const info = await ipc.restartTerminal(id, DEFAULT_COLS, DEFAULT_ROWS);
+    const dims = beforeSpawn.size(id) ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
+    const info = await ipc.restartTerminal(id, dims.cols, dims.rows);
     set((s) => ({ terminals: { ...s.terminals, [id]: info } }));
+    // The fit addon only fires onResize when dimensions change, so if the
+    // new PTY already matches dims (e.g. same terminal, no relayout since
+    // exit) it would never be resized without this explicit call.
+    void ipc.resizeTerminal(id, dims.cols, dims.rows).catch(() => {});
   },
 
   async renameTerminal(id, name) {

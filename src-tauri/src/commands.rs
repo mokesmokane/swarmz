@@ -54,6 +54,18 @@ fn spawn_for(app: &AppHandle, state: &AppState, info: &TerminalInfo, cols: u16, 
     let exit_app = app.clone();
     let exit_id = info.id.clone();
 
+    // Hold the sessions lock across the spawn call (and the subsequent
+    // insert) so the child's exit callback - which runs on another thread
+    // and can fire before this function returns for very short-lived
+    // processes - can never observe the (gen, session) tuple missing from
+    // the map. The callback blocks on the same mutex until the insert
+    // below lands, then finds and removes its own entry via
+    // `take_if_current`. Without this, a child that exits before the
+    // insert would cause the exit callback to no-op (its generation isn't
+    // in the map yet) and the insert that follows would then add a
+    // dead/zombie session that never gets cleaned up.
+    let mut sessions = state.sessions.lock().unwrap();
+
     let session = PtySession::spawn(
         spec,
         move |bytes| {
@@ -71,7 +83,8 @@ fn spawn_for(app: &AppHandle, state: &AppState, info: &TerminalInfo, cols: u16, 
         },
     )?;
 
-    state.sessions.lock().unwrap().insert(info.id.clone(), (gen, Arc::new(session)));
+    sessions.insert(info.id.clone(), (gen, Arc::new(session)));
+    drop(sessions);
     Ok(())
 }
 

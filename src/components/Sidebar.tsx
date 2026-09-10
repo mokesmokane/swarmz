@@ -39,6 +39,7 @@ function Row({ id }: { id: string }) {
       onDragEnd={endTerminalDrag}
       onClick={() => focusTerminal(id)}
       onDoubleClick={() => {
+        suppressBlur.current = false;
         setDraft(t.name);
         setEditing(true);
         setError(null);
@@ -72,6 +73,7 @@ function Row({ id }: { id: string }) {
                 void commit();
               }}
               onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
               className="w-full rounded border border-neutral-600 bg-neutral-900 px-1 text-sm text-neutral-100 outline-none focus:border-blue-500"
             />
             {error && <div className="mt-0.5 text-xs text-red-400">{error}</div>}
@@ -87,7 +89,7 @@ function Row({ id }: { id: string }) {
         className="rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"
         onClick={(e) => {
           e.stopPropagation();
-          void closeTerminal(id);
+          closeTerminal(id).catch(() => {});
         }}
         title="Close terminal"
       >

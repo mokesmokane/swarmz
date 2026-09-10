@@ -2488,3 +2488,4 @@ git commit -m "feat(ui): sidebar and app shell; workbench stage 1 complete"
 - Spec 4.3 pane header "Launch Claude" button is stage 2; the tab bar carries name and close in stage 1.
 - Spec 4.4 Ledger panel is stage 2.
 - Spec 3.1 `pty:exit` and registry `exited` state, 4.2 rules, 4.3 single xterm instance, 8 error handling (spawn failure, exit banner, duplicate name), and 9 reducer tests are all covered above.
+- Spec 4.3 says inactive tabs stay mounted and hidden with CSS. The implementation renders only the active tab and re-parents the xterm element via the registry; scrollback and state survive because the Terminal object lives in `xtermRegistry`. Revisit if the smoke test shows scroll-position glitches after re-docking.

@@ -15,6 +15,7 @@ pub enum RegistryError {
     DuplicateName(String),
     NotFound(String),
     EmptyName,
+    InvalidName(String),
 }
 
 impl std::fmt::Display for RegistryError {
@@ -23,8 +24,30 @@ impl std::fmt::Display for RegistryError {
             RegistryError::DuplicateName(n) => write!(f, "a terminal named \"{n}\" already exists"),
             RegistryError::NotFound(id) => write!(f, "no terminal with id {id}"),
             RegistryError::EmptyName => write!(f, "name cannot be empty"),
+            RegistryError::InvalidName(n) => {
+                write!(f, "name \"{n}\" contains unsupported characters or is too long")
+            }
         }
     }
+}
+
+const MAX_NAME_LEN: usize = 64;
+const UNSUPPORTED_NAME_CHARS: [char; 5] = ['"', '\'', '`', '\\', '$'];
+
+/// Trims `name` and rejects it if empty, too long, or containing characters
+/// that could cause trouble if the name is ever interpolated into a shell
+/// command or file path (quotes, backslash, `$`, or any control character).
+fn validate_name(name: &str) -> Result<String, RegistryError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(RegistryError::EmptyName);
+    }
+    if trimmed.chars().count() > MAX_NAME_LEN
+        || trimmed.chars().any(|c| UNSUPPORTED_NAME_CHARS.contains(&c) || c.is_control())
+    {
+        return Err(RegistryError::InvalidName(trimmed.to_string()));
+    }
+    Ok(trimmed.to_string())
 }
 
 #[derive(Debug, Default)]
@@ -47,8 +70,7 @@ impl TerminalRegistry {
 
     pub fn add(&mut self, id: String, requested_name: Option<String>, cwd: String) -> TerminalInfo {
         let base = requested_name
-            .map(|n| n.trim().to_string())
-            .filter(|n| !n.is_empty())
+            .and_then(|n| validate_name(&n).ok())
             .unwrap_or_else(|| basename(&cwd));
         let name = self.unique_name(&base);
         let info = TerminalInfo { id, name, cwd, exited: None, error: None };
@@ -57,19 +79,16 @@ impl TerminalRegistry {
     }
 
     pub fn rename(&mut self, id: &str, name: &str) -> Result<TerminalInfo, RegistryError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(RegistryError::EmptyName);
-        }
+        let name = validate_name(name)?;
         if self.entries.iter().any(|t| t.id != id && t.name == name) {
-            return Err(RegistryError::DuplicateName(name.to_string()));
+            return Err(RegistryError::DuplicateName(name));
         }
         let entry = self
             .entries
             .iter_mut()
             .find(|t| t.id == id)
             .ok_or_else(|| RegistryError::NotFound(id.to_string()))?;
-        entry.name = name.to_string();
+        entry.name = name;
         Ok(entry.clone())
     }
 
@@ -161,6 +180,38 @@ mod tests {
         let ok = r.rename("2", " c ").unwrap();
         assert_eq!(ok.name, "c");
         assert_eq!(r.get("2").unwrap().name, "c");
+    }
+
+    #[test]
+    fn rename_rejects_unsupported_characters() {
+        let mut r = TerminalRegistry::new();
+        r.add("1".into(), Some("a".into()), "/tmp".into());
+        assert_eq!(r.rename("1", "a\"b"), Err(RegistryError::InvalidName("a\"b".into())));
+        assert_eq!(r.get("1").unwrap().name, "a");
+    }
+
+    #[test]
+    fn rename_rejects_names_over_max_length() {
+        let mut r = TerminalRegistry::new();
+        r.add("1".into(), Some("a".into()), "/tmp".into());
+        let too_long = "x".repeat(65);
+        assert_eq!(r.rename("1", &too_long), Err(RegistryError::InvalidName(too_long)));
+        assert_eq!(r.get("1").unwrap().name, "a");
+    }
+
+    #[test]
+    fn rename_accepts_ordinary_names() {
+        let mut r = TerminalRegistry::new();
+        r.add("1".into(), Some("a".into()), "/tmp".into());
+        let ok = r.rename("1", "ok-name_2").unwrap();
+        assert_eq!(ok.name, "ok-name_2");
+    }
+
+    #[test]
+    fn add_falls_back_to_basename_when_requested_name_is_invalid() {
+        let mut r = TerminalRegistry::new();
+        let a = r.add("1".into(), Some("bad`name".into()), "/Users/me/projects/swarmz".into());
+        assert_eq!(a.name, "swarmz");
     }
 
     #[test]

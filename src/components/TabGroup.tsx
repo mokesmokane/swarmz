@@ -93,7 +93,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
                 className="ml-1 rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"
                 onClick={(e) => {
                   e.stopPropagation();
-                  void closeTerminal(id);
+                  closeTerminal(id).catch(() => {});
                 }}
                 title="Close"
               >

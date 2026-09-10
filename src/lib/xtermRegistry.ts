@@ -30,10 +30,11 @@ function createEntry(id: string): Entry {
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.onData((data) => {
-    void ipc.writeTerminal(id, data);
+    // Writes to an already-exited pane are expected to fail; ignore.
+    void ipc.writeTerminal(id, data).catch(() => {});
   });
   term.onResize(({ cols, rows }) => {
-    void ipc.resizeTerminal(id, cols, rows);
+    void ipc.resizeTerminal(id, cols, rows).catch(() => {});
   });
 
   const entry: Entry = { term, fit, ready: Promise.resolve(), unlisten: [], opened: false };
@@ -53,6 +54,12 @@ function createEntry(id: string): Entry {
 export function prepare(id: string): Promise<void> {
   const entry = entries.get(id) ?? createEntry(id);
   return entry.ready;
+}
+
+export function size(id: string): { cols: number; rows: number } | null {
+  const entry = entries.get(id);
+  if (!entry) return null;
+  return { cols: entry.term.cols, rows: entry.term.rows };
 }
 
 export function attach(id: string, container: HTMLElement): { term: Terminal; fit: FitAddon } {
@@ -86,6 +93,7 @@ export function dispose(id: string): void {
 }
 
 beforeSpawn.hook = prepare;
+beforeSpawn.size = size;
 
 useStore.subscribe((state, prev) => {
   if (state.terminals === prev.terminals) return;
