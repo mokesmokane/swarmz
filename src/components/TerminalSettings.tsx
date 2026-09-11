@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { useStore } from "../store";
 import { EMPTY_SETTINGS, startupLine, validateHost, type TerminalSettings as Settings } from "../lib/workspace";
+import { RemoteDirPicker } from "./RemoteDirPicker";
 
 export function TerminalSettings({ id, onClose }: { id: string; onClose: () => void }) {
   const info = useStore((s) => s.terminals[id]);
   const current = useStore((s) => s.settings[id] ?? EMPTY_SETTINGS);
   const updateSettings = useStore((s) => s.updateSettings);
   const renameTerminal = useStore((s) => s.renameTerminal);
+  const connected = useStore((s) => s.sshConnected[id] === true);
 
   const [name, setName] = useState(info?.name ?? "");
   const [host, setHost] = useState(current.ssh?.host ?? "");
@@ -15,6 +17,7 @@ export function TerminalSettings({ id, onClose }: { id: string; onClose: () => v
   const [skip, setSkip] = useState(current.claude?.skipPermissions ?? false);
   const [command, setCommand] = useState(current.command ?? "");
   const [error, setError] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
 
   if (!info) return null;
 
@@ -63,7 +66,17 @@ export function TerminalSettings({ id, onClose }: { id: string; onClose: () => v
       <label className={label}>SSH host (optional)</label>
       <input className={field} placeholder="user@host" value={host} onChange={(e) => setHost(e.target.value)} />
       <label className={label}>Remote directory (optional)</label>
-      <input className={field} placeholder="/path/on/remote" value={remoteCwd} onChange={(e) => setRemoteCwd(e.target.value)} disabled={!host.trim()} />
+      <div className="flex gap-1">
+        <input className={field} placeholder="/path/on/remote" value={remoteCwd} onChange={(e) => setRemoteCwd(e.target.value)} disabled={!host.trim()} />
+        <button
+          className="rounded border border-neutral-700 px-2 text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
+          disabled={!connected || !host.trim()}
+          title={connected ? "Browse folders on the remote host" : "Connect first"}
+          onClick={() => setPicking(true)}
+        >
+          Browse…
+        </button>
+      </div>
       <label className="mt-2 flex items-center gap-2 text-neutral-300">
         <input type="checkbox" checked={claudeOn} onChange={(e) => setClaudeOn(e.target.checked)} />
         Run Claude
@@ -82,6 +95,19 @@ export function TerminalSettings({ id, onClose }: { id: string; onClose: () => v
         <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={onClose}>Cancel</button>
         <button className="rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-500" onClick={() => void save()}>Save</button>
       </div>
+      {picking && (
+        <div className="relative h-64">
+          <RemoteDirPicker
+            host={host.trim()}
+            initialPath={remoteCwd.trim() || null}
+            onPick={(p) => {
+              setRemoteCwd(p);
+              setPicking(false);
+            }}
+            onClose={() => setPicking(false)}
+          />
+        </div>
+      )}
     </div>
   );
 }

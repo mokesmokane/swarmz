@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useStore } from "../store";
-import { validateHost } from "../lib/workspace";
+import { recentSshHosts, validateHost } from "../lib/workspace";
 
 const field = "w-full rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-xs text-neutral-100 outline-none focus:border-blue-500";
 const label = "mt-2 block text-[10px] uppercase tracking-wide text-neutral-500";
@@ -8,6 +8,9 @@ const label = "mt-2 block text-[10px] uppercase tracking-wide text-neutral-500";
 /** Inline form for creating a terminal that connects to a remote host on creation. */
 export function NewSshTerminal({ onClose }: { onClose: () => void }) {
   const createSshTerminal = useStore((s) => s.createSshTerminal);
+  const history = useStore((s) => s.sshHistory);
+  const forget = useStore((s) => s.forgetSshHost);
+  const recent = recentSshHosts(history);
   const [host, setHost] = useState("");
   const [remoteCwd, setRemoteCwd] = useState("");
   const [claudeOn, setClaudeOn] = useState(false);
@@ -39,6 +42,28 @@ export function NewSshTerminal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="border-b border-neutral-800 p-2 text-xs">
+      {recent.length > 0 && (
+        <>
+          <label className={label}>Recent</label>
+          <ul className="mb-1 max-h-32 overflow-y-auto rounded border border-neutral-800">
+            {recent.map((r) => (
+              <li key={r.host} className="flex items-center gap-2 px-2 py-1 hover:bg-neutral-800">
+                <button
+                  className="min-w-0 flex-1 truncate text-left text-neutral-200"
+                  title={r.cwd ?? "no folder yet"}
+                  onClick={() => {
+                    setHost(r.host);
+                    setRemoteCwd(r.cwd ?? "");
+                  }}
+                >
+                  {r.host} <span className="text-neutral-500">{r.cwd ?? ""}</span>
+                </button>
+                <button className="text-neutral-500 hover:text-neutral-200" title="Forget" onClick={() => forget(r.host)}>×</button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       <label className={label}>SSH host</label>
       <input
         autoFocus
@@ -53,6 +78,7 @@ export function NewSshTerminal({ onClose }: { onClose: () => void }) {
       />
       <label className={label}>Remote directory (optional)</label>
       <input className={field} placeholder="/path/on/remote" value={remoteCwd} onChange={(e) => setRemoteCwd(e.target.value)} />
+      <div className="text-[10px] text-neutral-500">You can pick the folder after connecting.</div>
       <label className="mt-2 flex items-center gap-2 text-neutral-300">
         <input type="checkbox" checked={claudeOn} onChange={(e) => setClaudeOn(e.target.checked)} />
         Run Claude

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
 import { attach, fitAndFocus } from "../lib/xtermRegistry";
-import { EMPTY_SETTINGS, startupLine } from "../lib/workspace";
+import { EMPTY_SETTINGS, needsRemoteFolder, startupLine } from "../lib/workspace";
+import { RemoteDirPicker } from "./RemoteDirPicker";
 
 export function TerminalPane({ id }: { id: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -14,7 +15,14 @@ export function TerminalPane({ id }: { id: string }) {
   const note = useStore((s) => s.startupNotes[id]);
   const runStartup = useStore((s) => s.runStartup);
   const skipStartup = useStore((s) => s.skipStartup);
+  const connecting = useStore((s) => s.sshConnecting[id] === true);
+  const connected = useStore((s) => s.sshConnected[id] === true);
+  const cancelConnecting = useStore((s) => s.cancelConnecting);
+  const chooseRemoteDir = useStore((s) => s.chooseRemoteDir);
+  const [picking, setPicking] = useState(false);
+  const [typedPath, setTypedPath] = useState("");
   const line = startupLine(settings);
+  const needsFolder = !pending && !connecting && connected && needsRemoteFolder(settings);
 
   useEffect(() => {
     const el = ref.current;
@@ -54,7 +62,39 @@ export function TerminalPane({ id }: { id: string }) {
           <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={() => skipStartup(id)}>Skip</button>
         </div>
       )}
-      <div ref={ref} className={`absolute inset-0 p-1 ${pending && line ? "pt-9" : ""}`} />
+      {connecting && (
+        <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-300">
+          <span className="flex-1">Connecting… authenticate in the terminal if prompted.</span>
+          <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={() => cancelConnecting(id)}>Cancel</button>
+        </div>
+      )}
+      {needsFolder && (
+        <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-300">
+          <span className="shrink-0">Choose a folder for Claude:</span>
+          <input
+            className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 font-mono text-neutral-100 outline-none focus:border-blue-500"
+            placeholder="/path/on/remote"
+            value={typedPath}
+            onChange={(e) => setTypedPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && typedPath.trim()) void chooseRemoteDir(id, typedPath.trim());
+            }}
+          />
+          <button className="rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-500" onClick={() => setPicking(true)}>Browse…</button>
+        </div>
+      )}
+      {picking && settings.ssh?.host && (
+        <RemoteDirPicker
+          host={settings.ssh.host}
+          initialPath={settings.ssh.cwd ?? null}
+          onPick={(p) => {
+            setPicking(false);
+            void chooseRemoteDir(id, p);
+          }}
+          onClose={() => setPicking(false)}
+        />
+      )}
+      <div ref={ref} className={`absolute inset-0 p-1 ${(pending && line) || connecting || needsFolder ? "pt-9" : ""}`} />
       {info?.exited !== null && info?.exited !== undefined && (
         <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-neutral-900/95 px-3 py-2 text-sm text-neutral-300 border-t border-neutral-700">
           <span>
