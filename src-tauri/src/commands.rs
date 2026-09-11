@@ -191,6 +191,16 @@ pub fn save_workspace(workspace: Workspace) -> Result<(), String> {
     ws_file::save_to(&ws_file::default_path(), &workspace)
 }
 
+#[tauri::command]
+pub fn ssh_check(host: String) -> Result<bool, String> {
+    crate::remote::check(&host)
+}
+
+#[tauri::command]
+pub fn ssh_list_dir(host: String, path: Option<String>) -> Result<crate::remote::RemoteListing, String> {
+    crate::remote::list_dir(&host, path.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
