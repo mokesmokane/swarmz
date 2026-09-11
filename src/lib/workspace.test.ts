@@ -3,6 +3,7 @@ import { addTab, splitWith, type GroupNode, type SplitNode } from "./layout";
 import {
   EMPTY_SETTINGS,
   claudeLine,
+  hostLabel,
   isLayoutNode,
   isSafeSessionId,
   reconcileLayout,
@@ -202,5 +203,14 @@ describe("toWorkspace", () => {
     expect(ws.terminals[0].claude).toBeNull();
     expect(ws.terminals[0].command).toBeNull();
     expect(ws.layout).toBeNull();
+  });
+});
+
+describe("hostLabel", () => {
+  it("strips the user and takes the first host label", () => {
+    expect(hostLabel("mokes@other-mac.local")).toBe("other-mac");
+    expect(hostLabel("other-mac.local")).toBe("other-mac");
+    expect(hostLabel("10.0.0.5")).toBe("10.0.0.5");
+    expect(hostLabel("me@box")).toBe("box");
   });
 });

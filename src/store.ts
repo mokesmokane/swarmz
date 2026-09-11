@@ -17,6 +17,7 @@ import {
 } from "./lib/layout";
 import {
   EMPTY_SETTINGS,
+  hostLabel,
   isSafeSessionId,
   reconcileLayout,
   sanitizeLayout,
@@ -50,6 +51,13 @@ export type Placement =
   | { kind: "tab"; groupId: string }
   | { kind: "split"; groupId: string; side: Side };
 
+/** What a new SSH terminal connects to. Claude, when set, gets a fresh session. */
+export interface SshTerminalOptions {
+  host: string;
+  cwd?: string | null;
+  claude?: { skipPermissions: boolean } | null;
+}
+
 export interface WorkbenchState {
   terminals: Record<string, TerminalInfo>;
   order: string[];
@@ -65,6 +73,7 @@ export interface WorkbenchState {
   persistenceReady: boolean;
 
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
+  createSshTerminal(opts: SshTerminalOptions, placement?: Placement): Promise<string>;
   closeTerminal(id: string): Promise<void>;
   restartTerminal(id: string): Promise<void>;
   renameTerminal(id: string, name: string): Promise<string | null>;
@@ -265,6 +274,39 @@ export const useStore = create<WorkbenchState>((set) => ({
         ...focusFor(layout, info.id),
       };
     });
+    return info.id;
+  },
+
+  async createSshTerminal(opts, placement) {
+    const id = crypto.randomUUID();
+    await beforeSpawn.hook(id);
+    const dims = beforeSpawn.size(id) ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
+    const home = await homeDir();
+    const info = await ipc.createTerminal(id, home, dims.cols, dims.rows, hostLabel(opts.host));
+    const settings: TerminalSettings = {
+      ...EMPTY_SETTINGS,
+      ssh: { host: opts.host.trim(), cwd: opts.cwd?.trim() || null },
+      claude: opts.claude
+        ? { enabled: true, sessionId: crypto.randomUUID(), skipPermissions: opts.claude.skipPermissions, started: false }
+        : null,
+    };
+    set((s) => {
+      const groupId = placement?.groupId ?? s.focusedGroupId;
+      let layout = addTab(s.layout, info.id, groupId);
+      if (placement?.kind === "split") {
+        layout = splitWith(layout, placement.groupId, info.id, placement.side);
+      }
+      return {
+        terminals: { ...s.terminals, [info.id]: info },
+        order: [...s.order, info.id],
+        layout,
+        settings: { ...s.settings, [info.id]: settings },
+        startupPending: { ...s.startupPending, [info.id]: true },
+        ...focusFor(layout, info.id),
+      };
+    });
+    // The user asked for this connection right now, so run it without a click.
+    await useStore.getState().runStartup(info.id);
     return info.id;
   },
 

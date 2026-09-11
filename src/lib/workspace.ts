@@ -145,3 +145,10 @@ export function toWorkspace(input: {
     });
   return { version: 1, terminals, layout: input.layout };
 }
+
+/** Short display name for an SSH host: drops `user@` and takes the first DNS label. */
+export function hostLabel(host: string): string {
+  const h = host.trim().replace(/^[^@]*@/, "");
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) return h;
+  return h.split(".")[0] || h;
+}

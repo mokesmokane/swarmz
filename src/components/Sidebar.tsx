@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
 import { TerminalSettings } from "./TerminalSettings";
+import { NewSshTerminal } from "./NewSshTerminal";
 
 function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? p;
@@ -94,7 +95,9 @@ function Row({ id }: { id: string }) {
                 </span>
               )}
             </div>
-            <div className="truncate text-xs text-neutral-500">{basename(t.cwd)}</div>
+            <div className="truncate text-xs text-neutral-500">
+              {settings?.ssh?.host ? `ssh ${settings.ssh.host}` : basename(t.cwd)}
+            </div>
           </>
         )}
       </div>
@@ -138,8 +141,10 @@ export function Sidebar() {
   const dismiss = useStore((s) => s.dismissPersistError);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [menu, setMenu] = useState<"closed" | "open" | "ssh">("closed");
 
   const addTerminal = async () => {
+    setMenu("closed");
     setBusy(true);
     setError(null);
     try {
@@ -166,7 +171,7 @@ export function Sidebar() {
           </button>
           <button
             className="rounded px-2 text-base leading-none text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
-            onClick={() => void addTerminal()}
+            onClick={() => setMenu((m) => (m === "closed" ? "open" : "closed"))}
             disabled={busy}
             title="New terminal"
           >
@@ -174,6 +179,23 @@ export function Sidebar() {
           </button>
         </div>
       </div>
+      {menu === "open" && (
+        <div className="flex gap-1 border-b border-neutral-800 p-2 text-xs">
+          <button
+            className="flex-1 rounded border border-neutral-700 px-2 py-1 text-neutral-200 hover:bg-neutral-800"
+            onClick={() => void addTerminal()}
+          >
+            Local terminal…
+          </button>
+          <button
+            className="flex-1 rounded border border-neutral-700 px-2 py-1 text-neutral-200 hover:bg-neutral-800"
+            onClick={() => setMenu("ssh")}
+          >
+            SSH terminal…
+          </button>
+        </div>
+      )}
+      {menu === "ssh" && <NewSshTerminal onClose={() => setMenu("closed")} />}
       {error && <div className="px-3 py-1 text-xs text-red-400">{error}</div>}
       {persistError && (
         <div className="flex items-start gap-2 px-3 py-1 text-xs text-amber-300">

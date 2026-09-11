@@ -589,3 +589,41 @@ describe("reloadWorkspace", () => {
     expect(s.persistenceReady).toBe(true);
   });
 });
+
+describe("createSshTerminal", () => {
+  it("opens a home-directory shell named after the host, applies ssh settings, and connects immediately", async () => {
+    const id = await useStore.getState().createSshTerminal({ host: "mokes@other-mac.local", cwd: "/remote", claude: null });
+    const s = useStore.getState();
+    const createCalls = vi.mocked(ipc.createTerminal).mock.calls;
+    const createCall = createCalls[createCalls.length - 1];
+    expect(createCall[1]).toBe("/home/me");
+    expect(createCall[4]).toBe("other-mac");
+    expect(s.settings[id].ssh).toEqual({ host: "mokes@other-mac.local", cwd: "/remote" });
+    expect(s.settings[id].claude).toBeNull();
+    expect(ipc.writeTerminal).toHaveBeenLastCalledWith(id, "ssh -t mokes@other-mac.local\r");
+    expect(s.startupPending[id]).toBe(false);
+    expect(s.focusedTerminalId).toBe(id);
+  });
+
+  it("enables claude with a fresh session id and marks it started after connecting", async () => {
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: null, claude: { skipPermissions: true } });
+    const c = useStore.getState().settings[id].claude!;
+    expect(c.enabled).toBe(true);
+    expect(c.skipPermissions).toBe(true);
+    expect(c.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(c.started).toBe(true);
+    const writeCalls = vi.mocked(ipc.writeTerminal).mock.calls;
+    const written = writeCalls[writeCalls.length - 1][1];
+    expect(written).toBe(`ssh -t me@box 'claude --dangerously-skip-permissions --session-id ${c.sessionId}'\r`);
+  });
+
+  it("honours a split placement", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const g1 = (useStore.getState().layout as GroupNode).id;
+    const b = await useStore.getState().createSshTerminal({ host: "h", cwd: null, claude: null }, { kind: "split", groupId: g1, side: "right" });
+    const root = useStore.getState().layout as SplitNode;
+    expect(root.kind).toBe("split");
+    expect((root.children[0] as GroupNode).tabs).toEqual([a]);
+    expect((root.children[1] as GroupNode).tabs).toEqual([b]);
+  });
+});

@@ -1,6 +1,6 @@
 import { useState, type DragEvent } from "react";
 import type { GroupNode, Side } from "../lib/layout";
-import { useStore } from "../store";
+import { useStore, type Placement } from "../store";
 import { TerminalPane } from "./TerminalPane";
 
 export const DRAG_MIME = "application/x-swarmz-terminal";
@@ -32,18 +32,26 @@ export function TabGroup({ group }: { group: GroupNode }) {
   const moveTerminal = useStore((s) => s.moveTerminal);
   const splitTerminal = useStore((s) => s.splitTerminal);
   const createTerminal = useStore((s) => s.createTerminal);
+  const createSshTerminal = useStore((s) => s.createSshTerminal);
+  const activeSsh = useStore((s) => s.settings[group.active]?.ssh ?? null);
+  const activeClaude = useStore((s) => s.settings[group.active]?.claude ?? null);
   const [hoverZone, setHoverZone] = useState<Side | "center" | null>(null);
 
   const isFocused = focusedGroupId === group.id;
   const activeCwd = terminals[group.active]?.cwd;
-  const openBeside = (side: Side) => {
+  // A new terminal spawned from an SSH tile connects to the same host; otherwise it
+  // opens a local shell in the same directory.
+  const openWith = (placement: Placement) => {
+    if (activeSsh?.host) {
+      const claude = activeClaude?.enabled ? { skipPermissions: activeClaude.skipPermissions } : null;
+      createSshTerminal({ host: activeSsh.host, cwd: activeSsh.cwd ?? null, claude }, placement).catch(() => {});
+      return;
+    }
     if (!activeCwd) return;
-    createTerminal(activeCwd, { kind: "split", groupId: group.id, side }).catch(() => {});
+    createTerminal(activeCwd, placement).catch(() => {});
   };
-  const openTab = () => {
-    if (!activeCwd) return;
-    createTerminal(activeCwd, { kind: "tab", groupId: group.id }).catch(() => {});
-  };
+  const openBeside = (side: Side) => openWith({ kind: "split", groupId: group.id, side });
+  const openTab = () => openWith({ kind: "tab", groupId: group.id });
   const showZones = dragging !== null && !(group.tabs.length === 1 && group.tabs[0] === dragging);
 
   const allowDrop = (e: DragEvent) => {
@@ -115,7 +123,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
         <div className="ml-auto flex shrink-0 items-center gap-0.5 px-1">
           <button
             className="rounded px-1.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
-            title="New tab in this tile (same directory)"
+            title="New tab in this tile (same directory or host)"
             onClick={openTab}
           >
             +
