@@ -33,11 +33,12 @@ vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn(async () => "/home/me") 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true) }));
 
 import { ipc } from "./lib/ipc";
-import { beforeSpawn, SAVE_DEBOUNCE_MS, useStore } from "./store";
+import { __resetLoadGuard, beforeSpawn, SAVE_DEBOUNCE_MS, useStore } from "./store";
 import { findGroup, findGroupOf, type GroupNode, type SplitNode } from "./lib/layout";
 import { EMPTY_SETTINGS, type Workspace } from "./lib/workspace";
 
 beforeEach(() => {
+  __resetLoadGuard();
   useStore.setState({
     terminals: {},
     order: [],

@@ -8,6 +8,10 @@ import "./lib/xtermRegistry";
 
 export default function App() {
   useEffect(() => {
+    void useStore.getState().loadWorkspace();
+  }, []);
+
+  useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const side = splitShortcut(e);
       if (!side) return;

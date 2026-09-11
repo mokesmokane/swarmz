@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
+import { TerminalSettings } from "./TerminalSettings";
 
 function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? p;
@@ -16,6 +17,7 @@ function Row({ id }: { id: string }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const suppressBlur = useRef(false);
 
   if (!t) return null;
@@ -32,7 +34,7 @@ function Row({ id }: { id: string }) {
     setEditing(false);
   };
 
-  return (
+  const row = (
     <div
       draggable={!editing}
       onDragStart={(e) => startTerminalDrag(e, id)}
@@ -89,6 +91,16 @@ function Row({ id }: { id: string }) {
         className="rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"
         onClick={(e) => {
           e.stopPropagation();
+          setSettingsOpen((v) => !v);
+        }}
+        title="Terminal settings"
+      >
+        ⚙
+      </button>
+      <button
+        className="rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"
+        onClick={(e) => {
+          e.stopPropagation();
           closeTerminal(id).catch(() => {});
         }}
         title="Close terminal"
@@ -97,12 +109,22 @@ function Row({ id }: { id: string }) {
       </button>
     </div>
   );
+
+  return (
+    <>
+      {row}
+      {settingsOpen && <TerminalSettings id={id} onClose={() => setSettingsOpen(false)} />}
+    </>
+  );
 }
 
 export function Sidebar() {
   const order = useStore((s) => s.order);
   const lastCwd = useStore((s) => s.lastCwd);
   const createTerminal = useStore((s) => s.createTerminal);
+  const reloadWorkspace = useStore((s) => s.reloadWorkspace);
+  const persistError = useStore((s) => s.persistError);
+  const dismiss = useStore((s) => s.dismissPersistError);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -124,6 +146,13 @@ export function Sidebar() {
       <div className="flex h-8 items-center justify-between border-b border-neutral-800 px-3 text-xs font-semibold uppercase tracking-wide text-neutral-400">
         <span>Terminals</span>
         <button
+          className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
+          onClick={() => void reloadWorkspace()}
+          title="Reload ~/.swarmz/workspace.json"
+        >
+          ↻
+        </button>
+        <button
           className="rounded px-2 text-base leading-none text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
           onClick={() => void addTerminal()}
           disabled={busy}
@@ -133,6 +162,12 @@ export function Sidebar() {
         </button>
       </div>
       {error && <div className="px-3 py-1 text-xs text-red-400">{error}</div>}
+      {persistError && (
+        <div className="flex items-start gap-2 px-3 py-1 text-xs text-amber-300">
+          <span className="flex-1">{persistError}</span>
+          <button className="text-neutral-500 hover:text-neutral-200" onClick={dismiss} title="Dismiss">×</button>
+        </div>
+      )}
       <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
         {order.map((id) => (
           <Row key={id} id={id} />

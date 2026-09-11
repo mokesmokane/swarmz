@@ -109,6 +109,12 @@ async function spawnDef(def: TerminalDef): Promise<{ info: TerminalInfo; note: s
 
 type SetState = (partial: Partial<WorkbenchState> | ((s: WorkbenchState) => Partial<WorkbenchState>)) => void;
 
+let loadStarted = false;
+
+export function __resetLoadGuard() {
+  loadStarted = false;
+}
+
 const UNSAFE_SESSION_NOTE = "claude session id in workspace.json was invalid; a new session was created";
 
 function regenerateIfUnsafe(def: TerminalDef): { def: TerminalDef; note: string | null } {
@@ -295,6 +301,8 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   async loadWorkspace() {
+    if (loadStarted) return;
+    loadStarted = true;
     let ws: Awaited<ReturnType<typeof ipc.loadWorkspace>> = null;
     try {
       ws = await ipc.loadWorkspace();
