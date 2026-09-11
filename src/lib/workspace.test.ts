@@ -3,6 +3,7 @@ import { addTab, splitWith, type GroupNode, type SplitNode } from "./layout";
 import {
   EMPTY_SETTINGS,
   claudeLine,
+  isSafeSessionId,
   reconcileLayout,
   shellQuote,
   startupLine,
@@ -62,6 +63,12 @@ describe("startupLine", () => {
     expect(startupLine({ ssh: { host: "me@host" }, claude, command: "  npm run dev  " })).toBe("npm run dev");
     expect(startupLine({ ...EMPTY_SETTINGS, command: "   " })).toBeNull();
   });
+
+  it("treats an unsafe claude session id as disabled", () => {
+    const unsafeClaude = { ...claude, sessionId: "x'y" };
+    expect(startupLine({ ssh: { host: "h" }, claude: unsafeClaude, command: null })).toBe("ssh -t h");
+    expect(startupLine({ ssh: null, claude: unsafeClaude, command: null })).toBeNull();
+  });
 });
 
 describe("startupUsesClaude", () => {
@@ -70,6 +77,7 @@ describe("startupUsesClaude", () => {
     expect(startupUsesClaude({ ssh: { host: "h" }, claude, command: null })).toBe(true);
     expect(startupUsesClaude({ ssh: { host: "h" }, claude, command: "ls" })).toBe(false);
     expect(startupUsesClaude({ ...EMPTY_SETTINGS, ssh: { host: "h" } })).toBe(false);
+    expect(startupUsesClaude({ ssh: { host: "h" }, claude: { ...claude, sessionId: "x'y" }, command: null })).toBe(false);
   });
 });
 
@@ -80,6 +88,24 @@ describe("validateHost", () => {
     expect(validateHost("")).not.toBeNull();
     expect(validateHost("me@host x")).not.toBeNull();
     expect(validateHost("me@'host'")).not.toBeNull();
+  });
+
+  it("rejects shell-injection-shaped hosts and accepts plain ones", () => {
+    expect(validateHost("-oProxyCommand=x")).not.toBeNull();
+    expect(validateHost("host;ls")).not.toBeNull();
+    expect(validateHost("a|b")).not.toBeNull();
+    expect(validateHost("a&b")).not.toBeNull();
+    expect(validateHost("me@host.local")).toBeNull();
+    expect(validateHost("10.0.0.5")).toBeNull();
+  });
+});
+
+describe("isSafeSessionId", () => {
+  it("accepts a UUID and rejects unsafe ids", () => {
+    expect(isSafeSessionId("11111111-2222-3333-4444-555555555555")).toBe(true);
+    expect(isSafeSessionId("abc'def")).toBe(false);
+    expect(isSafeSessionId("a b")).toBe(false);
+    expect(isSafeSessionId("")).toBe(false);
   });
 });
 

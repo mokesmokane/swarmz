@@ -43,19 +43,28 @@ export function claudeLine(c: ClaudeConfig): string {
   return parts.join(" ");
 }
 
+export function isSafeSessionId(id: string): boolean {
+  return /^[A-Za-z0-9-]{1,64}$/.test(id);
+}
+
 function trimmedCommand(s: TerminalSettings): string | null {
   const c = s.command?.trim();
   return c ? c : null;
 }
 
+function safeClaude(s: TerminalSettings): ClaudeConfig | null {
+  return s.claude?.enabled && isSafeSessionId(s.claude.sessionId) ? s.claude : null;
+}
+
 export function startupUsesClaude(s: TerminalSettings): boolean {
-  return trimmedCommand(s) === null && !!s.claude?.enabled;
+  return trimmedCommand(s) === null && !!safeClaude(s);
 }
 
 export function startupLine(s: TerminalSettings): string | null {
   const command = trimmedCommand(s);
   if (command) return command;
-  const claude = s.claude?.enabled ? claudeLine(s.claude) : null;
+  const claudeConfig = safeClaude(s);
+  const claude = claudeConfig ? claudeLine(claudeConfig) : null;
   const host = s.ssh?.host?.trim();
   if (host) {
     if (!claude) return `ssh -t ${host}`;
@@ -68,7 +77,9 @@ export function startupLine(s: TerminalSettings): string | null {
 export function validateHost(host: string): string | null {
   const h = host.trim();
   if (!h) return "host cannot be empty";
-  if (/[\s'"`\\$]/.test(h)) return "host cannot contain spaces, quotes, backslashes or $";
+  if (h.length > 253 || !/^[A-Za-z0-9][A-Za-z0-9._@:-]*$/.test(h)) {
+    return "host may only contain letters, digits, . _ @ : - and cannot start with -";
+  }
   return null;
 }
 
