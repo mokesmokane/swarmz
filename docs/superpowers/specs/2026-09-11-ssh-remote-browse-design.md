@@ -188,3 +188,17 @@ session reset; `sshHistory` round-trips through `toWorkspace`, is capped at
 Manual smoke: create an SSH terminal with Run Claude and no folder; connect;
 see "Choose a folder"; Browse from home into the project; Use this folder;
 Claude starts there; quit and relaunch; Run; watch it reconnect and resume.
+
+## 8. Amendment (2026-09-11, later): connect → pick folder → show terminal
+
+- Every remote terminal picks a folder, Claude or not: with `ssh.cwd` set the
+  remote step is `cd '<cwd>'`, or `cd '<cwd>' && claude …` when Claude is
+  enabled; `needsRemoteFolder` is true for any SSH terminal without a folder.
+- The SSH form's Connect first calls `ssh_open_master(host)`: the core runs
+  `ssh -o ControlMaster=yes -o ControlPersist=10m -o BatchMode=yes -N -f <host>`
+  (no prompts). On success no terminal exists yet; the form shows the remote
+  folder browser (starting at the host's last folder), and "Use this folder"
+  creates the tile with `ssh.cwd` set, which connects over the shared master
+  and runs the remote step. If the host needs interactive authentication
+  (exit 255), the tile is created immediately for the prompt, the form shows
+  "Connecting…", and continues to the folder browser once the tile is live.

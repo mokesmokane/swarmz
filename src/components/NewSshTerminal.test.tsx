@@ -22,6 +22,7 @@ vi.mock("../lib/ipc", () => ({
     loadWorkspace: vi.fn(async () => null),
     saveWorkspace: vi.fn(async () => {}),
     sshCheck: vi.fn(async () => false),
+    sshOpenMaster: vi.fn(async () => false),
     sshListDir: vi.fn(async () => ({ path: "/", parent: null, dirs: [] })),
     terminalForegroundBusy: vi.fn(async () => false),
   },
@@ -78,9 +79,10 @@ describe("NewSshTerminal", () => {
 });
 
 describe("NewSshTerminal folder flow", () => {
-  it("after Connect with Run Claude on, shows the folder browser in the form once connected and starts Claude in the chosen folder", async () => {
+  it("when the host needs interactive auth: tile opens, form shows Connecting…, then the folder browser, then Claude starts there", async () => {
     const { __stopAllPolling } = await import("../store");
     const { ipc } = await import("../lib/ipc");
+    vi.mocked(ipc.sshOpenMaster).mockResolvedValue(false);
     vi.mocked(ipc.sshListDir).mockResolvedValue({ path: "/Users/mokes/projects", parent: "/Users/mokes", dirs: ["certifyIP-desktop", "swarmz"] });
     const onClose = vi.fn();
     render(<NewSshTerminal onClose={onClose} />);
@@ -100,7 +102,7 @@ describe("NewSshTerminal folder flow", () => {
       __stopAllPolling();
       useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true }, sshConnecting: {} }));
     });
-    expect(await screen.findByText("Choose the project folder for Claude")).toBeTruthy();
+    expect(await screen.findByText("Choose the folder on mokes@172.16.82.70")).toBeTruthy();
     expect(await screen.findByText("swarmz/")).toBeTruthy();
     await act(async () => {
       fireEvent.click(screen.getByText("Use this folder"));
@@ -110,8 +112,12 @@ describe("NewSshTerminal folder flow", () => {
     __stopAllPolling();
   });
 
-  it("with Run Claude off, Connect closes the form straight away", async () => {
+  it("when keys work: no terminal until the folder is picked, then the tile opens into it (Claude off too)", async () => {
     const { __stopAllPolling } = await import("../store");
+    const { ipc } = await import("../lib/ipc");
+    vi.mocked(ipc.sshOpenMaster).mockResolvedValue(true);
+    vi.mocked(ipc.sshListDir).mockResolvedValue({ path: "/srv/app", parent: "/srv", dirs: ["api"] });
+    const before = useStore.getState().order.length;
     const onClose = vi.fn();
     render(<NewSshTerminal onClose={onClose} />);
     const input = screen.getByRole("combobox");
@@ -119,6 +125,16 @@ describe("NewSshTerminal folder flow", () => {
     await act(async () => {
       fireEvent.click(screen.getByText("Connect"));
     });
+    expect(useStore.getState().order.length).toBe(before);
+    expect(await screen.findByText("Choose the folder on me@other")).toBeTruthy();
+    expect(await screen.findByText("api/")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Use this folder"));
+    });
+    const id = useStore.getState().order[useStore.getState().order.length - 1];
+    expect(useStore.getState().order.length).toBe(before + 1);
+    expect(useStore.getState().settings[id].ssh).toEqual({ host: "me@other", cwd: "/srv/app" });
+    expect(useStore.getState().settings[id].claude).toBeNull();
     expect(onClose).toHaveBeenCalled();
     __stopAllPolling();
   });

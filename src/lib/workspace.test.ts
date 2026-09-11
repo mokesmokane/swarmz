@@ -78,7 +78,14 @@ describe("startupLine", () => {
     expect(needsRemoteFolder(s)).toBe(true);
     expect(needsRemoteFolder({ ssh: { host: "me@host", cwd: "/p" }, claude, command: null })).toBe(false);
     expect(needsRemoteFolder({ ssh: { host: "me@host" }, claude, command: "ls" })).toBe(false);
-    expect(needsRemoteFolder({ ssh: { host: "me@host" }, claude: null, command: null })).toBe(false);
+  });
+
+  it("every remote terminal with a folder gets a cd step, even without Claude", () => {
+    expect(needsRemoteFolder({ ssh: { host: "me@host" }, claude: null, command: null })).toBe(true);
+    expect(startupSteps({ ssh: { host: "me@host", cwd: "/proj" }, claude: null, command: null })).toEqual([
+      { via: "local", line: sshLine("me@host") },
+      { via: "remote", line: `cd ${shellQuote("/proj")}` },
+    ]);
   });
 
   it("sshLine carries the multiplexing options", () => {

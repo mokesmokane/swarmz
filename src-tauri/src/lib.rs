@@ -22,6 +22,7 @@ pub fn run() {
             commands::load_workspace,
             commands::save_workspace,
             commands::ssh_check,
+            commands::ssh_open_master,
             commands::ssh_list_dir,
             commands::terminal_foreground_busy,
         ])

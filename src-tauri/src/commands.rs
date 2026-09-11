@@ -254,3 +254,10 @@ mod tests {
         session.kill();
     }
 }
+
+#[tauri::command]
+pub async fn ssh_open_master(host: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::remote::open_master(&host))
+        .await
+        .map_err(|e| e.to_string())?
+}

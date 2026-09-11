@@ -182,6 +182,39 @@ fn base_command() -> Result<Command, String> {
     Ok(cmd)
 }
 
+/// Opens the shared master connection in the background without any prompt.
+/// `Ok(true)` when the master is up (key/agent auth worked or it already existed),
+/// `Ok(false)` when interactive authentication is required (ssh exit 255).
+pub fn open_master(host: &str) -> Result<bool, String> {
+    let host = validate_host(host)?;
+    if check(&host)? {
+        return Ok(true);
+    }
+    ensure_ssh_dir()?;
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-o").arg(format!("ControlPath={CONTROL_PATH}"))
+        .arg("-o").arg("ControlMaster=yes")
+        .arg("-o").arg("ControlPersist=10m")
+        .arg("-o").arg("BatchMode=yes")
+        .arg("-o").arg("ConnectTimeout=10")
+        .arg("-N").arg("-f")
+        .arg(&host)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // -f backgrounds the master after authentication; the foreground process exits
+    // 0 on success and 255 when it could not authenticate non-interactively.
+    let status = cmd.status().map_err(|e| format!("could not run ssh: {e}"))?;
+    if status.success() {
+        return Ok(true);
+    }
+    match status.code() {
+        Some(255) => Ok(false),
+        Some(c) => Err(format!("ssh exited with {c}")),
+        None => Err("ssh was terminated".into()),
+    }
+}
+
 pub fn check(host: &str) -> Result<bool, String> {
     let host = validate_host(host)?;
     let mut cmd = base_command()?;

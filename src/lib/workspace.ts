@@ -88,7 +88,10 @@ export function startupSteps(s: TerminalSettings): Step[] {
   const host = validHost(s);
   if (host) {
     const steps: Step[] = [{ via: "local", line: sshLine(host) }];
-    if (claude && s.ssh?.cwd) steps.push({ via: "remote", line: `cd ${shellQuote(s.ssh.cwd)} && ${claude}` });
+    if (s.ssh?.cwd) {
+      const cd = `cd ${shellQuote(s.ssh.cwd)}`;
+      steps.push({ via: "remote", line: claude ? `${cd} && ${claude}` : cd });
+    }
     return steps;
   }
   return claude ? [{ via: "local", line: claude }] : [];
@@ -101,7 +104,7 @@ export function startupLine(s: TerminalSettings): string | null {
 }
 
 export function needsRemoteFolder(s: TerminalSettings): boolean {
-  return startupIsSsh(s) && !!safeClaude(s) && !s.ssh?.cwd;
+  return startupIsSsh(s) && !s.ssh?.cwd;
 }
 
 export interface SshHistoryEntry {
