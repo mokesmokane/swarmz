@@ -23,13 +23,19 @@ vi.mock("./lib/ipc", () => {
       restartTerminal: vi.fn(async (id: string) => info(id, "/tmp/x")),
       onData: vi.fn(async () => () => {}),
       onExit: vi.fn(async () => () => {}),
+      loadWorkspace: vi.fn(async () => null),
+      saveWorkspace: vi.fn(async () => {}),
     },
   };
 });
 
+vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn(async () => "/home/me") }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true) }));
+
 import { ipc } from "./lib/ipc";
-import { beforeSpawn, useStore } from "./store";
+import { beforeSpawn, SAVE_DEBOUNCE_MS, useStore } from "./store";
 import { findGroup, findGroupOf, type GroupNode, type SplitNode } from "./lib/layout";
+import { EMPTY_SETTINGS, type Workspace } from "./lib/workspace";
 
 beforeEach(() => {
   useStore.setState({
@@ -40,9 +46,17 @@ beforeEach(() => {
     focusedTerminalId: null,
     draggingTerminalId: null,
     lastCwd: null,
+    settings: {},
+    startupPending: {},
+    startupNotes: {},
+    persistError: null,
+    persistenceReady: true,
   });
   beforeSpawn.hook = async () => {};
   beforeSpawn.size = () => null;
+  vi.mocked(ipc.saveWorkspace).mockClear();
+  vi.mocked(ipc.loadWorkspace).mockResolvedValue(null);
+  vi.mocked(ipc.createTerminal).mockClear();
 });
 
 describe("createTerminal", () => {
@@ -197,5 +211,204 @@ describe("layout actions", () => {
     const sid = (useStore.getState().layout as SplitNode).id;
     useStore.getState().resizeSplit(sid, [70, 30]);
     expect((useStore.getState().layout as SplitNode).sizes).toEqual([70, 30]);
+  });
+});
+
+describe("persistence", () => {
+  it("saves the workspace, debounced, after a change", async () => {
+    vi.useFakeTimers();
+    try {
+      const id = await useStore.getState().createTerminal("/tmp/a");
+      expect(ipc.saveWorkspace).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS - 1);
+      expect(ipc.saveWorkspace).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(ipc.saveWorkspace).toHaveBeenCalledTimes(1);
+      const ws = vi.mocked(ipc.saveWorkspace).mock.calls[0][0] as Workspace;
+      expect(ws.terminals.map((t) => t.id)).toEqual([id]);
+      expect(ws.terminals[0].ssh).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not save before persistenceReady", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ persistenceReady: false });
+      await useStore.getState().createTerminal("/tmp/a");
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+      expect(ipc.saveWorkspace).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records a save failure as persistError", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(ipc.saveWorkspace).mockRejectedValueOnce("disk full");
+      await useStore.getState().createTerminal("/tmp/a");
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+      await vi.runAllTimersAsync();
+      expect(useStore.getState().persistError).toContain("disk full");
+      useStore.getState().dismissPersistError();
+      expect(useStore.getState().persistError).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("loadWorkspace", () => {
+  const ws: Workspace = {
+    version: 1,
+    terminals: [
+      { id: "t1", name: "one", cwd: "/tmp/one", ssh: null, claude: null, command: null },
+      {
+        id: "t2",
+        name: "two",
+        cwd: "/tmp/two",
+        ssh: { host: "me@host", cwd: "/remote" },
+        claude: { enabled: true, sessionId: "s2", skipPermissions: true, started: true },
+        command: null,
+      },
+    ],
+    layout: { kind: "split", id: "s", dir: "row", sizes: [50, 50], children: [
+      { kind: "group", id: "g1", tabs: ["t1"], active: "t1" },
+      { kind: "group", id: "g2", tabs: ["t2", "ghost"], active: "t2" },
+    ] },
+  };
+
+  it("restores terminals with saved ids, settings, layout, and pending flags", async () => {
+    useStore.setState({ persistenceReady: false });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce(ws);
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(s.order).toEqual(["t1", "t2"]);
+    expect(vi.mocked(ipc.createTerminal).mock.calls.map((c) => [c[0], c[1], c[4]])).toEqual([
+      ["t1", "/tmp/one", "one"],
+      ["t2", "/tmp/two", "two"],
+    ]);
+    expect(s.settings.t2.claude?.sessionId).toBe("s2");
+    expect(s.startupPending).toEqual({ t1: false, t2: true });
+    expect(s.layout?.kind).toBe("split");
+    expect(findGroup(s.layout, "g2")?.tabs).toEqual(["t2"]);
+    expect(s.persistenceReady).toBe(true);
+    expect(s.focusedTerminalId).toBe("t1");
+  });
+
+  it("falls back to the home directory when a saved cwd is rejected", async () => {
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [{ id: "t1", name: "gone", cwd: "/no/such", ssh: null, claude: null, command: null }],
+      layout: null,
+    });
+    vi.mocked(ipc.createTerminal).mockImplementationOnce(async () => {
+      throw "/no/such is not a directory";
+    });
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(s.terminals.t1.cwd).toBe("/home/me");
+    expect(s.startupNotes.t1).toContain("/no/such");
+  });
+
+  it("surfaces a load error and still becomes ready", async () => {
+    useStore.setState({ persistenceReady: false });
+    vi.mocked(ipc.loadWorkspace).mockRejectedValueOnce("workspace file was invalid and was moved to x");
+    await useStore.getState().loadWorkspace();
+    expect(useStore.getState().persistError).toContain("moved to x");
+    expect(useStore.getState().persistenceReady).toBe(true);
+  });
+
+  it("regenerates an unsafe claude session id on restore", async () => {
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [
+        {
+          id: "t1",
+          name: "one",
+          cwd: "/tmp/one",
+          ssh: null,
+          claude: { enabled: true, sessionId: "bad'id", skipPermissions: false, started: true },
+          command: null,
+        },
+      ],
+      layout: null,
+    });
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(s.settings.t1.claude?.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(s.settings.t1.claude?.started).toBe(false);
+    expect(s.startupPending.t1).toBe(true);
+    expect(s.startupNotes.t1).toBe("claude session id in workspace.json was invalid; a new session was created");
+  });
+});
+
+describe("settings and startup", () => {
+  it("updateSettings generates a session id when claude is enabled and marks pending", () => {
+    useStore.setState({
+      terminals: { a: { id: "a", name: "a", cwd: "/a", exited: null, error: null } },
+      order: ["a"],
+      layout: { kind: "group", id: "g", tabs: ["a"], active: "a" },
+      settings: { a: EMPTY_SETTINGS },
+      startupPending: { a: false },
+    });
+    useStore.getState().updateSettings("a", { claude: { enabled: true, sessionId: "", skipPermissions: false, started: false } });
+    const s = useStore.getState();
+    expect(s.settings.a.claude?.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(s.startupPending.a).toBe(true);
+    useStore.getState().updateSettings("a", { claude: null });
+    expect(useStore.getState().startupPending.a).toBe(false);
+  });
+
+  it("runStartup writes the line, marks claude started, and clears pending", async () => {
+    useStore.setState({
+      terminals: { a: { id: "a", name: "a", cwd: "/a", exited: null, error: null } },
+      order: ["a"],
+      layout: { kind: "group", id: "g", tabs: ["a"], active: "a" },
+      settings: { a: { ssh: null, claude: { enabled: true, sessionId: "sid", skipPermissions: false, started: false }, command: null } },
+      startupPending: { a: true },
+    });
+    await useStore.getState().runStartup("a");
+    expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", "claude --session-id sid\r");
+    const s = useStore.getState();
+    expect(s.settings.a.claude?.started).toBe(true);
+    expect(s.startupPending.a).toBe(false);
+    useStore.getState().skipStartup("a");
+    expect(useStore.getState().startupPending.a).toBe(false);
+  });
+
+  it("restartTerminal re-marks pending when a startup line exists", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(id, { ssh: { host: "h" } });
+    useStore.getState().skipStartup(id);
+    useStore.getState().markExited(id, 0);
+    await useStore.getState().restartTerminal(id);
+    expect(useStore.getState().startupPending[id]).toBe(true);
+  });
+
+  it("closeTerminal drops settings and pending entries", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(id, { ssh: { host: "h" } });
+    await useStore.getState().closeTerminal(id);
+    expect(useStore.getState().settings[id]).toBeUndefined();
+    expect(useStore.getState().startupPending[id]).toBeUndefined();
+  });
+});
+
+describe("reloadWorkspace", () => {
+  it("opens defs missing from the app and closes terminals missing from the file", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [{ id: "n1", name: "new", cwd: "/tmp/n", ssh: null, claude: null, command: null }],
+      layout: null,
+    });
+    await useStore.getState().reloadWorkspace();
+    const s = useStore.getState();
+    expect(s.order).toEqual(["n1"]);
+    expect(s.terminals[a]).toBeUndefined();
+    expect(ipc.closeTerminal).toHaveBeenCalledWith(a);
   });
 });
