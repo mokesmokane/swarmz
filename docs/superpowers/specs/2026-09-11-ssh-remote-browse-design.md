@@ -31,6 +31,7 @@ ssh -t -o ControlMaster=auto -o ControlPath=<HOME>/.swarmz/ssh/%C -o ControlPers
   `-o ControlMaster=no -o ControlPath=… -o BatchMode=yes` and never prompt.
 - `ControlPersist=10m` keeps the master alive for ten minutes after the tile's
   session ends, so a browse right after a disconnect still works.
+- OpenSSH ≥ 6.7 is required for `%C`.
 
 ## 3. Startup steps
 
@@ -64,13 +65,17 @@ New module `remote.rs`, commands:
 - `ssh_list_dir(host: String, path: Option<String>) -> Result<RemoteListing, String>`
   where `RemoteListing { path: String, parent: Option<String>, dirs: Vec<String> }`.
   Runs, over the shared connection with `BatchMode=yes`,
-  `cd -- '<path>' && pwd && { ls -1Ap -- . | grep '/$' || true; }` (with
-  `cd` alone when `path` is `None`, i.e. the remote home). First output line
-  is the resolved path; remaining lines are directory names with the trailing
-  `/` stripped, sorted: visible first, then dot-directories, each
-  alphabetically. `parent` is `None` at `/`. 10 s timeout. Errors: not
-  connected (exit 255 with no master), path not a directory (non-zero `cd`),
-  timeout.
+  ``cd -- '<path>' && printf '\001%s\001\n' "$PWD" && { ls -1Ap -- . | grep '/$' || true; }``
+  (with `cd` alone when `path` is `None`, i.e. the remote home). The `\001`
+  (`\x01`) markers let the parser find the resolved-path line unambiguously
+  even if login-shell startup scripts print banner lines before it: the first
+  line matching `^\x01(.*)\x01$` is the path, any earlier lines are ignored,
+  and the lines after it are directory names with the trailing `/` stripped,
+  sorted: visible first, then dot-directories, each alphabetically. A path
+  containing control characters is rejected as an error, and entries
+  containing control characters are skipped. `parent` is `None` at `/`. 10 s
+  timeout. Errors: not connected (exit 255 with no master), path not a
+  directory (non-zero `cd`), no marker line found, timeout.
 - `host` is validated in Rust with the same allowlist as the frontend before
   being passed as an argv word; the remote path is single-quoted with the
   `'\''` rule.
@@ -105,11 +110,15 @@ New state: `sshConnected: Record<id, boolean>`,
 `sshHistory: Record<host, { cwd: string | null; lastUsed: string }>`.
 
 - `runStartup(id)`: types step 1. If step 1 is an ssh line, starts polling
-  `ipc.sshCheck(host)` every 500 ms for up to 120 s. On success:
-  `sshConnected[id] = true`; wait 300 ms; if a remote step exists, type it and
-  set `claude.started = true`. If Claude is enabled but no folder is set, do
+  `ipc.sshCheck(host)` every 500 ms for up to 120 s. On success — meaning
+  `ssh_check` is true AND the tile's PTY foreground process is not the shell
+  itself (`terminal_foreground_busy`) — wait 300 ms and type the remote step;
+  `runRemoteStep` re-checks both immediately before typing. Once typed, set
+  `claude.started = true`. If Claude is enabled but no folder is set, do
   nothing more (the bar offers Browse). Polling stops on success, timeout,
-  close, or exit.
+  close, or exit. If the tile is already live when `runStartup` runs (both
+  checks true), the ssh line is not retyped; it proceeds straight to the
+  remote step.
 - `markExited(id)` and `closeTerminal(id)` set `sshConnected[id] = false` and
   stop polling.
 - `chooseRemoteDir(id, path)`: sets `ssh.cwd = path` and records
@@ -150,6 +159,11 @@ New state: `sshConnected: Record<id, boolean>`,
 - `ssh_check` false forever (user never authenticates): polling ends after
   120 s and the bar returns to the pending state with a note "connection not
   detected; click Run to try again".
+- `ssh_check` true but the tile's foreground is the local shell on two
+  consecutive polls: ssh exited before connecting; the bar returns to pending
+  with a note.
+- Run on an already-connected tile does not retype the ssh line; it proceeds
+  to the remote step.
 - Browse when not connected: button disabled; if the socket died meanwhile,
   the picker shows the core's error and a Retry.
 - Listing a path that isn't a directory: inline error, stay on the previous

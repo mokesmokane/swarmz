@@ -18,6 +18,7 @@ import {
 import {
   EMPTY_SETTINGS,
   hostLabel,
+  isSafeRemotePath,
   isSafeSessionId,
   reconcileLayout,
   sanitizeLayout,
@@ -143,6 +144,7 @@ export function __resetLoadGuard() {
 
 const UNSAFE_SESSION_NOTE = "claude session id in workspace.json was invalid; a new session was created";
 const INVALID_HOST_NOTE = "ssh host in workspace.json is invalid and was ignored";
+const UNSAFE_CWD_NOTE = "ssh remote directory in workspace.json contained unsupported characters and was ignored";
 
 const KNOWN_DEF_KEYS = new Set(["id", "name", "cwd", "ssh", "claude", "command"]);
 
@@ -169,6 +171,10 @@ function regenerateIfUnsafe(def: TerminalDef): { def: TerminalDef; note: string 
   // Keep the ssh settings as loaded (so the user can fix them in the panel); just flag them.
   if (out.ssh?.host && validateHost(out.ssh.host) !== null) {
     note = note ?? INVALID_HOST_NOTE;
+  }
+  if (out.ssh?.cwd && !isSafeRemotePath(out.ssh.cwd)) {
+    out = { ...out, ssh: { ...out.ssh, cwd: null } };
+    note = note ?? UNSAFE_CWD_NOTE;
   }
   return { def: out, note };
 }
@@ -254,7 +260,35 @@ async function openDefs(
   return { anyFailed: failedCount > 0 };
 }
 
-const pollers = new Map<string, { timer: ReturnType<typeof setInterval>; started: number; busy: boolean }>();
+async function safeSshCheck(host: string): Promise<boolean> {
+  try {
+    return await ipc.sshCheck(host);
+  } catch {
+    return false;
+  }
+}
+
+async function safeForegroundBusy(id: string): Promise<boolean> {
+  try {
+    return await ipc.terminalForegroundBusy(id);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the ssh connection this tile started is actually live: the host's shared
+ * multiplexed master must be up (`ssh -O check`) AND this tile's own pty must currently have a
+ * foreground process other than the shell (i.e. an `ssh` this tile itself is running). The
+ * first check alone is host-scoped and can be true from an unrelated master that outlived a
+ * connection attempt this tile's ssh already gave up on — typing the remote step in that case
+ * would land in the tile's local shell instead.
+ */
+async function tileLive(id: string, host: string): Promise<boolean> {
+  return (await safeSshCheck(host)) && (await safeForegroundBusy(id));
+}
+
+const pollers = new Map<string, { timer: ReturnType<typeof setInterval>; started: number; busy: boolean; staleForeground: number }>();
 
 function stopPolling(id: string) {
   const p = pollers.get(id);
@@ -271,7 +305,7 @@ export function __stopAllPolling() {
 function startPolling(id: string, host: string) {
   stopPolling(id);
   useStore.setState((s) => ({ sshConnecting: { ...s.sshConnecting, [id]: true }, sshConnected: omit(s.sshConnected, id) }));
-  const entry = { timer: setInterval(() => void tick(), SSH_POLL_MS), started: Date.now(), busy: false };
+  const entry = { timer: setInterval(() => void tick(), SSH_POLL_MS), started: Date.now(), busy: false, staleForeground: 0 };
   pollers.set(id, entry);
 
   async function tick() {
@@ -293,15 +327,35 @@ function startPolling(id: string, host: string) {
       return;
     }
     entry.busy = true;
-    let ok = false;
-    try {
-      ok = await ipc.sshCheck(host);
-    } catch {
-      ok = false;
-    } finally {
+    const sshOk = await safeSshCheck(host);
+    if (!sshOk) {
       entry.busy = false;
+      entry.staleForeground = 0;
+      return;
     }
-    if (!ok || !pollers.has(id)) return;
+    if (!pollers.has(id)) {
+      entry.busy = false;
+      return;
+    }
+    const foregroundBusy = await safeForegroundBusy(id);
+    entry.busy = false;
+    if (!pollers.has(id)) return;
+    if (!foregroundBusy) {
+      // The host-wide master is up, but this tile's own pty has no foreground process (its
+      // ssh already exited, or never started one) — on the second consecutive miss, give up
+      // rather than risk typing the remote step into the tile's local shell.
+      entry.staleForeground += 1;
+      if (entry.staleForeground >= 2) {
+        stopPolling(id);
+        useStore.setState((s) => ({
+          sshConnecting: omit(s.sshConnecting, id),
+          startupPending: { ...s.startupPending, [id]: true },
+          startupNotes: { ...s.startupNotes, [id]: "ssh exited before connecting; click Run to try again" },
+        }));
+      }
+      return;
+    }
+    entry.staleForeground = 0;
     stopPolling(id);
     useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true }, sshConnecting: omit(s.sshConnecting, id) }));
     await new Promise((r) => setTimeout(r, SSH_SETTLE_MS));
@@ -585,8 +639,22 @@ export const useStore = create<WorkbenchState>((set) => ({
     const settings = s.settings[id] ?? EMPTY_SETTINGS;
     const steps = startupSteps(settings);
     if (steps.length === 0) return;
-    await ipc.writeTerminal(id, steps[0].line + "\r");
     const isSsh = startupIsSsh(settings);
+    const host = settings.ssh?.host?.trim();
+    if (isSsh && host && (await tileLive(id, host))) {
+      // This tile's ssh is already live (e.g. Run was clicked again right after connecting,
+      // before the bar updated): don't retype the ssh line, just proceed to the remote step.
+      if (!useStore.getState().terminals[id]) return;
+      set((st) => ({
+        sshConnected: { ...st.sshConnected, [id]: true },
+        sshConnecting: omit(st.sshConnecting, id),
+        startupPending: { ...st.startupPending, [id]: false },
+        startupNotes: omit(st.startupNotes, id),
+      }));
+      await useStore.getState().runRemoteStep(id);
+      return;
+    }
+    await ipc.writeTerminal(id, steps[0].line + "\r");
     set((st) => {
       if (!st.terminals[id]) return {};
       const cur = st.settings[id] ?? EMPTY_SETTINGS;
@@ -597,7 +665,7 @@ export const useStore = create<WorkbenchState>((set) => ({
         startupNotes: omit(st.startupNotes, id),
       };
     });
-    if (isSsh && settings.ssh?.host) startPolling(id, settings.ssh.host.trim());
+    if (isSsh && host) startPolling(id, host);
   },
 
   async runRemoteStep(id) {
@@ -605,6 +673,14 @@ export const useStore = create<WorkbenchState>((set) => ({
     if (!s.sshConnected[id] || !s.terminals[id]) return;
     const remote = startupSteps(s.settings[id] ?? EMPTY_SETTINGS).find((st) => st.via === "remote");
     if (!remote) return;
+    const host = s.settings[id]?.ssh?.host?.trim();
+    if (!host || !(await tileLive(id, host))) {
+      set((st) => ({
+        sshConnected: omit(st.sshConnected, id),
+        startupPending: { ...st.startupPending, [id]: true },
+      }));
+      return;
+    }
     await ipc.writeTerminal(id, remote.line + "\r");
     set((st) => {
       if (!st.terminals[id]) return {};
@@ -622,6 +698,12 @@ export const useStore = create<WorkbenchState>((set) => ({
   async chooseRemoteDir(id, path) {
     const clean = path.trim();
     if (!clean) return;
+    if (!isSafeRemotePath(clean)) {
+      set((s) => ({ startupNotes: { ...s.startupNotes, [id]: "folder name contains unsupported characters" } }));
+      return;
+    }
+    const host = useStore.getState().settings[id]?.ssh?.host;
+    if (!host) return;
     set((s) => {
       const cur = s.settings[id] ?? EMPTY_SETTINGS;
       if (!cur.ssh?.host) return {};
@@ -633,7 +715,13 @@ export const useStore = create<WorkbenchState>((set) => ({
         startupPending: { ...s.startupPending, [id]: !s.sshConnected[id] },
       };
     });
-    if (useStore.getState().sshConnected[id]) await useStore.getState().runRemoteStep(id);
+    if (useStore.getState().sshConnected[id]) {
+      if (await tileLive(id, host)) {
+        await useStore.getState().runRemoteStep(id);
+      } else {
+        set((s) => ({ sshConnected: { ...s.sshConnected, [id]: false }, startupPending: { ...s.startupPending, [id]: true } }));
+      }
+    }
   },
 
   forgetSshHost(host) {

@@ -51,22 +51,47 @@ pub fn ensure_ssh_dir() -> Result<PathBuf, String> {
     ensure_ssh_dir_in(&home_dir())
 }
 
+/// Marker byte wrapped around the resolved `$PWD` in the listing command's output so it can be
+/// found unambiguously even if login-shell startup scripts print banners or other junk lines
+/// before it (see `parse_listing`).
+const PATH_MARKER: char = '\u{1}';
+
 pub fn list_command(path: Option<&str>) -> String {
     let cd = match path {
         Some(p) => format!("cd -- {}", sh_quote(p)),
         None => "cd".to_string(),
     };
-    format!("{cd} && pwd && {{ ls -1Ap -- . | grep '/$' || true; }}")
+    format!("{cd} && printf '\\001%s\\001\\n' \"$PWD\" && {{ ls -1Ap -- . | grep '/$' || true; }}")
+}
+
+/// True if `s` contains an ASCII control character (`\x00`-`\x1f` or `\x7f`), which must never
+/// be accepted as part of a remote path: it could otherwise be used to smuggle terminal escape
+/// sequences or confuse the marker-line parsing below.
+fn has_control_chars(s: &str) -> bool {
+    s.chars().any(|c| (c as u32) < 0x20 || c as u32 == 0x7f)
 }
 
 pub fn parse_listing(stdout: &str) -> Result<RemoteListing, String> {
     let mut lines = stdout.lines().map(|l| l.trim_end_matches('\r'));
-    let path = lines.next().filter(|l| !l.is_empty()).ok_or_else(|| "empty listing".to_string())?.to_string();
+    let path = loop {
+        match lines.next() {
+            Some(line) => {
+                if let Some(inner) = line.strip_prefix(PATH_MARKER).and_then(|l| l.strip_suffix(PATH_MARKER)) {
+                    break inner.to_string();
+                }
+                // Ignore junk lines (e.g. login-shell banners) printed before the marker line.
+            }
+            None => return Err("empty listing".to_string()),
+        }
+    };
+    if path.is_empty() || has_control_chars(&path) {
+        return Err("remote path contains unsupported characters".to_string());
+    }
     let mut visible: Vec<String> = Vec::new();
     let mut hidden: Vec<String> = Vec::new();
     for line in lines {
         let name = line.trim_end_matches('/');
-        if name.is_empty() {
+        if name.is_empty() || has_control_chars(name) {
             continue;
         }
         if name.starts_with('.') {
@@ -206,7 +231,7 @@ mod tests {
 
     #[test]
     fn parse_listing_orders_dirs_and_computes_parent() {
-        let out = "/Users/me/projects\nzeta/\n.hidden/\nalpha/\n.git/\n";
+        let out = "\u{1}/Users/me/projects\u{1}\nzeta/\n.hidden/\nalpha/\n.git/\n";
         let l = parse_listing(out).unwrap();
         assert_eq!(l.path, "/Users/me/projects");
         assert_eq!(l.parent.as_deref(), Some("/Users/me"));
@@ -215,8 +240,8 @@ mod tests {
 
     #[test]
     fn parse_listing_root_has_no_parent_and_top_level_parent_is_root() {
-        assert_eq!(parse_listing("/\nbin/\n").unwrap().parent, None);
-        assert_eq!(parse_listing("/Users\nme/\n").unwrap().parent.as_deref(), Some("/"));
+        assert_eq!(parse_listing("\u{1}/\u{1}\nbin/\n").unwrap().parent, None);
+        assert_eq!(parse_listing("\u{1}/Users\u{1}\nme/\n").unwrap().parent.as_deref(), Some("/"));
     }
 
     #[test]
@@ -225,11 +250,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_listing_ignores_junk_lines_before_the_marker() {
+        let out = "welcome\nlast login: today\n\u{1}/Users/me\u{1}\nproj/\n";
+        let l = parse_listing(out).unwrap();
+        assert_eq!(l.path, "/Users/me");
+        assert_eq!(l.dirs, vec!["proj"]);
+    }
+
+    #[test]
+    fn parse_listing_rejects_a_path_with_control_characters() {
+        let out = "\u{1}/Users/me\u{7}evil\u{1}\nproj/\n";
+        let err = parse_listing(out).unwrap_err();
+        assert!(err.contains("unsupported characters"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_listing_skips_entries_with_control_characters() {
+        let out = "\u{1}/Users/me\u{1}\ngood/\nbad\u{7}name/\n";
+        let l = parse_listing(out).unwrap();
+        assert_eq!(l.dirs, vec!["good"]);
+    }
+
+    #[test]
     fn remote_list_command_quotes_path() {
-        assert_eq!(list_command(None), "cd && pwd && { ls -1Ap -- . | grep '/$' || true; }");
+        assert_eq!(list_command(None), "cd && printf '\\001%s\\001\\n' \"$PWD\" && { ls -1Ap -- . | grep '/$' || true; }");
         assert_eq!(
             list_command(Some("/a'b")),
-            "cd -- '/a'\\''b' && pwd && { ls -1Ap -- . | grep '/$' || true; }"
+            "cd -- '/a'\\''b' && printf '\\001%s\\001\\n' \"$PWD\" && { ls -1Ap -- . | grep '/$' || true; }"
         );
     }
 

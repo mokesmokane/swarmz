@@ -27,6 +27,7 @@ vi.mock("./lib/ipc", () => {
       saveWorkspace: vi.fn(async () => {}),
       sshCheck: vi.fn(async () => false),
       sshListDir: vi.fn(async () => ({ path: "/", parent: null, dirs: [] })),
+      terminalForegroundBusy: vi.fn(async () => false),
     },
   };
 });
@@ -67,6 +68,7 @@ beforeEach(() => {
   vi.mocked(ipc.createTerminal).mockClear();
   vi.mocked(ipc.writeTerminal).mockClear();
   vi.mocked(ipc.sshCheck).mockReset().mockResolvedValue(false);
+  vi.mocked(ipc.terminalForegroundBusy).mockReset().mockResolvedValue(false);
 });
 
 describe("createTerminal", () => {
@@ -403,6 +405,20 @@ describe("loadWorkspace", () => {
     expect(s.startupPending.t1).toBe(true);
     expect(s.startupNotes.t1).toBe("claude session id in workspace.json was invalid; a new session was created");
   });
+
+  it("drops an unsafe ssh.cwd on restore and flags it", async () => {
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [
+        { id: "t1", name: "one", cwd: "/tmp/one", ssh: { host: "me@box", cwd: "/a\nb" }, claude: null, command: null },
+      ],
+      layout: null,
+    });
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(s.settings.t1.ssh).toEqual({ host: "me@box", cwd: null });
+    expect(s.startupNotes.t1).toContain("unsupported characters");
+  });
 });
 
 describe("settings and startup", () => {
@@ -664,6 +680,7 @@ describe("ssh two-step startup", () => {
       await vi.advanceTimersByTimeAsync(SSH_POLL_MS);
       expect(ipc.sshCheck).toHaveBeenCalledWith("me@box");
       vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
       await vi.advanceTimersByTimeAsync(SSH_POLL_MS + SSH_SETTLE_MS + 10);
       expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", `cd ${shellQuote("/proj")} && claude --session-id sid\r`);
       const s = useStore.getState();
@@ -718,8 +735,9 @@ describe("ssh two-step startup", () => {
     vi.useFakeTimers();
     try {
       seed(null);
-      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
       await useStore.getState().runStartup("a");
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
       await vi.advanceTimersByTimeAsync(SSH_POLL_MS + SSH_SETTLE_MS + 10);
       expect(useStore.getState().sshConnected.a).toBe(true);
       expect(vi.mocked(ipc.writeTerminal).mock.calls.length).toBe(1);
@@ -732,6 +750,15 @@ describe("ssh two-step startup", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("chooseRemoteDir ignores a path containing control characters", async () => {
+    seed("/old");
+    await useStore.getState().chooseRemoteDir("a", "/a\nb");
+    const s = useStore.getState();
+    expect(s.settings.a.ssh?.cwd).toBe("/old");
+    expect(s.startupNotes.a).toContain("unsupported characters");
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
   });
 
   it("changing the folder of a started Claude session resets the session", async () => {
@@ -804,5 +831,48 @@ describe("ssh two-step startup", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("master already up at Run time does not type the remote step without tile liveness", async () => {
+    vi.useFakeTimers();
+    try {
+      seed("/proj");
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+      await useStore.getState().runStartup("a");
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 2);
+      const s = useStore.getState();
+      expect(vi.mocked(ipc.writeTerminal).mock.calls.map((c) => c[1])).toEqual([`${sshLine("me@box")}\r`]);
+      expect(s.sshConnected.a).toBeUndefined();
+      expect(s.startupPending.a).toBe(true);
+      expect(s.startupNotes.a).toContain("exited before connecting");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("chooseRemoteDir while the session is gone re-arms instead of typing", async () => {
+    seed("/proj");
+    useStore.setState({ sshConnected: { a: true }, startupPending: { a: false } });
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    const before = vi.mocked(ipc.writeTerminal).mock.calls.length;
+    await useStore.getState().chooseRemoteDir("a", "/new/path");
+    expect(vi.mocked(ipc.writeTerminal).mock.calls.length).toBe(before);
+    const s = useStore.getState();
+    expect(s.sshConnected.a).toBe(false);
+    expect(s.startupPending.a).toBe(true);
+  });
+
+  it("Run on an already-connected tile skips to the remote step instead of retyping ssh", async () => {
+    seed("/proj");
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    await useStore.getState().runStartup("a");
+    expect(vi.mocked(ipc.writeTerminal).mock.calls.map((c) => c[1])).toEqual([
+      `cd ${shellQuote("/proj")} && claude --session-id sid\r`,
+    ]);
+    const s = useStore.getState();
+    expect(s.sshConnected.a).toBe(true);
+    expect(s.startupPending.a).toBe(false);
   });
 });

@@ -133,6 +133,12 @@ export function recentSshHosts(h: SshHistory, limit = 8): Array<{ host: string }
     .slice(0, limit);
 }
 
+/** Rejects control characters (which could smuggle terminal escapes into a typed `cd`) in a
+ * remote path chosen via the picker, typed by hand, or loaded from workspace.json. */
+export function isSafeRemotePath(p: string): boolean {
+  return p.length > 0 && !/[\x00-\x1f\x7f]/.test(p);
+}
+
 export function validateHost(host: string): string | null {
   const h = host.trim();
   if (!h) return "host cannot be empty";

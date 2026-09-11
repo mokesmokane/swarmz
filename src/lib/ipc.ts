@@ -42,4 +42,5 @@ export const ipc = {
   saveWorkspace: (workspace: Workspace) => invoke<void>("save_workspace", { workspace }),
   sshCheck: (host: string) => invoke<boolean>("ssh_check", { host }),
   sshListDir: (host: string, path: string | null) => invoke<RemoteListing>("ssh_list_dir", { host, path }),
+  terminalForegroundBusy: (id: string) => invoke<boolean>("terminal_foreground_busy", { id }),
 };

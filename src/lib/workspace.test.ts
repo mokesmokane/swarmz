@@ -5,6 +5,7 @@ import {
   claudeLine,
   hostLabel,
   isLayoutNode,
+  isSafeRemotePath,
   isSafeSessionId,
   needsRemoteFolder,
   reconcileLayout,
@@ -139,6 +140,16 @@ describe("isSafeSessionId", () => {
     expect(isSafeSessionId("abc'def")).toBe(false);
     expect(isSafeSessionId("a b")).toBe(false);
     expect(isSafeSessionId("")).toBe(false);
+  });
+});
+
+describe("isSafeRemotePath", () => {
+  it("accepts ordinary paths and rejects empty or control characters", () => {
+    expect(isSafeRemotePath("/Users/me/projects")).toBe(true);
+    expect(isSafeRemotePath("")).toBe(false);
+    expect(isSafeRemotePath("/a\nb")).toBe(false);
+    expect(isSafeRemotePath("/a\x1bb")).toBe(false);
+    expect(isSafeRemotePath("/a\x7fb")).toBe(false);
   });
 });
 

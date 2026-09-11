@@ -23,6 +23,7 @@ pub fn run() {
             commands::save_workspace,
             commands::ssh_check,
             commands::ssh_list_dir,
+            commands::terminal_foreground_busy,
         ])
         .setup(|_app| {
             let _ = remote::ensure_ssh_dir();

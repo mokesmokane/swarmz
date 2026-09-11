@@ -22,7 +22,16 @@ export function TerminalPane({ id }: { id: string }) {
   const [picking, setPicking] = useState(false);
   const [typedPath, setTypedPath] = useState("");
   const line = startupLine(settings);
-  const needsFolder = !pending && !connecting && connected && needsRemoteFolder(settings);
+  const needsFolder = connected && needsRemoteFolder(settings);
+  // Exactly one bar renders at a time; connecting takes precedence over needing a folder, which
+  // takes precedence over the pending (Run/Skip) bar.
+  const bar: "connecting" | "folder" | "pending" | null = connecting
+    ? "connecting"
+    : needsFolder
+      ? "folder"
+      : pending && line
+        ? "pending"
+        : null;
 
   useEffect(() => {
     const el = ref.current;
@@ -54,21 +63,21 @@ export function TerminalPane({ id }: { id: string }) {
 
   return (
     <div className="relative h-full w-full bg-[#0f1115]">
-      {pending && line && (
+      {bar === "pending" && (
         <div className="absolute inset-x-0 top-0 z-10 flex max-h-24 items-start gap-2 overflow-y-auto border-b border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-300">
-          <span className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono" title={line}>{line}</span>
+          <span className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono" title={line ?? undefined}>{line}</span>
           {note && <span className="truncate text-amber-300" title={note}>{note}</span>}
           <button className="rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-500" onClick={() => void runStartup(id)}>Run</button>
           <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={() => skipStartup(id)}>Skip</button>
         </div>
       )}
-      {connecting && (
+      {bar === "connecting" && (
         <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-300">
           <span className="flex-1">Connecting… authenticate in the terminal if prompted.</span>
           <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={() => cancelConnecting(id)}>Cancel</button>
         </div>
       )}
-      {needsFolder && (
+      {bar === "folder" && (
         <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-300">
           <span className="shrink-0">Choose a folder for Claude:</span>
           <input
@@ -94,7 +103,7 @@ export function TerminalPane({ id }: { id: string }) {
           onClose={() => setPicking(false)}
         />
       )}
-      <div ref={ref} className={`absolute inset-0 p-1 ${(pending && line) || connecting || needsFolder ? "pt-9" : ""}`} />
+      <div ref={ref} className={`absolute inset-0 p-1 ${bar ? "pt-9" : ""}`} />
       {info?.exited !== null && info?.exited !== undefined && (
         <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-neutral-900/95 px-3 py-2 text-sm text-neutral-300 border-t border-neutral-700">
           <span>

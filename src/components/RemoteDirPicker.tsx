@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ipc, type RemoteListing } from "../lib/ipc";
 
 export function RemoteDirPicker({
@@ -16,18 +16,25 @@ export function RemoteDirPicker({
   const [pathInput, setPathInput] = useState(initialPath ?? "");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Guards against a slower earlier `load` overwriting the result of a later one (e.g. a stale
+  // "Go" request that resolves after the user already navigated somewhere else): only the
+  // request whose id still matches `latest.current` when it settles is applied to state.
+  const latest = useRef(0);
 
   const load = async (path: string | null) => {
+    const requestId = ++latest.current;
     setLoading(true);
     setError(null);
     try {
       const l = await ipc.sshListDir(host, path);
+      if (requestId !== latest.current) return;
       setListing(l);
       setPathInput(l.path);
     } catch (e) {
+      if (requestId !== latest.current) return;
       setError(typeof e === "string" ? e : String(e));
     } finally {
-      setLoading(false);
+      if (requestId === latest.current) setLoading(false);
     }
   };
 

@@ -70,8 +70,14 @@ export function TerminalSettings({ id, onClose }: { id: string; onClose: () => v
         <input className={field} placeholder="/path/on/remote" value={remoteCwd} onChange={(e) => setRemoteCwd(e.target.value)} disabled={!host.trim()} />
         <button
           className="rounded border border-neutral-700 px-2 text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
-          disabled={!connected || !host.trim()}
-          title={connected ? "Browse folders on the remote host" : "Connect first"}
+          disabled={!connected || host.trim() !== (current.ssh?.host ?? "")}
+          title={
+            !connected
+              ? "Connect first"
+              : host.trim() !== (current.ssh?.host ?? "")
+                ? "Save the new host and connect first"
+                : "Browse folders on the remote host"
+          }
           onClick={() => setPicking(true)}
         >
           Browse…
@@ -98,7 +104,7 @@ export function TerminalSettings({ id, onClose }: { id: string; onClose: () => v
       {picking && (
         <div className="relative h-64">
           <RemoteDirPicker
-            host={host.trim()}
+            host={current.ssh?.host ?? ""}
             initialPath={remoteCwd.trim() || null}
             onPick={(p) => {
               setRemoteCwd(p);

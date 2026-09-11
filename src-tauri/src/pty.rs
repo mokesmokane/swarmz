@@ -15,6 +15,7 @@ pub struct PtySession {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    shell_pid: Option<u32>,
 }
 
 impl PtySession {
@@ -56,6 +57,10 @@ impl PtySession {
             }
         };
         let killer = child.clone_killer();
+        // Captured before `child` moves into the waiter thread below: this is the pid of the
+        // shell we spawned, used by `foreground_busy` to tell whether the pty's foreground
+        // process group is still that shell (idle) or something the shell launched (busy).
+        let shell_pid = child.process_id();
 
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -76,7 +81,26 @@ impl PtySession {
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
             killer: Mutex::new(killer),
+            shell_pid,
         })
+    }
+
+    /// Whether the pty's foreground process group is something other than the shell we
+    /// spawned (i.e. the shell is currently running a foreground command). `None` when either
+    /// the shell's pid or the pty's foreground process group leader isn't known (e.g. non-unix,
+    /// or the master doesn't support querying it) — callers should treat that as "unknown", not
+    /// as busy or idle.
+    #[cfg(unix)]
+    pub fn foreground_busy(&self) -> Option<bool> {
+        let shell_pid = self.shell_pid?;
+        let master = self.master.lock().ok()?;
+        let leader = master.process_group_leader()?;
+        Some(leader as u32 != shell_pid)
+    }
+
+    #[cfg(not(unix))]
+    pub fn foreground_busy(&self) -> Option<bool> {
+        None
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<(), String> {
@@ -161,5 +185,34 @@ mod tests {
     fn spawn_failure_is_an_error() {
         let result = PtySession::spawn(spec("/nonexistent/binary", &[]), |_| {}, |_| {});
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn foreground_busy_tracks_the_pty_foreground_process_group() {
+        // An interactive shell with job control (bash -i) is used rather than a plain
+        // `/bin/sh` script: job control - and thus a foreground process group distinct from
+        // the shell's own - is only reliably enabled for a shell that believes it is
+        // interactive, which a non-interactive `sh -c "..."` script does not.
+        let session = PtySession::spawn(spec("/bin/bash", &["-i"]), |_| {}, |_| {}).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut idle = session.foreground_busy();
+        while Instant::now() < deadline && idle != Some(false) {
+            std::thread::sleep(Duration::from_millis(50));
+            idle = session.foreground_busy();
+        }
+        assert_eq!(idle, Some(false), "shell should be idle (foreground == shell) shortly after spawn");
+
+        session.write(b"sleep 5\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut busy = session.foreground_busy();
+        while Instant::now() < deadline && busy != Some(true) {
+            std::thread::sleep(Duration::from_millis(50));
+            busy = session.foreground_busy();
+        }
+        assert_eq!(busy, Some(true), "sleep should become the pty's foreground process group");
+
+        session.kill();
     }
 }

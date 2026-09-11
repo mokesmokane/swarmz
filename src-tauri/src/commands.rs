@@ -140,6 +140,17 @@ pub fn resize_terminal(state: State<'_, AppState>, id: String, cols: u16, rows: 
     }
 }
 
+/// Whether the tile's pty currently has a foreground process other than the shell itself
+/// (e.g. `ssh` still running). Used to tell a genuinely live remote session apart from a
+/// host-wide multiplexed master that has outlived the shell that opened it. An unknown id, or
+/// a session for which liveness cannot be determined, is reported as not busy so callers don't
+/// mistake "unknown" for "safe to type into".
+#[tauri::command]
+pub fn terminal_foreground_busy(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let session = state.sessions.lock().unwrap().get(&id).map(|(_, s)| s.clone());
+    Ok(session.and_then(|s| s.foreground_busy()).unwrap_or(false))
+}
+
 #[tauri::command]
 pub fn rename_terminal(state: State<'_, AppState>, id: String, name: String) -> Result<TerminalInfo, String> {
     state.registry.lock().unwrap().rename(&id, &name).map_err(|e| e.to_string())
