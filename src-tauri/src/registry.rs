@@ -13,6 +13,7 @@ pub struct TerminalInfo {
 #[derive(Debug, PartialEq)]
 pub enum RegistryError {
     DuplicateName(String),
+    DuplicateId(String),
     NotFound(String),
     EmptyName,
     InvalidName(String),
@@ -22,6 +23,7 @@ impl std::fmt::Display for RegistryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RegistryError::DuplicateName(n) => write!(f, "a terminal named \"{n}\" already exists"),
+            RegistryError::DuplicateId(id) => write!(f, "a terminal with id {id} already exists"),
             RegistryError::NotFound(id) => write!(f, "no terminal with id {id}"),
             RegistryError::EmptyName => write!(f, "name cannot be empty"),
             RegistryError::InvalidName(n) => {
@@ -68,14 +70,17 @@ impl TerminalRegistry {
         self.entries.iter().find(|t| t.id == id)
     }
 
-    pub fn add(&mut self, id: String, requested_name: Option<String>, cwd: String) -> TerminalInfo {
+    pub fn add(&mut self, id: String, requested_name: Option<String>, cwd: String) -> Result<TerminalInfo, RegistryError> {
+        if self.entries.iter().any(|t| t.id == id) {
+            return Err(RegistryError::DuplicateId(id));
+        }
         let base = requested_name
             .and_then(|n| validate_name(&n).ok())
             .unwrap_or_else(|| basename(&cwd));
         let name = self.unique_name(&base);
         let info = TerminalInfo { id, name, cwd, exited: None, error: None };
         self.entries.push(info.clone());
-        info
+        Ok(info)
     }
 
     pub fn rename(&mut self, id: &str, name: &str) -> Result<TerminalInfo, RegistryError> {
@@ -143,9 +148,9 @@ mod tests {
     #[test]
     fn default_name_is_cwd_basename_and_suffixes_on_collision() {
         let mut r = TerminalRegistry::new();
-        let a = r.add("1".into(), None, "/Users/me/projects/swarmz".into());
-        let b = r.add("2".into(), None, "/Users/me/projects/swarmz".into());
-        let c = r.add("3".into(), None, "/Users/me/projects/swarmz".into());
+        let a = r.add("1".into(), None, "/Users/me/projects/swarmz".into()).unwrap();
+        let b = r.add("2".into(), None, "/Users/me/projects/swarmz".into()).unwrap();
+        let c = r.add("3".into(), None, "/Users/me/projects/swarmz".into()).unwrap();
         assert_eq!(a.name, "swarmz");
         assert_eq!(b.name, "swarmz-2");
         assert_eq!(c.name, "swarmz-3");
@@ -154,8 +159,8 @@ mod tests {
     #[test]
     fn requested_name_is_used_and_suffixed_on_collision() {
         let mut r = TerminalRegistry::new();
-        let a = r.add("1".into(), Some("api".into()), "/tmp".into());
-        let b = r.add("2".into(), Some("api".into()), "/tmp".into());
+        let a = r.add("1".into(), Some("api".into()), "/tmp".into()).unwrap();
+        let b = r.add("2".into(), Some("api".into()), "/tmp".into()).unwrap();
         assert_eq!(a.name, "api");
         assert_eq!(b.name, "api-2");
     }
@@ -163,15 +168,15 @@ mod tests {
     #[test]
     fn blank_or_root_cwd_falls_back_to_shell() {
         let mut r = TerminalRegistry::new();
-        let a = r.add("1".into(), Some("   ".into()), "/".into());
+        let a = r.add("1".into(), Some("   ".into()), "/".into()).unwrap();
         assert_eq!(a.name, "shell");
     }
 
     #[test]
     fn rename_rejects_duplicates_and_empty() {
         let mut r = TerminalRegistry::new();
-        r.add("1".into(), Some("a".into()), "/tmp".into());
-        r.add("2".into(), Some("b".into()), "/tmp".into());
+        r.add("1".into(), Some("a".into()), "/tmp".into()).unwrap();
+        r.add("2".into(), Some("b".into()), "/tmp".into()).unwrap();
         assert_eq!(r.rename("2", "a"), Err(RegistryError::DuplicateName("a".into())));
         assert_eq!(r.rename("2", "  "), Err(RegistryError::EmptyName));
         assert_eq!(r.rename("9", "z"), Err(RegistryError::NotFound("9".into())));
@@ -185,7 +190,7 @@ mod tests {
     #[test]
     fn rename_rejects_unsupported_characters() {
         let mut r = TerminalRegistry::new();
-        r.add("1".into(), Some("a".into()), "/tmp".into());
+        r.add("1".into(), Some("a".into()), "/tmp".into()).unwrap();
         assert_eq!(r.rename("1", "a\"b"), Err(RegistryError::InvalidName("a\"b".into())));
         assert_eq!(r.get("1").unwrap().name, "a");
     }
@@ -193,7 +198,7 @@ mod tests {
     #[test]
     fn rename_rejects_names_over_max_length() {
         let mut r = TerminalRegistry::new();
-        r.add("1".into(), Some("a".into()), "/tmp".into());
+        r.add("1".into(), Some("a".into()), "/tmp".into()).unwrap();
         let too_long = "x".repeat(65);
         assert_eq!(r.rename("1", &too_long), Err(RegistryError::InvalidName(too_long)));
         assert_eq!(r.get("1").unwrap().name, "a");
@@ -202,7 +207,7 @@ mod tests {
     #[test]
     fn rename_accepts_ordinary_names() {
         let mut r = TerminalRegistry::new();
-        r.add("1".into(), Some("a".into()), "/tmp".into());
+        r.add("1".into(), Some("a".into()), "/tmp".into()).unwrap();
         let ok = r.rename("1", "ok-name_2").unwrap();
         assert_eq!(ok.name, "ok-name_2");
     }
@@ -210,14 +215,25 @@ mod tests {
     #[test]
     fn add_falls_back_to_basename_when_requested_name_is_invalid() {
         let mut r = TerminalRegistry::new();
-        let a = r.add("1".into(), Some("bad`name".into()), "/Users/me/projects/swarmz".into());
+        let a = r.add("1".into(), Some("bad`name".into()), "/Users/me/projects/swarmz".into()).unwrap();
         assert_eq!(a.name, "swarmz");
+    }
+
+    #[test]
+    fn add_rejects_duplicate_id() {
+        let mut r = TerminalRegistry::new();
+        r.add("1".into(), Some("a".into()), "/tmp".into()).unwrap();
+        assert_eq!(
+            r.add("1".into(), Some("b".into()), "/tmp".into()),
+            Err(RegistryError::DuplicateId("1".into()))
+        );
+        assert_eq!(r.list().len(), 1);
     }
 
     #[test]
     fn exited_and_remove() {
         let mut r = TerminalRegistry::new();
-        r.add("1".into(), Some("a".into()), "/tmp".into());
+        r.add("1".into(), Some("a".into()), "/tmp".into()).unwrap();
         r.set_exited("1", Some(3), None);
         assert_eq!(r.get("1").unwrap().exited, Some(3));
         r.clear_exited("1");
@@ -225,7 +241,7 @@ mod tests {
         assert!(r.remove("1").is_some());
         assert!(r.get("1").is_none());
         assert_eq!(r.list().len(), 0);
-        let again = r.add("2".into(), Some("a".into()), "/tmp".into());
+        let again = r.add("2".into(), Some("a".into()), "/tmp".into()).unwrap();
         assert_eq!(again.name, "a");
     }
 }

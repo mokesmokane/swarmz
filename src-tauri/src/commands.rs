@@ -1,5 +1,7 @@
 use crate::pty::{PtySession, SpawnSpec};
 use crate::registry::{TerminalInfo, TerminalRegistry};
+use crate::workspace::Workspace;
+use crate::workspace as ws_file;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -101,7 +103,7 @@ pub fn create_terminal(
     if !std::path::Path::new(&cwd).is_dir() {
         return Err(format!("{cwd} is not a directory"));
     }
-    let info = state.registry.lock().unwrap().add(id, name, cwd);
+    let info = state.registry.lock().unwrap().add(id, name, cwd).map_err(|e| e.to_string())?;
     match spawn_for(&app, &state, &info, cols, rows) {
         Ok(()) => Ok(info),
         Err(e) => {
@@ -177,6 +179,16 @@ pub fn restart_terminal(
             Ok(reg.get(&id).cloned().unwrap_or(info))
         }
     }
+}
+
+#[tauri::command]
+pub fn load_workspace() -> Result<Option<Workspace>, String> {
+    ws_file::load_from(&ws_file::default_path())
+}
+
+#[tauri::command]
+pub fn save_workspace(workspace: Workspace) -> Result<(), String> {
+    ws_file::save_to(&ws_file::default_path(), &workspace)
 }
 
 #[cfg(test)]

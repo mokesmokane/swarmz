@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod pty;
 pub mod registry;
+pub mod workspace;
 
 use commands::AppState;
 
@@ -17,6 +18,8 @@ pub fn run() {
             commands::rename_terminal,
             commands::close_terminal,
             commands::restart_terminal,
+            commands::load_workspace,
+            commands::save_workspace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
