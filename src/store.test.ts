@@ -25,6 +25,8 @@ vi.mock("./lib/ipc", () => {
       onExit: vi.fn(async () => () => {}),
       loadWorkspace: vi.fn(async () => null),
       saveWorkspace: vi.fn(async () => {}),
+      sshCheck: vi.fn(async () => false),
+      sshListDir: vi.fn(async () => ({ path: "/", parent: null, dirs: [] })),
     },
   };
 });
@@ -34,12 +36,13 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true) }
 
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { ipc } from "./lib/ipc";
-import { __resetLoadGuard, beforeSpawn, SAVE_DEBOUNCE_MS, useStore } from "./store";
+import { __resetLoadGuard, __stopAllPolling, SAVE_DEBOUNCE_MS, SSH_POLL_MS, SSH_POLL_TIMEOUT_MS, SSH_SETTLE_MS, beforeSpawn, useStore } from "./store";
 import { findGroup, findGroupOf, type GroupNode, type SplitNode } from "./lib/layout";
-import { EMPTY_SETTINGS, toWorkspace, type Workspace } from "./lib/workspace";
+import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, shellQuote, toWorkspace, type Workspace } from "./lib/workspace";
 
 beforeEach(() => {
   __resetLoadGuard();
+  __stopAllPolling();
   useStore.setState({
     terminals: {},
     order: [],
@@ -53,12 +56,17 @@ beforeEach(() => {
     startupNotes: {},
     persistError: null,
     persistenceReady: true,
+    sshConnected: {},
+    sshConnecting: {},
+    sshHistory: {},
   });
   beforeSpawn.hook = async () => {};
   beforeSpawn.size = () => null;
   vi.mocked(ipc.saveWorkspace).mockClear();
   vi.mocked(ipc.loadWorkspace).mockResolvedValue(null);
   vi.mocked(ipc.createTerminal).mockClear();
+  vi.mocked(ipc.writeTerminal).mockClear();
+  vi.mocked(ipc.sshCheck).mockReset().mockResolvedValue(false);
 });
 
 describe("createTerminal", () => {
@@ -369,7 +377,7 @@ describe("loadWorkspace", () => {
     } as unknown as Workspace);
     await useStore.getState().loadWorkspace();
     const s = useStore.getState();
-    const ws = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout });
+    const ws = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, sshHistory: s.sshHistory });
     expect((ws.terminals[0] as unknown as { note: string }).note).toBe("keep");
   });
 
@@ -600,7 +608,7 @@ describe("createSshTerminal", () => {
     expect(createCall[4]).toBe("other-mac");
     expect(s.settings[id].ssh).toEqual({ host: "mokes@other-mac.local", cwd: "/remote" });
     expect(s.settings[id].claude).toBeNull();
-    expect(ipc.writeTerminal).toHaveBeenLastCalledWith(id, "ssh -t mokes@other-mac.local\r");
+    expect(ipc.writeTerminal).toHaveBeenLastCalledWith(id, `${sshLine("mokes@other-mac.local")}\r`);
     expect(s.startupPending[id]).toBe(false);
     expect(s.focusedTerminalId).toBe(id);
   });
@@ -611,11 +619,10 @@ describe("createSshTerminal", () => {
     expect(c.enabled).toBe(true);
     expect(c.skipPermissions).toBe(true);
     expect(c.sessionId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(c.started).toBe(true);
-    const writeCalls = vi.mocked(ipc.writeTerminal).mock.calls;
-    const written = writeCalls[writeCalls.length - 1][1];
-    const inner = `claude --dangerously-skip-permissions --session-id ${c.sessionId}`;
-    expect(written).toBe(`ssh -t me@box 'exec $SHELL -lic '\\''${inner}'\\'''\r`);
+    expect(c.started).toBe(false);
+    expect(ipc.writeTerminal).toHaveBeenLastCalledWith(id, `${sshLine("me@box")}\r`);
+    expect(useStore.getState().sshConnecting[id]).toBe(true);
+    expect(needsRemoteFolder(useStore.getState().settings[id])).toBe(true);
   });
 
   it("honours a split placement", async () => {
@@ -626,5 +633,144 @@ describe("createSshTerminal", () => {
     expect(root.kind).toBe("split");
     expect((root.children[0] as GroupNode).tabs).toEqual([a]);
     expect((root.children[1] as GroupNode).tabs).toEqual([b]);
+  });
+});
+
+describe("ssh two-step startup", () => {
+  const sshClaude = (cwd: string | null) => ({
+    ssh: { host: "me@box", cwd },
+    claude: { enabled: true, sessionId: "sid", skipPermissions: false, started: false },
+    command: null,
+  });
+
+  function seed(cwd: string | null) {
+    useStore.setState({
+      terminals: { a: { id: "a", name: "a", cwd: "/home/me", exited: null, error: null } },
+      order: ["a"],
+      layout: { kind: "group", id: "g", tabs: ["a"], active: "a" },
+      settings: { a: sshClaude(cwd) },
+      startupPending: { a: true },
+    });
+  }
+
+  it("types ssh, polls, then types the remote step once connected", async () => {
+    vi.useFakeTimers();
+    try {
+      seed("/proj");
+      await useStore.getState().runStartup("a");
+      expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", `${sshLine("me@box")}\r`);
+      expect(useStore.getState().sshConnecting.a).toBe(true);
+      expect(useStore.getState().settings.a.claude?.started).toBe(false);
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS);
+      expect(ipc.sshCheck).toHaveBeenCalledWith("me@box");
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS + SSH_SETTLE_MS + 10);
+      expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", `cd ${shellQuote("/proj")} && claude --session-id sid\r`);
+      const s = useStore.getState();
+      expect(s.sshConnected.a).toBe(true);
+      expect(s.sshConnecting.a).toBeUndefined();
+      expect(s.settings.a.claude?.started).toBe(true);
+      expect(s.startupPending.a).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up after the timeout and re-arms the bar with a note", async () => {
+    vi.useFakeTimers();
+    try {
+      seed("/proj");
+      await useStore.getState().runStartup("a");
+      await vi.advanceTimersByTimeAsync(SSH_POLL_TIMEOUT_MS + SSH_POLL_MS * 2);
+      const s = useStore.getState();
+      expect(s.sshConnecting.a).toBeUndefined();
+      expect(s.sshConnected.a).toBeUndefined();
+      expect(s.startupPending.a).toBe(true);
+      expect(s.startupNotes.a).toContain("not detected");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops polling when the terminal exits or is cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      seed("/proj");
+      await useStore.getState().runStartup("a");
+      useStore.getState().markExited("a", 255);
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 3);
+      expect(useStore.getState().sshConnecting.a).toBeUndefined();
+      const calls = vi.mocked(ipc.sshCheck).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 3);
+      expect(vi.mocked(ipc.sshCheck).mock.calls.length).toBe(calls);
+
+      seed(null);
+      await useStore.getState().runStartup("a");
+      useStore.getState().cancelConnecting("a");
+      expect(useStore.getState().sshConnecting.a).toBeUndefined();
+      expect(useStore.getState().startupPending.a).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("connected with no folder waits for a folder; chooseRemoteDir types the remote step and records history", async () => {
+    vi.useFakeTimers();
+    try {
+      seed(null);
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      await useStore.getState().runStartup("a");
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS + SSH_SETTLE_MS + 10);
+      expect(useStore.getState().sshConnected.a).toBe(true);
+      expect(vi.mocked(ipc.writeTerminal).mock.calls.length).toBe(1);
+      await useStore.getState().chooseRemoteDir("a", "/remote/proj");
+      expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", `cd ${shellQuote("/remote/proj")} && claude --session-id sid\r`);
+      const s = useStore.getState();
+      expect(s.settings.a.ssh?.cwd).toBe("/remote/proj");
+      expect(s.settings.a.claude?.started).toBe(true);
+      expect(s.sshHistory["me@box"].cwd).toBe("/remote/proj");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("changing the folder of a started Claude session resets the session", async () => {
+    seed("/old");
+    useStore.setState((s) => ({
+      settings: { a: { ...s.settings.a, claude: { ...s.settings.a.claude!, started: true } } },
+      sshConnected: { a: false },
+    }));
+    await useStore.getState().chooseRemoteDir("a", "/new");
+    const c = useStore.getState().settings.a.claude!;
+    expect(c.sessionId).not.toBe("sid");
+    expect(c.started).toBe(false);
+    expect(useStore.getState().startupNotes.a).toContain("folder changed");
+    expect(useStore.getState().startupPending.a).toBe(true);
+
+    useStore.getState().updateSettings("a", { ssh: { host: "me@box", cwd: "/newer" } });
+    expect(useStore.getState().settings.a.claude?.sessionId).toBe(c.sessionId); // not started: keep id
+  });
+
+  it("forgetSshHost removes history and history round-trips through save", async () => {
+    vi.useFakeTimers();
+    try {
+      await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: null });
+      expect(useStore.getState().sshHistory["me@box"].cwd).toBe("/p");
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+      const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
+      const ws = calls[calls.length - 1][0] as Workspace;
+      expect(ws.sshHistory?.["me@box"].cwd).toBe("/p");
+      useStore.getState().forgetSshHost("me@box");
+      expect(useStore.getState().sshHistory["me@box"]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("loadWorkspace restores sshHistory", async () => {
+    useStore.setState({ persistenceReady: false });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({ version: 1, terminals: [], layout: null, sshHistory: { "x@y": { cwd: "/q", lastUsed: "t" } } });
+    await useStore.getState().loadWorkspace();
+    expect(useStore.getState().sshHistory["x@y"].cwd).toBe("/q");
   });
 });

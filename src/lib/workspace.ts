@@ -200,11 +200,12 @@ export function toWorkspace(input: {
       const s = input.settings[id] ?? EMPTY_SETTINGS;
       return { ...s.extra, id: t.id, name: t.name, cwd: t.cwd, ssh: s.ssh, claude: s.claude, command: s.command };
     });
+  const history = input.sshHistory ?? {};
   return {
     version: 1,
     terminals,
     layout: input.layout,
-    ...(Object.keys(input.sshHistory).length ? { sshHistory: input.sshHistory } : {}),
+    ...(Object.keys(history).length ? { sshHistory: history } : {}),
   };
 }
 

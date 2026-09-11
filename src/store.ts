@@ -21,10 +21,14 @@ import {
   isSafeSessionId,
   reconcileLayout,
   sanitizeLayout,
+  startupIsSsh,
   startupLine,
+  startupSteps,
   startupUsesClaude,
   toWorkspace,
+  touchSshHistory,
   validateHost,
+  type SshHistory,
   type TerminalSettings,
   type TerminalDef,
 } from "./lib/workspace";
@@ -33,6 +37,10 @@ const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 
 export const SAVE_DEBOUNCE_MS = 500;
+
+export const SSH_POLL_MS = 500;
+export const SSH_POLL_TIMEOUT_MS = 120_000;
+export const SSH_SETTLE_MS = 300;
 
 // Note: this store does NOT import xtermRegistry directly (that would create
 // an import cycle, since xtermRegistry imports beforeSpawn/useStore from
@@ -71,6 +79,9 @@ export interface WorkbenchState {
   startupNotes: Record<string, string>;
   persistError: string | null;
   persistenceReady: boolean;
+  sshConnected: Record<string, boolean>;
+  sshConnecting: Record<string, boolean>;
+  sshHistory: SshHistory;
 
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
   createSshTerminal(opts: SshTerminalOptions, placement?: Placement): Promise<string>;
@@ -88,6 +99,10 @@ export interface WorkbenchState {
   reloadWorkspace(): Promise<void>;
   updateSettings(id: string, patch: Partial<TerminalSettings>): void;
   runStartup(id: string): Promise<void>;
+  runRemoteStep(id: string): Promise<void>;
+  cancelConnecting(id: string): void;
+  chooseRemoteDir(id: string, path: string): Promise<void>;
+  forgetSshHost(host: string): void;
   skipStartup(id: string): void;
   dismissPersistError(): void;
 }
@@ -239,6 +254,73 @@ async function openDefs(
   return { anyFailed: failedCount > 0 };
 }
 
+const pollers = new Map<string, { timer: ReturnType<typeof setInterval>; started: number; busy: boolean }>();
+
+function stopPolling(id: string) {
+  const p = pollers.get(id);
+  if (p) {
+    clearInterval(p.timer);
+    pollers.delete(id);
+  }
+}
+
+export function __stopAllPolling() {
+  for (const id of Array.from(pollers.keys())) stopPolling(id);
+}
+
+function startPolling(id: string, host: string) {
+  stopPolling(id);
+  useStore.setState((s) => ({ sshConnecting: { ...s.sshConnecting, [id]: true }, sshConnected: omit(s.sshConnected, id) }));
+  const entry = { timer: setInterval(() => void tick(), SSH_POLL_MS), started: Date.now(), busy: false };
+  pollers.set(id, entry);
+
+  async function tick() {
+    if (entry.busy || !pollers.has(id)) return;
+    const st = useStore.getState();
+    const t = st.terminals[id];
+    if (!t || t.exited !== null) {
+      stopPolling(id);
+      useStore.setState((s) => ({ sshConnecting: omit(s.sshConnecting, id) }));
+      return;
+    }
+    if (Date.now() - entry.started > SSH_POLL_TIMEOUT_MS) {
+      stopPolling(id);
+      useStore.setState((s) => ({
+        sshConnecting: omit(s.sshConnecting, id),
+        startupPending: { ...s.startupPending, [id]: true },
+        startupNotes: { ...s.startupNotes, [id]: "connection not detected; click Run to try again" },
+      }));
+      return;
+    }
+    entry.busy = true;
+    let ok = false;
+    try {
+      ok = await ipc.sshCheck(host);
+    } catch {
+      ok = false;
+    } finally {
+      entry.busy = false;
+    }
+    if (!ok || !pollers.has(id)) return;
+    stopPolling(id);
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true }, sshConnecting: omit(s.sshConnecting, id) }));
+    await new Promise((r) => setTimeout(r, SSH_SETTLE_MS));
+    await useStore.getState().runRemoteStep(id);
+  }
+}
+
+function resetSessionIfFolderChanged(cur: TerminalSettings, next: TerminalSettings): { settings: TerminalSettings; note: string | null } {
+  const before = cur.ssh?.cwd ?? null;
+  const after = next.ssh?.cwd ?? null;
+  if (next.claude?.enabled && next.claude.started && before !== after) {
+    return {
+      settings: { ...next, claude: { ...next.claude, sessionId: crypto.randomUUID(), started: false } },
+      note: "folder changed; Claude will start a new session",
+    };
+  }
+  return { settings: next, note: null };
+}
+
 export const useStore = create<WorkbenchState>((set) => ({
   terminals: {},
   order: [],
@@ -252,6 +334,9 @@ export const useStore = create<WorkbenchState>((set) => ({
   startupNotes: {},
   persistError: null,
   persistenceReady: false,
+  sshConnected: {},
+  sshConnecting: {},
+  sshHistory: {},
 
   async createTerminal(cwd, placement) {
     const id = crypto.randomUUID();
@@ -302,6 +387,7 @@ export const useStore = create<WorkbenchState>((set) => ({
         layout,
         settings: { ...s.settings, [info.id]: settings },
         startupPending: { ...s.startupPending, [info.id]: true },
+        sshHistory: touchSshHistory(s.sshHistory, opts.host, opts.cwd?.trim() || undefined),
         ...focusFor(layout, info.id),
       };
     });
@@ -311,6 +397,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   async closeTerminal(id) {
+    stopPolling(id);
     await ipc.closeTerminal(id);
     set((s) => {
       const terminals = { ...s.terminals };
@@ -330,6 +417,8 @@ export const useStore = create<WorkbenchState>((set) => ({
         settings: omit(s.settings, id),
         startupPending: omit(s.startupPending, id),
         startupNotes: omit(s.startupNotes, id),
+        sshConnected: omit(s.sshConnected, id),
+        sshConnecting: omit(s.sshConnecting, id),
         ...focusFor(layout, fallback),
       };
     });
@@ -341,6 +430,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     set((s) => ({
       terminals: { ...s.terminals, [id]: info },
       startupPending: { ...s.startupPending, [id]: startupLine(s.settings[id] ?? EMPTY_SETTINGS) !== null },
+      sshConnected: omit(s.sshConnected, id),
     }));
     // The fit addon only fires onResize when dimensions change, so if the
     // new PTY already matches dims (e.g. same terminal, no relayout since
@@ -359,10 +449,15 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   markExited(id, code) {
+    stopPolling(id);
     set((s) => {
       const t = s.terminals[id];
       if (!t) return {};
-      return { terminals: { ...s.terminals, [id]: { ...t, exited: code ?? -1 } } };
+      return {
+        terminals: { ...s.terminals, [id]: { ...t, exited: code ?? -1 } },
+        sshConnected: omit(s.sshConnected, id),
+        sshConnecting: omit(s.sshConnecting, id),
+      };
     });
   },
 
@@ -419,6 +514,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       set({ persistenceReady: true });
       return;
     }
+    set({ sshHistory: ws.sshHistory ?? {} });
     // openDefs sets persistenceReady itself: true when every def opened cleanly, false
     // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
     await openDefs(ws.terminals, ws.layout, set);
@@ -443,6 +539,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       set({ persistError: "no workspace file found — saving is paused until a successful Reload" });
       return;
     }
+    set({ sshHistory: ws.sshHistory ?? {} });
     const wanted = new Set(ws.terminals.map((t) => t.id));
     const toClose = useStore.getState().order.filter((id) => !wanted.has(id));
     if (toClose.length > 0) {
@@ -471,9 +568,11 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (next.claude?.enabled && !next.claude.sessionId) {
         next.claude = { ...next.claude, sessionId: crypto.randomUUID() };
       }
+      const { settings: finalSettings, note } = resetSessionIfFolderChanged(current, next);
       return {
-        settings: { ...s.settings, [id]: next },
-        startupPending: { ...s.startupPending, [id]: startupLine(next) !== null },
+        settings: { ...s.settings, [id]: finalSettings },
+        startupPending: { ...s.startupPending, [id]: startupLine(finalSettings) !== null },
+        startupNotes: note ? { ...s.startupNotes, [id]: note } : s.startupNotes,
       };
     });
   },
@@ -481,19 +580,61 @@ export const useStore = create<WorkbenchState>((set) => ({
   async runStartup(id) {
     const s = useStore.getState();
     const settings = s.settings[id] ?? EMPTY_SETTINGS;
-    const line = startupLine(settings);
-    if (!line) return;
-    await ipc.writeTerminal(id, line + "\r");
+    const steps = startupSteps(settings);
+    if (steps.length === 0) return;
+    await ipc.writeTerminal(id, steps[0].line + "\r");
+    const isSsh = startupIsSsh(settings);
     set((st) => {
       if (!st.terminals[id]) return {};
       const cur = st.settings[id] ?? EMPTY_SETTINGS;
-      const claude = startupUsesClaude(cur) && cur.claude ? { ...cur.claude, started: true } : cur.claude;
+      const claude = !isSsh && startupUsesClaude(cur) && cur.claude ? { ...cur.claude, started: true } : cur.claude;
       return {
         settings: { ...st.settings, [id]: { ...cur, claude } },
         startupPending: { ...st.startupPending, [id]: false },
         startupNotes: omit(st.startupNotes, id),
       };
     });
+    if (isSsh && settings.ssh?.host) startPolling(id, settings.ssh.host.trim());
+  },
+
+  async runRemoteStep(id) {
+    const s = useStore.getState();
+    if (!s.sshConnected[id] || !s.terminals[id]) return;
+    const remote = startupSteps(s.settings[id] ?? EMPTY_SETTINGS).find((st) => st.via === "remote");
+    if (!remote) return;
+    await ipc.writeTerminal(id, remote.line + "\r");
+    set((st) => {
+      if (!st.terminals[id]) return {};
+      const cur = st.settings[id] ?? EMPTY_SETTINGS;
+      const claude = startupUsesClaude(cur) && cur.claude ? { ...cur.claude, started: true } : cur.claude;
+      return { settings: { ...st.settings, [id]: { ...cur, claude } }, startupPending: { ...st.startupPending, [id]: false } };
+    });
+  },
+
+  cancelConnecting(id) {
+    stopPolling(id);
+    set((s) => ({ sshConnecting: omit(s.sshConnecting, id), startupPending: { ...s.startupPending, [id]: true } }));
+  },
+
+  async chooseRemoteDir(id, path) {
+    const clean = path.trim();
+    if (!clean) return;
+    set((s) => {
+      const cur = s.settings[id] ?? EMPTY_SETTINGS;
+      if (!cur.ssh?.host) return {};
+      const { settings, note } = resetSessionIfFolderChanged(cur, { ...cur, ssh: { ...cur.ssh, cwd: clean } });
+      return {
+        settings: { ...s.settings, [id]: settings },
+        sshHistory: touchSshHistory(s.sshHistory, cur.ssh.host, clean),
+        startupNotes: note ? { ...s.startupNotes, [id]: note } : s.startupNotes,
+        startupPending: { ...s.startupPending, [id]: !s.sshConnected[id] },
+      };
+    });
+    if (useStore.getState().sshConnected[id]) await useStore.getState().runRemoteStep(id);
+  },
+
+  forgetSshHost(host) {
+    set((s) => ({ sshHistory: omit(s.sshHistory, host) }));
   },
 
   skipStartup(id) {
@@ -513,15 +654,23 @@ function scheduleSave() {
     saveTimer = null;
     if (!useStore.getState().persistenceReady) return;
     const s = useStore.getState();
-    ipc.saveWorkspace(toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout })).catch((e) => {
-      useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });
-    });
+    ipc
+      .saveWorkspace(toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, sshHistory: s.sshHistory }))
+      .catch((e) => {
+        useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });
+      });
   }, SAVE_DEBOUNCE_MS);
 }
 
 useStore.subscribe((s, prev) => {
   if (!s.persistenceReady) return;
-  if (s.terminals !== prev.terminals || s.order !== prev.order || s.layout !== prev.layout || s.settings !== prev.settings) {
+  if (
+    s.terminals !== prev.terminals ||
+    s.order !== prev.order ||
+    s.layout !== prev.layout ||
+    s.settings !== prev.settings ||
+    s.sshHistory !== prev.sshHistory
+  ) {
     scheduleSave();
   }
 });
