@@ -10,6 +10,12 @@ export interface TerminalInfo {
   error: string | null;
 }
 
+export interface RemoteListing {
+  path: string;
+  parent: string | null;
+  dirs: string[];
+}
+
 function base64ToBytes(s: string): Uint8Array {
   const bin = atob(s);
   const out = new Uint8Array(bin.length);
@@ -34,4 +40,6 @@ export const ipc = {
     listen<{ code: number | null }>(`pty:exit:${id}`, (e) => cb(e.payload.code)),
   loadWorkspace: () => invoke<Workspace | null>("load_workspace"),
   saveWorkspace: (workspace: Workspace) => invoke<void>("save_workspace", { workspace }),
+  sshCheck: (host: string) => invoke<boolean>("ssh_check", { host }),
+  sshListDir: (host: string, path: string | null) => invoke<RemoteListing>("ssh_list_dir", { host, path }),
 };

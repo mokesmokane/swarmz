@@ -30,6 +30,7 @@ export interface Workspace {
   version: 1;
   terminals: TerminalDef[];
   layout: Layout;
+  sshHistory?: SshHistory;
 }
 
 export const EMPTY_SETTINGS: TerminalSettings = { ssh: null, claude: null, command: null, extra: {} };
@@ -62,23 +63,74 @@ export function startupUsesClaude(s: TerminalSettings): boolean {
   return trimmedCommand(s) === null && !!safeClaude(s);
 }
 
-export function startupLine(s: TerminalSettings): string | null {
+export type Step = { line: string; via: "local" | "remote" };
+
+export const SSH_OPTS = "-t -o ControlMaster=auto -o ControlPath=~/.swarmz/ssh/%C -o ControlPersist=10m";
+
+export function sshLine(host: string): string {
+  return `ssh ${SSH_OPTS} ${host}`;
+}
+
+export function validHost(s: TerminalSettings): string | null {
+  const raw = s.ssh?.host?.trim();
+  return raw && validateHost(raw) === null ? raw : null;
+}
+
+export function startupIsSsh(s: TerminalSettings): boolean {
+  return trimmedCommand(s) === null && validHost(s) !== null;
+}
+
+export function startupSteps(s: TerminalSettings): Step[] {
   const command = trimmedCommand(s);
-  if (command) return command;
+  if (command) return [{ via: "local", line: command }];
   const claudeConfig = safeClaude(s);
   const claude = claudeConfig ? claudeLine(claudeConfig) : null;
-  const rawHost = s.ssh?.host?.trim();
-  const host = rawHost && validateHost(rawHost) === null ? rawHost : null;
+  const host = validHost(s);
   if (host) {
-    if (!claude) return `ssh -t ${host}`;
-    const cd = s.ssh?.cwd ? `cd ${shellQuote(s.ssh.cwd)} && ` : "";
-    // A command given to ssh runs in a non-interactive shell that skips the
-    // user's profile, so tools like claude are often not on PATH. Run it
-    // through the remote login shell instead ($SHELL expands remotely).
-    const remote = `exec $SHELL -lic ${shellQuote(cd + claude)}`;
-    return `ssh -t ${host} ${shellQuote(remote)}`;
+    const steps: Step[] = [{ via: "local", line: sshLine(host) }];
+    if (claude && s.ssh?.cwd) steps.push({ via: "remote", line: `cd ${shellQuote(s.ssh.cwd)} && ${claude}` });
+    return steps;
   }
-  return claude;
+  return claude ? [{ via: "local", line: claude }] : [];
+}
+
+/** Display form of the startup steps, or null when there are none. */
+export function startupLine(s: TerminalSettings): string | null {
+  const steps = startupSteps(s);
+  return steps.length ? steps.map((st) => st.line).join(" ⏎ ") : null;
+}
+
+export function needsRemoteFolder(s: TerminalSettings): boolean {
+  return startupIsSsh(s) && !!safeClaude(s) && !s.ssh?.cwd;
+}
+
+export interface SshHistoryEntry {
+  cwd: string | null;
+  lastUsed: string;
+}
+export type SshHistory = Record<string, SshHistoryEntry>;
+export const SSH_HISTORY_MAX = 20;
+
+export function touchSshHistory(
+  h: SshHistory,
+  host: string,
+  cwd: string | null | undefined,
+  now: string = new Date().toISOString(),
+): SshHistory {
+  const key = host.trim();
+  const prev = h[key];
+  const next: SshHistory = { ...h, [key]: { cwd: cwd === undefined ? (prev?.cwd ?? null) : cwd, lastUsed: now } };
+  const keys = Object.keys(next).sort((a, b) => (next[b].lastUsed > next[a].lastUsed ? 1 : next[b].lastUsed < next[a].lastUsed ? -1 : 0));
+  const kept: SshHistory = {};
+  for (const k of keys.slice(0, SSH_HISTORY_MAX)) kept[k] = next[k];
+  return kept;
+}
+
+export function recentSshHosts(h: SshHistory, limit = 8): Array<{ host: string } & SshHistoryEntry> {
+  return Object.entries(h)
+    .map(([host, e]) => ({ host, ...e }))
+    .sort((a, b) => (b.lastUsed > a.lastUsed ? 1 : b.lastUsed < a.lastUsed ? -1 : 0))
+    .slice(0, limit);
 }
 
 export function validateHost(host: string): string | null {
@@ -139,6 +191,7 @@ export function toWorkspace(input: {
   terminals: Record<string, { id: string; name: string; cwd: string }>;
   settings: Record<string, TerminalSettings>;
   layout: Layout;
+  sshHistory: SshHistory;
 }): Workspace {
   const terminals: TerminalDef[] = input.order
     .filter((id) => input.terminals[id])
@@ -147,7 +200,12 @@ export function toWorkspace(input: {
       const s = input.settings[id] ?? EMPTY_SETTINGS;
       return { ...s.extra, id: t.id, name: t.name, cwd: t.cwd, ssh: s.ssh, claude: s.claude, command: s.command };
     });
-  return { version: 1, terminals, layout: input.layout };
+  return {
+    version: 1,
+    terminals,
+    layout: input.layout,
+    ...(Object.keys(input.sshHistory).length ? { sshHistory: input.sshHistory } : {}),
+  };
 }
 
 /** Short display name for an SSH host: drops `user@` and takes the first DNS label. */

@@ -6,14 +6,21 @@ import {
   hostLabel,
   isLayoutNode,
   isSafeSessionId,
+  needsRemoteFolder,
   reconcileLayout,
+  recentSshHosts,
   sanitizeLayout,
   shellQuote,
+  sshLine,
+  startupIsSsh,
   startupLine,
+  startupSteps,
   startupUsesClaude,
   toWorkspace,
+  touchSshHistory,
   validateHost,
   type ClaudeConfig,
+  type SshHistory,
 } from "./workspace";
 
 const claude: ClaudeConfig = { enabled: true, sessionId: "11111111-2222-3333-4444-555555555555", skipPermissions: false, started: false };
@@ -45,23 +52,39 @@ describe("startupLine", () => {
   });
 
   it("ssh only", () => {
-    expect(startupLine({ ...EMPTY_SETTINGS, ssh: { host: "me@host" } })).toBe("ssh -t me@host");
+    expect(startupLine({ ...EMPTY_SETTINGS, ssh: { host: "me@host" } })).toBe(sshLine("me@host"));
   });
 
   it("claude only", () => {
     expect(startupLine({ ...EMPTY_SETTINGS, claude })).toBe(`claude --session-id ${claude.sessionId}`);
   });
 
-  it("ssh and claude with a remote cwd", () => {
-    const line = startupLine({ ssh: { host: "me@host", cwd: "/proj" }, claude, command: null });
-    const inner = `cd ${shellQuote("/proj")} && claude --session-id ${claude.sessionId}`;
-    expect(line).toBe(`ssh -t me@host ${shellQuote(`exec $SHELL -lic ${shellQuote(inner)}`)}`);
+  it("ssh and claude with a remote cwd is two steps", () => {
+    const steps = startupSteps({ ssh: { host: "me@host", cwd: "/proj" }, claude, command: null });
+    expect(steps).toEqual([
+      { via: "local", line: sshLine("me@host") },
+      { via: "remote", line: `cd ${shellQuote("/proj")} && claude --session-id ${claude.sessionId}` },
+    ]);
+    expect(startupLine({ ssh: { host: "me@host", cwd: "/proj" }, claude, command: null })).toBe(
+      `${sshLine("me@host")} ⏎ cd '/proj' && claude --session-id ${claude.sessionId}`,
+    );
   });
 
-  it("ssh and claude without a remote cwd", () => {
-    const line = startupLine({ ssh: { host: "me@host" }, claude, command: null });
-    const inner = `claude --session-id ${claude.sessionId}`;
-    expect(line).toBe(`ssh -t me@host ${shellQuote(`exec $SHELL -lic ${shellQuote(inner)}`)}`);
+  it("ssh and claude without a remote cwd is only the ssh step and needs a folder", () => {
+    const s = { ssh: { host: "me@host" }, claude, command: null };
+    expect(startupSteps(s)).toEqual([{ via: "local", line: sshLine("me@host") }]);
+    expect(needsRemoteFolder(s)).toBe(true);
+    expect(needsRemoteFolder({ ssh: { host: "me@host", cwd: "/p" }, claude, command: null })).toBe(false);
+    expect(needsRemoteFolder({ ssh: { host: "me@host" }, claude, command: "ls" })).toBe(false);
+    expect(needsRemoteFolder({ ssh: { host: "me@host" }, claude: null, command: null })).toBe(false);
+  });
+
+  it("sshLine carries the multiplexing options", () => {
+    expect(sshLine("me@host")).toBe("ssh -t -o ControlMaster=auto -o ControlPath=~/.swarmz/ssh/%C -o ControlPersist=10m me@host");
+    expect(startupSteps({ ...EMPTY_SETTINGS, ssh: { host: "me@host" } })).toEqual([{ via: "local", line: sshLine("me@host") }]);
+    expect(startupIsSsh({ ...EMPTY_SETTINGS, ssh: { host: "me@host" } })).toBe(true);
+    expect(startupIsSsh({ ...EMPTY_SETTINGS, ssh: { host: "me@host" }, command: "ls" })).toBe(false);
+    expect(startupIsSsh({ ...EMPTY_SETTINGS, ssh: { host: "h; ls" } })).toBe(false);
   });
 
   it("free-form command wins and is trimmed", () => {
@@ -71,7 +94,7 @@ describe("startupLine", () => {
 
   it("treats an unsafe claude session id as disabled", () => {
     const unsafeClaude = { ...claude, sessionId: "x'y" };
-    expect(startupLine({ ssh: { host: "h" }, claude: unsafeClaude, command: null })).toBe("ssh -t h");
+    expect(startupLine({ ssh: { host: "h" }, claude: unsafeClaude, command: null })).toBe(sshLine("h"));
     expect(startupLine({ ssh: null, claude: unsafeClaude, command: null })).toBeNull();
   });
 
@@ -197,6 +220,7 @@ describe("toWorkspace", () => {
       },
       settings: { a: { ...EMPTY_SETTINGS, ssh: { host: "h" } } },
       layout: null,
+      sshHistory: { "a@x": { cwd: null, lastUsed: "t" } },
     });
     expect(ws.version).toBe(1);
     expect(ws.terminals.map((t) => t.id)).toEqual(["b", "a"]);
@@ -205,6 +229,38 @@ describe("toWorkspace", () => {
     expect(ws.terminals[0].claude).toBeNull();
     expect(ws.terminals[0].command).toBeNull();
     expect(ws.layout).toBeNull();
+    expect(ws.sshHistory).toEqual({ "a@x": { cwd: null, lastUsed: "t" } });
+  });
+
+  it("omits sshHistory when empty", () => {
+    const ws = toWorkspace({
+      order: ["a"],
+      terminals: { a: { id: "a", name: "A", cwd: "/a" } },
+      settings: {},
+      layout: null,
+      sshHistory: {},
+    });
+    expect("sshHistory" in ws).toBe(false);
+  });
+});
+
+describe("ssh history", () => {
+  it("touch adds or refreshes an entry and keeps an existing cwd when none is given", () => {
+    let h = touchSshHistory({}, "a@x", "/p", "2026-01-01T00:00:00Z");
+    expect(h["a@x"]).toEqual({ cwd: "/p", lastUsed: "2026-01-01T00:00:00Z" });
+    h = touchSshHistory(h, "a@x", undefined, "2026-01-02T00:00:00Z");
+    expect(h["a@x"]).toEqual({ cwd: "/p", lastUsed: "2026-01-02T00:00:00Z" });
+    h = touchSshHistory(h, "a@x", null, "2026-01-03T00:00:00Z");
+    expect(h["a@x"].cwd).toBeNull();
+  });
+
+  it("caps at the most recent entries and lists them newest first", () => {
+    let h: SshHistory = {};
+    for (let i = 0; i < 25; i++) h = touchSshHistory(h, `h${i}`, null, new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString());
+    expect(Object.keys(h).length).toBe(20);
+    expect(h["h0"]).toBeUndefined();
+    const recent = recentSshHosts(h, 3).map((e) => e.host);
+    expect(recent).toEqual(["h24", "h23", "h22"]);
   });
 });
 
