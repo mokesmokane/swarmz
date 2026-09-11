@@ -418,13 +418,16 @@ export const useStore = create<WorkbenchState>((set) => ({
 
   async createSshTerminal(opts, placement) {
     const id = crypto.randomUUID();
+    // A host used before keeps its last folder unless the caller gives one explicitly.
+    const remembered = useStore.getState().sshHistory[opts.host.trim()]?.cwd ?? null;
+    const rememberedOrGivenCwd = opts.cwd === undefined ? remembered : opts.cwd?.trim() || null;
     await beforeSpawn.hook(id);
     const dims = beforeSpawn.size(id) ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
     const home = await homeDir();
     const info = await ipc.createTerminal(id, home, dims.cols, dims.rows, hostLabel(opts.host));
     const settings: TerminalSettings = {
       ...EMPTY_SETTINGS,
-      ssh: { host: opts.host.trim(), cwd: opts.cwd?.trim() || null },
+      ssh: { host: opts.host.trim(), cwd: rememberedOrGivenCwd },
       claude: opts.claude
         ? { enabled: true, sessionId: crypto.randomUUID(), skipPermissions: opts.claude.skipPermissions, started: false }
         : null,

@@ -876,3 +876,15 @@ describe("ssh two-step startup", () => {
     expect(s.startupPending.a).toBe(false);
   });
 });
+
+describe("createSshTerminal reuses a remembered folder", () => {
+  it("falls back to the host's last folder when none is given, and keeps an explicit one", async () => {
+    useStore.setState({ sshHistory: { "me@box": { cwd: "/remembered", lastUsed: "2026-01-01T00:00:00Z" } } });
+    const a = await useStore.getState().createSshTerminal({ host: "me@box", claude: null });
+    expect(useStore.getState().settings[a].ssh?.cwd).toBe("/remembered");
+    const b = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/explicit", claude: null });
+    expect(useStore.getState().settings[b].ssh?.cwd).toBe("/explicit");
+    const c = await useStore.getState().createSshTerminal({ host: "me@box", cwd: null, claude: null });
+    expect(useStore.getState().settings[c].ssh?.cwd).toBeNull();
+  });
+});

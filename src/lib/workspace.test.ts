@@ -3,6 +3,7 @@ import { addTab, splitWith, type GroupNode, type SplitNode } from "./layout";
 import {
   EMPTY_SETTINGS,
   claudeLine,
+  filterSshHosts,
   hostLabel,
   isLayoutNode,
   isSafeRemotePath,
@@ -281,5 +282,24 @@ describe("hostLabel", () => {
     expect(hostLabel("other-mac.local")).toBe("other-mac");
     expect(hostLabel("10.0.0.5")).toBe("10.0.0.5");
     expect(hostLabel("me@box")).toBe("box");
+  });
+});
+
+describe("filterSshHosts", () => {
+  const h = {
+    "me@alpha.local": { cwd: "/a", lastUsed: "2026-01-03T00:00:00Z" },
+    "me@beta": { cwd: null, lastUsed: "2026-01-02T00:00:00Z" },
+    "10.0.0.5": { cwd: "/c", lastUsed: "2026-01-01T00:00:00Z" },
+  };
+
+  it("returns all recents, newest first, for an empty query", () => {
+    expect(filterSshHosts(h, "").map((r) => r.host)).toEqual(["me@alpha.local", "me@beta", "10.0.0.5"]);
+  });
+
+  it("matches case-insensitively on host or folder and keeps recency order", () => {
+    expect(filterSshHosts(h, "BETA").map((r) => r.host)).toEqual(["me@beta"]);
+    expect(filterSshHosts(h, "/c").map((r) => r.host)).toEqual(["10.0.0.5"]);
+    expect(filterSshHosts(h, "me@").map((r) => r.host)).toEqual(["me@alpha.local", "me@beta"]);
+    expect(filterSshHosts(h, "zzz")).toEqual([]);
   });
 });

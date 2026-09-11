@@ -221,3 +221,11 @@ export function hostLabel(host: string): string {
   if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) return h;
   return h.split(".")[0] || h;
 }
+
+/** Recent hosts matching a typed query (host or last folder, case-insensitive), newest first. */
+export function filterSshHosts(h: SshHistory, query: string, limit = 8): Array<{ host: string } & SshHistoryEntry> {
+  const q = query.trim().toLowerCase();
+  const all = recentSshHosts(h, Number.MAX_SAFE_INTEGER);
+  const matched = q ? all.filter((r) => r.host.toLowerCase().includes(q) || (r.cwd ?? "").toLowerCase().includes(q)) : all;
+  return matched.slice(0, limit);
+}
