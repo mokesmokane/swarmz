@@ -47,8 +47,8 @@ export function TerminalPane({ id }: { id: string }) {
   return (
     <div className="relative h-full w-full bg-[#0f1115]">
       {pending && line && (
-        <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-300">
-          <span className="min-w-0 flex-1 truncate font-mono" title={line}>{line}</span>
+        <div className="absolute inset-x-0 top-0 z-10 flex max-h-24 items-start gap-2 overflow-y-auto border-b border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-300">
+          <span className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono" title={line}>{line}</span>
           {note && <span className="truncate text-amber-300" title={note}>{note}</span>}
           <button className="rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-500" onClick={() => void runStartup(id)}>Run</button>
           <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={() => skipStartup(id)}>Skip</button>

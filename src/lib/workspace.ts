@@ -1,4 +1,4 @@
-import { addTab, allGroups, removeTerminal, type Layout } from "./layout";
+import { addTab, allGroups, removeTerminal, type Layout, type LayoutNode } from "./layout";
 
 export interface SshConfig {
   host: string;
@@ -16,6 +16,8 @@ export interface TerminalSettings {
   ssh: SshConfig | null;
   claude: ClaudeConfig | null;
   command: string | null;
+  /** Fields carried in workspace.json that this app version does not know about; preserved on save. */
+  extra?: Record<string, unknown>;
 }
 
 export interface TerminalDef extends TerminalSettings {
@@ -30,7 +32,7 @@ export interface Workspace {
   layout: Layout;
 }
 
-export const EMPTY_SETTINGS: TerminalSettings = { ssh: null, claude: null, command: null };
+export const EMPTY_SETTINGS: TerminalSettings = { ssh: null, claude: null, command: null, extra: {} };
 
 export function shellQuote(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
@@ -65,7 +67,8 @@ export function startupLine(s: TerminalSettings): string | null {
   if (command) return command;
   const claudeConfig = safeClaude(s);
   const claude = claudeConfig ? claudeLine(claudeConfig) : null;
-  const host = s.ssh?.host?.trim();
+  const rawHost = s.ssh?.host?.trim();
+  const host = rawHost && validateHost(rawHost) === null ? rawHost : null;
   if (host) {
     if (!claude) return `ssh -t ${host}`;
     const cd = s.ssh?.cwd ? `cd ${shellQuote(s.ssh.cwd)} && ` : "";
@@ -81,6 +84,37 @@ export function validateHost(host: string): string | null {
     return "host may only contain letters, digits, . _ @ : - and cannot start with -";
   }
   return null;
+}
+
+export function isLayoutNode(v: unknown): v is LayoutNode {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  if (o.kind === "group") {
+    return (
+      typeof o.id === "string" &&
+      Array.isArray(o.tabs) &&
+      o.tabs.every((t) => typeof t === "string") &&
+      typeof o.active === "string"
+    );
+  }
+  if (o.kind === "split") {
+    return (
+      typeof o.id === "string" &&
+      (o.dir === "row" || o.dir === "col") &&
+      Array.isArray(o.children) &&
+      o.children.length >= 1 &&
+      o.children.every((c) => isLayoutNode(c)) &&
+      Array.isArray(o.sizes) &&
+      o.sizes.length === o.children.length &&
+      o.sizes.every((n) => typeof n === "number")
+    );
+  }
+  return false;
+}
+
+export function sanitizeLayout(v: unknown): Layout {
+  if (v === null) return null;
+  return isLayoutNode(v) ? v : null;
 }
 
 export function reconcileLayout(layout: Layout, ids: string[]): Layout {
@@ -107,7 +141,7 @@ export function toWorkspace(input: {
     .map((id) => {
       const t = input.terminals[id];
       const s = input.settings[id] ?? EMPTY_SETTINGS;
-      return { id: t.id, name: t.name, cwd: t.cwd, ssh: s.ssh, claude: s.claude, command: s.command };
+      return { ...s.extra, id: t.id, name: t.name, cwd: t.cwd, ssh: s.ssh, claude: s.claude, command: s.command };
     });
   return { version: 1, terminals, layout: input.layout };
 }

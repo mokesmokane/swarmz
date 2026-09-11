@@ -10,6 +10,7 @@ function basename(p: string): string {
 
 function Row({ id }: { id: string }) {
   const t = useStore((s) => s.terminals[id]);
+  const settings = useStore((s) => s.settings[id]);
   const focused = useStore((s) => s.focusedTerminalId === id);
   const focusTerminal = useStore((s) => s.focusTerminal);
   const closeTerminal = useStore((s) => s.closeTerminal);
@@ -82,7 +83,17 @@ function Row({ id }: { id: string }) {
           </div>
         ) : (
           <>
-            <div className="truncate">{t.name}</div>
+            <div className="truncate">
+              {t.name}
+              {settings?.claude?.enabled && settings.claude.skipPermissions && (
+                <span
+                  className="ml-1 rounded bg-red-900/60 px-1 text-[10px] font-semibold text-red-300"
+                  title="Claude runs with --dangerously-skip-permissions"
+                >
+                  ⚠ skip-perms
+                </span>
+              )}
+            </div>
             <div className="truncate text-xs text-neutral-500">{basename(t.cwd)}</div>
           </>
         )}
@@ -145,21 +156,23 @@ export function Sidebar() {
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-neutral-800 bg-neutral-950">
       <div className="flex h-8 items-center justify-between border-b border-neutral-800 px-3 text-xs font-semibold uppercase tracking-wide text-neutral-400">
         <span>Terminals</span>
-        <button
-          className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
-          onClick={() => void reloadWorkspace()}
-          title="Reload ~/.swarmz/workspace.json"
-        >
-          ↻
-        </button>
-        <button
-          className="rounded px-2 text-base leading-none text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
-          onClick={() => void addTerminal()}
-          disabled={busy}
-          title="New terminal"
-        >
-          +
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
+            onClick={() => void reloadWorkspace()}
+            title="Reload ~/.swarmz/workspace.json"
+          >
+            ↻
+          </button>
+          <button
+            className="rounded px-2 text-base leading-none text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            onClick={() => void addTerminal()}
+            disabled={busy}
+            title="New terminal"
+          >
+            +
+          </button>
+        </div>
       </div>
       {error && <div className="px-3 py-1 text-xs text-red-400">{error}</div>}
       {persistError && (

@@ -35,7 +35,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true) }
 import { ipc } from "./lib/ipc";
 import { __resetLoadGuard, beforeSpawn, SAVE_DEBOUNCE_MS, useStore } from "./store";
 import { findGroup, findGroupOf, type GroupNode, type SplitNode } from "./lib/layout";
-import { EMPTY_SETTINGS, type Workspace } from "./lib/workspace";
+import { EMPTY_SETTINGS, toWorkspace, type Workspace } from "./lib/workspace";
 
 beforeEach(() => {
   __resetLoadGuard();
@@ -314,12 +314,62 @@ describe("loadWorkspace", () => {
     expect(s.startupNotes.t1).toContain("/no/such");
   });
 
-  it("surfaces a load error and still becomes ready", async () => {
+  it("surfaces a load error and pauses persistence instead of becoming ready", async () => {
     useStore.setState({ persistenceReady: false });
     vi.mocked(ipc.loadWorkspace).mockRejectedValueOnce("workspace file was invalid and was moved to x");
     await useStore.getState().loadWorkspace();
     expect(useStore.getState().persistError).toContain("moved to x");
-    expect(useStore.getState().persistenceReady).toBe(true);
+    expect(useStore.getState().persistError).toContain("paused");
+    expect(useStore.getState().persistenceReady).toBe(false);
+  });
+
+  it("pauses persistence when a terminal fails to open, and a subsequent clean reload resumes it", async () => {
+    useStore.setState({ persistenceReady: false });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [{ id: "t1", name: "one", cwd: "/tmp/one", ssh: null, claude: null, command: null }],
+      layout: null,
+    });
+    vi.mocked(ipc.createTerminal).mockRejectedValueOnce("permission denied");
+    await useStore.getState().loadWorkspace();
+    let s = useStore.getState();
+    expect(s.persistenceReady).toBe(false);
+    expect(s.persistError).toContain("paused");
+
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({ version: 1, terminals: [], layout: null });
+    await useStore.getState().reloadWorkspace();
+    s = useStore.getState();
+    expect(s.persistenceReady).toBe(true);
+  });
+
+  it("rebuilds an invalid saved layout, reports it, and keeps terminals in one group", async () => {
+    useStore.setState({ persistenceReady: false });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [
+        { id: "t1", name: "one", cwd: "/tmp/one", ssh: null, claude: null, command: null },
+        { id: "t2", name: "two", cwd: "/tmp/two", ssh: null, claude: null, command: null },
+      ],
+      layout: {},
+    } as unknown as Workspace);
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(s.layout?.kind).toBe("group");
+    expect((s.layout as GroupNode).tabs).toEqual(["t1", "t2"]);
+    expect(s.persistError).toContain("layout");
+  });
+
+  it("preserves unknown fields on a def through load and save", async () => {
+    useStore.setState({ persistenceReady: false });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [{ id: "t1", name: "one", cwd: "/tmp/one", ssh: null, claude: null, command: null, note: "keep" }],
+      layout: null,
+    } as unknown as Workspace);
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    const ws = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout });
+    expect((ws.terminals[0] as unknown as { note: string }).note).toBe("keep");
   });
 
   it("regenerates an unsafe claude session id on restore", async () => {
@@ -363,20 +413,24 @@ describe("settings and startup", () => {
     expect(useStore.getState().startupPending.a).toBe(false);
   });
 
-  it("runStartup writes the line, marks claude started, and clears pending", async () => {
+  it("runStartup writes the line, marks claude started, and clears pending and notes", async () => {
     useStore.setState({
       terminals: { a: { id: "a", name: "a", cwd: "/a", exited: null, error: null } },
       order: ["a"],
       layout: { kind: "group", id: "g", tabs: ["a"], active: "a" },
       settings: { a: { ssh: null, claude: { enabled: true, sessionId: "sid", skipPermissions: false, started: false }, command: null } },
       startupPending: { a: true },
+      startupNotes: { a: "some note" },
     });
     await useStore.getState().runStartup("a");
     expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", "claude --session-id sid\r");
     const s = useStore.getState();
     expect(s.settings.a.claude?.started).toBe(true);
     expect(s.startupPending.a).toBe(false);
+    expect(s.startupNotes.a).toBeUndefined();
+    useStore.setState({ startupNotes: { a: "another note" } });
     useStore.getState().skipStartup("a");
+    expect(useStore.getState().startupNotes.a).toBeUndefined();
     expect(useStore.getState().startupPending.a).toBe(false);
   });
 
@@ -474,5 +528,51 @@ describe("reloadWorkspace", () => {
     });
     await useStore.getState().reloadWorkspace();
     expect(useStore.getState().focusedTerminalId).toBe(b);
+  });
+
+  it("does not re-arm the startup bar for an already-open terminal whose settings did not change", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(a, { ssh: { host: "h" } });
+    useStore.getState().skipStartup(a);
+    expect(useStore.getState().startupPending[a]).toBe(false);
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [{ id: a, name: "a", cwd: "/tmp/a", ssh: { host: "h" }, claude: null, command: null }],
+      layout: null,
+    });
+    await useStore.getState().reloadWorkspace();
+    expect(useStore.getState().startupPending[a]).toBe(false);
+  });
+
+  it("gates the debounced save during reload and persists the reconciled state after", async () => {
+    vi.useFakeTimers();
+    try {
+      const a = await useStore.getState().createTerminal("/tmp/a");
+      useStore.getState().updateSettings(a, { command: "npm run dev" });
+      expect(ipc.saveWorkspace).not.toHaveBeenCalled();
+
+      vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+        version: 1,
+        terminals: [{ id: a, name: "a", cwd: "/tmp/a", ssh: null, claude: null, command: "npm run dev" }],
+        layout: null,
+      });
+      const reloadPromise = useStore.getState().reloadWorkspace();
+      // The pending save scheduled by updateSettings must be cancelled synchronously.
+      expect(useStore.getState().persistenceReady).toBe(false);
+
+      await reloadPromise;
+      // No macrotask timer has fired yet (fake time hasn't advanced), so nothing should
+      // have saved while the reload was in flight and persistenceReady was false.
+      expect(ipc.saveWorkspace).not.toHaveBeenCalled();
+      expect(useStore.getState().persistenceReady).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+      expect(ipc.saveWorkspace).toHaveBeenCalledTimes(1);
+      const ws = vi.mocked(ipc.saveWorkspace).mock.calls[0][0] as Workspace;
+      expect(ws.terminals.map((t) => t.id)).toEqual([a]);
+      expect(ws.terminals[0].command).toBe("npm run dev");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

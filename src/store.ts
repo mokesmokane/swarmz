@@ -19,9 +19,11 @@ import {
   EMPTY_SETTINGS,
   isSafeSessionId,
   reconcileLayout,
+  sanitizeLayout,
   startupLine,
   startupUsesClaude,
   toWorkspace,
+  validateHost,
   type TerminalSettings,
   type TerminalDef,
 } from "./lib/workspace";
@@ -116,19 +118,46 @@ export function __resetLoadGuard() {
 }
 
 const UNSAFE_SESSION_NOTE = "claude session id in workspace.json was invalid; a new session was created";
+const INVALID_HOST_NOTE = "ssh host in workspace.json is invalid and was ignored";
 
-function regenerateIfUnsafe(def: TerminalDef): { def: TerminalDef; note: string | null } {
-  if (def.claude?.enabled && !isSafeSessionId(def.claude.sessionId)) {
-    return {
-      def: { ...def, claude: { ...def.claude, sessionId: crypto.randomUUID(), started: false } },
-      note: UNSAFE_SESSION_NOTE,
-    };
+const KNOWN_DEF_KEYS = new Set(["id", "name", "cwd", "ssh", "claude", "command"]);
+
+/** Fields on a loaded def that this app version does not know about; kept so they round-trip on save. */
+function extraFromDef(def: TerminalDef): Record<string, unknown> {
+  const extra: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(def)) {
+    if (!KNOWN_DEF_KEYS.has(k)) extra[k] = v;
   }
-  return { def, note: null };
+  return extra;
 }
 
-async function openDefs(defs: TerminalDef[], savedLayout: Layout, set: SetState, allDefs: TerminalDef[] = defs) {
+function settingsFromDef(d: TerminalDef): TerminalSettings {
+  return { ssh: d.ssh ?? null, claude: d.claude ?? null, command: d.command ?? null, extra: extraFromDef(d) };
+}
+
+function regenerateIfUnsafe(def: TerminalDef): { def: TerminalDef; note: string | null } {
+  let out = def;
+  let note: string | null = null;
+  if (out.claude?.enabled && !isSafeSessionId(out.claude.sessionId)) {
+    out = { ...out, claude: { ...out.claude, sessionId: crypto.randomUUID(), started: false } };
+    note = UNSAFE_SESSION_NOTE;
+  }
+  // Keep the ssh settings as loaded (so the user can fix them in the panel); just flag them.
+  if (out.ssh?.host && validateHost(out.ssh.host) !== null) {
+    note = note ?? INVALID_HOST_NOTE;
+  }
+  return { def: out, note };
+}
+
+async function openDefs(
+  defs: TerminalDef[],
+  savedLayout: Layout,
+  set: SetState,
+  allDefs: TerminalDef[] = defs,
+): Promise<{ anyFailed: boolean }> {
+  const preOpenIds = new Set(useStore.getState().order);
   const normalized = new Map(allDefs.map((d) => [d.id, regenerateIfUnsafe(d)]));
+  let failedCount = 0;
   for (const def of defs) {
     const { def: regenerated, note: unsafeNote } = normalized.get(def.id) ?? regenerateIfUnsafe(def);
     try {
@@ -137,35 +166,68 @@ async function openDefs(defs: TerminalDef[], savedLayout: Layout, set: SetState,
       set((s) => ({
         terminals: { ...s.terminals, [info.id]: info },
         order: [...s.order, info.id],
-        settings: {
-          ...s.settings,
-          [info.id]: { ssh: regenerated.ssh ?? null, claude: regenerated.claude ?? null, command: regenerated.command ?? null },
-        },
+        settings: { ...s.settings, [info.id]: settingsFromDef(regenerated) },
         startupNotes: startupNote ? { ...s.startupNotes, [info.id]: startupNote } : s.startupNotes,
         lastCwd: info.cwd,
       }));
     } catch (e) {
+      failedCount += 1;
       set({ persistError: `could not open "${def.name}": ${typeof e === "string" ? e : String(e)}` });
     }
   }
   set((s) => {
-    const settings = { ...s.settings };
-    let startupNotes = s.startupNotes;
-    for (const [id, { def: d, note }] of normalized) {
-      if (s.terminals[id]) {
-        settings[id] = { ssh: d.ssh ?? null, claude: d.claude ?? null, command: d.command ?? null };
-        if (note) startupNotes = { ...startupNotes, [id]: note };
+    try {
+      const settings = { ...s.settings };
+      let startupNotes = s.startupNotes;
+      for (const [id, { def: d, note }] of normalized) {
+        if (s.terminals[id]) {
+          settings[id] = settingsFromDef(d);
+          if (note) startupNotes = { ...startupNotes, [id]: note };
+        }
       }
+      const sanitizedLayout = sanitizeLayout(savedLayout);
+      const layoutWasInvalid = savedLayout !== null && sanitizedLayout === null;
+      const layout = reconcileLayout(sanitizedLayout, s.order);
+      const startupPending: Record<string, boolean> = { ...s.startupPending };
+      for (const id of s.order) {
+        const wasOpenBefore = preOpenIds.has(id);
+        const changed = !wasOpenBefore || JSON.stringify(settings[id]) !== JSON.stringify(s.settings[id]);
+        if (changed) startupPending[id] = startupLine(settings[id] ?? EMPTY_SETTINGS) !== null;
+      }
+      const keep =
+        s.focusedTerminalId && findGroupOf(layout, s.focusedTerminalId)
+          ? s.focusedTerminalId
+          : (allGroups(layout)[0]?.active ?? null);
+      const persistError =
+        failedCount > 0
+          ? `${failedCount} terminal(s) could not be opened; saving is paused until a successful Reload`
+          : layoutWasInvalid
+            ? "layout in workspace.json was invalid and was rebuilt"
+            : s.persistError;
+      return {
+        settings,
+        startupNotes,
+        layout,
+        startupPending,
+        persistenceReady: failedCount === 0,
+        persistError,
+        ...focusFor(layout, keep),
+      };
+    } catch (e) {
+      const layout = reconcileLayout(null, s.order);
+      const keep =
+        s.focusedTerminalId && findGroupOf(layout, s.focusedTerminalId)
+          ? s.focusedTerminalId
+          : (allGroups(layout)[0]?.active ?? null);
+      return {
+        layout,
+        persistenceReady: false,
+        persistError: `could not reconcile workspace: ${typeof e === "string" ? e : String(e)}`,
+        ...focusFor(layout, keep),
+      };
     }
-    const layout = reconcileLayout(savedLayout, s.order);
-    const startupPending: Record<string, boolean> = {};
-    for (const id of s.order) startupPending[id] = startupLine(settings[id] ?? EMPTY_SETTINGS) !== null;
-    const keep =
-      s.focusedTerminalId && findGroupOf(layout, s.focusedTerminalId)
-        ? s.focusedTerminalId
-        : (allGroups(layout)[0]?.active ?? null);
-    return { settings, startupNotes, layout, startupPending, ...focusFor(layout, keep) };
   });
+  return { anyFailed: failedCount > 0 };
 }
 
 export const useStore = create<WorkbenchState>((set) => ({
@@ -307,27 +369,35 @@ export const useStore = create<WorkbenchState>((set) => ({
     try {
       ws = await ipc.loadWorkspace();
     } catch (e) {
-      set({ persistError: typeof e === "string" ? e : String(e), persistenceReady: true });
+      const msg = typeof e === "string" ? e : String(e);
+      set({ persistError: `${msg} — saving is paused until a successful Reload`, persistenceReady: false });
       return;
     }
     if (!ws) {
       set({ persistenceReady: true });
       return;
     }
+    // openDefs sets persistenceReady itself: true when every def opened cleanly, false
+    // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
     await openDefs(ws.terminals, ws.layout, set);
-    set({ persistenceReady: true });
   },
 
   async reloadWorkspace() {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    set({ persistenceReady: false });
     let ws: Awaited<ReturnType<typeof ipc.loadWorkspace>> = null;
     try {
       ws = await ipc.loadWorkspace();
     } catch (e) {
-      set({ persistError: typeof e === "string" ? e : String(e) });
+      const msg = typeof e === "string" ? e : String(e);
+      set({ persistError: `${msg} — saving is paused until a successful Reload` });
       return;
     }
     if (!ws) {
-      set({ persistError: "no workspace file found" });
+      set({ persistError: "no workspace file found — saving is paused until a successful Reload" });
       return;
     }
     const wanted = new Set(ws.terminals.map((t) => t.id));
@@ -338,7 +408,13 @@ export const useStore = create<WorkbenchState>((set) => ({
       for (const id of toClose) await useStore.getState().closeTerminal(id);
     }
     const open = new Set(useStore.getState().order);
-    await openDefs(ws.terminals.filter((d) => !open.has(d.id)), ws.layout, set, ws.terminals);
+    const { anyFailed } = await openDefs(ws.terminals.filter((d) => !open.has(d.id)), ws.layout, set, ws.terminals);
+    if (!anyFailed) {
+      // openDefs already set persistenceReady true; schedule an explicit save so the
+      // reconciled state (regenerated ids, rebuilt layout, etc.) is persisted right away.
+      set({ persistenceReady: true });
+      scheduleSave();
+    }
   },
 
   updateSettings(id, patch) {
@@ -368,12 +444,13 @@ export const useStore = create<WorkbenchState>((set) => ({
       return {
         settings: { ...st.settings, [id]: { ...cur, claude } },
         startupPending: { ...st.startupPending, [id]: false },
+        startupNotes: omit(st.startupNotes, id),
       };
     });
   },
 
   skipStartup(id) {
-    set((s) => ({ startupPending: { ...s.startupPending, [id]: false } }));
+    set((s) => ({ startupPending: { ...s.startupPending, [id]: false }, startupNotes: omit(s.startupNotes, id) }));
   },
 
   dismissPersistError() {
@@ -387,6 +464,7 @@ function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
+    if (!useStore.getState().persistenceReady) return;
     const s = useStore.getState();
     ipc.saveWorkspace(toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout })).catch((e) => {
       useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });

@@ -3,8 +3,10 @@ import { addTab, splitWith, type GroupNode, type SplitNode } from "./layout";
 import {
   EMPTY_SETTINGS,
   claudeLine,
+  isLayoutNode,
   isSafeSessionId,
   reconcileLayout,
+  sanitizeLayout,
   shellQuote,
   startupLine,
   startupUsesClaude,
@@ -69,6 +71,11 @@ describe("startupLine", () => {
     expect(startupLine({ ssh: { host: "h" }, claude: unsafeClaude, command: null })).toBe("ssh -t h");
     expect(startupLine({ ssh: null, claude: unsafeClaude, command: null })).toBeNull();
   });
+
+  it("ignores an ssh host that fails validation", () => {
+    expect(startupLine({ ssh: { host: "h; ls" }, claude, command: null })).toBe(`claude --session-id ${claude.sessionId}`);
+    expect(startupLine({ ssh: { host: "h; ls" }, claude: null, command: null })).toBeNull();
+  });
 });
 
 describe("startupUsesClaude", () => {
@@ -132,6 +139,48 @@ describe("reconcileLayout", () => {
     l = splitWith(l, (l as GroupNode).id, "b", "bottom", "g2");
     const out = reconcileLayout(l, ["a", "b"]);
     expect((out as SplitNode).children.length).toBe(2);
+  });
+});
+
+describe("isLayoutNode", () => {
+  it("accepts a valid group and a valid split", () => {
+    const group: GroupNode = { kind: "group", id: "g1", tabs: ["a", "b"], active: "a" };
+    expect(isLayoutNode(group)).toBe(true);
+    const split: SplitNode = {
+      kind: "split",
+      id: "s1",
+      dir: "row",
+      children: [group, { kind: "group", id: "g2", tabs: ["c"], active: "c" }],
+      sizes: [50, 50],
+    };
+    expect(isLayoutNode(split)).toBe(true);
+  });
+
+  it("rejects shapes that are not a valid group or split", () => {
+    expect(isLayoutNode({})).toBe(false);
+    expect(isLayoutNode("x")).toBe(false);
+    expect(isLayoutNode(null)).toBe(false);
+    expect(isLayoutNode({ kind: "split", id: "s1", dir: "row", sizes: [50, 50] })).toBe(false); // missing children
+    expect(isLayoutNode({ kind: "group", id: "g1", active: "a" })).toBe(false); // missing tabs
+    expect(
+      isLayoutNode({
+        kind: "split",
+        id: "s1",
+        dir: "row",
+        children: [{ kind: "group", id: "g1", tabs: ["a"], active: "a" }],
+        sizes: [50, 50], // length mismatch with children
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("sanitizeLayout", () => {
+  it("passes through null and valid layouts, and rejects invalid ones", () => {
+    expect(sanitizeLayout(null)).toBeNull();
+    const group: GroupNode = { kind: "group", id: "g1", tabs: ["a"], active: "a" };
+    expect(sanitizeLayout(group)).toEqual(group);
+    expect(sanitizeLayout({})).toBeNull();
+    expect(sanitizeLayout("not a layout")).toBeNull();
   });
 });
 

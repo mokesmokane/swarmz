@@ -27,7 +27,7 @@ export function TerminalSettings({ id, onClose }: { id: string; onClose: () => v
         : null,
     command: command.trim() || null,
   };
-  const preview = startupLine({ ...draft, claude: draft.claude ? { ...draft.claude, sessionId: draft.claude.sessionId || "<new>" } : null });
+  const preview = startupLine({ ...draft, claude: draft.claude ? { ...draft.claude, sessionId: draft.claude.sessionId || "new-session" } : null });
 
   const save = async () => {
     if (host.trim()) {

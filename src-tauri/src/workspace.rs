@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -42,6 +43,8 @@ pub struct Workspace {
     pub terminals: Vec<TerminalDef>,
     #[serde(default)]
     pub layout: Value,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 pub fn default_path() -> PathBuf {
@@ -65,11 +68,16 @@ pub fn load_from(path: &Path) -> Result<Option<Workspace>, String> {
     }
 }
 
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 pub fn save_to(path: &Path, ws: &Workspace) -> Result<(), String> {
     let parent = path.parent().ok_or_else(|| "workspace path has no parent".to_string())?;
     fs::create_dir_all(parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
     let text = serde_json::to_string_pretty(ws).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
+    // A unique-per-save tmp filename (pid + a monotonically increasing counter) so that
+    // overlapping saves can never interleave writes into the same tmp file.
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.tmp-{}-{}", std::process::id(), n));
     fs::write(&tmp, text).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
     fs::rename(&tmp, path).map_err(|e| format!("could not replace {}: {e}", path.display()))
 }
@@ -103,6 +111,7 @@ mod tests {
                 extra: serde_json::Map::new(),
             }],
             layout: serde_json::json!({ "kind": "group", "id": "g1", "tabs": ["t1"], "active": "t1" }),
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -112,11 +121,18 @@ mod tests {
         assert_eq!(load_from(&path).unwrap(), None);
     }
 
+    fn no_leftover_tmp_file(path: &Path) -> bool {
+        fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().starts_with("workspace.json.tmp"))
+    }
+
     #[test]
     fn round_trips_and_leaves_no_tmp_file() {
         let path = temp_path("roundtrip");
         save_to(&path, &sample()).unwrap();
-        assert!(!path.with_extension("json.tmp").exists());
+        assert!(!no_leftover_tmp_file(&path), "no sibling workspace.json.tmp* file should remain");
         let loaded = load_from(&path).unwrap().unwrap();
         assert_eq!(loaded, sample());
         let text = fs::read_to_string(&path).unwrap();
@@ -140,6 +156,21 @@ mod tests {
         assert_eq!(ws.layout, serde_json::Value::Null);
         save_to(&path, &ws).unwrap();
         assert!(fs::read_to_string(&path).unwrap().contains("keep me"));
+    }
+
+    #[test]
+    fn unknown_top_level_field_round_trips() {
+        let path = temp_path("top-level-extra");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"version":1,"terminals":[],"layout":null,"generatedBy":"some-other-tool"}"#,
+        )
+        .unwrap();
+        let ws = load_from(&path).unwrap().unwrap();
+        assert_eq!(ws.extra.get("generatedBy").unwrap(), "some-other-tool");
+        save_to(&path, &ws).unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("some-other-tool"));
     }
 
     #[test]
