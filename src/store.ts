@@ -109,18 +109,25 @@ async function spawnDef(def: TerminalDef): Promise<{ info: TerminalInfo; note: s
 
 type SetState = (partial: Partial<WorkbenchState> | ((s: WorkbenchState) => Partial<WorkbenchState>)) => void;
 
+const UNSAFE_SESSION_NOTE = "claude session id in workspace.json was invalid; a new session was created";
+
+function regenerateIfUnsafe(def: TerminalDef): { def: TerminalDef; note: string | null } {
+  if (def.claude?.enabled && !isSafeSessionId(def.claude.sessionId)) {
+    return {
+      def: { ...def, claude: { ...def.claude, sessionId: crypto.randomUUID(), started: false } },
+      note: UNSAFE_SESSION_NOTE,
+    };
+  }
+  return { def, note: null };
+}
+
 async function openDefs(defs: TerminalDef[], savedLayout: Layout, set: SetState, allDefs: TerminalDef[] = defs) {
-  const effective = new Map<string, TerminalDef>();
+  const normalized = new Map(allDefs.map((d) => [d.id, regenerateIfUnsafe(d)]));
   for (const def of defs) {
-    const regenerated =
-      def.claude?.enabled && !isSafeSessionId(def.claude.sessionId)
-        ? { ...def, claude: { ...def.claude, sessionId: crypto.randomUUID(), started: false } }
-        : def;
-    effective.set(def.id, regenerated);
+    const { def: regenerated, note: unsafeNote } = normalized.get(def.id) ?? regenerateIfUnsafe(def);
     try {
       const { info, note } = await spawnDef(regenerated);
-      const startupNote =
-        regenerated !== def ? "claude session id in workspace.json was invalid; a new session was created" : note;
+      const startupNote = unsafeNote ?? note;
       set((s) => ({
         terminals: { ...s.terminals, [info.id]: info },
         order: [...s.order, info.id],
@@ -137,17 +144,21 @@ async function openDefs(defs: TerminalDef[], savedLayout: Layout, set: SetState,
   }
   set((s) => {
     const settings = { ...s.settings };
-    for (const def of allDefs) {
-      if (s.terminals[def.id]) {
-        const d = effective.get(def.id) ?? def;
-        settings[def.id] = { ssh: d.ssh ?? null, claude: d.claude ?? null, command: d.command ?? null };
+    let startupNotes = s.startupNotes;
+    for (const [id, { def: d, note }] of normalized) {
+      if (s.terminals[id]) {
+        settings[id] = { ssh: d.ssh ?? null, claude: d.claude ?? null, command: d.command ?? null };
+        if (note) startupNotes = { ...startupNotes, [id]: note };
       }
     }
     const layout = reconcileLayout(savedLayout, s.order);
     const startupPending: Record<string, boolean> = {};
     for (const id of s.order) startupPending[id] = startupLine(settings[id] ?? EMPTY_SETTINGS) !== null;
-    const first = allGroups(layout)[0]?.active ?? null;
-    return { settings, layout, startupPending, ...focusFor(layout, first) };
+    const keep =
+      s.focusedTerminalId && findGroupOf(layout, s.focusedTerminalId)
+        ? s.focusedTerminalId
+        : (allGroups(layout)[0]?.active ?? null);
+    return { settings, startupNotes, layout, startupPending, ...focusFor(layout, keep) };
   });
 }
 
@@ -343,6 +354,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     if (!line) return;
     await ipc.writeTerminal(id, line + "\r");
     set((st) => {
+      if (!st.terminals[id]) return {};
       const cur = st.settings[id] ?? EMPTY_SETTINGS;
       const claude = startupUsesClaude(cur) && cur.claude ? { ...cur.claude, started: true } : cur.claude;
       return {

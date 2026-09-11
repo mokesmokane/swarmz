@@ -379,6 +379,30 @@ describe("settings and startup", () => {
     expect(useStore.getState().startupPending.a).toBe(false);
   });
 
+  it("runStartup does not resurrect settings/pending if the terminal was closed mid-await", async () => {
+    useStore.setState({
+      terminals: { a: { id: "a", name: "a", cwd: "/a", exited: null, error: null } },
+      order: ["a"],
+      layout: { kind: "group", id: "g", tabs: ["a"], active: "a" },
+      settings: { a: { ssh: null, claude: { enabled: true, sessionId: "sid", skipPermissions: false, started: false }, command: null } },
+      startupPending: { a: true },
+    });
+    vi.mocked(ipc.writeTerminal).mockImplementationOnce(async () => {
+      useStore.setState((s) => {
+        const terminals = { ...s.terminals };
+        delete terminals.a;
+        const settings = { ...s.settings };
+        delete settings.a;
+        const startupPending = { ...s.startupPending };
+        delete startupPending.a;
+        return { terminals, order: s.order.filter((id) => id !== "a"), settings, startupPending };
+      });
+    });
+    await useStore.getState().runStartup("a");
+    expect(useStore.getState().settings.a).toBeUndefined();
+    expect(useStore.getState().startupPending.a).toBeUndefined();
+  });
+
   it("restartTerminal re-marks pending when a startup line exists", async () => {
     const id = await useStore.getState().createTerminal("/tmp/a");
     useStore.getState().updateSettings(id, { ssh: { host: "h" } });
@@ -410,5 +434,44 @@ describe("reloadWorkspace", () => {
     expect(s.order).toEqual(["n1"]);
     expect(s.terminals[a]).toBeUndefined();
     expect(ipc.closeTerminal).toHaveBeenCalledWith(a);
+  });
+
+  it("regenerates an unsafe claude session id for an already-open terminal", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [
+        {
+          id: a,
+          name: "a",
+          cwd: "/tmp/a",
+          ssh: null,
+          claude: { enabled: true, sessionId: "bad'id", skipPermissions: false, started: true },
+          command: null,
+        },
+      ],
+      layout: null,
+    });
+    await useStore.getState().reloadWorkspace();
+    const s = useStore.getState();
+    expect(s.settings[a].claude?.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(s.settings[a].claude?.started).toBe(false);
+    expect(s.startupNotes[a]).toContain("invalid");
+  });
+
+  it("keeps the current focus on a no-op reload", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    useStore.getState().focusTerminal(b);
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [
+        { id: a, name: "a", cwd: "/tmp/a", ssh: null, claude: null, command: null },
+        { id: b, name: "b", cwd: "/tmp/b", ssh: null, claude: null, command: null },
+      ],
+      layout: null,
+    });
+    await useStore.getState().reloadWorkspace();
+    expect(useStore.getState().focusedTerminalId).toBe(b);
   });
 });
