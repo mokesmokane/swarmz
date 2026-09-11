@@ -166,7 +166,7 @@ leading `-`; `ssh_dir` creates the directory with 0700 (unix).
 Frontend: `startupSteps` for every table row; `sshLine` options; `startupLine`
 display join; `needsRemoteFolder`; store: `runStartup` for ssh+claude types
 step 1, polls (fake timers), types step 2 on connect and marks started;
-timeout path; `chooseRemoteDir` sets cwd, updates `sshDefaults`, resets the
+timeout path; `chooseRemoteDir` sets cwd, updates `sshHistory`, resets the
 session on change, types the remote step when connected; `updateSettings`
 session reset; `sshHistory` round-trips through `toWorkspace`, is capped at
 20 and ordered by `lastUsed`; `forgetSshHost` removes an entry.
