@@ -192,13 +192,17 @@ pub fn save_workspace(workspace: Workspace) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn ssh_check(host: String) -> Result<bool, String> {
-    crate::remote::check(&host)
+pub async fn ssh_check(host: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::remote::check(&host))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn ssh_list_dir(host: String, path: Option<String>) -> Result<crate::remote::RemoteListing, String> {
-    crate::remote::list_dir(&host, path.as_deref())
+pub async fn ssh_list_dir(host: String, path: Option<String>) -> Result<crate::remote::RemoteListing, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::remote::list_dir(&host, path.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
