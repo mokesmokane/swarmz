@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
 import { filterSshHosts, validateHost } from "../lib/workspace";
+import { RemoteDirPicker } from "./RemoteDirPicker";
 
 const field = "w-full rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-xs text-neutral-100 outline-none focus:border-blue-500";
 const label = "mt-2 block text-[10px] uppercase tracking-wide text-neutral-500";
@@ -22,7 +23,20 @@ export function NewSshTerminal({ onClose }: { onClose: () => void }) {
   const [skip, setSkip] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [stage, setStage] = useState<"form" | "connecting" | "pick">("form");
+  const [createdId, setCreatedId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const chooseRemoteDir = useStore((s) => s.chooseRemoteDir);
+  const runStartup = useStore((s) => s.runStartup);
+  const connected = useStore((s) => (createdId ? s.sshConnected[createdId] === true : false));
+  const connecting = useStore((s) => (createdId ? s.sshConnecting[createdId] === true : false));
+  const rearmed = useStore((s) => (createdId ? s.startupPending[createdId] === true : false));
+  const connectNote = useStore((s) => (createdId ? s.startupNotes[createdId] : undefined));
+  const remembered = history[host.trim()]?.cwd ?? null;
+
+  useEffect(() => {
+    if (stage === "connecting" && connected) setStage("pick");
+  }, [stage, connected]);
 
   const matches = filterSshHosts(history, host);
   const showList = open && matches.length > 0;
@@ -54,16 +68,69 @@ export function NewSshTerminal({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      // cwd omitted: the store keeps a remembered folder for this host, or the
-      // tile asks for one after connecting.
-      await createSshTerminal({ host: host.trim(), claude: claudeOn ? { skipPermissions: skip } : null });
-      onClose();
+      // With Claude on, the folder is chosen in this form once connected, so the
+      // store must not start Claude in a remembered folder on its own.
+      const id = await createSshTerminal({
+        host: host.trim(),
+        cwd: claudeOn ? null : undefined,
+        claude: claudeOn ? { skipPermissions: skip } : null,
+      });
+      if (!claudeOn) {
+        onClose();
+        return;
+      }
+      setCreatedId(id);
+      setStage("connecting");
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
       setBusy(false);
     }
   };
+
+  if (stage === "connecting" && createdId) {
+    return (
+      <div className="border-b border-neutral-800 p-2 text-xs text-neutral-300">
+        {rearmed ? (
+          <>
+            <div className="text-amber-300">{connectNote ?? "Connection not detected."}</div>
+            <div className="mt-2 flex justify-end gap-2">
+              <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={onClose}>Close</button>
+              <button className="rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-500" onClick={() => void runStartup(createdId)}>Retry</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div>Connecting to {host.trim()}… {connecting ? "authenticate in the terminal if prompted." : ""}</div>
+            <div className="mt-1 text-[10px] text-neutral-500">The folder browser opens here once connected.</div>
+            <div className="mt-2 flex justify-end">
+              <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={onClose}>Close</button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  if (stage === "pick" && createdId) {
+    return (
+      <div className="border-b border-neutral-800 p-2 text-xs">
+        <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">Choose the project folder for Claude</div>
+        <div className="relative h-72">
+          <RemoteDirPicker
+            host={host.trim()}
+            initialPath={remembered}
+            onPick={(p) => {
+              chooseRemoteDir(createdId, p)
+                .catch(() => {})
+                .finally(() => onClose());
+            }}
+            onClose={onClose}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div ref={rootRef} className="border-b border-neutral-800 p-2 text-xs">
@@ -143,7 +210,7 @@ export function NewSshTerminal({ onClose }: { onClose: () => void }) {
           </ul>
         )}
       </div>
-      <div className="mt-1 text-[10px] text-neutral-500">Pick the project folder after connecting.</div>
+      <div className="mt-1 text-[10px] text-neutral-500">With Run Claude on, you choose the project folder here once connected.</div>
       <label className="mt-2 flex items-center gap-2 text-neutral-300">
         <input type="checkbox" checked={claudeOn} onChange={(e) => setClaudeOn(e.target.checked)} />
         Run Claude
