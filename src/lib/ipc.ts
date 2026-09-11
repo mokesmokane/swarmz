@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { Workspace } from "./workspace";
 
 export interface TerminalInfo {
   id: string;
@@ -31,4 +32,6 @@ export const ipc = {
     listen<string>(`pty:data:${id}`, (e) => cb(base64ToBytes(e.payload))),
   onExit: (id: string, cb: (code: number | null) => void): Promise<UnlistenFn> =>
     listen<{ code: number | null }>(`pty:exit:${id}`, (e) => cb(e.payload.code)),
+  loadWorkspace: () => invoke<Workspace | null>("load_workspace"),
+  saveWorkspace: (workspace: Workspace) => invoke<void>("save_workspace", { workspace }),
 };
