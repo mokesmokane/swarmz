@@ -383,6 +383,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   async reloadWorkspace() {
+    const wasReady = useStore.getState().persistenceReady;
     if (saveTimer) {
       clearTimeout(saveTimer);
       saveTimer = null;
@@ -404,7 +405,11 @@ export const useStore = create<WorkbenchState>((set) => ({
     const toClose = useStore.getState().order.filter((id) => !wanted.has(id));
     if (toClose.length > 0) {
       const ok = await confirm(`Close ${toClose.length} terminal(s) that are not in workspace.json?`, { title: "Reload workspace" });
-      if (!ok) return;
+      if (!ok) {
+        // Nothing changed — restore whatever readiness this reload started with.
+        set({ persistenceReady: wasReady });
+        return;
+      }
       for (const id of toClose) await useStore.getState().closeTerminal(id);
     }
     const open = new Set(useStore.getState().order);

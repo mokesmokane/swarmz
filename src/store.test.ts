@@ -32,6 +32,7 @@ vi.mock("./lib/ipc", () => {
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn(async () => "/home/me") }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true) }));
 
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { ipc } from "./lib/ipc";
 import { __resetLoadGuard, beforeSpawn, SAVE_DEBOUNCE_MS, useStore } from "./store";
 import { findGroup, findGroupOf, type GroupNode, type SplitNode } from "./lib/layout";
@@ -574,5 +575,17 @@ describe("reloadWorkspace", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("resumes persistence when the user declines to close stale terminals", async () => {
+    useStore.setState({ persistenceReady: true });
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    vi.mocked(confirm).mockResolvedValueOnce(false);
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({ version: 1, terminals: [], layout: null });
+    await useStore.getState().reloadWorkspace();
+    const s = useStore.getState();
+    expect(s.terminals[a]).toBeDefined();
+    expect(s.order).toEqual([a]);
+    expect(s.persistenceReady).toBe(true);
   });
 });
