@@ -54,12 +54,14 @@ describe("startupLine", () => {
 
   it("ssh and claude with a remote cwd", () => {
     const line = startupLine({ ssh: { host: "me@host", cwd: "/proj" }, claude, command: null });
-    expect(line).toBe(`ssh -t me@host ${shellQuote(`cd ${shellQuote("/proj")} && claude --session-id ${claude.sessionId}`)}`);
+    const inner = `cd ${shellQuote("/proj")} && claude --session-id ${claude.sessionId}`;
+    expect(line).toBe(`ssh -t me@host ${shellQuote(`exec $SHELL -lic ${shellQuote(inner)}`)}`);
   });
 
   it("ssh and claude without a remote cwd", () => {
     const line = startupLine({ ssh: { host: "me@host" }, claude, command: null });
-    expect(line).toBe(`ssh -t me@host ${shellQuote(`claude --session-id ${claude.sessionId}`)}`);
+    const inner = `claude --session-id ${claude.sessionId}`;
+    expect(line).toBe(`ssh -t me@host ${shellQuote(`exec $SHELL -lic ${shellQuote(inner)}`)}`);
   });
 
   it("free-form command wins and is trimmed", () => {

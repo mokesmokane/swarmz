@@ -61,7 +61,7 @@ A pure function `startupLine(def) -> string | null`:
 | no  | no     | `null` |
 | yes | no     | `ssh -t <host>` |
 | no  | yes    | `claude [--dangerously-skip-permissions] (--session-id X \| --resume X)` |
-| yes | yes    | `ssh -t <host> '<cd> claude …'` where `<cd>` is `cd <ssh.cwd> && ` when set |
+| yes | yes    | `ssh -t <host> 'exec $SHELL -lic '\''<cd> claude …'\'''` where `<cd>` is `cd <ssh.cwd> && ` when set; the remote login shell is used so PATH from the user's profile applies |
 
 - `--session-id X` when `started` is false, `--resume X` when true.
 - `--dangerously-skip-permissions` is included when `skipPermissions` is true.

@@ -614,7 +614,8 @@ describe("createSshTerminal", () => {
     expect(c.started).toBe(true);
     const writeCalls = vi.mocked(ipc.writeTerminal).mock.calls;
     const written = writeCalls[writeCalls.length - 1][1];
-    expect(written).toBe(`ssh -t me@box 'claude --dangerously-skip-permissions --session-id ${c.sessionId}'\r`);
+    const inner = `claude --dangerously-skip-permissions --session-id ${c.sessionId}`;
+    expect(written).toBe(`ssh -t me@box 'exec $SHELL -lic '\\''${inner}'\\'''\r`);
   });
 
   it("honours a split placement", async () => {

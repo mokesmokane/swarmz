@@ -72,7 +72,11 @@ export function startupLine(s: TerminalSettings): string | null {
   if (host) {
     if (!claude) return `ssh -t ${host}`;
     const cd = s.ssh?.cwd ? `cd ${shellQuote(s.ssh.cwd)} && ` : "";
-    return `ssh -t ${host} ${shellQuote(cd + claude)}`;
+    // A command given to ssh runs in a non-interactive shell that skips the
+    // user's profile, so tools like claude are often not on PATH. Run it
+    // through the remote login shell instead ($SHELL expands remotely).
+    const remote = `exec $SHELL -lic ${shellQuote(cd + claude)}`;
+    return `ssh -t ${host} ${shellQuote(remote)}`;
   }
   return claude;
 }
