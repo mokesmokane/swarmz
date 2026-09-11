@@ -425,12 +425,14 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   async restartTerminal(id) {
+    stopPolling(id);
     const dims = beforeSpawn.size(id) ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
     const info = await ipc.restartTerminal(id, dims.cols, dims.rows);
     set((s) => ({
       terminals: { ...s.terminals, [id]: info },
       startupPending: { ...s.startupPending, [id]: startupLine(s.settings[id] ?? EMPTY_SETTINGS) !== null },
       sshConnected: omit(s.sshConnected, id),
+      sshConnecting: omit(s.sshConnecting, id),
     }));
     // The fit addon only fires onResize when dimensions change, so if the
     // new PTY already matches dims (e.g. same terminal, no relayout since
@@ -579,6 +581,7 @@ export const useStore = create<WorkbenchState>((set) => ({
 
   async runStartup(id) {
     const s = useStore.getState();
+    if (s.sshConnecting[id]) return;
     const settings = s.settings[id] ?? EMPTY_SETTINGS;
     const steps = startupSteps(settings);
     if (steps.length === 0) return;

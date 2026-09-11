@@ -773,4 +773,36 @@ describe("ssh two-step startup", () => {
     await useStore.getState().loadWorkspace();
     expect(useStore.getState().sshHistory["x@y"].cwd).toBe("/q");
   });
+
+  it("restart stops an in-flight connection poll", async () => {
+    vi.useFakeTimers();
+    try {
+      seed("/proj");
+      await useStore.getState().runStartup("a");
+      await useStore.getState().restartTerminal("a");
+      expect(useStore.getState().sshConnecting.a).toBeUndefined();
+
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      const before = vi.mocked(ipc.writeTerminal).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 2 + SSH_SETTLE_MS + 10);
+      expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", `${sshLine("me@box")}\r`);
+      expect(vi.mocked(ipc.writeTerminal).mock.calls.length).toBe(before);
+      expect(useStore.getState().sshConnected.a).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a second Run while connecting does not retype", async () => {
+    vi.useFakeTimers();
+    try {
+      seed("/proj");
+      await useStore.getState().runStartup("a");
+      const before = vi.mocked(ipc.writeTerminal).mock.calls.length;
+      await useStore.getState().runStartup("a");
+      expect(vi.mocked(ipc.writeTerminal).mock.calls.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
