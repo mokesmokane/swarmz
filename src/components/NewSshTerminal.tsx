@@ -15,7 +15,8 @@ export function NewSshTerminal({ onClose }: { onClose: () => void }) {
   const history = useStore((s) => s.sshHistory);
   const forget = useStore((s) => s.forgetSshHost);
   const [host, setHost] = useState("");
-  const [open, setOpen] = useState(false);
+  // Recents are shown immediately so a previous connection is one click away.
+  const [open, setOpen] = useState(true);
   const [highlight, setHighlight] = useState(0);
   const [claudeOn, setClaudeOn] = useState(false);
   const [skip, setSkip] = useState(false);
