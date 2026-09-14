@@ -5,7 +5,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 pub const PULL_COMMAND: &str = "cat ~/.swarmz/workspace.json";
 pub const PUSH_COMMAND: &str =
-    "mkdir -p ~/.swarmz && cat > ~/.swarmz/workspace.json.sync && mv -f ~/.swarmz/workspace.json.sync ~/.swarmz/workspace.json";
+    "mkdir -p ~/.swarmz && cat > ~/.swarmz/workspace.json.sync.$$ && mv -f ~/.swarmz/workspace.json.sync.$$ ~/.swarmz/workspace.json";
 
 fn ssh_command(host: &str) -> Result<Command, String> {
     crate::remote::ensure_ssh_dir()?;
@@ -76,7 +76,7 @@ mod tests {
         assert_eq!(PULL_COMMAND, "cat ~/.swarmz/workspace.json");
         assert_eq!(
             PUSH_COMMAND,
-            "mkdir -p ~/.swarmz && cat > ~/.swarmz/workspace.json.sync && mv -f ~/.swarmz/workspace.json.sync ~/.swarmz/workspace.json"
+            "mkdir -p ~/.swarmz && cat > ~/.swarmz/workspace.json.sync.$$ && mv -f ~/.swarmz/workspace.json.sync.$$ ~/.swarmz/workspace.json"
         );
     }
 

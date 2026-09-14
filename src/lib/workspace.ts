@@ -254,7 +254,12 @@ export function isNewer(a: SyncMeta | undefined | null, b: SyncMeta | undefined 
   if (!a) return false;
   if (!b) return true;
   if (a.revision !== b.revision) return a.revision > b.revision;
-  return a.updatedAt > b.updatedAt;
+  if (a.updatedAt !== b.updatedAt) return a.updatedAt > b.updatedAt;
+  // Exact tie on revision AND timestamp: break it on the machine name so every machine in the
+  // tailnet picks the SAME winner (without this, two copies are each "not newer" than the other
+  // and the two machines can settle on different files and never converge). Equal metas — the
+  // common case, including `isNewer(a, a)` — still compare as not newer.
+  return a.updatedBy > b.updatedBy;
 }
 
 export function pickNewest(cands: Workspace[]): Workspace | null {
@@ -267,22 +272,56 @@ export function bumpSync(prev: SyncMeta | undefined | null, self: string, now: s
   return { revision: (prev?.revision ?? 0) + 1, updatedAt: now, updatedBy: self };
 }
 
+export function unknownOriginNote(origin: string): string {
+  return `origin machine ${origin} is not on your tailnet; opened locally`;
+}
+
+/**
+ * How a def should open here. `knownMachines` is the set of machine names this app can actually
+ * reach (tailnet peers plus machines recorded in workspace.json): a foreign local is only turned
+ * into a remote when its `origin` is one of them, because `machineHost` would otherwise invent a
+ * `user@name` address for a machine that does not exist and every startup would fail. An unknown
+ * origin opens locally in `def.cwd` with a `note` explaining why.
+ */
 export function openingFor(
   def: TerminalDef,
   self: string | null,
   machines: Machines,
   defaultUser: string,
-): { cwd: string | null; settings: TerminalSettings } {
+  knownMachines: Set<string>,
+): { cwd: string | null; settings: TerminalSettings; note: string | null } {
   const origin = def.origin ?? null;
   const base: TerminalSettings = { ssh: def.ssh ?? null, claude: def.claude ?? null, command: def.command ?? null, origin };
-  if (def.ssh) return { cwd: null, settings: base };
+  if (def.ssh) return { cwd: null, settings: base, note: null };
   if (self && origin && origin !== self) {
+    if (!knownMachines.has(origin)) return { cwd: def.cwd, settings: base, note: unknownOriginNote(origin) };
     return {
       cwd: null,
       settings: { ...base, ssh: { host: machineHost(origin, machines[origin], defaultUser), cwd: def.cwd, machine: origin }, foreign: { cwd: def.cwd } },
+      note: null,
     };
   }
-  return { cwd: def.cwd, settings: base };
+  return { cwd: def.cwd, settings: base, note: null };
+}
+
+/**
+ * The first time this machine syncs (it has no `sync` of its own) its terminals are not "an older
+ * copy of the peer's workspace" — they were never shared at all, so adopting the peer's file
+ * verbatim would silently close them. Merge instead: the peer's workspace plus any local terminal
+ * the peer does not have, keeping the peer's sync metadata (the union is saved locally and, being
+ * different from what the peers hold, is bumped and pushed back by the usual save path).
+ */
+export function mergeForFirstSync(local: Workspace, peer: Workspace): Workspace {
+  const fromPeer = new Set(peer.terminals.map((t) => t.id));
+  const terminals = [...peer.terminals, ...local.terminals.filter((t) => !fromPeer.has(t.id))];
+  const machines = { ...(local.machines ?? {}), ...(peer.machines ?? {}) };
+  return {
+    version: 1,
+    terminals,
+    layout: reconcileLayout(peer.layout, terminals.map((t) => t.id)),
+    ...(Object.keys(machines).length ? { machines } : {}),
+    ...(peer.sync ? { sync: peer.sync } : {}),
+  };
 }
 
 export function toWorkspace(input: {

@@ -1024,6 +1024,14 @@ describe("machines and tailscale", () => {
 describe("shared workspace", () => {
   const online = (name: string) => ({ name, hostName: name, ip: null, os: "macOS", online: true });
   const ts = (peers: string[]) => ({ running: true, message: null, user: "mokes", self: online("here"), peers: peers.map(online) });
+  // A peer's file always carries the layout `toWorkspace` wrote, i.e. one that already places
+  // every def; using `layout: null` here would make the adopted state differ from the file the
+  // moment `reconcileLayout` rebuilt it, and the post-adoption diff would (correctly) save it.
+  const group = (ids: string[]) => ({ kind: "group" as const, id: "g-adopted", tabs: ids, active: ids[0] });
+  // The per-test `setState` in `beforeEach` replaces `terminals`/`order`/… and so arms the save
+  // debounce through the store subscription. Tests that assert exactly which saves happen drop
+  // that pre-armed timer first, so the only saves they see are the ones they caused.
+  const noPendingSave = () => __resetSyncState();
 
   it("refreshTailscale records self and enables sync", async () => {
     vi.mocked(ipc.tailscaleStatus).mockResolvedValueOnce(ts(["desk"]));
@@ -1076,7 +1084,7 @@ describe("shared workspace", () => {
     useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), syncMeta: { revision: 2, updatedAt: "t", updatedBy: "here" }, sync: { ...useStore.getState().sync, enabled: true } });
     const a = await useStore.getState().createTerminal("/tmp/a");
     const newer: Workspace = {
-      version: 1, layout: null, sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
+      version: 1, layout: group(["n1"]), sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
       terminals: [{ id: "n1", name: "N", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" }],
       machines: { desk: { alias: "Desk", lastUsed: "t" } },
     };
@@ -1091,6 +1099,7 @@ describe("shared workspace", () => {
     expect(s.syncMeta?.revision).toBe(9);
     expect(s.machines.desk.alias).toBe("Desk");
     expect(s.sync.peersOk).toBe(1);
+    expect(s.persistError).toBe("1 terminal(s) closed by a workspace update from desk");
 
     vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify({ ...newer, sync: { revision: 4, updatedAt: "t", updatedBy: "desk" } }));
     await useStore.getState().pullWorkspace();
@@ -1123,7 +1132,7 @@ describe("shared workspace", () => {
     // Arms the debounce (via the store subscription) without letting it fire.
     await useStore.getState().createTerminal("/tmp/a");
     const newer: Workspace = {
-      version: 1, layout: null, sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
+      version: 1, layout: group(["n1"]), sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
       terminals: [{ id: "n1", name: "N", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" }],
     };
     vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(newer));
@@ -1141,7 +1150,7 @@ describe("shared workspace", () => {
     try {
       useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), sync: { ...useStore.getState().sync, enabled: true } });
       const newer: Workspace = {
-        version: 1, layout: null, sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
+        version: 1, layout: group(["n1"]), sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
         terminals: [{ id: "n1", name: "N", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" }],
       };
       vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(newer));
@@ -1167,5 +1176,231 @@ describe("shared workspace", () => {
     await useStore.getState().loadWorkspace();
     const s = useStore.getState();
     expect(s.settings.f.ssh?.host).toBe("root@desk");
+  });
+
+  it("resolves this machine's identity before opening defs", async () => {
+    // selfMachine is null at mount: without a Tailscale refresh first, a def from another Mac
+    // would open as a local shell in that Mac's path, and a legacy def would never be stamped.
+    useStore.setState({ persistenceReady: false, selfMachine: null, machines: { desk: { user: "root", lastUsed: "t" } } });
+    vi.mocked(ipc.tailscaleStatus).mockResolvedValueOnce(ts(["desk"]));
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1, layout: null,
+      terminals: [
+        { id: "f", name: "F", cwd: "/proj", ssh: null, claude: null, command: null, origin: "desk" },
+        { id: "l", name: "L", cwd: "/tmp/l", ssh: null, claude: null, command: null },
+      ],
+    });
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(s.selfMachine).toBe("here");
+    expect(s.settings.f.ssh?.machine).toBe("desk");
+    expect(vi.mocked(ipc.createTerminal).mock.calls.find((c) => c[0] === "f")?.[1]).toBe("/home/me");
+    expect(s.settings.l.origin).toBe("here");
+  });
+
+  it("checkExternalChange rewrites our copy when the file on disk is older", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({
+        selfMachine: "here",
+        syncMeta: { revision: 5, updatedAt: "t5", updatedBy: "here" },
+        sync: { ...useStore.getState().sync, enabled: true },
+      });
+      noPendingSave();
+      vi.mocked(ipc.workspaceStat).mockResolvedValue(1000);
+      await useStore.getState().checkExternalChange();
+      vi.mocked(ipc.workspaceStat).mockResolvedValue(2000);
+      vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+        version: 1, layout: null, terminals: [], sync: { revision: 1, updatedAt: "t1", updatedBy: "desk" },
+      });
+      await useStore.getState().checkExternalChange();
+      expect(useStore.getState().syncMeta?.revision).toBe(5);
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+      const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
+      expect((calls[calls.length - 1][0] as Workspace).sync?.revision).toBe(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a pull and an external change racing each other never open a terminal twice", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({
+        selfMachine: "here", tailscale: ts(["desk"]),
+        syncMeta: { revision: 1, updatedAt: "t1", updatedBy: "here" },
+        sync: { ...useStore.getState().sync, enabled: true },
+      });
+      noPendingSave();
+      const def = (id: string) => ({ id, name: id, cwd: `/tmp/${id}`, ssh: null, claude: null, command: null, origin: "here" });
+      const fromPeer: Workspace = {
+        version: 1, layout: group(["n1", "n2"]), sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
+        terminals: [def("n1"), def("n2")],
+      };
+      const onDisk: Workspace = {
+        version: 1, layout: group(["n1", "n2", "n3"]), sync: { revision: 10, updatedAt: "t10", updatedBy: "desk" },
+        terminals: [def("n1"), def("n2"), def("n3")],
+      };
+      // Spawning takes long enough that a second adoption starting meanwhile would look at an
+      // app with none of the terminals open yet and open them all over again.
+      vi.mocked(ipc.createTerminal).mockImplementation(
+        (id: string, cwd: string, _cols?: number, _rows?: number, name?: string) =>
+          new Promise((r) => setTimeout(() => r({ id, name: name ?? id, cwd, exited: null, error: null }), 10)),
+      );
+      vi.mocked(ipc.workspaceStat).mockResolvedValue(1000);
+      await useStore.getState().checkExternalChange();
+      vi.mocked(ipc.workspaceStat).mockResolvedValue(2000);
+      vi.mocked(ipc.loadWorkspace).mockImplementation(() => new Promise((r) => setTimeout(() => r(onDisk), 10)));
+      vi.mocked(ipc.workspacePull).mockImplementationOnce(() => new Promise((r) => setTimeout(() => r(JSON.stringify(fromPeer)), 5)));
+      // A peer's copy and a newer file on disk both arrive while the other is still being read.
+      const pull = useStore.getState().pullWorkspace();
+      const check = useStore.getState().checkExternalChange();
+      await vi.advanceTimersByTimeAsync(200);
+      await Promise.all([pull, check]);
+      const s = useStore.getState();
+      expect(new Set(s.order).size).toBe(s.order.length);
+      for (const id of ["n1", "n2"]) {
+        expect(vi.mocked(ipc.createTerminal).mock.calls.filter((c) => c[0] === id).length).toBe(1);
+      }
+      expect(s.order).toEqual(["n1", "n2"]);
+      expect(s.sync.adopting).toBe(false);
+    } finally {
+      vi.mocked(ipc.loadWorkspace).mockReset().mockResolvedValue(null);
+      vi.mocked(ipc.createTerminal).mockReset();
+      vi.useRealTimers();
+    }
+  });
+
+  it("saves an edit made while an adoption was running", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({
+        selfMachine: "here", tailscale: ts(["desk"]),
+        syncMeta: { revision: 1, updatedAt: "t1", updatedBy: "here" },
+        sync: { ...useStore.getState().sync, enabled: true },
+        terminals: { n1: { id: "n1", name: "N", cwd: "/tmp/n", exited: null, error: null } },
+        order: ["n1"],
+        settings: { n1: { ...EMPTY_SETTINGS, origin: "here" } },
+        layout: group(["n1"]),
+      });
+      const newer: Workspace = {
+        version: 1, layout: group(["n1"]), sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
+        terminals: [{ id: "n1", name: "N", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" }],
+      };
+      noPendingSave();
+      vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(newer));
+      let release: () => void = () => {};
+      vi.mocked(ipc.saveWorkspace).mockImplementationOnce(() => new Promise<void>((r) => (release = r)));
+      const pull = useStore.getState().pullWorkspace();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(useStore.getState().sync.adopting).toBe(true);
+      await useStore.getState().renameTerminal("n1", "Renamed");
+      release();
+      await pull;
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+      const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
+      const saved = calls[calls.length - 1][0] as Workspace;
+      expect(saved.terminals[0].name).toBe("Renamed");
+      expect(saved.sync?.revision).toBe(10);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("pushes only to online macOS peers", async () => {
+    vi.useFakeTimers();
+    try {
+      const linux = { name: "box", hostName: "box", ip: null, os: "linux", online: true };
+      const offline = { name: "away", hostName: "away", ip: null, os: "macOS", online: false };
+      useStore.setState({
+        selfMachine: "here",
+        tailscale: { running: true, message: null, user: "mokes", self: online("here"), peers: [online("desk"), linux, offline] },
+        sync: { ...useStore.getState().sync, enabled: true },
+      });
+      await useStore.getState().createTerminal("/tmp/a");
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+      expect(vi.mocked(ipc.workspacePush).mock.calls.map((c) => c[0])).toEqual(["mokes@desk"]);
+      expect(useStore.getState().sync.peersTotal).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens a local from an unknown machine here, with a note", async () => {
+    useStore.setState({ persistenceReady: false, selfMachine: "here", tailscale: ts(["desk"]) });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1, layout: null,
+      terminals: [{ id: "g", name: "G", cwd: "/proj", ssh: null, claude: null, command: null, origin: "gone" }],
+    });
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(vi.mocked(ipc.createTerminal).mock.calls.find((c) => c[0] === "g")?.[1]).toBe("/proj");
+    expect(s.settings.g.ssh).toBeNull();
+    expect(s.settings.g.foreign).toBeUndefined();
+    expect(s.startupNotes.g).toBe("origin machine gone is not on your tailnet; opened locally");
+  });
+
+  it("skips a malformed peer copy and names the peer", async () => {
+    useStore.setState({
+      selfMachine: "here", tailscale: ts(["desk"]),
+      syncMeta: { revision: 2, updatedAt: "t2", updatedBy: "here" },
+      sync: { ...useStore.getState().sync, enabled: true },
+    });
+    noPendingSave();
+    vi.mocked(ipc.workspacePull).mockResolvedValueOnce('{"sync":{}}');
+    await useStore.getState().pullWorkspace();
+    const s = useStore.getState();
+    expect(ipc.saveWorkspace).not.toHaveBeenCalled();
+    expect(s.syncMeta?.revision).toBe(2);
+    expect(s.sync.peersOk).toBe(1);
+    expect(s.sync.error).toContain("desk");
+    expect(s.sync.error).toContain("malformed");
+  });
+
+  it("reports an adoption that fails and stops adopting", async () => {
+    useStore.setState({
+      selfMachine: "here", tailscale: ts(["desk"]),
+      syncMeta: { revision: 1, updatedAt: "t1", updatedBy: "here" },
+      sync: { ...useStore.getState().sync, enabled: true },
+    });
+    const newer: Workspace = {
+      version: 1, layout: group(["n1"]), sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
+      terminals: [{ id: "n1", name: "N", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" }],
+    };
+    noPendingSave();
+    vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(newer));
+    vi.mocked(ipc.saveWorkspace).mockRejectedValueOnce("disk full");
+    await useStore.getState().pullWorkspace();
+    const s = useStore.getState();
+    expect(s.sync.adopting).toBe(false);
+    expect(s.sync.error).toContain("disk full");
+    expect(s.syncMeta?.revision).toBe(1);
+    expect(s.order).toEqual([]);
+  });
+
+  it("a machine that has never synced keeps its own terminals on the first pull", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), syncMeta: null, sync: { ...useStore.getState().sync, enabled: true } });
+      const mine = await useStore.getState().createTerminal("/tmp/mine");
+      const peer: Workspace = {
+        version: 1, layout: group(["n1"]), sync: { revision: 4, updatedAt: "t4", updatedBy: "desk" },
+        terminals: [{ id: "n1", name: "N", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "desk" }],
+      };
+      vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(peer));
+      await useStore.getState().pullWorkspace();
+      const s = useStore.getState();
+      expect(s.order.sort()).toEqual([mine, "n1"].sort());
+      expect(s.syncMeta?.revision).toBe(4);
+      // The union is bumped and pushed back, so the peer converges on it too.
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+      const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
+      const saved = calls[calls.length - 1][0] as Workspace;
+      expect(saved.terminals.map((t) => t.id).sort()).toEqual([mine, "n1"].sort());
+      expect(saved.sync?.revision).toBe(5);
+      expect(vi.mocked(ipc.workspacePush).mock.calls.some((c) => (JSON.parse(c[1]) as Workspace).sync?.revision === 5)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

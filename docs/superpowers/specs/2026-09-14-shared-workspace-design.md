@@ -53,7 +53,13 @@ On load or when adopting a newer file, for each def with self `S`:
 |-----|----------|
 | `ssh` set | remote terminal, unchanged |
 | no `ssh`, `origin` absent or `= S` | local shell in `cwd`, as today |
-| no `ssh`, `origin = O ≠ S` | **foreign local**: local shell in `$HOME`, in-memory `ssh = { host: machineHost(O, machines[O], user), cwd: def.cwd, machine: O }`, settings flagged `foreign: { cwd: def.cwd }`; startup bar as for any remote terminal |
+| no `ssh`, `origin = O ≠ S`, `O` known | **foreign local**: local shell in `$HOME`, in-memory `ssh = { host: machineHost(O, machines[O], user), cwd: def.cwd, machine: O }`, settings flagged `foreign: { cwd: def.cwd }`; startup bar as for any remote terminal |
+| no `ssh`, `origin = O ≠ S`, `O` unknown | local shell in `cwd`, with the note `origin machine O is not on your tailnet; opened locally` |
+
+`O` is *known* when it is a tailnet peer or a machine recorded in `machines`; otherwise
+`machineHost` would invent an address for a machine that does not exist and every
+startup would fail. `self` is resolved (a Tailscale refresh) *before* any def is
+opened, so a foreign local is never mistaken for one of ours.
 
 A foreign local is written back exactly as it was read (`ssh: null`,
 `cwd: def.cwd`, `origin: O`), so the origin machine still opens it as a plain
@@ -72,16 +78,43 @@ All copies are full copies; the newest `revision` wins.
   highest `revision` (then newest `updatedAt`) that is newer than the local
   one is **adopted**: saved locally verbatim, then applied with the reload
   semantics (open missing defs, close defs absent from the file without a
-  confirm, replace layout/machines). Adoption is skipped while a local save is
-  pending or a reload is in progress.
+  confirm, replace layout/machines). A pending local save is flushed (saved and
+  bumped) before any comparison; adoption is skipped only while another
+  adoption or reload is in progress. Adoptions and reloads are serialised, so
+  two of them can never open the same def twice.
+- **Peers**: only *online macOS* peers are pulled from and pushed to — anything
+  else on the tailnet does not run swarmz, and every round would report a
+  timeout against it. Pushes run in parallel.
+- **First sync**: a machine that has never synced (no local `sync`) has
+  terminals that are not an older copy of the peer's workspace — they were
+  never shared. Its first pull adopts the *union*: the peer's workspace plus
+  any local terminal the peer does not have, with the peer's `sync`. The union
+  is then saved (bumped, pushed), so the peers converge on it too.
+- **Changes during an adoption**: edits made while adopting are not saved (the
+  file already is the adopted state). When adoption finishes, the reconciled
+  state is compared with the file that was adopted and saved if it differs, so
+  a rename or a new tile made meanwhile is not lost.
+- **Closed terminals**: when an adoption closes N ≥ 1 terminals it says so in
+  the dismissible workspace line: `N terminal(s) closed by a workspace update
+  from <updatedBy>`.
+- **Malformed peer copy**: a pulled candidate is only considered when it parses
+  and has `version: 1`, an array of `terminals` and a numeric `sync.revision`;
+  otherwise it is skipped and named in the sync line. An adoption that fails
+  (cannot save or reconcile) is reported there too and never leaves the app
+  stuck in "adopting".
 - **Push**: after every successful local save, `workspace_push(host, text)`
-  writes the file to each online peer (`mkdir -p ~/.swarmz && cat >
-  ~/.swarmz/workspace.json.sync && mv -f … workspace.json`, contents on
-  stdin). Best effort; failures show in the sync line and do not block.
+  writes the file to each online macOS peer (`mkdir -p ~/.swarmz && cat >
+  ~/.swarmz/workspace.json.sync.$$ && mv -f … workspace.json`, contents on
+  stdin; the `$$` is the remote shell's pid, so two pushes arriving at once
+  cannot share a temporary file). Best effort; failures show in the sync line
+  and do not block.
 - **External change**: every 5 s the store calls `workspace_stat()` (local
   file mtime). If the mtime differs from the last one the app wrote or saw,
   the file is loaded and adopted when its `revision` is newer. This is how a
-  push from another Mac is noticed within seconds.
+  push from another Mac is noticed within seconds. If the file that appeared is
+  *older* than what this machine holds (a peer pushed a stale copy, a backup was
+  restored), our copy is re-asserted instead: it is saved — which bumps the
+  revision — and pushed, so the other machine adopts ours.
 - **Bumping**: `scheduleSave` sets `sync = { revision: prev + 1, updatedAt:
   now, updatedBy: self }` before writing. Adopting never bumps.
 - Requires: Remote Login on each Mac and your key in each `authorized_keys`.
@@ -91,7 +124,7 @@ All copies are full copies; the newest `revision` wins.
 ## 5. UI
 
 Sidebar header gains a one-line sync status under the title:
-- `Synced · 2 machines · 12 s ago` (click: pull now)
+- `Synced · 1/2 machines · 12 s ago` (reachable/total peers; click: pull now)
 - `Sync off · Tailscale not running`
 - `Sync error · <message>` (click: retry)
 
@@ -106,19 +139,26 @@ alias, the second line `martins-mac-mini-2 · /Users/mokes/projects/swarmz`.
 - Adopted file fails to open some defs: the existing "saving is paused" rule
   applies, and pulling continues.
 - Two Macs save within the same second: higher revision wins; if revisions tie
-  the newer `updatedAt` wins; the loser's change is overwritten (accepted).
+  the newer `updatedAt` wins; on an exact tie the higher `updatedBy` (string
+  order) wins, so both Macs pick the same winner and converge; the loser's
+  change is overwritten (accepted).
 
 ## 7. Testing
 
 Rust: pull/push command strings (pure), push feeds stdin, pull maps "No such
 file" to `None`, stat returns mtime.
 
-Frontend: `pickNewest`, `isNewer`, `openingFor(def, self, machines, user)`
-(three rules), `toWorkspace` writes a foreign local back unchanged and writes
+Frontend: `pickNewest`, `isNewer` (including the `updatedBy` tiebreak),
+`mergeForFirstSync`, `openingFor(def, self, machines, user, knownMachines)`
+(four rules), `toWorkspace` writes a foreign local back unchanged and writes
 `origin`/`sync`; store: origin stamping on create and load, save bumps
 revision and pushes, adopt when a pulled copy is newer (opens/closes/relayouts,
 no confirm), skip adopt while a save is pending, stat poll adopts an external
-newer file and ignores our own write, sync line states.
+newer file and ignores our own write, sync line states, identity resolved
+before defs open, an older external file is re-asserted, a pull racing a stat
+poll opens nothing twice, an edit made during an adoption is saved after it,
+non-macOS peers are not pushed to, a malformed peer copy is skipped, and a
+never-synced machine keeps its own terminals on its first pull.
 
 Manual: run swarmz on both desk minis; add a tile on one, see it on the other
 within seconds; a local tile from A shows on B as A's colour and connects to A;

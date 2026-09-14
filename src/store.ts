@@ -25,6 +25,7 @@ import {
   isSafeSessionId,
   machineHost,
   machineLabel,
+  mergeForFirstSync,
   openingFor,
   pickNewest,
   reconcileLayout,
@@ -281,15 +282,29 @@ function extraFromDef(def: TerminalDef): Record<string, unknown> {
  * app version's unknown-field passthrough. Used for both newly-spawned defs and the bulk
  * settings pass over already-open terminals (so an already-open foreign local keeps its
  * derived ssh when the workspace is reconciled). */
-function settingsFromDef(d: TerminalDef, self: string | null, machines: Machines, user: string): TerminalSettings {
-  const opening = openingFor(d, self, machines, user);
+function settingsFromDef(
+  d: TerminalDef,
+  self: string | null,
+  machines: Machines,
+  user: string,
+  known: Set<string>,
+): { settings: TerminalSettings; note: string | null } {
+  const opening = openingFor(d, self, machines, user, known);
   // `origin` is pulled out and re-added last (after `extra`) rather than left wherever
   // `openingFor` placed it, so this always produces the same key order as `EMPTY_SETTINGS`-based
   // settings (ssh, claude, command, ..., extra, origin) — openDefs' bulk pass compares settings
   // with JSON.stringify to decide whether an already-open terminal's startup bar should
   // re-arm, and that comparison is key-order sensitive.
   const { origin, ...rest } = opening.settings;
-  return { ...rest, extra: extraFromDef(d), origin: origin ?? self ?? null };
+  return { settings: { ...rest, extra: extraFromDef(d), origin: origin ?? self ?? null }, note: opening.note };
+}
+
+/** Machine names this app can actually reach: tailnet peers plus every machine recorded in
+ * workspace.json. Used to decide whether a def's `origin` names a real machine (see
+ * `openingFor`). */
+function knownMachineNames(): Set<string> {
+  const s = useStore.getState();
+  return new Set([...(s.tailscale?.peers ?? []).map((p) => p.name), ...Object.keys(s.machines)]);
 }
 
 function regenerateIfUnsafe(def: TerminalDef): { def: TerminalDef; note: string | null } {
@@ -320,14 +335,15 @@ async function openDefs(
   const normalized = new Map(allDefs.map((d) => [d.id, regenerateIfUnsafe(d)]));
   const { selfMachine, machines, tailscale } = useStore.getState();
   const defaultUser = tailscale?.user ?? "";
+  const known = knownMachineNames();
   let failedCount = 0;
   for (const def of defs) {
     const { def: regenerated, note: unsafeNote } = normalized.get(def.id) ?? regenerateIfUnsafe(def);
     try {
-      const opening = openingFor(regenerated, selfMachine, machines, defaultUser);
+      const opening = openingFor(regenerated, selfMachine, machines, defaultUser, known);
       const { info, note } = await spawnDef({ ...regenerated, cwd: opening.cwd ?? (await homeDir()) });
-      const startupNote = unsafeNote ?? note;
-      const settings = settingsFromDef(regenerated, selfMachine, machines, defaultUser);
+      const startupNote = unsafeNote ?? opening.note ?? note;
+      const { settings } = settingsFromDef(regenerated, selfMachine, machines, defaultUser, known);
       set((s) => ({
         terminals: { ...s.terminals, [info.id]: info },
         order: [...s.order, info.id],
@@ -346,8 +362,10 @@ async function openDefs(
       let startupNotes = s.startupNotes;
       for (const [id, { def: d, note }] of normalized) {
         if (s.terminals[id]) {
-          settings[id] = settingsFromDef(d, selfMachine, machines, defaultUser);
-          if (note) startupNotes = { ...startupNotes, [id]: note };
+          const derived = settingsFromDef(d, selfMachine, machines, defaultUser, known);
+          settings[id] = derived.settings;
+          const n = note ?? derived.note;
+          if (n) startupNotes = { ...startupNotes, [id]: n };
         }
       }
       const sanitizedLayout = sanitizeLayout(savedLayout);
@@ -718,6 +736,12 @@ export const useStore = create<WorkbenchState>((set) => ({
   async loadWorkspace() {
     if (loadStarted) return;
     loadStarted = true;
+    // Identity BEFORE the defs are opened: `openDefs` needs `selfMachine` to tell this machine's
+    // own locals from another machine's (which must open as remotes, not as local shells in a
+    // path that belongs to the other Mac) and to stamp `origin` on legacy defs. Waiting for the
+    // caller to refresh Tailscale afterwards would be too late. `refreshTailscale` swallows its
+    // own errors, so a machine without Tailscale just carries on with `selfMachine` null.
+    if (useStore.getState().selfMachine === null) await useStore.getState().refreshTailscale();
     let ws: Awaited<ReturnType<typeof ipc.loadWorkspace>> = null;
     try {
       ws = await ipc.loadWorkspace();
@@ -770,12 +794,19 @@ export const useStore = create<WorkbenchState>((set) => ({
     // "wasReady" from current state (to also serve the adopt path), and re-pauses
     // immediately as its own first step.
     set({ persistenceReady: wasReady });
-    await applyWorkspace(ws, { confirmClose: true, scheduleSave: true });
+    // Through the same queue as `adopt`: a reload and an adoption both close/open terminals and
+    // rebuild the layout, and interleaving them would double-open or lose defs.
+    const loaded = ws;
+    await runExclusive(() => applyWorkspace(loaded, { confirmClose: true, scheduleSave: true }));
   },
 
   async pullWorkspace() {
     const s = useStore.getState();
     if (!s.sync.enabled || s.sync.adopting) return;
+    // Read BEFORE the flush below: flushing writes a first `sync` block, so asking afterwards
+    // whether this machine has ever synced would always answer "yes" and the first-sync union
+    // would never run.
+    const neverSynced = s.syncMeta === null;
     // Save (and revision-bump) any local edit before comparing against peers, so a pending
     // debounced save can never land after — and clobber — an adoption below.
     await flushPendingSave();
@@ -783,29 +814,76 @@ export const useStore = create<WorkbenchState>((set) => ({
     const cands: Workspace[] = [];
     let ok = 0;
     const failed: string[] = [];
+    const malformed: string[] = [];
     for (const p of peers) {
+      let text: string | null;
       try {
-        const text = await ipc.workspacePull(p.host);
-        ok += 1;
-        if (text) {
-          const parsed = JSON.parse(text) as Workspace;
-          if (parsed && typeof parsed === "object" && parsed.sync) cands.push(parsed);
-        }
+        text = await ipc.workspacePull(p.host);
       } catch (e) {
         failed.push(`${p.name}: ${typeof e === "string" ? e : String(e)}`);
+        continue;
+      }
+      ok += 1;
+      if (!text) continue;
+      // A peer's file is untrusted input (a truncated push, a hand-edited file, a future
+      // version): only a copy with the shape the adopt path relies on is a candidate, since
+      // adopting a malformed one would save it verbatim over our own workspace.
+      let parsed: Workspace | null = null;
+      try {
+        parsed = JSON.parse(text) as Workspace;
+      } catch {
+        parsed = null;
+      }
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        parsed.version === 1 &&
+        Array.isArray(parsed.terminals) &&
+        parsed.sync &&
+        typeof parsed.sync.revision === "number"
+      ) {
+        cands.push(parsed);
+      } else {
+        malformed.push(p.name);
       }
     }
+    const problems = [
+      ...(failed.length ? [`pull failed for ${failed.join("; ")}`] : []),
+      ...(malformed.length ? [`ignored malformed workspace from ${malformed.join(", ")}`] : []),
+    ];
     set((st) => ({
       sync: {
         ...st.sync,
         lastPullAt: new Date().toISOString(),
         peersOk: ok,
         peersTotal: peers.length,
-        error: failed.length ? `pull failed for ${failed.join("; ")}` : null,
+        error: problems.length ? problems.join("; ") : null,
       },
     }));
     const best = pickNewest(cands);
-    if (best && isNewer(best.sync, useStore.getState().syncMeta)) await adopt(best);
+    if (!best) return;
+    // Re-read `adopting`: flushing and pulling above are awaits, and an adoption may have
+    // started (or a reload may be running) in the meantime.
+    if (useStore.getState().sync.adopting) return;
+    if (neverSynced) {
+      // This machine has never synced, so its terminals are not an older copy of the peer's
+      // workspace — they were never shared. Union them in rather than closing them.
+      const st = useStore.getState();
+      const localWs = toWorkspace({
+        order: st.order,
+        terminals: st.terminals,
+        settings: st.settings,
+        layout: st.layout,
+        machines: st.machines,
+      });
+      const merged = mergeForFirstSync(localWs, best);
+      await adoptGuarded(merged);
+      // The peers still hold `best`; if the union added anything, save it so the usual bump and
+      // push carry it back to them and everyone converges on the union.
+      if (fingerprint(merged) !== fingerprint(best)) scheduleSave();
+      return;
+    }
+    if (isNewer(best.sync, useStore.getState().syncMeta)) await adoptGuarded(best);
   },
 
   async checkExternalChange() {
@@ -821,14 +899,26 @@ export const useStore = create<WorkbenchState>((set) => ({
       lastSeenMtime = mtime;
       return;
     }
-    lastSeenMtime = mtime;
     let ws: Workspace | null = null;
     try {
       ws = await ipc.loadWorkspace();
     } catch {
       return;
     }
-    if (ws && isNewer(ws.sync, useStore.getState().syncMeta)) await adopt(ws);
+    if (!ws) return;
+    // Re-read `adopting`: the stat and the load above are awaits (see `pullWorkspace`).
+    if (useStore.getState().sync.adopting) return;
+    // Only now is this mtime "seen": a round that bailed out above must look at the file again
+    // on the next tick instead of treating a change it never acted on as already handled.
+    lastSeenMtime = mtime;
+    if (isNewer(ws.sync, useStore.getState().syncMeta)) {
+      await adoptGuarded(ws);
+    } else {
+      // The file on disk is OLDER than what we hold: something (a peer pushing a stale copy, a
+      // restored backup) overwrote our workspace. Rewrite ours over it — the save bumps the
+      // revision, so the peer that sent the stale copy adopts ours on its next round.
+      scheduleSave();
+    }
   },
 
   updateSettings(id, patch) {
@@ -1002,6 +1092,23 @@ let savePromise: Promise<void> | null = null;
  * tell "someone else wrote the file" apart from silence. Reset for tests via `__resetSyncState`. */
 let lastSeenMtime: number | null = null;
 
+/**
+ * Serialises the operations that reconcile the running app against a whole workspace snapshot
+ * (adoption and reload). Both close terminals, open the missing ones and rebuild the layout across
+ * many awaits; running two at once double-opens defs and leaves duplicates in `order`. Each queued
+ * body runs only after the previous one has settled (failures do not stall the queue).
+ */
+let syncOp: Promise<void> = Promise.resolve();
+
+function runExclusive(fn: () => Promise<void>): Promise<void> {
+  const next = syncOp.then(fn, fn);
+  syncOp = next.then(
+    () => {},
+    () => {},
+  );
+  return next;
+}
+
 export function __resetSyncState() {
   lastSeenMtime = null;
   if (saveTimer) {
@@ -1009,6 +1116,33 @@ export function __resetSyncState() {
     saveTimer = null;
   }
   savePromise = null;
+  syncOp = Promise.resolve();
+}
+
+/** Order-insensitive JSON of a workspace's *content* (its `sync` metadata deliberately left out),
+ * used to tell "the state in memory is exactly the file we adopted" from "it has drifted". Keys
+ * are sorted so two copies that differ only in key order compare equal. */
+function fingerprint(ws: Workspace): string {
+  const stable = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(stable);
+    if (v && typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const k of Object.keys(o).sort()) {
+        if (o[k] !== undefined) out[k] = stable(o[k]);
+      }
+      return out;
+    }
+    return v;
+  };
+  const { sync: _sync, ...rest } = ws;
+  return JSON.stringify(stable({ ...rest, machines: ws.machines ?? {} }));
+}
+
+/** `toWorkspace` of the live store, without sync metadata — the counterpart of `fingerprint`. */
+function currentWorkspace(): Workspace {
+  const s = useStore.getState();
+  return toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines });
 }
 
 /**
@@ -1047,6 +1181,12 @@ async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean; sche
         useStore.setState({ persistenceReady: wasReady });
         return;
       }
+    } else {
+      // Adoption closes without asking (there is nobody to ask on the machine that pushed), so
+      // say what happened in the existing dismissible line rather than letting tiles vanish.
+      useStore.setState({
+        persistError: `${toClose.length} terminal(s) closed by a workspace update from ${ws.sync?.updatedBy ?? "another machine"}`,
+      });
     }
     for (const id of toClose) await useStore.getState().closeTerminal(id);
   }
@@ -1063,12 +1203,14 @@ async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean; sche
 }
 
 /** Online tailnet peers this machine can push/pull workspace.json with, resolved to a usable
- * `user@host`; a peer whose host can't be resolved to a valid address is left out. */
+ * `user@host`; a peer whose host can't be resolved to a valid address is left out. Only macOS
+ * peers: a phone, an iPad or a Linux box on the tailnet does not run swarmz, so pushing to it
+ * would just time out every round and report a permanent sync error. */
 function peerHosts(): { name: string; host: string }[] {
   const s = useStore.getState();
   if (!s.tailscale?.running) return [];
   return s.tailscale.peers
-    .filter((p) => p.online)
+    .filter((p) => p.online && p.os === "macOS")
     .map((p) => ({ name: p.name, host: machineHost(p.name, s.machines[p.name], s.tailscale?.user ?? "") }))
     .filter((p) => validateHost(p.host) === null);
 }
@@ -1078,14 +1220,13 @@ async function pushWorkspace(text: string) {
   if (peers.length === 0 || !useStore.getState().sync.enabled) return;
   let ok = 0;
   const failed: string[] = [];
-  for (const p of peers) {
-    try {
-      await ipc.workspacePush(p.host, text);
-      ok += 1;
-    } catch (e) {
-      failed.push(`${p.name}: ${typeof e === "string" ? e : String(e)}`);
-    }
-  }
+  // In parallel: each push is an ssh round trip with a 10 s timeout, and one unreachable peer
+  // should not delay the others (a sequential loop makes every save wait for the slowest).
+  const results = await Promise.allSettled(peers.map((p) => ipc.workspacePush(p.host, text)));
+  results.forEach((r, i) => {
+    if (r.status === "fulfilled") ok += 1;
+    else failed.push(`${peers[i].name}: ${typeof r.reason === "string" ? r.reason : String(r.reason)}`);
+  });
   useStore.setState((s) => ({
     sync: {
       ...s.sync,
@@ -1099,22 +1240,40 @@ async function pushWorkspace(text: string) {
 
 /** Adopts a peer's (or our own file's, per `checkExternalChange`) newer workspace: saves it
  * verbatim so it's the durable copy, then reconciles the running app to match it. */
-async function adopt(ws: Workspace) {
-  useStore.setState((s) => ({ sync: { ...s.sync, adopting: true } }));
-  try {
-    // Nothing pending should be allowed to land after this write.
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
+function adopt(ws: Workspace): Promise<void> {
+  return runExclusive(async () => {
+    useStore.setState((s) => ({ sync: { ...s.sync, adopting: true } }));
+    try {
+      // Nothing pending should be allowed to land after this write.
+      if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+      }
+      if (savePromise) await savePromise;
+      await ipc.saveWorkspace(ws);
+      lastSeenMtime = await ipc.workspaceStat().catch(() => null);
+      useStore.setState({ syncMeta: ws.sync ?? null });
+      // `scheduleSave: false` — the file already is this exact state; see applyWorkspace's doc.
+      await applyWorkspace(ws, { confirmClose: false, scheduleSave: false });
+    } finally {
+      useStore.setState((s) => ({ sync: { ...s.sync, adopting: false } }));
+      // Edits made while `adopting` was set were deliberately not scheduled for saving (the
+      // subscription ignores them, since most are the adoption reconciling itself). Anything the
+      // user changed in the meantime — a rename, a new tile — would otherwise be lost on the next
+      // adoption, so compare the reconciled state with the file we adopted and save if it drifted.
+      if (useStore.getState().persistenceReady && fingerprint(currentWorkspace()) !== fingerprint(ws)) scheduleSave();
     }
-    if (savePromise) await savePromise;
-    await ipc.saveWorkspace(ws);
-    lastSeenMtime = await ipc.workspaceStat().catch(() => null);
-    useStore.setState({ syncMeta: ws.sync ?? null });
-    // `scheduleSave: false` — the file already is this exact state; see applyWorkspace's doc.
-    await applyWorkspace(ws, { confirmClose: false, scheduleSave: false });
-  } finally {
-    useStore.setState((s) => ({ sync: { ...s.sync, adopting: false } }));
+  });
+}
+
+/** `adopt` with its failures reported in the sync line instead of thrown: a peer's copy that we
+ * cannot save or open must not take down the polling loop that called us. */
+async function adoptGuarded(ws: Workspace) {
+  try {
+    await adopt(ws);
+  } catch (e) {
+    const msg = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
+    useStore.setState((s) => ({ sync: { ...s.sync, error: `could not adopt workspace: ${msg}` } }));
   }
 }
 
@@ -1168,6 +1327,10 @@ async function flushPendingSave(): Promise<void> {
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
+    // A save already in flight must finish first: `runSave` reads `syncMeta` and bumps it, so
+    // starting a second one alongside would compute both revisions from the same base and write
+    // them in whatever order the two ipc calls happen to complete.
+    if (savePromise) await savePromise;
     await runSave();
     return;
   }

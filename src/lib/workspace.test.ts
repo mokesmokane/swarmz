@@ -12,6 +12,7 @@ import {
   isSafeSessionId,
   machineHost,
   machineLabel,
+  mergeForFirstSync,
   needsRemoteFolder,
   openingFor,
   pickNewest,
@@ -32,6 +33,7 @@ import {
   type ClaudeConfig,
   type Machines,
   type SyncMeta,
+  type TerminalDef,
   type Workspace,
 } from "./workspace";
 
@@ -342,6 +344,13 @@ describe("sync meta", () => {
     expect(isNewer(undefined, a)).toBe(false);
     expect(isNewer(a, a)).toBe(false);
   });
+  it("breaks an exact revision+timestamp tie on the machine name, the same way on both machines", () => {
+    const x = { revision: 3, updatedAt: "2026-01-02T00:00:00Z", updatedBy: "a" };
+    const y = { revision: 3, updatedAt: "2026-01-02T00:00:00Z", updatedBy: "b" };
+    expect(isNewer(y, x)).toBe(true);
+    expect(isNewer(x, y)).toBe(false);
+    expect(isNewer(x, { ...x })).toBe(false);
+  });
   it("pickNewest returns the newest candidate or null", () => {
     const w = (sync: SyncMeta | undefined): Workspace => ({ version: 1, terminals: [], layout: null, ...(sync ? { sync } : {}) });
     expect(pickNewest([])).toBeNull();
@@ -355,26 +364,70 @@ describe("sync meta", () => {
 
 describe("openingFor", () => {
   const machines: Machines = { desk: { user: "root", color: "#ef4444", lastUsed: "t" } };
+  const known = new Set(["desk"]);
   const base = { id: "t", name: "n", cwd: "/proj", ssh: null, claude: null, command: null };
   it("remote defs open unchanged", () => {
     const def = { ...base, ssh: { host: "me@x", cwd: "/r", machine: "x" }, origin: "elsewhere" };
-    const o = openingFor(def, "here", machines, "mokes");
+    const o = openingFor(def, "here", machines, "mokes", known);
     expect(o.cwd).toBeNull();
     expect(o.settings.ssh).toEqual(def.ssh);
     expect(o.settings.foreign).toBeUndefined();
+    expect(o.note).toBeNull();
   });
   it("locals from here or without origin open locally", () => {
-    expect(openingFor({ ...base, origin: "here" }, "here", machines, "mokes").cwd).toBe("/proj");
-    expect(openingFor(base, "here", machines, "mokes").cwd).toBe("/proj");
-    expect(openingFor({ ...base, origin: "desk" }, null, machines, "mokes").cwd).toBe("/proj");
+    expect(openingFor({ ...base, origin: "here" }, "here", machines, "mokes", known).cwd).toBe("/proj");
+    expect(openingFor(base, "here", machines, "mokes", known).cwd).toBe("/proj");
+    expect(openingFor({ ...base, origin: "desk" }, null, machines, "mokes", known).cwd).toBe("/proj");
   });
   it("locals from another machine open as foreign remotes", () => {
-    const o = openingFor({ ...base, origin: "desk", claude: { enabled: true, sessionId: "s", skipPermissions: false, started: true } }, "here", machines, "mokes");
+    const o = openingFor({ ...base, origin: "desk", claude: { enabled: true, sessionId: "s", skipPermissions: false, started: true } }, "here", machines, "mokes", known);
     expect(o.cwd).toBeNull();
     expect(o.settings.ssh).toEqual({ host: "root@desk", cwd: "/proj", machine: "desk" });
     expect(o.settings.foreign).toEqual({ cwd: "/proj" });
     expect(o.settings.origin).toBe("desk");
     expect(o.settings.claude?.sessionId).toBe("s");
+    expect(o.note).toBeNull();
+  });
+  it("a local from a machine we do not know opens locally with a note", () => {
+    const o = openingFor({ ...base, origin: "gone" }, "here", machines, "mokes", known);
+    expect(o.cwd).toBe("/proj");
+    expect(o.settings.ssh).toBeNull();
+    expect(o.settings.foreign).toBeUndefined();
+    expect(o.settings.origin).toBe("gone");
+    expect(o.note).toBe("origin machine gone is not on your tailnet; opened locally");
+  });
+});
+
+describe("mergeForFirstSync", () => {
+  const def = (id: string): TerminalDef => ({ id, name: id, cwd: `/${id}`, ssh: null, claude: null, command: null });
+  it("keeps local terminals the peer does not have, with the peer's sync and layout", () => {
+    const local: Workspace = {
+      version: 1,
+      terminals: [def("mine"), def("both")],
+      layout: { kind: "group", id: "lg", tabs: ["mine", "both"], active: "mine" },
+      machines: { old: { lastUsed: "t0" }, desk: { alias: "stale", lastUsed: "t0" } },
+    };
+    const peer: Workspace = {
+      version: 1,
+      terminals: [def("both"), def("theirs")],
+      layout: { kind: "group", id: "pg", tabs: ["both", "theirs"], active: "theirs" },
+      machines: { desk: { alias: "Desk", lastUsed: "t1" } },
+      sync: { revision: 4, updatedAt: "t", updatedBy: "desk" },
+    };
+    const merged = mergeForFirstSync(local, peer);
+    expect(merged.terminals.map((t) => t.id)).toEqual(["both", "theirs", "mine"]);
+    expect(merged.sync).toEqual(peer.sync);
+    expect(merged.machines).toEqual({ old: { lastUsed: "t0" }, desk: { alias: "Desk", lastUsed: "t1" } });
+    // The peer's layout, with the extra local terminal placed into it.
+    const tabs = (merged.layout as GroupNode).tabs;
+    expect(tabs).toContain("mine");
+    expect([...tabs].sort()).toEqual(["both", "mine", "theirs"]);
+  });
+  it("is the peer's workspace when the local one is empty", () => {
+    const peer: Workspace = { version: 1, terminals: [def("a")], layout: null, sync: { revision: 1, updatedAt: "t", updatedBy: "desk" } };
+    const merged = mergeForFirstSync({ version: 1, terminals: [], layout: null }, peer);
+    expect(merged.terminals.map((t) => t.id)).toEqual(["a"]);
+    expect(merged.machines).toBeUndefined();
   });
 });
 
