@@ -107,7 +107,9 @@ All copies are full copies; the newest `revision` wins.
   reconcile the same file into the same terminals — listed differently — would
   rewrite each other once per poll forever. A terminal's name is machine-local
   whenever the registry had to deduplicate it; the shared file keeps the name
-  that was requested. For the same reason adoption also
+  that was requested. An adoption also applies the file's name to terminals
+  that are already open; if this machine cannot use that name, the difference is
+  treated as machine-local. For the same reason adoption also
   takes the file's **sidebar order** (ids it lists, in its order, then anything
   local it does not mention), not just its layout. An adoption that fails
   before it reconciles writes nothing back.

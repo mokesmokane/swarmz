@@ -276,6 +276,13 @@ export function __resetLoadGuard() {
  */
 const requestedNames = new Map<string, string>();
 
+/** What each open terminal is called, as the shared file would spell it (see `requestedNames`). */
+function effectiveNames(): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [id, t] of Object.entries(useStore.getState().terminals)) out.set(id, requestedNames.get(id) ?? t.name);
+  return out;
+}
+
 /** The store's terminals as the workspace file should spell them (see `requestedNames`). */
 function persistedTerminals(terminals: Record<string, TerminalInfo>): Record<string, TerminalInfo> {
   if (requestedNames.size === 0) return terminals;
@@ -880,6 +887,9 @@ export const useStore = create<WorkbenchState>((set) => ({
           typeof parsed === "object" &&
           parsed.version === 1 &&
           Array.isArray(parsed.terminals) &&
+          // Every entry must be usable before anything touches it: a `null` or a def without an
+          // id would otherwise throw inside the dedupe below and take the whole pull down.
+          parsed.terminals.every((d) => !!d && typeof d === "object" && typeof (d as { id?: unknown }).id === "string") &&
           parsed.sync &&
           typeof parsed.sync.revision === "number"
         ) {
@@ -1200,7 +1210,10 @@ function currentWorkspace(): Workspace {
  * wrote it verbatim), so scheduling one would just bump the revision and push it right back to
  * the peer we got it from, which would adopt it and do the same, forever.
  */
-async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean; scheduleSave: boolean }): Promise<void> {
+async function applyWorkspace(
+  ws: Workspace,
+  opts: { confirmClose: boolean; scheduleSave: boolean; namesAtStart?: Map<string, string> },
+): Promise<void> {
   const wasReady = useStore.getState().persistenceReady;
   if (saveTimer) {
     clearTimeout(saveTimer);
@@ -1215,6 +1228,10 @@ async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean; sche
     const { machines, dropped } = sanitizeMachines(ws.machines);
     useStore.setState({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
   }
+  // What each open terminal was called (as the shared file would spell it) when this operation
+  // began — see the rename pass below. `adopt` captures it before its own save, because a user
+  // rename made while that save is in flight belongs to the user, not to the file.
+  const namesAtStart = opts.namesAtStart ?? effectiveNames();
   // A file can name the same id twice (a truncated push, a hand-merged file); opening it twice
   // would spawn two ptys for one id and list it twice in the sidebar. First mention wins.
   const defs = dedupeById(ws.terminals);
@@ -1239,6 +1256,26 @@ async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean; sche
   }
   const open = new Set(useStore.getState().order);
   const { anyFailed } = await openDefs(defs.filter((d) => !open.has(d.id)), ws.layout, useStore.setState, defs);
+  // Names travel too. A terminal that was already open keeps the name the registry gave it when
+  // it was spawned, so a rename made on another machine would never land here — and then that
+  // machine would write "other" and this one would write the old name back, once per round,
+  // forever. Defs opened just above already carry the file's name (or a local suffix, recorded
+  // by `openDefs`), so only the ones that were open before need this.
+  for (const d of defs) {
+    if (!open.has(d.id)) continue;
+    const live = useStore.getState().terminals[d.id];
+    // `namesAtStart`, not the live name: the file only has something new to say when it disagrees
+    // with what this terminal was called when the adoption began. If it agrees, a rename the user
+    // made while the adoption was in flight is theirs to keep (the post-adoption comparison then
+    // saves it); undoing it here would make every adoption quietly revert edits made during it.
+    const before = namesAtStart.get(d.id);
+    if (!live || before === undefined || before === d.name) continue;
+    const err = await useStore.getState().renameTerminal(d.id, d.name);
+    // The registry refuses (something else here holds that name): keep the live one and remember
+    // what the file asked for, so the difference stays machine-local instead of being written
+    // back at the machine that made the rename.
+    if (err !== null) requestedNames.set(d.id, d.name);
+  }
   // Take the file's terminal order too, not just its layout: `openDefs` appends whatever was
   // missing to the end, so the machine that had to open defs would otherwise list them in a
   // different order from the machine that wrote the file — and `toWorkspace` writes terminals in
@@ -1303,6 +1340,7 @@ function adopt(ws: Workspace): Promise<void> {
   return runExclusive(async () => {
     let applied = false;
     useStore.setState((s) => ({ sync: { ...s.sync, adopting: true } }));
+    const namesAtStart = effectiveNames();
     try {
       // Nothing pending should be allowed to land after this write.
       if (saveTimer) {
@@ -1314,7 +1352,7 @@ function adopt(ws: Workspace): Promise<void> {
       lastSeenMtime = await ipc.workspaceStat().catch(() => null);
       useStore.setState({ syncMeta: ws.sync ?? null });
       // `scheduleSave: false` — the file already is this exact state; see applyWorkspace's doc.
-      await applyWorkspace(ws, { confirmClose: false, scheduleSave: false });
+      await applyWorkspace(ws, { confirmClose: false, scheduleSave: false, namesAtStart });
       applied = true;
     } finally {
       useStore.setState((s) => ({ sync: { ...s.sync, adopting: false } }));

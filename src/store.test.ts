@@ -1594,4 +1594,91 @@ describe("shared workspace", () => {
       vi.useRealTimers();
     }
   });
+
+  it("adoption applies a name another machine changed to a terminal that is already open", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({
+        selfMachine: "here", tailscale: ts(["desk"]),
+        syncMeta: { revision: 1, updatedAt: "t1", updatedBy: "here" },
+        sync: { ...useStore.getState().sync, enabled: true },
+        terminals: { n1: { id: "n1", name: "swarmz", cwd: "/tmp/n", exited: null, error: null } },
+        order: ["n1"],
+        settings: { n1: { ...EMPTY_SETTINGS, origin: "here" } },
+        layout: group(["n1"]),
+      });
+      noPendingSave();
+      vi.mocked(ipc.renameTerminal).mockClear();
+      // The real registry keeps the cwd; the shared mock does not, which would look like drift.
+      vi.mocked(ipc.renameTerminal).mockImplementationOnce(async (id: string, name: string) => ({
+        ...useStore.getState().terminals[id],
+        name,
+      }));
+      const peer: Workspace = {
+        version: 1, layout: group(["n1"]), sync: { revision: 4, updatedAt: "t4", updatedBy: "desk" },
+        terminals: [{ id: "n1", name: "other", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" }],
+      };
+      vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(peer));
+      await useStore.getState().pullWorkspace();
+      expect(ipc.renameTerminal).toHaveBeenCalledWith("n1", "other");
+      expect(useStore.getState().terminals.n1.name).toBe("other");
+      // Nothing to write back: this machine now agrees with the file.
+      const afterAdopt = vi.mocked(ipc.saveWorkspace).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS * 2);
+      expect(vi.mocked(ipc.saveWorkspace).mock.calls.length).toBe(afterAdopt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the live name when the registry refuses the adopted one, without calling it drift", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({
+        selfMachine: "here", tailscale: ts(["desk"]),
+        syncMeta: { revision: 1, updatedAt: "t1", updatedBy: "here" },
+        sync: { ...useStore.getState().sync, enabled: true },
+        terminals: { n1: { id: "n1", name: "swarmz", cwd: "/tmp/n", exited: null, error: null } },
+        order: ["n1"],
+        settings: { n1: { ...EMPTY_SETTINGS, origin: "here" } },
+        layout: group(["n1"]),
+      });
+      noPendingSave();
+      vi.mocked(ipc.renameTerminal).mockClear();
+      vi.mocked(ipc.renameTerminal).mockRejectedValueOnce('a terminal named "other" already exists');
+      const peer: Workspace = {
+        version: 1, layout: group(["n1"]), sync: { revision: 4, updatedAt: "t4", updatedBy: "desk" },
+        terminals: [{ id: "n1", name: "other", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" }],
+      };
+      vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(peer));
+      await useStore.getState().pullWorkspace();
+      expect(useStore.getState().terminals.n1.name).toBe("swarmz");
+      const afterAdopt = vi.mocked(ipc.saveWorkspace).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS * 2);
+      expect(vi.mocked(ipc.saveWorkspace).mock.calls.length).toBe(afterAdopt);
+      // The name this machine could not use stays machine-local: the file keeps the adopted one.
+      useStore.getState().updateSettings("n1", { command: "ls" });
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+      const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
+      expect((calls[calls.length - 1][0] as Workspace).terminals.find((t) => t.id === "n1")?.name).toBe("other");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skips a peer file whose terminal list holds something that is not a def", async () => {
+    useStore.setState({
+      selfMachine: "here", tailscale: ts(["desk"]),
+      syncMeta: { revision: 2, updatedAt: "t2", updatedBy: "here" },
+      sync: { ...useStore.getState().sync, enabled: true },
+    });
+    noPendingSave();
+    vi.mocked(ipc.workspacePull).mockResolvedValueOnce('{"version":1,"terminals":[null],"sync":{"revision":9,"updatedAt":"t9","updatedBy":"desk"}}');
+    await expect(useStore.getState().pullWorkspace()).resolves.toBeUndefined();
+    const s = useStore.getState();
+    expect(s.syncMeta?.revision).toBe(2);
+    expect(s.order).toEqual([]);
+    expect(s.sync.error).toContain("desk");
+    expect(s.sync.error).toContain("malformed");
+  });
 });
