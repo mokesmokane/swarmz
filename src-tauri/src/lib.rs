@@ -2,6 +2,7 @@ pub mod commands;
 pub mod pty;
 pub mod registry;
 pub mod remote;
+pub mod tailscale;
 pub mod workspace;
 
 use commands::AppState;
@@ -25,6 +26,8 @@ pub fn run() {
             commands::ssh_open_master,
             commands::ssh_list_dir,
             commands::terminal_foreground_busy,
+            commands::tailscale_status,
+            commands::tailscale_open,
         ])
         .setup(|_app| {
             let _ = remote::ensure_ssh_dir();

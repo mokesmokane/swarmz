@@ -116,13 +116,13 @@ pub fn parse_listing(stdout: &str) -> Result<RemoteListing, String> {
 }
 
 #[derive(Debug)]
-struct Finished {
-    status: std::process::ExitStatus,
-    stdout: String,
-    stderr: String,
+pub(crate) struct Finished {
+    pub(crate) status: std::process::ExitStatus,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
 }
 
-fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Finished, String> {
+pub(crate) fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Finished, String> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

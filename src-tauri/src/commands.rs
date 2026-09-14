@@ -261,3 +261,17 @@ pub async fn ssh_open_master(host: String) -> Result<bool, String> {
         .await
         .map_err(|e| e.to_string())?
 }
+
+#[tauri::command]
+pub async fn tailscale_status() -> Result<crate::tailscale::TailscaleStatus, String> {
+    tauri::async_runtime::spawn_blocking(crate::tailscale::status)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn tailscale_open() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(crate::tailscale::open_app)
+        .await
+        .map_err(|e| e.to_string())?
+}
