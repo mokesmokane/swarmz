@@ -2,7 +2,6 @@ import { useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore, terminalColor } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
-import { TerminalSettings } from "./TerminalSettings";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
 
 function basename(p: string): string {
@@ -28,7 +27,6 @@ function Row({ id }: { id: string }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const suppressBlur = useRef(false);
 
   if (!t) return null;
@@ -122,16 +120,6 @@ function Row({ id }: { id: string }) {
         className="rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"
         onClick={(e) => {
           e.stopPropagation();
-          setSettingsOpen((v) => !v);
-        }}
-        title="Terminal settings"
-      >
-        ⚙
-      </button>
-      <button
-        className="rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"
-        onClick={(e) => {
-          e.stopPropagation();
           closeTerminal(id).catch(() => {});
         }}
         title="Close terminal"
@@ -141,12 +129,7 @@ function Row({ id }: { id: string }) {
     </div>
   );
 
-  return (
-    <>
-      {row}
-      {settingsOpen && <TerminalSettings id={id} onClose={() => setSettingsOpen(false)} />}
-    </>
-  );
+  return row;
 }
 
 export function Sidebar() {

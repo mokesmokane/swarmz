@@ -137,8 +137,11 @@ State: `machines: Machines`, `tailscale: TailscaleStatus | null`,
   subscribes to the store).
 - **Tailscale online state**: sidebar rows for machine terminals show a
   tooltip "online on Tailscale" / "offline" from the latest status.
-- The old SSH tile settings panel keeps its host field for legacy terminals;
-  for machine terminals the host is shown read-only with the alias.
+- Amendment (2026-09-14, later): the per-terminal settings panel and the
+  sidebar row gear are removed entirely. Renaming stays inline (double-click),
+  machine alias/username/colour live in the Remote terminal list's gear, and
+  folder / Claude choices are made at creation. `command` remains a
+  hand-editable field in the file with no UI.
 
 ## 5. Errors
 
