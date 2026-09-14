@@ -3,14 +3,15 @@ import { addTab, splitWith, type GroupNode, type SplitNode } from "./layout";
 import {
   EMPTY_SETTINGS,
   claudeLine,
-  filterSshHosts,
   hostLabel,
   isLayoutNode,
+  isMachineColor,
   isSafeRemotePath,
   isSafeSessionId,
+  machineHost,
+  machineLabel,
   needsRemoteFolder,
   reconcileLayout,
-  recentSshHosts,
   sanitizeLayout,
   shellQuote,
   sshLine,
@@ -18,11 +19,12 @@ import {
   startupLine,
   startupSteps,
   startupUsesClaude,
+  tintBackground,
   toWorkspace,
-  touchSshHistory,
+  touchMachine,
+  validateAlias,
   validateHost,
   type ClaudeConfig,
-  type SshHistory,
 } from "./workspace";
 
 const claude: ClaudeConfig = { enabled: true, sessionId: "11111111-2222-3333-4444-555555555555", skipPermissions: false, started: false };
@@ -239,7 +241,7 @@ describe("toWorkspace", () => {
       },
       settings: { a: { ...EMPTY_SETTINGS, ssh: { host: "h" } } },
       layout: null,
-      sshHistory: { "a@x": { cwd: null, lastUsed: "t" } },
+      machines: { m1: { alias: "a", lastUsed: "t" } },
     });
     expect(ws.version).toBe(1);
     expect(ws.terminals.map((t) => t.id)).toEqual(["b", "a"]);
@@ -248,38 +250,56 @@ describe("toWorkspace", () => {
     expect(ws.terminals[0].claude).toBeNull();
     expect(ws.terminals[0].command).toBeNull();
     expect(ws.layout).toBeNull();
-    expect(ws.sshHistory).toEqual({ "a@x": { cwd: null, lastUsed: "t" } });
+    expect(ws.machines).toEqual({ m1: { alias: "a", lastUsed: "t" } });
   });
 
-  it("omits sshHistory when empty", () => {
+  it("omits machines when empty", () => {
     const ws = toWorkspace({
       order: ["a"],
       terminals: { a: { id: "a", name: "A", cwd: "/a" } },
       settings: {},
       layout: null,
-      sshHistory: {},
+      machines: {},
     });
-    expect("sshHistory" in ws).toBe(false);
+    expect("machines" in ws).toBe(false);
   });
 });
 
-describe("ssh history", () => {
-  it("touch adds or refreshes an entry and keeps an existing cwd when none is given", () => {
-    let h = touchSshHistory({}, "a@x", "/p", "2026-01-01T00:00:00Z");
-    expect(h["a@x"]).toEqual({ cwd: "/p", lastUsed: "2026-01-01T00:00:00Z" });
-    h = touchSshHistory(h, "a@x", undefined, "2026-01-02T00:00:00Z");
-    expect(h["a@x"]).toEqual({ cwd: "/p", lastUsed: "2026-01-02T00:00:00Z" });
-    h = touchSshHistory(h, "a@x", null, "2026-01-03T00:00:00Z");
-    expect(h["a@x"].cwd).toBeNull();
+describe("machines", () => {
+  it("label and host", () => {
+    expect(machineLabel("martins-mac-mini", undefined)).toBe("martins-mac-mini");
+    expect(machineLabel("martins-mac-mini", { alias: " desk mini ", lastUsed: "t" })).toBe("desk mini");
+    expect(machineLabel("martins-mac-mini", { alias: "", lastUsed: "t" })).toBe("martins-mac-mini");
+    expect(machineHost("martins-mac-mini", undefined, "mokes")).toBe("mokes@martins-mac-mini");
+    expect(machineHost("martins-mac-mini", { user: "root", lastUsed: "t" }, "mokes")).toBe("root@martins-mac-mini");
+    expect(machineHost("martins-mac-mini", { user: " ", lastUsed: "t" }, "mokes")).toBe("mokes@martins-mac-mini");
   });
 
-  it("caps at the most recent entries and lists them newest first", () => {
-    let h: SshHistory = {};
-    for (let i = 0; i < 25; i++) h = touchSshHistory(h, `h${i}`, null, new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString());
-    expect(Object.keys(h).length).toBe(20);
-    expect(h["h0"]).toBeUndefined();
-    const recent = recentSshHosts(h, 3).map((e) => e.host);
-    expect(recent).toEqual(["h24", "h23", "h22"]);
+  it("touchMachine merges, stamps lastUsed unless told not to, and caps at 50", () => {
+    let m = touchMachine({}, "a", { cwd: "/x" }, "2026-01-01T00:00:00Z");
+    expect(m.a).toEqual({ cwd: "/x", lastUsed: "2026-01-01T00:00:00Z" });
+    m = touchMachine(m, "a", { alias: "A" }, "2026-01-02T00:00:00Z", { bump: false });
+    expect(m.a).toEqual({ cwd: "/x", alias: "A", lastUsed: "2026-01-01T00:00:00Z" });
+    for (let i = 0; i < 60; i++) m = touchMachine(m, `h${i}`, {}, new Date(Date.UTC(2026, 1, 1, 0, i)).toISOString());
+    expect(Object.keys(m).length).toBe(50);
+    expect(m.a).toBeUndefined();
+    expect(m.h59).toBeDefined();
+  });
+
+  it("validateAlias follows the name rules", () => {
+    expect(validateAlias("desk mini")).toBeNull();
+    expect(validateAlias("")).not.toBeNull();
+    expect(validateAlias("a\"b")).not.toBeNull();
+    expect(validateAlias("x".repeat(65))).not.toBeNull();
+  });
+
+  it("colours", () => {
+    expect(isMachineColor(null)).toBe(true);
+    expect(isMachineColor("#f59e0b")).toBe(true);
+    expect(isMachineColor("#123456")).toBe(false);
+    expect(tintBackground("#0f1115", null)).toBe("#0f1115");
+    expect(tintBackground("#000000", "#ffffff")).toBe("#1a1a1a");
+    expect(tintBackground("#0f1115", "#f59e0b")).toBe("#261f14");
   });
 });
 
@@ -289,24 +309,5 @@ describe("hostLabel", () => {
     expect(hostLabel("other-mac.local")).toBe("other-mac");
     expect(hostLabel("10.0.0.5")).toBe("10.0.0.5");
     expect(hostLabel("me@box")).toBe("box");
-  });
-});
-
-describe("filterSshHosts", () => {
-  const h = {
-    "me@alpha.local": { cwd: "/a", lastUsed: "2026-01-03T00:00:00Z" },
-    "me@beta": { cwd: null, lastUsed: "2026-01-02T00:00:00Z" },
-    "10.0.0.5": { cwd: "/c", lastUsed: "2026-01-01T00:00:00Z" },
-  };
-
-  it("returns all recents, newest first, for an empty query", () => {
-    expect(filterSshHosts(h, "").map((r) => r.host)).toEqual(["me@alpha.local", "me@beta", "10.0.0.5"]);
-  });
-
-  it("matches case-insensitively on host or folder and keeps recency order", () => {
-    expect(filterSshHosts(h, "BETA").map((r) => r.host)).toEqual(["me@beta"]);
-    expect(filterSshHosts(h, "/c").map((r) => r.host)).toEqual(["10.0.0.5"]);
-    expect(filterSshHosts(h, "me@").map((r) => r.host)).toEqual(["me@alpha.local", "me@beta"]);
-    expect(filterSshHosts(h, "zzz")).toEqual([]);
   });
 });

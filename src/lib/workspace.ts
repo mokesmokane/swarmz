@@ -3,6 +3,7 @@ import { addTab, allGroups, removeTerminal, type Layout, type LayoutNode } from 
 export interface SshConfig {
   host: string;
   cwd?: string | null;
+  machine?: string | null;
 }
 
 export interface ClaudeConfig {
@@ -30,7 +31,7 @@ export interface Workspace {
   version: 1;
   terminals: TerminalDef[];
   layout: Layout;
-  sshHistory?: SshHistory;
+  machines?: Machines;
 }
 
 export const EMPTY_SETTINGS: TerminalSettings = { ssh: null, claude: null, command: null, extra: {} };
@@ -107,33 +108,64 @@ export function needsRemoteFolder(s: TerminalSettings): boolean {
   return startupIsSsh(s) && !s.ssh?.cwd;
 }
 
-export interface SshHistoryEntry {
-  cwd: string | null;
+export const MACHINE_COLORS = ["#f59e0b", "#ef4444", "#ec4899", "#8b5cf6", "#3b82f6", "#06b6d4", "#22c55e", "#a3e635"] as const;
+export const MACHINES_MAX = 50;
+
+export interface MachineConfig {
+  alias?: string | null;
+  user?: string | null;
+  color?: string | null;
+  cwd?: string | null;
   lastUsed: string;
 }
-export type SshHistory = Record<string, SshHistoryEntry>;
-export const SSH_HISTORY_MAX = 20;
+export type Machines = Record<string, MachineConfig>;
 
-export function touchSshHistory(
-  h: SshHistory,
-  host: string,
-  cwd: string | null | undefined,
+export function machineLabel(name: string, cfg: MachineConfig | undefined): string {
+  const alias = cfg?.alias?.trim();
+  return alias ? alias : name;
+}
+
+export function machineHost(name: string, cfg: MachineConfig | undefined, defaultUser: string): string {
+  const user = cfg?.user?.trim() || defaultUser.trim();
+  return `${user}@${name}`;
+}
+
+export function touchMachine(
+  m: Machines,
+  name: string,
+  patch: Partial<Omit<MachineConfig, "lastUsed">>,
   now: string = new Date().toISOString(),
-): SshHistory {
-  const key = host.trim();
-  const prev = h[key];
-  const next: SshHistory = { ...h, [key]: { cwd: cwd === undefined ? (prev?.cwd ?? null) : cwd, lastUsed: now } };
+  opts: { bump?: boolean } = {},
+): Machines {
+  const prev = m[name];
+  const lastUsed = opts.bump === false && prev ? prev.lastUsed : now;
+  const next: Machines = { ...m, [name]: { ...prev, ...patch, lastUsed } };
   const keys = Object.keys(next).sort((a, b) => (next[b].lastUsed > next[a].lastUsed ? 1 : next[b].lastUsed < next[a].lastUsed ? -1 : 0));
-  const kept: SshHistory = {};
-  for (const k of keys.slice(0, SSH_HISTORY_MAX)) kept[k] = next[k];
+  const kept: Machines = {};
+  for (const k of keys.slice(0, MACHINES_MAX)) kept[k] = next[k];
   return kept;
 }
 
-export function recentSshHosts(h: SshHistory, limit = 8): Array<{ host: string } & SshHistoryEntry> {
-  return Object.entries(h)
-    .map(([host, e]) => ({ host, ...e }))
-    .sort((a, b) => (b.lastUsed > a.lastUsed ? 1 : b.lastUsed < a.lastUsed ? -1 : 0))
-    .slice(0, limit);
+const UNSUPPORTED_ALIAS = /["'`\\$\x00-\x1f\x7f]/;
+export function validateAlias(alias: string): string | null {
+  const a = alias.trim();
+  if (!a) return "alias cannot be empty";
+  if (a.length > 64 || UNSUPPORTED_ALIAS.test(a)) return "alias may not contain quotes, backslash, $ or control characters, and must be at most 64 characters";
+  return null;
+}
+
+export function isMachineColor(c: string | null | undefined): boolean {
+  return c === null || c === undefined || (MACHINE_COLORS as readonly string[]).includes(c);
+}
+
+export function tintBackground(base: string, color: string | null): string {
+  if (!color) return base;
+  const hex = (s: string) => [1, 3, 5].map((i) => parseInt(s.slice(i, i + 2), 16));
+  const [br, bg, bb] = hex(base);
+  const [cr, cg, cb] = hex(color);
+  const mix = (b: number, c: number) => Math.round(b * 0.9 + c * 0.1);
+  const out = [mix(br, cr), mix(bg, cg), mix(bb, cb)].map((v) => v.toString(16).padStart(2, "0")).join("");
+  return `#${out}`;
 }
 
 /** Rejects control characters (which could smuggle terminal escapes into a typed `cd`) in a
@@ -200,7 +232,7 @@ export function toWorkspace(input: {
   terminals: Record<string, { id: string; name: string; cwd: string }>;
   settings: Record<string, TerminalSettings>;
   layout: Layout;
-  sshHistory: SshHistory;
+  machines: Machines;
 }): Workspace {
   const terminals: TerminalDef[] = input.order
     .filter((id) => input.terminals[id])
@@ -209,12 +241,12 @@ export function toWorkspace(input: {
       const s = input.settings[id] ?? EMPTY_SETTINGS;
       return { ...s.extra, id: t.id, name: t.name, cwd: t.cwd, ssh: s.ssh, claude: s.claude, command: s.command };
     });
-  const history = input.sshHistory ?? {};
+  const machines = input.machines ?? {};
   return {
     version: 1,
     terminals,
     layout: input.layout,
-    ...(Object.keys(history).length ? { sshHistory: history } : {}),
+    ...(Object.keys(machines).length ? { machines } : {}),
   };
 }
 
@@ -223,12 +255,4 @@ export function hostLabel(host: string): string {
   const h = host.trim().replace(/^[^@]*@/, "");
   if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) return h;
   return h.split(".")[0] || h;
-}
-
-/** Recent hosts matching a typed query (host or last folder, case-insensitive), newest first. */
-export function filterSshHosts(h: SshHistory, query: string, limit = 8): Array<{ host: string } & SshHistoryEntry> {
-  const q = query.trim().toLowerCase();
-  const all = recentSshHosts(h, Number.MAX_SAFE_INTEGER);
-  const matched = q ? all.filter((r) => r.host.toLowerCase().includes(q) || (r.cwd ?? "").toLowerCase().includes(q)) : all;
-  return matched.slice(0, limit);
 }

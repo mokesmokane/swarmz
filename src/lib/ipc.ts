@@ -16,6 +16,22 @@ export interface RemoteListing {
   dirs: string[];
 }
 
+export interface TailscaleMachine {
+  name: string;
+  hostName: string;
+  ip: string | null;
+  os: string;
+  online: boolean;
+}
+
+export interface TailscaleStatus {
+  running: boolean;
+  message: string | null;
+  user: string;
+  self: TailscaleMachine | null;
+  peers: TailscaleMachine[];
+}
+
 function base64ToBytes(s: string): Uint8Array {
   const bin = atob(s);
   const out = new Uint8Array(bin.length);
@@ -44,4 +60,6 @@ export const ipc = {
   sshOpenMaster: (host: string) => invoke<boolean>("ssh_open_master", { host }),
   sshListDir: (host: string, path: string | null) => invoke<RemoteListing>("ssh_list_dir", { host, path }),
   terminalForegroundBusy: (id: string) => invoke<boolean>("terminal_foreground_busy", { id }),
+  tailscaleStatus: () => invoke<TailscaleStatus>("tailscale_status"),
+  tailscaleOpen: () => invoke<void>("tailscale_open"),
 };
