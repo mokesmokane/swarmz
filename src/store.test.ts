@@ -11,7 +11,7 @@ vi.mock("./lib/ipc", () => {
   });
   return {
     ipc: {
-      createTerminal: vi.fn(async (id: string, cwd: string) => info(id, cwd)),
+      createTerminal: vi.fn(async (id: string, cwd: string, _cols?: number, _rows?: number, name?: string) => info(id, cwd, name)),
       listTerminals: vi.fn(async () => []),
       writeTerminal: vi.fn(async () => {}),
       resizeTerminal: vi.fn(async () => {}),
@@ -28,6 +28,8 @@ vi.mock("./lib/ipc", () => {
       sshCheck: vi.fn(async () => false),
       sshListDir: vi.fn(async () => ({ path: "/", parent: null, dirs: [] })),
       terminalForegroundBusy: vi.fn(async () => false),
+      tailscaleStatus: vi.fn(async () => ({ running: true, message: null, user: "mokes", self: null, peers: [] })),
+      tailscaleOpen: vi.fn(async () => {}),
     },
   };
 });
@@ -37,7 +39,18 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true) }
 
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { ipc } from "./lib/ipc";
-import { __resetLoadGuard, __stopAllPolling, SAVE_DEBOUNCE_MS, SSH_POLL_MS, SSH_POLL_TIMEOUT_MS, SSH_SETTLE_MS, beforeSpawn, useStore } from "./store";
+import {
+  __resetLoadGuard,
+  __stopAllPolling,
+  SAVE_DEBOUNCE_MS,
+  SSH_POLL_MS,
+  SSH_POLL_TIMEOUT_MS,
+  SSH_SETTLE_MS,
+  beforeSpawn,
+  machineFor,
+  terminalColor,
+  useStore,
+} from "./store";
 import { findGroup, findGroupOf, type GroupNode, type SplitNode } from "./lib/layout";
 import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, shellQuote, toWorkspace, type Workspace } from "./lib/workspace";
 
@@ -59,7 +72,9 @@ beforeEach(() => {
     persistenceReady: true,
     sshConnected: {},
     sshConnecting: {},
-    sshHistory: {},
+    machines: {},
+    tailscale: null,
+    tailscaleError: null,
   });
   beforeSpawn.hook = async () => {};
   beforeSpawn.size = () => null;
@@ -379,7 +394,7 @@ describe("loadWorkspace", () => {
     } as unknown as Workspace);
     await useStore.getState().loadWorkspace();
     const s = useStore.getState();
-    const ws = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, sshHistory: s.sshHistory });
+    const ws = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines });
     expect((ws.terminals[0] as unknown as { note: string }).note).toBe("keep");
   });
 
@@ -746,7 +761,6 @@ describe("ssh two-step startup", () => {
       const s = useStore.getState();
       expect(s.settings.a.ssh?.cwd).toBe("/remote/proj");
       expect(s.settings.a.claude?.started).toBe(true);
-      expect(s.sshHistory["me@box"].cwd).toBe("/remote/proj");
     } finally {
       vi.useRealTimers();
     }
@@ -776,29 +790,6 @@ describe("ssh two-step startup", () => {
 
     useStore.getState().updateSettings("a", { ssh: { host: "me@box", cwd: "/newer" } });
     expect(useStore.getState().settings.a.claude?.sessionId).toBe(c.sessionId); // not started: keep id
-  });
-
-  it("forgetSshHost removes history and history round-trips through save", async () => {
-    vi.useFakeTimers();
-    try {
-      await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: null });
-      expect(useStore.getState().sshHistory["me@box"].cwd).toBe("/p");
-      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
-      const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
-      const ws = calls[calls.length - 1][0] as Workspace;
-      expect(ws.sshHistory?.["me@box"].cwd).toBe("/p");
-      useStore.getState().forgetSshHost("me@box");
-      expect(useStore.getState().sshHistory["me@box"]).toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("loadWorkspace restores sshHistory", async () => {
-    useStore.setState({ persistenceReady: false });
-    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({ version: 1, terminals: [], layout: null, sshHistory: { "x@y": { cwd: "/q", lastUsed: "t" } } });
-    await useStore.getState().loadWorkspace();
-    expect(useStore.getState().sshHistory["x@y"].cwd).toBe("/q");
   });
 
   it("restart stops an in-flight connection poll", async () => {
@@ -877,14 +868,85 @@ describe("ssh two-step startup", () => {
   });
 });
 
-describe("createSshTerminal reuses a remembered folder", () => {
-  it("falls back to the host's last folder when none is given, and keeps an explicit one", async () => {
-    useStore.setState({ sshHistory: { "me@box": { cwd: "/remembered", lastUsed: "2026-01-01T00:00:00Z" } } });
-    const a = await useStore.getState().createSshTerminal({ host: "me@box", claude: null });
-    expect(useStore.getState().settings[a].ssh?.cwd).toBe("/remembered");
-    const b = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/explicit", claude: null });
-    expect(useStore.getState().settings[b].ssh?.cwd).toBe("/explicit");
-    const c = await useStore.getState().createSshTerminal({ host: "me@box", cwd: null, claude: null });
-    expect(useStore.getState().settings[c].ssh?.cwd).toBeNull();
+describe("machines and tailscale", () => {
+  it("refreshTailscale stores the status or the error", async () => {
+    vi.mocked(ipc.tailscaleStatus).mockResolvedValueOnce({
+      running: true, message: null, user: "mokes", self: null,
+      peers: [{ name: "martins-mac-mini", hostName: "Mini", ip: "100.1.1.1", os: "macOS", online: true }],
+    });
+    await useStore.getState().refreshTailscale();
+    expect(useStore.getState().tailscale?.peers[0].name).toBe("martins-mac-mini");
+    expect(useStore.getState().tailscaleError).toBeNull();
+    vi.mocked(ipc.tailscaleStatus).mockRejectedValueOnce("boom");
+    await useStore.getState().refreshTailscale();
+    expect(useStore.getState().tailscaleError).toContain("boom");
+  });
+
+  it("createRemoteTerminal resolves user@name, names the tile after the alias, tags the machine, bumps lastUsed", async () => {
+    useStore.setState({
+      tailscale: { running: true, message: null, user: "mokes", self: null, peers: [] },
+      machines: { "martins-mac-mini": { alias: "desk mini", color: "#f59e0b", cwd: "/old", lastUsed: "2026-01-01T00:00:00Z" } },
+    });
+    const id = await useStore.getState().createRemoteTerminal({ machine: "martins-mac-mini", cwd: "/proj", claude: null });
+    const s = useStore.getState();
+    const calls = vi.mocked(ipc.createTerminal).mock.calls;
+    expect(calls[calls.length - 1][4]).toBe("desk mini");
+    expect(s.settings[id].ssh).toEqual({ host: "mokes@martins-mac-mini", cwd: "/proj", machine: "martins-mac-mini" });
+    expect(s.machines["martins-mac-mini"].lastUsed > "2026-01-01T00:00:00Z").toBe(true);
+    expect(s.machines["martins-mac-mini"].cwd).toBe("/proj");
+    expect(terminalColor(s, id)).toBe("#f59e0b");
+    expect(machineFor(s, id)?.name).toBe("martins-mac-mini");
+  });
+
+  it("createRemoteTerminal uses the machine's username and falls back to the remembered folder", async () => {
+    useStore.setState({
+      tailscale: { running: true, message: null, user: "mokes", self: null, peers: [] },
+      machines: { box: { user: "root", cwd: "/srv", lastUsed: "t" } },
+    });
+    const id = await useStore.getState().createRemoteTerminal({ machine: "box", cwd: null, claude: null });
+    expect(useStore.getState().settings[id].ssh?.host).toBe("root@box");
+    expect(useStore.getState().settings[id].ssh?.cwd).toBeNull();
+    const id2 = await useStore.getState().createRemoteTerminal({ machine: "box", cwd: undefined as unknown as null, claude: null });
+    expect(useStore.getState().settings[id2].ssh?.cwd).toBe("/srv");
+  });
+
+  it("updateMachine validates and renames open terminals that carry the old label", async () => {
+    useStore.setState({ tailscale: { running: true, message: null, user: "mokes", self: null, peers: [] }, machines: {} });
+    const id = await useStore.getState().createRemoteTerminal({ machine: "box", cwd: null, claude: null });
+    expect(useStore.getState().terminals[id].name).toBe("box");
+    expect(await useStore.getState().updateMachine("box", { alias: 'a"b' })).not.toBeNull();
+    expect(await useStore.getState().updateMachine("box", { color: "#000000" })).not.toBeNull();
+    expect(await useStore.getState().updateMachine("box", { alias: "home mini", color: "#3b82f6" })).toBeNull();
+    expect(useStore.getState().machines.box.alias).toBe("home mini");
+    expect(ipc.renameTerminal).toHaveBeenLastCalledWith(id, "home mini");
+  });
+
+  it("chooseRemoteDir records the folder on the machine", async () => {
+    useStore.setState({ tailscale: { running: true, message: null, user: "mokes", self: null, peers: [] }, machines: {} });
+    const id = await useStore.getState().createRemoteTerminal({ machine: "box", cwd: null, claude: null });
+    await useStore.getState().chooseRemoteDir(id, "/picked");
+    expect(useStore.getState().machines.box.cwd).toBe("/picked");
+  });
+
+  it("machines load from and save to the workspace; sshHistory is ignored", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ persistenceReady: false });
+      vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+        version: 1, terminals: [], layout: null,
+        machines: { box: { alias: "b", lastUsed: "t" } },
+        ...({ sshHistory: { "x@y": { cwd: "/q", lastUsed: "t" } } } as object),
+      });
+      await useStore.getState().loadWorkspace();
+      expect(useStore.getState().machines.box.alias).toBe("b");
+      await useStore.getState().updateMachine("box", { color: "#22c55e" });
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+      const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
+      const ws = calls[calls.length - 1][0] as Workspace;
+      expect(ws.machines?.box.color).toBe("#22c55e");
+      expect("sshHistory" in ws).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { homeDir } from "@tauri-apps/api/path";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { ipc, type TerminalInfo } from "./lib/ipc";
+import { ipc, type TerminalInfo, type TailscaleStatus } from "./lib/ipc";
 import {
   addTab,
   allGroups,
@@ -18,8 +18,11 @@ import {
 import {
   EMPTY_SETTINGS,
   hostLabel,
+  isMachineColor,
   isSafeRemotePath,
   isSafeSessionId,
+  machineHost,
+  machineLabel,
   reconcileLayout,
   sanitizeLayout,
   startupIsSsh,
@@ -27,9 +30,11 @@ import {
   startupSteps,
   startupUsesClaude,
   toWorkspace,
-  touchSshHistory,
+  touchMachine,
+  validateAlias,
   validateHost,
-  type SshHistory,
+  type MachineConfig,
+  type Machines,
   type TerminalSettings,
   type TerminalDef,
 } from "./lib/workspace";
@@ -65,6 +70,8 @@ export interface SshTerminalOptions {
   host: string;
   cwd?: string | null;
   claude?: { skipPermissions: boolean } | null;
+  name?: string;
+  machine?: string | null;
 }
 
 export interface WorkbenchState {
@@ -82,10 +89,16 @@ export interface WorkbenchState {
   persistenceReady: boolean;
   sshConnected: Record<string, boolean>;
   sshConnecting: Record<string, boolean>;
-  sshHistory: SshHistory;
+  machines: Machines;
+  tailscale: TailscaleStatus | null;
+  tailscaleError: string | null;
 
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
   createSshTerminal(opts: SshTerminalOptions, placement?: Placement): Promise<string>;
+  createRemoteTerminal(
+    opts: { machine: string; cwd: string | null; claude: { skipPermissions: boolean } | null },
+    placement?: Placement,
+  ): Promise<string>;
   closeTerminal(id: string): Promise<void>;
   restartTerminal(id: string): Promise<void>;
   renameTerminal(id: string, name: string): Promise<string | null>;
@@ -103,9 +116,40 @@ export interface WorkbenchState {
   runRemoteStep(id: string): Promise<void>;
   cancelConnecting(id: string): void;
   chooseRemoteDir(id: string, path: string): Promise<void>;
-  forgetSshHost(host: string): void;
   skipStartup(id: string): void;
   dismissPersistError(): void;
+  refreshTailscale(): Promise<void>;
+  updateMachine(name: string, patch: { alias?: string | null; user?: string | null; color?: string | null }): Promise<string | null>;
+}
+
+export function machineFor(s: WorkbenchState, id: string): { name: string; cfg: MachineConfig | undefined } | null {
+  const name = s.settings[id]?.ssh?.machine;
+  return name ? { name, cfg: s.machines[name] } : null;
+}
+
+export function terminalColor(s: WorkbenchState, id: string): string | null {
+  return machineFor(s, id)?.cfg?.color ?? null;
+}
+
+function sanitizeMachines(input: unknown): Machines {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return {};
+  const out: Machines = {};
+  for (const [name, value] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof value !== "object" || value === null) continue;
+    const v = value as Record<string, unknown>;
+    if (typeof v.lastUsed !== "string") continue;
+    const strOrNullOk = (k: string) => v[k] === undefined || v[k] === null || typeof v[k] === "string";
+    if (!strOrNullOk("alias") || !strOrNullOk("user") || !strOrNullOk("cwd")) continue;
+    if (!isMachineColor(v.color as string | null | undefined)) continue;
+    out[name] = {
+      lastUsed: v.lastUsed,
+      ...(v.alias !== undefined ? { alias: v.alias as string | null } : {}),
+      ...(v.user !== undefined ? { user: v.user as string | null } : {}),
+      ...(v.cwd !== undefined ? { cwd: v.cwd as string | null } : {}),
+      ...(v.color !== undefined ? { color: v.color as string | null } : {}),
+    };
+  }
+  return out;
 }
 
 function focusFor(layout: Layout, termId: string | null) {
@@ -390,7 +434,9 @@ export const useStore = create<WorkbenchState>((set) => ({
   persistenceReady: false,
   sshConnected: {},
   sshConnecting: {},
-  sshHistory: {},
+  machines: {},
+  tailscale: null,
+  tailscaleError: null,
 
   async createTerminal(cwd, placement) {
     const id = crypto.randomUUID();
@@ -419,15 +465,16 @@ export const useStore = create<WorkbenchState>((set) => ({
   async createSshTerminal(opts, placement) {
     const id = crypto.randomUUID();
     // A host used before keeps its last folder unless the caller gives one explicitly.
-    const remembered = useStore.getState().sshHistory[opts.host.trim()]?.cwd ?? null;
+    const machineName = opts.machine ?? null;
+    const remembered = machineName ? (useStore.getState().machines[machineName]?.cwd ?? null) : null;
     const rememberedOrGivenCwd = opts.cwd === undefined ? remembered : opts.cwd?.trim() || null;
     await beforeSpawn.hook(id);
     const dims = beforeSpawn.size(id) ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
     const home = await homeDir();
-    const info = await ipc.createTerminal(id, home, dims.cols, dims.rows, hostLabel(opts.host));
+    const info = await ipc.createTerminal(id, home, dims.cols, dims.rows, opts.name ?? hostLabel(opts.host));
     const settings: TerminalSettings = {
       ...EMPTY_SETTINGS,
-      ssh: { host: opts.host.trim(), cwd: rememberedOrGivenCwd },
+      ssh: { host: opts.host.trim(), cwd: rememberedOrGivenCwd, ...(machineName ? { machine: machineName } : {}) },
       claude: opts.claude
         ? { enabled: true, sessionId: crypto.randomUUID(), skipPermissions: opts.claude.skipPermissions, started: false }
         : null,
@@ -444,13 +491,24 @@ export const useStore = create<WorkbenchState>((set) => ({
         layout,
         settings: { ...s.settings, [info.id]: settings },
         startupPending: { ...s.startupPending, [info.id]: true },
-        sshHistory: touchSshHistory(s.sshHistory, opts.host, opts.cwd?.trim() || undefined),
+        machines: machineName ? touchMachine(s.machines, machineName, rememberedOrGivenCwd ? { cwd: rememberedOrGivenCwd } : {}) : s.machines,
         ...focusFor(layout, info.id),
       };
     });
     // The user asked for this connection right now, so run it without a click.
     await useStore.getState().runStartup(info.id);
     return info.id;
+  },
+
+  async createRemoteTerminal(opts, placement): Promise<string> {
+    const s = useStore.getState();
+    const cfg = s.machines[opts.machine];
+    const user = s.tailscale?.user ?? "";
+    if (!cfg?.user?.trim() && !user.trim()) throw "no username for this machine";
+    return useStore.getState().createSshTerminal(
+      { host: machineHost(opts.machine, cfg, user), cwd: opts.cwd, claude: opts.claude, name: machineLabel(opts.machine, cfg), machine: opts.machine },
+      placement,
+    );
   },
 
   async closeTerminal(id) {
@@ -573,7 +631,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       set({ persistenceReady: true });
       return;
     }
-    set({ sshHistory: ws.sshHistory ?? {} });
+    set({ machines: sanitizeMachines(ws.machines) });
     // openDefs sets persistenceReady itself: true when every def opened cleanly, false
     // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
     await openDefs(ws.terminals, ws.layout, set);
@@ -598,7 +656,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       set({ persistError: "no workspace file found — saving is paused until a successful Reload" });
       return;
     }
-    set({ sshHistory: ws.sshHistory ?? {} });
+    set({ machines: sanitizeMachines(ws.machines) });
     const wanted = new Set(ws.terminals.map((t) => t.id));
     const toClose = useStore.getState().order.filter((id) => !wanted.has(id));
     if (toClose.length > 0) {
@@ -713,7 +771,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       const { settings, note } = resetSessionIfFolderChanged(cur, { ...cur, ssh: { ...cur.ssh, cwd: clean } });
       return {
         settings: { ...s.settings, [id]: settings },
-        sshHistory: touchSshHistory(s.sshHistory, cur.ssh.host, clean),
+        machines: cur.ssh.machine ? touchMachine(s.machines, cur.ssh.machine, { cwd: clean }) : s.machines,
         startupNotes: note ? { ...s.startupNotes, [id]: note } : s.startupNotes,
         startupPending: { ...s.startupPending, [id]: !s.sshConnected[id] },
       };
@@ -727,16 +785,47 @@ export const useStore = create<WorkbenchState>((set) => ({
     }
   },
 
-  forgetSshHost(host) {
-    set((s) => ({ sshHistory: omit(s.sshHistory, host) }));
-  },
-
   skipStartup(id) {
     set((s) => ({ startupPending: { ...s.startupPending, [id]: false }, startupNotes: omit(s.startupNotes, id) }));
   },
 
   dismissPersistError() {
     set({ persistError: null });
+  },
+
+  async refreshTailscale() {
+    try {
+      const st = await ipc.tailscaleStatus();
+      set({ tailscale: st, tailscaleError: null });
+    } catch (e) {
+      set({ tailscaleError: typeof e === "string" ? e : String(e) });
+    }
+  },
+
+  async updateMachine(name, patch) {
+    if (patch.alias !== undefined && patch.alias !== null && patch.alias.trim() !== "") {
+      const err = validateAlias(patch.alias);
+      if (err) return err;
+    }
+    if (patch.color !== undefined && !isMachineColor(patch.color)) return "unsupported colour";
+    const before = useStore.getState();
+    const oldLabel = machineLabel(name, before.machines[name]);
+    const cleaned = {
+      ...(patch.alias !== undefined ? { alias: patch.alias?.trim() || null } : {}),
+      ...(patch.user !== undefined ? { user: patch.user?.trim() || null } : {}),
+      ...(patch.color !== undefined ? { color: patch.color } : {}),
+    };
+    set((s) => ({ machines: touchMachine(s.machines, name, cleaned, undefined, { bump: false }) }));
+    const after = useStore.getState();
+    const newLabel = machineLabel(name, after.machines[name]);
+    if (newLabel !== oldLabel) {
+      for (const id of after.order) {
+        if (after.settings[id]?.ssh?.machine === name && after.terminals[id]?.name === oldLabel) {
+          await useStore.getState().renameTerminal(id, newLabel);
+        }
+      }
+    }
+    return null;
   },
 }));
 
@@ -749,7 +838,7 @@ function scheduleSave() {
     if (!useStore.getState().persistenceReady) return;
     const s = useStore.getState();
     ipc
-      .saveWorkspace(toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, sshHistory: s.sshHistory }))
+      .saveWorkspace(toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines }))
       .catch((e) => {
         useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });
       });
@@ -763,7 +852,7 @@ useStore.subscribe((s, prev) => {
     s.order !== prev.order ||
     s.layout !== prev.layout ||
     s.settings !== prev.settings ||
-    s.sshHistory !== prev.sshHistory
+    s.machines !== prev.machines
   ) {
     scheduleSave();
   }
