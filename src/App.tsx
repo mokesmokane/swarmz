@@ -12,6 +12,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const timer = setInterval(() => {
+      const s = useStore.getState();
+      const hasMachine = s.order.some((id) => s.settings[id]?.ssh?.machine);
+      if (hasMachine) void s.refreshTailscale();
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const side = splitShortcut(e);
       if (!side) return;

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { useStore } from "../store";
+import { useStore, terminalColor } from "../store";
 import { attach, fitAndFocus } from "../lib/xtermRegistry";
-import { EMPTY_SETTINGS, needsRemoteFolder, startupLine } from "../lib/workspace";
+import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, tintBackground } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
 
 export function TerminalPane({ id }: { id: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const info = useStore((s) => s.terminals[id]);
+  const color = useStore((s) => terminalColor(s, id));
   const focused = useStore((s) => s.focusedTerminalId === id);
   const restart = useStore((s) => s.restartTerminal);
   const [restartError, setRestartError] = useState<string | null>(null);
@@ -62,7 +63,8 @@ export function TerminalPane({ id }: { id: string }) {
   }, [focused, id]);
 
   return (
-    <div className="relative h-full w-full bg-[#0f1115]">
+    <div className="relative h-full w-full" style={{ backgroundColor: tintBackground("#0f1115", color) }}>
+      {color && <div className="absolute inset-x-0 top-0 z-20 h-0.5" style={{ backgroundColor: color }} />}
       {bar === "pending" && (
         <div className="absolute inset-x-0 top-0 z-10 flex max-h-24 items-start gap-2 overflow-y-auto border-b border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-300">
           <span className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono" title={line ?? undefined}>{line}</span>

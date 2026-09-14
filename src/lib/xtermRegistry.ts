@@ -2,7 +2,10 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { ipc } from "./ipc";
-import { beforeSpawn, useStore } from "../store";
+import { beforeSpawn, terminalColor, useStore } from "../store";
+import { tintBackground } from "./workspace";
+
+const BASE_BG = "#0f1115";
 
 interface Entry {
   term: Terminal;
@@ -70,7 +73,15 @@ export function attach(id: string, container: HTMLElement): { term: Terminal; fi
   } else if (entry.term.element && entry.term.element.parentElement !== container) {
     container.appendChild(entry.term.element);
   }
+  applyColor(id);
   return { term: entry.term, fit: entry.fit };
+}
+
+export function applyColor(id: string): void {
+  const entry = entries.get(id);
+  if (!entry) return;
+  const bg = tintBackground(BASE_BG, terminalColor(useStore.getState(), id));
+  if (entry.term.options.theme?.background !== bg) entry.term.options.theme = { ...entry.term.options.theme, background: bg };
 }
 
 export function fitAndFocus(id: string): void {
@@ -100,4 +111,8 @@ useStore.subscribe((state, prev) => {
   for (const id of Object.keys(prev.terminals)) {
     if (!(id in state.terminals)) dispose(id);
   }
+});
+
+useStore.subscribe((s, prev) => {
+  if (s.settings !== prev.settings || s.machines !== prev.machines) for (const id of entries.keys()) applyColor(id);
 });

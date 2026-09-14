@@ -1,9 +1,9 @@
 import { useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useStore } from "../store";
+import { useStore, machineFor, terminalColor } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
 import { TerminalSettings } from "./TerminalSettings";
-import { NewSshTerminal } from "./NewSshTerminal";
+import { NewRemoteTerminal } from "./NewRemoteTerminal";
 
 function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? p;
@@ -13,6 +13,9 @@ function Row({ id }: { id: string }) {
   const t = useStore((s) => s.terminals[id]);
   const settings = useStore((s) => s.settings[id]);
   const focused = useStore((s) => s.focusedTerminalId === id);
+  const color = useStore((s) => terminalColor(s, id));
+  const machine = useStore((s) => machineFor(s, id));
+  const online = useStore((s) => (machine ? s.tailscale?.peers.find((p) => p.name === machine.name)?.online : undefined));
   const focusTerminal = useStore((s) => s.focusTerminal);
   const closeTerminal = useStore((s) => s.closeTerminal);
   const renameTerminal = useStore((s) => s.renameTerminal);
@@ -51,9 +54,13 @@ function Row({ id }: { id: string }) {
       className={`group flex cursor-default select-none items-center gap-2 rounded px-2 py-1.5 text-sm ${
         focused ? "bg-neutral-800 text-neutral-100" : "text-neutral-300 hover:bg-neutral-800/60"
       }`}
-      title={t.cwd}
+      style={{ borderLeft: color ? `2px solid ${color}` : undefined }}
+      title={machine ? (online ? "online on Tailscale" : "offline") : t.cwd}
     >
-      <span className={`h-2 w-2 shrink-0 rounded-full ${exited ? "bg-neutral-600" : "bg-emerald-500"}`} />
+      <span
+        className={`h-2 w-2 shrink-0 rounded-full ${exited ? "bg-neutral-600" : color ? "" : "bg-emerald-500"}`}
+        style={{ backgroundColor: exited ? undefined : (color ?? undefined) }}
+      />
       <div className="min-w-0 flex-1">
         {editing ? (
           <div>
@@ -96,7 +103,7 @@ function Row({ id }: { id: string }) {
               )}
             </div>
             <div className="truncate text-xs text-neutral-500">
-              {settings?.ssh?.host ? `ssh ${settings.ssh.host}` : basename(t.cwd)}
+              {machine ? machine.name : settings?.ssh?.host ? `ssh ${settings.ssh.host}` : basename(t.cwd)}
             </div>
           </>
         )}
@@ -191,11 +198,11 @@ export function Sidebar() {
             className="flex-1 rounded border border-neutral-700 px-2 py-1 text-neutral-200 hover:bg-neutral-800"
             onClick={() => setMenu("ssh")}
           >
-            SSH terminal…
+            Remote terminal…
           </button>
         </div>
       )}
-      {menu === "ssh" && <NewSshTerminal onClose={() => setMenu("closed")} />}
+      {menu === "ssh" && <NewRemoteTerminal onClose={() => setMenu("closed")} />}
       {error && <div className="px-3 py-1 text-xs text-red-400">{error}</div>}
       {persistError && (
         <div className="flex items-start gap-2 px-3 py-1 text-xs text-amber-300">

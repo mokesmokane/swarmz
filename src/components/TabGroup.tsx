@@ -1,6 +1,7 @@
 import { useState, type DragEvent } from "react";
 import type { GroupNode, Side } from "../lib/layout";
-import { useStore, type Placement } from "../store";
+import { useStore, terminalColor, type Placement } from "../store";
+import { machineLabel } from "../lib/workspace";
 import { TerminalPane } from "./TerminalPane";
 
 export const DRAG_MIME = "application/x-swarmz-terminal";
@@ -22,6 +23,17 @@ const ZONES: { side: Side; className: string }[] = [
   { side: "bottom", className: "left-1/4 bottom-0 h-1/4 w-1/2" },
 ];
 
+/** Reads this one tab's colour without re-rendering the whole tab strip on every colour change. */
+function TabDot({ id, exited }: { id: string; exited: boolean }) {
+  const color = useStore((s) => terminalColor(s, id));
+  return (
+    <span
+      className={`h-2 w-2 rounded-full ${color ? "" : exited ? "bg-neutral-600" : "bg-emerald-500"}`}
+      style={{ backgroundColor: color ?? undefined }}
+    />
+  );
+}
+
 export function TabGroup({ group }: { group: GroupNode }) {
   const terminals = useStore((s) => s.terminals);
   const focusedGroupId = useStore((s) => s.focusedGroupId);
@@ -35,6 +47,8 @@ export function TabGroup({ group }: { group: GroupNode }) {
   const createSshTerminal = useStore((s) => s.createSshTerminal);
   const activeSsh = useStore((s) => s.settings[group.active]?.ssh ?? null);
   const activeClaude = useStore((s) => s.settings[group.active]?.claude ?? null);
+  const activeMachine = useStore((s) => s.settings[group.active]?.ssh?.machine ?? null);
+  const machines = useStore((s) => s.machines);
   const [hoverZone, setHoverZone] = useState<Side | "center" | null>(null);
 
   const isFocused = focusedGroupId === group.id;
@@ -44,7 +58,16 @@ export function TabGroup({ group }: { group: GroupNode }) {
   const openWith = (placement: Placement) => {
     if (activeSsh?.host) {
       const claude = activeClaude?.enabled ? { skipPermissions: activeClaude.skipPermissions } : null;
-      createSshTerminal({ host: activeSsh.host, cwd: activeSsh.cwd ?? null, claude }, placement).catch(() => {});
+      createSshTerminal(
+        {
+          host: activeSsh.host,
+          cwd: activeSsh.cwd ?? null,
+          claude,
+          machine: activeMachine,
+          name: activeMachine ? machineLabel(activeMachine, machines[activeMachine]) : undefined,
+        },
+        placement,
+      ).catch(() => {});
       return;
     }
     if (!activeCwd) return;
@@ -105,7 +128,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
                 active ? "bg-[#0f1115] text-neutral-100" : "text-neutral-400 hover:bg-neutral-800"
               }`}
             >
-              <span className={`h-2 w-2 rounded-full ${t?.exited !== null && t?.exited !== undefined ? "bg-neutral-600" : "bg-emerald-500"}`} />
+              <TabDot id={id} exited={t?.exited !== null && t?.exited !== undefined} />
               <span className="max-w-[160px] truncate">{t?.name ?? id}</span>
               <button
                 className="ml-1 rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"

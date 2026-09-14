@@ -22,7 +22,9 @@ export function TerminalSettings({ id, onClose }: { id: string; onClose: () => v
   if (!info) return null;
 
   const draft: Settings = {
-    ssh: host.trim() ? { host: host.trim(), cwd: remoteCwd.trim() || null } : null,
+    ssh: host.trim()
+      ? { host: host.trim(), cwd: remoteCwd.trim() || null, ...(current.ssh?.machine ? { machine: current.ssh.machine } : {}) }
+      : null,
     claude: claudeOn
       ? { enabled: true, sessionId: current.claude?.sessionId ?? "", skipPermissions: skip, started: current.claude?.started ?? false }
       : current.claude
@@ -64,7 +66,14 @@ export function TerminalSettings({ id, onClose }: { id: string; onClose: () => v
         {info.cwd}
       </div>
       <label className={label}>SSH host (optional)</label>
-      <input className={field} placeholder="user@host" value={host} onChange={(e) => setHost(e.target.value)} />
+      {current.ssh?.machine ? (
+        <>
+          <div className="truncate rounded border border-neutral-800 px-1.5 py-0.5 text-neutral-400">{current.ssh.host}</div>
+          <div className="mt-0.5 text-[10px] text-neutral-500">managed by the machine's settings</div>
+        </>
+      ) : (
+        <input className={field} placeholder="user@host" value={host} onChange={(e) => setHost(e.target.value)} />
+      )}
       <label className={label}>Remote directory (optional)</label>
       <div className="flex gap-1">
         <input className={field} placeholder="/path/on/remote" value={remoteCwd} onChange={(e) => setRemoteCwd(e.target.value)} disabled={!host.trim()} />
