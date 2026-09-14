@@ -324,6 +324,50 @@ export function mergeForFirstSync(local: Workspace, peer: Workspace): Workspace 
   };
 }
 
+/** JSON with every object's keys in a fixed order, so two values that differ only in key order
+ * stringify identically. Array order is preserved (it is meaningful for `tabs` and `sizes`). */
+function stableJson(v: unknown): string {
+  const stable = (x: unknown): unknown => {
+    if (Array.isArray(x)) return x.map(stable);
+    if (x && typeof x === "object") {
+      const o = x as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const k of Object.keys(o).sort()) if (o[k] !== undefined) out[k] = stable(o[k]);
+      return out;
+    }
+    return x;
+  };
+  return JSON.stringify(stable(v));
+}
+
+/**
+ * Whether two workspaces describe the same thing, ignoring how they are written down: terminals
+ * are compared as a map keyed by id (so the order they appear in is irrelevant), the layout
+ * structurally, machines as a map, and `sync` not at all.
+ *
+ * This is what decides whether the state reached after an adoption still differs from the file
+ * that was adopted. It must NOT be order-sensitive: two machines reconcile the same file into the
+ * same set of terminals but can list them differently, and an order-sensitive comparison would
+ * make each machine "fix" the other's order forever, one revision per round.
+ */
+export function sameWorkspaceContent(a: Workspace, b: Workspace): boolean {
+  const key = (ws: Workspace) => {
+    const terminals: Record<string, unknown> = {};
+    for (const t of ws.terminals) {
+      terminals[t.id] = {
+        name: t.name,
+        cwd: t.cwd,
+        ssh: t.ssh ?? null,
+        claude: t.claude ?? null,
+        command: t.command ?? null,
+        origin: t.origin ?? null,
+      };
+    }
+    return stableJson({ terminals, layout: ws.layout, machines: ws.machines ?? {} });
+  };
+  return key(a) === key(b);
+}
+
 export function toWorkspace(input: {
   order: string[];
   terminals: Record<string, { id: string; name: string; cwd: string }>;

@@ -13,6 +13,7 @@ import {
   machineHost,
   machineLabel,
   mergeForFirstSync,
+  sameWorkspaceContent,
   needsRemoteFolder,
   openingFor,
   pickNewest,
@@ -395,6 +396,30 @@ describe("openingFor", () => {
     expect(o.settings.foreign).toBeUndefined();
     expect(o.settings.origin).toBe("gone");
     expect(o.note).toBe("origin machine gone is not on your tailnet; opened locally");
+  });
+});
+
+describe("sameWorkspaceContent", () => {
+  const t = (id: string, name = id): TerminalDef => ({ id, name, cwd: `/${id}`, ssh: null, claude: null, command: null });
+  const ws = (terminals: TerminalDef[], extra: Partial<Workspace> = {}): Workspace => ({
+    version: 1, terminals, layout: { kind: "group", id: "g", tabs: terminals.map((x) => x.id), active: terminals[0]?.id ?? "" }, ...extra,
+  });
+  it("ignores the order terminals are listed in, and `sync` entirely", () => {
+    const a = ws([t("a"), t("b")]);
+    const b = { ...ws([t("b"), t("a")]), layout: a.layout, sync: { revision: 9, updatedAt: "t", updatedBy: "x" } };
+    expect(sameWorkspaceContent(a, b)).toBe(true);
+    expect(sameWorkspaceContent(a, ws([t("a"), t("b")], { machines: {} }))).toBe(true);
+  });
+  it("sees a changed name, cwd, ssh, claude, command, origin, layout, machine set or terminal set", () => {
+    const base = ws([t("a"), t("b")]);
+    expect(sameWorkspaceContent(base, ws([t("a"), t("b", "renamed")]))).toBe(false);
+    expect(sameWorkspaceContent(base, ws([t("a"), { ...t("b"), cwd: "/elsewhere" }]))).toBe(false);
+    expect(sameWorkspaceContent(base, ws([t("a"), { ...t("b"), ssh: { host: "me@x", cwd: null } }]))).toBe(false);
+    expect(sameWorkspaceContent(base, ws([t("a"), { ...t("b"), command: "ls" }]))).toBe(false);
+    expect(sameWorkspaceContent(base, ws([t("a"), { ...t("b"), origin: "desk" }]))).toBe(false);
+    expect(sameWorkspaceContent(base, ws([t("a")]))).toBe(false);
+    expect(sameWorkspaceContent(base, { ...base, layout: null })).toBe(false);
+    expect(sameWorkspaceContent(base, { ...base, machines: { desk: { lastUsed: "t" } } })).toBe(false);
   });
 });
 

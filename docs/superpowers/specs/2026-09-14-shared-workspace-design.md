@@ -87,13 +87,25 @@ All copies are full copies; the newest `revision` wins.
   timeout against it. Pushes run in parallel.
 - **First sync**: a machine that has never synced (no local `sync`) has
   terminals that are not an older copy of the peer's workspace — they were
-  never shared. Its first pull adopts the *union*: the peer's workspace plus
-  any local terminal the peer does not have, with the peer's `sync`. The union
-  is then saved (bumped, pushed), so the peers converge on it too.
+  never shared. Such a machine **pulls before it ever pushes**: it does not
+  flush a pending save ahead of the pull, and a save made before that first
+  pull completes is written locally but not pushed — otherwise its own file
+  would reach the peers first and the union below would merge its copy back
+  into itself. Its first pull adopts the *union*: the peer's workspace plus any
+  local terminal the peer does not have, with the peer's `sync`. The union is
+  then saved (bumped, pushed), so the peers converge on it too.
 - **Changes during an adoption**: edits made while adopting are not saved (the
   file already is the adopted state). When adoption finishes, the reconciled
   state is compared with the file that was adopted and saved if it differs, so
-  a rename or a new tile made meanwhile is not lost.
+  a rename or a new tile made meanwhile is not lost. The comparison is
+  *content-based*: terminals as a map keyed by id (name, cwd, ssh, claude,
+  command, origin), the layout structurally, machines as a map, `sync` ignored.
+  It must not depend on the order things are written down, or two machines that
+  reconcile the same file into the same terminals — listed differently — would
+  rewrite each other once per poll forever. For the same reason adoption also
+  takes the file's **sidebar order** (ids it lists, in its order, then anything
+  local it does not mention), not just its layout. An adoption that fails
+  before it reconciles writes nothing back.
 - **Closed terminals**: when an adoption closes N ≥ 1 terminals it says so in
   the dismissible workspace line: `N terminal(s) closed by a workspace update
   from <updatedBy>`.
