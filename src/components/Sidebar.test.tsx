@@ -93,4 +93,37 @@ describe("Sidebar", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it("shows a synced status line when sync is enabled and tailscale is running", () => {
+    useStore.setState({
+      sync: {
+        enabled: true,
+        lastPullAt: new Date().toISOString(),
+        lastPushAt: null,
+        peersOk: 1,
+        peersTotal: 2,
+        error: null,
+        adopting: false,
+      },
+      tailscale: {
+        running: true,
+        message: null,
+        user: "mokes",
+        self: { name: "here", hostName: "h", ip: null, os: "macOS", online: true },
+        peers: [],
+      },
+    });
+
+    render(<Sidebar />);
+
+    expect(screen.getByRole("button", { name: /Synced · 1\/2 machines/ }).textContent).toContain("Synced · 1/2 machines");
+  });
+
+  it("shows sync off when tailscale is not available", () => {
+    useStore.setState({ tailscale: null });
+
+    render(<Sidebar />);
+
+    expect(screen.getByRole("button", { name: /Sync off/ }).textContent).toContain("Sync off");
+  });
 });

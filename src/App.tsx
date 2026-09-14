@@ -3,21 +3,39 @@ import { Sidebar } from "./components/Sidebar";
 import { Workbench } from "./components/Workbench";
 import { splitShortcut } from "./lib/shortcuts";
 import { findGroup } from "./lib/layout";
-import { useStore } from "./store";
+import { SYNC_PULL_MS, SYNC_STAT_MS, useStore } from "./store";
 import "./lib/xtermRegistry";
 
 export default function App() {
   useEffect(() => {
-    void useStore.getState().loadWorkspace();
+    void useStore
+      .getState()
+      .loadWorkspace()
+      .then(async () => {
+        await useStore.getState().refreshTailscale();
+        await useStore.getState().pullWorkspace();
+      });
   }, []);
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      const s = useStore.getState();
-      const hasMachine = s.order.some((id) => s.settings[id]?.ssh?.machine);
-      if (hasMachine) void s.refreshTailscale();
-    }, 30_000);
-    return () => clearInterval(timer);
+    const pullTimer = setInterval(() => {
+      void useStore
+        .getState()
+        .refreshTailscale()
+        .then(() => useStore.getState().pullWorkspace());
+    }, SYNC_PULL_MS);
+    const statTimer = setInterval(() => {
+      void useStore.getState().checkExternalChange();
+    }, SYNC_STAT_MS);
+    const onFocus = () => {
+      void useStore.getState().pullWorkspace();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearInterval(pullTimer);
+      clearInterval(statTimer);
+      window.removeEventListener("focus", onFocus);
+    };
   }, []);
 
   useEffect(() => {

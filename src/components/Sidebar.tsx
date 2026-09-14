@@ -8,6 +8,27 @@ function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? p;
 }
 
+function SyncLine() {
+  const enabled = useStore((s) => s.sync.enabled);
+  const error = useStore((s) => s.sync.error);
+  const peersOk = useStore((s) => s.sync.peersOk);
+  const peersTotal = useStore((s) => s.sync.peersTotal);
+  const lastPullAt = useStore((s) => s.sync.lastPullAt);
+  const running = useStore((s) => s.tailscale?.running ?? false);
+  const pull = useStore((s) => s.pullWorkspace);
+  const ago = lastPullAt ? `${Math.max(0, Math.round((Date.now() - Date.parse(lastPullAt)) / 1000))} s ago` : "not yet";
+  const text = !running ? "Sync off · Tailscale not running" : !enabled ? "Sync off" : error ? `Sync error · ${error}` : `Synced · ${peersOk}/${peersTotal} machines · ${ago}`;
+  return (
+    <button
+      className={`w-full truncate border-b border-neutral-800 px-3 py-1 text-left text-[10px] ${error ? "text-amber-300" : "text-neutral-500"} hover:bg-neutral-800/60`}
+      title={error ?? "Click to sync now"}
+      onClick={() => void pull()}
+    >
+      {text}
+    </button>
+  );
+}
+
 function Row({ id }: { id: string }) {
   const t = useStore((s) => s.terminals[id]);
   const settings = useStore((s) => s.settings[id]);
@@ -18,6 +39,7 @@ function Row({ id }: { id: string }) {
   // already narrows machineFor's result down to a primitive.
   const color = useStore((s) => terminalColor(s, id));
   const machineName = useStore((s) => s.settings[id]?.ssh?.machine ?? null);
+  const machineCwd = useStore((s) => s.settings[id]?.ssh?.cwd ?? "");
   const online = useStore((s) =>
     machineName ? (s.tailscale?.peers.find((p) => p.name === machineName)?.online ?? null) : null,
   );
@@ -111,7 +133,11 @@ function Row({ id }: { id: string }) {
               )}
             </div>
             <div className="truncate text-xs text-neutral-500">
-              {machineName ? machineName : settings?.ssh?.host ? `ssh ${settings.ssh.host}` : basename(t.cwd)}
+              {machineName
+                ? `${machineName}${machineCwd ? ` · ${machineCwd}` : ""}`
+                : settings?.ssh?.host
+                  ? `ssh ${settings.ssh.host}`
+                  : basename(t.cwd)}
             </div>
           </>
         )}
@@ -179,6 +205,7 @@ export function Sidebar() {
           </button>
         </div>
       </div>
+      <SyncLine />
       {menu === "open" && (
         <div className="flex gap-1 border-b border-neutral-800 p-2 text-xs">
           <button
