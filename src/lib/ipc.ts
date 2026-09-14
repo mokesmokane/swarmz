@@ -62,4 +62,7 @@ export const ipc = {
   terminalForegroundBusy: (id: string) => invoke<boolean>("terminal_foreground_busy", { id }),
   tailscaleStatus: () => invoke<TailscaleStatus>("tailscale_status"),
   tailscaleOpen: () => invoke<void>("tailscale_open"),
+  workspacePull: (host: string) => invoke<string | null>("workspace_pull", { host }),
+  workspacePush: (host: string, contents: string) => invoke<void>("workspace_push", { host, contents }),
+  workspaceStat: () => invoke<number | null>("workspace_stat"),
 };

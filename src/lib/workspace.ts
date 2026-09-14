@@ -17,6 +17,10 @@ export interface TerminalSettings {
   ssh: SshConfig | null;
   claude: ClaudeConfig | null;
   command: string | null;
+  /** Name of the machine that owns this terminal's local working directory; null/absent means "here". */
+  origin?: string | null;
+  /** In-memory marker for a local terminal whose origin is another machine; never persisted. */
+  foreign?: { cwd: string } | null;
   /** Fields carried in workspace.json that this app version does not know about; preserved on save. */
   extra?: Record<string, unknown>;
 }
@@ -27,11 +31,18 @@ export interface TerminalDef extends TerminalSettings {
   cwd: string;
 }
 
+export interface SyncMeta {
+  revision: number;
+  updatedAt: string;
+  updatedBy: string;
+}
+
 export interface Workspace {
   version: 1;
   terminals: TerminalDef[];
   layout: Layout;
   machines?: Machines;
+  sync?: SyncMeta;
 }
 
 export const EMPTY_SETTINGS: TerminalSettings = { ssh: null, claude: null, command: null, extra: {} };
@@ -239,19 +250,65 @@ export function reconcileLayout(layout: Layout, ids: string[]): Layout {
   return out;
 }
 
+export function isNewer(a: SyncMeta | undefined | null, b: SyncMeta | undefined | null): boolean {
+  if (!a) return false;
+  if (!b) return true;
+  if (a.revision !== b.revision) return a.revision > b.revision;
+  return a.updatedAt > b.updatedAt;
+}
+
+export function pickNewest(cands: Workspace[]): Workspace | null {
+  let best: Workspace | null = null;
+  for (const c of cands) if (!best || isNewer(c.sync, best.sync)) best = c;
+  return best;
+}
+
+export function bumpSync(prev: SyncMeta | undefined | null, self: string, now: string = new Date().toISOString()): SyncMeta {
+  return { revision: (prev?.revision ?? 0) + 1, updatedAt: now, updatedBy: self };
+}
+
+export function openingFor(
+  def: TerminalDef,
+  self: string | null,
+  machines: Machines,
+  defaultUser: string,
+): { cwd: string | null; settings: TerminalSettings } {
+  const origin = def.origin ?? null;
+  const base: TerminalSettings = { ssh: def.ssh ?? null, claude: def.claude ?? null, command: def.command ?? null, origin };
+  if (def.ssh) return { cwd: null, settings: base };
+  if (self && origin && origin !== self) {
+    return {
+      cwd: null,
+      settings: { ...base, ssh: { host: machineHost(origin, machines[origin], defaultUser), cwd: def.cwd, machine: origin }, foreign: { cwd: def.cwd } },
+    };
+  }
+  return { cwd: def.cwd, settings: base };
+}
+
 export function toWorkspace(input: {
   order: string[];
   terminals: Record<string, { id: string; name: string; cwd: string }>;
   settings: Record<string, TerminalSettings>;
   layout: Layout;
   machines: Machines;
+  sync?: SyncMeta | null;
 }): Workspace {
   const terminals: TerminalDef[] = input.order
     .filter((id) => input.terminals[id])
     .map((id) => {
       const t = input.terminals[id];
       const s = input.settings[id] ?? EMPTY_SETTINGS;
-      return { ...s.extra, id: t.id, name: t.name, cwd: t.cwd, ssh: s.ssh, claude: s.claude, command: s.command };
+      const foreign = s.foreign ?? null;
+      return {
+        ...s.extra,
+        id: t.id,
+        name: t.name,
+        cwd: foreign ? foreign.cwd : t.cwd,
+        ssh: foreign ? null : s.ssh,
+        claude: s.claude,
+        command: s.command,
+        ...(s.origin ? { origin: s.origin } : {}),
+      };
     });
   const machines = input.machines ?? {};
   return {
@@ -259,6 +316,7 @@ export function toWorkspace(input: {
     terminals,
     layout: input.layout,
     ...(Object.keys(machines).length ? { machines } : {}),
+    ...(input.sync ? { sync: input.sync } : {}),
   };
 }
 

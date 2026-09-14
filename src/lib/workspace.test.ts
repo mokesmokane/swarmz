@@ -2,15 +2,19 @@ import { describe, expect, it } from "vitest";
 import { addTab, splitWith, type GroupNode, type SplitNode } from "./layout";
 import {
   EMPTY_SETTINGS,
+  bumpSync,
   claudeLine,
   hostLabel,
   isLayoutNode,
   isMachineColor,
+  isNewer,
   isSafeRemotePath,
   isSafeSessionId,
   machineHost,
   machineLabel,
   needsRemoteFolder,
+  openingFor,
+  pickNewest,
   reconcileLayout,
   sanitizeLayout,
   shellQuote,
@@ -26,6 +30,9 @@ import {
   validateHost,
   validateUser,
   type ClaudeConfig,
+  type Machines,
+  type SyncMeta,
+  type Workspace,
 } from "./workspace";
 
 const claude: ClaudeConfig = { enabled: true, sessionId: "11111111-2222-3333-4444-555555555555", skipPermissions: false, started: false };
@@ -321,5 +328,72 @@ describe("hostLabel", () => {
     expect(hostLabel("other-mac.local")).toBe("other-mac");
     expect(hostLabel("10.0.0.5")).toBe("10.0.0.5");
     expect(hostLabel("me@box")).toBe("box");
+  });
+});
+
+describe("sync meta", () => {
+  const a = { revision: 3, updatedAt: "2026-01-02T00:00:00Z", updatedBy: "a" };
+  const b = { revision: 3, updatedAt: "2026-01-01T00:00:00Z", updatedBy: "b" };
+  it("isNewer compares revision then updatedAt and treats missing as oldest", () => {
+    expect(isNewer(a, b)).toBe(true);
+    expect(isNewer(b, a)).toBe(false);
+    expect(isNewer({ ...b, revision: 4 }, a)).toBe(true);
+    expect(isNewer(a, undefined)).toBe(true);
+    expect(isNewer(undefined, a)).toBe(false);
+    expect(isNewer(a, a)).toBe(false);
+  });
+  it("pickNewest returns the newest candidate or null", () => {
+    const w = (sync: SyncMeta | undefined): Workspace => ({ version: 1, terminals: [], layout: null, ...(sync ? { sync } : {}) });
+    expect(pickNewest([])).toBeNull();
+    expect(pickNewest([w(b), w(a), w(undefined)])?.sync).toEqual(a);
+  });
+  it("bumpSync increments and stamps", () => {
+    expect(bumpSync(undefined, "me", "t1")).toEqual({ revision: 1, updatedAt: "t1", updatedBy: "me" });
+    expect(bumpSync(a, "me", "t2")).toEqual({ revision: 4, updatedAt: "t2", updatedBy: "me" });
+  });
+});
+
+describe("openingFor", () => {
+  const machines: Machines = { desk: { user: "root", color: "#ef4444", lastUsed: "t" } };
+  const base = { id: "t", name: "n", cwd: "/proj", ssh: null, claude: null, command: null };
+  it("remote defs open unchanged", () => {
+    const def = { ...base, ssh: { host: "me@x", cwd: "/r", machine: "x" }, origin: "elsewhere" };
+    const o = openingFor(def, "here", machines, "mokes");
+    expect(o.cwd).toBeNull();
+    expect(o.settings.ssh).toEqual(def.ssh);
+    expect(o.settings.foreign).toBeUndefined();
+  });
+  it("locals from here or without origin open locally", () => {
+    expect(openingFor({ ...base, origin: "here" }, "here", machines, "mokes").cwd).toBe("/proj");
+    expect(openingFor(base, "here", machines, "mokes").cwd).toBe("/proj");
+    expect(openingFor({ ...base, origin: "desk" }, null, machines, "mokes").cwd).toBe("/proj");
+  });
+  it("locals from another machine open as foreign remotes", () => {
+    const o = openingFor({ ...base, origin: "desk", claude: { enabled: true, sessionId: "s", skipPermissions: false, started: true } }, "here", machines, "mokes");
+    expect(o.cwd).toBeNull();
+    expect(o.settings.ssh).toEqual({ host: "root@desk", cwd: "/proj", machine: "desk" });
+    expect(o.settings.foreign).toEqual({ cwd: "/proj" });
+    expect(o.settings.origin).toBe("desk");
+    expect(o.settings.claude?.sessionId).toBe("s");
+  });
+});
+
+describe("toWorkspace with sync and foreign locals", () => {
+  it("writes origin and sync, and writes a foreign local back unchanged", () => {
+    const ws = toWorkspace({
+      order: ["f", "l"],
+      terminals: { f: { id: "f", name: "F", cwd: "/home/me" }, l: { id: "l", name: "L", cwd: "/here" } },
+      settings: {
+        f: { ...EMPTY_SETTINGS, origin: "desk", foreign: { cwd: "/proj" }, ssh: { host: "root@desk", cwd: "/proj", machine: "desk" } },
+        l: { ...EMPTY_SETTINGS, origin: "here" },
+      },
+      layout: null,
+      machines: {},
+      sync: { revision: 7, updatedAt: "t", updatedBy: "here" },
+    });
+    expect(ws.sync).toEqual({ revision: 7, updatedAt: "t", updatedBy: "here" });
+    expect(ws.terminals[0]).toMatchObject({ id: "f", cwd: "/proj", ssh: null, origin: "desk" });
+    expect("foreign" in ws.terminals[0]).toBe(false);
+    expect(ws.terminals[1]).toMatchObject({ id: "l", cwd: "/here", origin: "here" });
   });
 });
