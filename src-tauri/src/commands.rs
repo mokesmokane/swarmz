@@ -275,3 +275,18 @@ pub async fn tailscale_open() -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?
 }
+
+#[tauri::command]
+pub async fn workspace_pull(host: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::sync::pull(&host)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn workspace_push(host: String, contents: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::sync::push(&host, &contents)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn workspace_stat() -> Result<Option<u64>, String> {
+    tauri::async_runtime::spawn_blocking(crate::sync::stat_local).await.map_err(|e| e.to_string())?
+}

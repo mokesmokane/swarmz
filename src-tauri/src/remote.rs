@@ -122,13 +122,22 @@ pub(crate) struct Finished {
     pub(crate) stderr: String,
 }
 
-pub(crate) fn run_with_timeout(mut cmd: Command, timeout: Duration, program: &str) -> Result<Finished, String> {
+pub(crate) fn run_with_timeout_input(mut cmd: Command, timeout: Duration, program: &str, input: Option<&[u8]>) -> Result<Finished, String> {
     let mut child = cmd
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("could not run {program}: {e}"))?;
+    if let Some(bytes) = input {
+        if let Some(mut stdin) = child.stdin.take() {
+            let bytes = bytes.to_vec();
+            std::thread::spawn(move || {
+                use std::io::Write;
+                let _ = stdin.write_all(&bytes);
+            });
+        }
+    }
     let start = Instant::now();
 
     // Drain stdout/stderr concurrently on their own threads so a listing
@@ -173,6 +182,10 @@ pub(crate) fn run_with_timeout(mut cmd: Command, timeout: Duration, program: &st
             Err(e) => return Err(format!("{program} failed: {e}")),
         }
     }
+}
+
+pub(crate) fn run_with_timeout(cmd: Command, timeout: Duration, program: &str) -> Result<Finished, String> {
+    run_with_timeout_input(cmd, timeout, program, None)
 }
 
 fn base_command() -> Result<Command, String> {
