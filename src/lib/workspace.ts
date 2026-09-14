@@ -183,6 +183,18 @@ export function validateHost(host: string): string | null {
   return null;
 }
 
+const UNSUPPORTED_USER = /^[A-Za-z0-9._-]+$/;
+/** Validates a machine's ssh username. Empty (after trimming) means "use the default" and is
+ * not an error — only a non-empty value that fails the allowlist is rejected. */
+export function validateUser(user: string): string | null {
+  const u = user.trim();
+  if (!u) return null;
+  if (u.length > 32 || !UNSUPPORTED_USER.test(u)) {
+    return "username may only contain letters, digits, . _ -";
+  }
+  return null;
+}
+
 export function isLayoutNode(v: unknown): v is LayoutNode {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;

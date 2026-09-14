@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "../store";
 import { machineHost, machineLabel } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
@@ -24,7 +24,6 @@ export function NewRemoteTerminal({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState<"form" | "connecting" | "pick">("form");
   const [createdId, setCreatedId] = useState<string | null>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
   const chooseRemoteDir = useStore((s) => s.chooseRemoteDir);
   const runStartup = useStore((s) => s.runStartup);
   const connected = useStore((s) => (createdId ? s.sshConnected[createdId] === true : false));
@@ -114,16 +113,25 @@ export function NewRemoteTerminal({ onClose }: { onClose: () => void }) {
     return (
       <div className="border-b border-neutral-800 p-2 text-xs text-neutral-300">
         <div className="text-amber-300">{tailscale?.message ?? tailscaleError ?? "Checking Tailscale…"}</div>
+        {error && <div className="mt-1 text-red-400">{error}</div>}
         <div className="mt-2 flex justify-end gap-2">
           <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={onClose}>Cancel</button>
-          <button className="rounded px-2 py-0.5 text-neutral-300 hover:bg-neutral-800" onClick={() => void ipc.tailscaleOpen().catch(() => {})}>Open Tailscale</button>
+          <button
+            className="rounded px-2 py-0.5 text-neutral-300 hover:bg-neutral-800"
+            onClick={() => {
+              setError(null);
+              ipc.tailscaleOpen().catch((e) => setError(typeof e === "string" ? e : String(e)));
+            }}
+          >
+            Open Tailscale
+          </button>
           <button className="rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-500" onClick={() => void refresh()}>Retry</button>
         </div>
       </div>
     );
   }
   return (
-    <div ref={rootRef} className="border-b border-neutral-800 p-2 text-xs">
+    <div className="border-b border-neutral-800 p-2 text-xs">
       <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-neutral-500">
         <span>Machines on your tailnet</span>
         <button className="text-neutral-500 hover:text-neutral-200" title="Refresh" onClick={() => void refresh()}>↻</button>

@@ -122,13 +122,13 @@ pub(crate) struct Finished {
     pub(crate) stderr: String,
 }
 
-pub(crate) fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Finished, String> {
+pub(crate) fn run_with_timeout(mut cmd: Command, timeout: Duration, program: &str) -> Result<Finished, String> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("could not run ssh: {e}"))?;
+        .map_err(|e| format!("could not run {program}: {e}"))?;
     let start = Instant::now();
 
     // Drain stdout/stderr concurrently on their own threads so a listing
@@ -166,11 +166,11 @@ pub(crate) fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Fi
                     // see EOF and finish; join them to avoid leaking.
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
-                    return Err("ssh timed out".into());
+                    return Err(format!("{program} timed out"));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            Err(e) => return Err(format!("ssh failed: {e}")),
+            Err(e) => return Err(format!("{program} failed: {e}")),
         }
     }
 }
@@ -219,7 +219,7 @@ pub fn check(host: &str) -> Result<bool, String> {
     let host = validate_host(host)?;
     let mut cmd = base_command()?;
     cmd.arg("-O").arg("check").arg(&host);
-    let done = run_with_timeout(cmd, Duration::from_secs(5))?;
+    let done = run_with_timeout(cmd, Duration::from_secs(5), "ssh")?;
     Ok(done.status.success())
 }
 
@@ -230,7 +230,7 @@ pub fn list_dir(host: &str, path: Option<&str>) -> Result<RemoteListing, String>
     }
     let mut cmd = base_command()?;
     cmd.arg("-o").arg("ControlMaster=no").arg("-o").arg("BatchMode=yes").arg(&host).arg(list_command(path));
-    let done = run_with_timeout(cmd, Duration::from_secs(10))?;
+    let done = run_with_timeout(cmd, Duration::from_secs(10), "ssh")?;
     if !done.status.success() {
         let code = done.status.code().unwrap_or(-1);
         if code == 255 {
@@ -318,7 +318,7 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("head -c 300000 /dev/zero | tr '\\0' 'a'; echo; echo done");
         let started = Instant::now();
-        let done = run_with_timeout(cmd, Duration::from_secs(10)).unwrap();
+        let done = run_with_timeout(cmd, Duration::from_secs(10), "sh").unwrap();
         assert!(started.elapsed() < Duration::from_secs(10));
         assert!(done.status.success());
         assert!(done.stdout.len() > 200_000);
@@ -329,10 +329,10 @@ mod tests {
         let mut cmd = Command::new("sleep");
         cmd.arg("5");
         let started = Instant::now();
-        let result = run_with_timeout(cmd, Duration::from_secs(1));
+        let result = run_with_timeout(cmd, Duration::from_secs(1), "sleep");
         assert!(started.elapsed() < Duration::from_secs(2));
         let err = result.unwrap_err();
-        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(err.contains("sleep timed out"), "unexpected error: {err}");
     }
 
     #[test]

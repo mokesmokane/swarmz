@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useStore, machineFor, terminalColor } from "../store";
+import { useStore, terminalColor } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
 import { TerminalSettings } from "./TerminalSettings";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
@@ -13,9 +13,15 @@ function Row({ id }: { id: string }) {
   const t = useStore((s) => s.terminals[id]);
   const settings = useStore((s) => s.settings[id]);
   const focused = useStore((s) => s.focusedTerminalId === id);
+  // Select primitives only (a plain string/boolean/null): machineFor/its cfg return a fresh
+  // object on every call, and with zustand 5's default (no) equality check a hook selector that
+  // returns a new object every render re-renders forever. terminalColor is safe because it
+  // already narrows machineFor's result down to a primitive.
   const color = useStore((s) => terminalColor(s, id));
-  const machine = useStore((s) => machineFor(s, id));
-  const online = useStore((s) => (machine ? s.tailscale?.peers.find((p) => p.name === machine.name)?.online : undefined));
+  const machineName = useStore((s) => s.settings[id]?.ssh?.machine ?? null);
+  const online = useStore((s) =>
+    machineName ? (s.tailscale?.peers.find((p) => p.name === machineName)?.online ?? null) : null,
+  );
   const focusTerminal = useStore((s) => s.focusTerminal);
   const closeTerminal = useStore((s) => s.closeTerminal);
   const renameTerminal = useStore((s) => s.renameTerminal);
@@ -55,7 +61,11 @@ function Row({ id }: { id: string }) {
         focused ? "bg-neutral-800 text-neutral-100" : "text-neutral-300 hover:bg-neutral-800/60"
       }`}
       style={{ borderLeft: color ? `2px solid ${color}` : undefined }}
-      title={machine ? (online ? "online on Tailscale" : "offline") : t.cwd}
+      title={
+        machineName
+          ? `${online === true ? "online on Tailscale" : online === false ? "offline" : "Tailscale status unknown"} · ${t.cwd}`
+          : t.cwd
+      }
     >
       <span
         className={`h-2 w-2 shrink-0 rounded-full ${exited ? "bg-neutral-600" : color ? "" : "bg-emerald-500"}`}
@@ -103,7 +113,7 @@ function Row({ id }: { id: string }) {
               )}
             </div>
             <div className="truncate text-xs text-neutral-500">
-              {machine ? machine.name : settings?.ssh?.host ? `ssh ${settings.ssh.host}` : basename(t.cwd)}
+              {machineName ? machineName : settings?.ssh?.host ? `ssh ${settings.ssh.host}` : basename(t.cwd)}
             </div>
           </>
         )}

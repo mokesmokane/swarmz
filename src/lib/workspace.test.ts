@@ -24,6 +24,7 @@ import {
   touchMachine,
   validateAlias,
   validateHost,
+  validateUser,
   type ClaudeConfig,
 } from "./workspace";
 
@@ -291,6 +292,17 @@ describe("machines", () => {
     expect(validateAlias("")).not.toBeNull();
     expect(validateAlias("a\"b")).not.toBeNull();
     expect(validateAlias("x".repeat(65))).not.toBeNull();
+  });
+
+  it("validateUser: empty means use the default, otherwise a strict allowlist", () => {
+    expect(validateUser("")).toBeNull();
+    expect(validateUser("   ")).toBeNull();
+    expect(validateUser("mokes")).toBeNull();
+    expect(validateUser("root_1.2-3")).toBeNull();
+    expect(validateUser("a b")).not.toBeNull();
+    expect(validateUser("me@x")).not.toBeNull();
+    expect(validateUser("x".repeat(33))).not.toBeNull();
+    expect(validateUser("x".repeat(32))).toBeNull();
   });
 
   it("colours", () => {

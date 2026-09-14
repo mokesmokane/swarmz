@@ -10,6 +10,8 @@ pub struct SshConfig {
     pub host: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -100,7 +102,7 @@ mod tests {
                 id: "t1".into(),
                 name: "api".into(),
                 cwd: "/tmp".into(),
-                ssh: Some(SshConfig { host: "me@host".into(), cwd: Some("/remote".into()) }),
+                ssh: Some(SshConfig { host: "me@host".into(), cwd: Some("/remote".into()), machine: Some("martins-mac-mini".into()) }),
                 claude: Some(ClaudeConfig {
                     enabled: true,
                     session_id: "s1".into(),
@@ -171,6 +173,31 @@ mod tests {
         assert_eq!(ws.extra.get("generatedBy").unwrap(), "some-other-tool");
         save_to(&path, &ws).unwrap();
         assert!(fs::read_to_string(&path).unwrap().contains("some-other-tool"));
+    }
+
+    #[test]
+    fn ssh_machine_round_trips_and_is_written_to_disk() {
+        let path = temp_path("ssh-machine");
+        let ws = Workspace {
+            version: 1,
+            terminals: vec![TerminalDef {
+                id: "t1".into(),
+                name: "mini".into(),
+                cwd: "/tmp".into(),
+                ssh: Some(SshConfig { host: "mokes@martins-mac-mini".into(), cwd: None, machine: Some("martins-mac-mini".into()) }),
+                claude: None,
+                command: None,
+                extra: serde_json::Map::new(),
+            }],
+            layout: serde_json::Value::Null,
+            extra: serde_json::Map::new(),
+        };
+        save_to(&path, &ws).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"machine\""), "expected machine field in saved JSON, got: {text}");
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded, ws);
+        assert_eq!(loaded.terminals[0].ssh.as_ref().unwrap().machine.as_deref(), Some("martins-mac-mini"));
     }
 
     #[test]

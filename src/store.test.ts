@@ -921,6 +921,26 @@ describe("machines and tailscale", () => {
     expect(ipc.renameTerminal).toHaveBeenLastCalledWith(id, "home mini");
   });
 
+  it("updateMachine rejects an invalid username", async () => {
+    useStore.setState({ tailscale: { running: true, message: null, user: "mokes", self: null, peers: [] }, machines: {} });
+    await useStore.getState().createRemoteTerminal({ machine: "box", cwd: null, claude: null });
+    expect(await useStore.getState().updateMachine("box", { user: "a b" })).toContain("username");
+    expect(await useStore.getState().updateMachine("box", { user: "me@x" })).toContain("username");
+    expect(await useStore.getState().updateMachine("box", { user: "root" })).toBeNull();
+    expect(useStore.getState().machines.box.user).toBe("root");
+  });
+
+  it("createRemoteTerminal rejects when the resolved host is invalid", async () => {
+    useStore.setState({
+      tailscale: { running: true, message: null, user: "mokes", self: null, peers: [] },
+      // Bypass updateMachine's own validation to simulate a bad value already on disk.
+      machines: { box: { user: "a b", lastUsed: "t" } },
+    });
+    await expect(useStore.getState().createRemoteTerminal({ machine: "box", cwd: null, claude: null })).rejects.toContain(
+      "cannot connect",
+    );
+  });
+
   it("chooseRemoteDir records the folder on the machine", async () => {
     useStore.setState({ tailscale: { running: true, message: null, user: "mokes", self: null, peers: [] }, machines: {} });
     const id = await useStore.getState().createRemoteTerminal({ machine: "box", cwd: null, claude: null });
@@ -948,5 +968,41 @@ describe("machines and tailscale", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("drops invalid machine entries on load and notes the count", async () => {
+    useStore.setState({ persistenceReady: false });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [],
+      layout: null,
+      machines: {
+        good: { lastUsed: "t" },
+        "bad host!": { lastUsed: "t" },
+        other: { lastUsed: "t", cwd: "bad\u0007cwd" },
+      },
+    } as unknown as Workspace);
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(Object.keys(s.machines)).toEqual(["good"]);
+    expect(s.persistError).toContain("2 machine entries");
+    expect(s.persistError).toContain("invalid");
+  });
+
+  it("caps machines loaded from workspace.json at 50, newest lastUsed first", async () => {
+    useStore.setState({ persistenceReady: false });
+    const machines: Record<string, { lastUsed: string }> = {};
+    for (let i = 0; i < 60; i++) machines[`h${i}`] = { lastUsed: new Date(Date.UTC(2026, 1, 1, 0, i)).toISOString() };
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [],
+      layout: null,
+      machines,
+    } as unknown as Workspace);
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(Object.keys(s.machines).length).toBe(50);
+    expect(s.machines.h59).toBeDefined();
+    expect(s.machines.h0).toBeUndefined();
   });
 });

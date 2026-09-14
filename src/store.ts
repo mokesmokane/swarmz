@@ -33,6 +33,8 @@ import {
   touchMachine,
   validateAlias,
   validateHost,
+  validateUser,
+  MACHINES_MAX,
   type MachineConfig,
   type Machines,
   type TerminalSettings,
@@ -122,25 +124,67 @@ export interface WorkbenchState {
   updateMachine(name: string, patch: { alias?: string | null; user?: string | null; color?: string | null }): Promise<string | null>;
 }
 
+/**
+ * NOT safe to use as a zustand hook selector: it allocates a fresh `{ name, cfg }` object on
+ * every call, and zustand 5 has no default equality check, so `useStore((s) => machineFor(s, id))`
+ * would make the component re-render on every store update forever. Call it inside a plain
+ * function (a store action, a non-hook selector like `terminalColor`, or a test), or — in a
+ * component — select the primitives it would have read (e.g. `s.settings[id]?.ssh?.machine`)
+ * directly instead.
+ */
 export function machineFor(s: WorkbenchState, id: string): { name: string; cfg: MachineConfig | undefined } | null {
   const name = s.settings[id]?.ssh?.machine;
   return name ? { name, cfg: s.machines[name] } : null;
 }
 
+/**
+ * Safe to use as a hook selector: unlike `machineFor`, this returns a primitive (a string or
+ * null), so zustand's default `Object.is` comparison is enough to avoid rerendering when the
+ * value hasn't changed — no `useShallow` needed. Any new selector derived from `machineFor`
+ * should follow the same rule: return a primitive, not the object.
+ */
 export function terminalColor(s: WorkbenchState, id: string): string | null {
   return machineFor(s, id)?.cfg?.color ?? null;
 }
 
-function sanitizeMachines(input: unknown): Machines {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) return {};
+/** Loaded from workspace.json: parses and validates each machine entry, dropping any whose key
+ * is not a valid host or whose string fields fail validation, and caps the result at
+ * `MACHINES_MAX` entries (newest `lastUsed` first). */
+function sanitizeMachines(input: unknown): { machines: Machines; dropped: number } {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return { machines: {}, dropped: 0 };
   const out: Machines = {};
+  let dropped = 0;
   for (const [name, value] of Object.entries(input as Record<string, unknown>)) {
-    if (typeof value !== "object" || value === null) continue;
+    if (validateHost(name) !== null) {
+      dropped += 1;
+      continue;
+    }
+    if (typeof value !== "object" || value === null) {
+      dropped += 1;
+      continue;
+    }
     const v = value as Record<string, unknown>;
-    if (typeof v.lastUsed !== "string") continue;
+    if (typeof v.lastUsed !== "string") {
+      dropped += 1;
+      continue;
+    }
     const strOrNullOk = (k: string) => v[k] === undefined || v[k] === null || typeof v[k] === "string";
-    if (!strOrNullOk("alias") || !strOrNullOk("user") || !strOrNullOk("cwd")) continue;
-    if (!isMachineColor(v.color as string | null | undefined)) continue;
+    if (!strOrNullOk("alias") || !strOrNullOk("user") || !strOrNullOk("cwd")) {
+      dropped += 1;
+      continue;
+    }
+    if (!isMachineColor(v.color as string | null | undefined)) {
+      dropped += 1;
+      continue;
+    }
+    if (typeof v.cwd === "string" && !isSafeRemotePath(v.cwd)) {
+      dropped += 1;
+      continue;
+    }
+    if (typeof v.user === "string" && validateUser(v.user) !== null) {
+      dropped += 1;
+      continue;
+    }
     out[name] = {
       lastUsed: v.lastUsed,
       ...(v.alias !== undefined ? { alias: v.alias as string | null } : {}),
@@ -149,7 +193,13 @@ function sanitizeMachines(input: unknown): Machines {
       ...(v.color !== undefined ? { color: v.color as string | null } : {}),
     };
   }
-  return out;
+  // The cap trims excess entries (oldest first), which is routine housekeeping rather than an
+  // invalid-data condition, so it is not counted in `dropped` (that count drives the "invalid
+  // and were dropped" persistError note).
+  const keys = Object.keys(out).sort((a, b) => (out[b].lastUsed > out[a].lastUsed ? 1 : out[b].lastUsed < out[a].lastUsed ? -1 : 0));
+  const capped: Machines = {};
+  for (const k of keys.slice(0, MACHINES_MAX)) capped[k] = out[k];
+  return { machines: capped, dropped };
 }
 
 function focusFor(layout: Layout, termId: string | null) {
@@ -189,6 +239,10 @@ export function __resetLoadGuard() {
 const UNSAFE_SESSION_NOTE = "claude session id in workspace.json was invalid; a new session was created";
 const INVALID_HOST_NOTE = "ssh host in workspace.json is invalid and was ignored";
 const UNSAFE_CWD_NOTE = "ssh remote directory in workspace.json contained unsupported characters and was ignored";
+
+function machineDropNote(dropped: number): string {
+  return `${dropped} machine ${dropped === 1 ? "entry" : "entries"} in workspace.json were invalid and were dropped`;
+}
 
 const KNOWN_DEF_KEYS = new Set(["id", "name", "cwd", "ssh", "claude", "command"]);
 
@@ -505,8 +559,11 @@ export const useStore = create<WorkbenchState>((set) => ({
     const cfg = s.machines[opts.machine];
     const user = s.tailscale?.user ?? "";
     if (!cfg?.user?.trim() && !user.trim()) throw "no username for this machine";
+    const host = machineHost(opts.machine, cfg, user);
+    const hostErr = validateHost(host);
+    if (hostErr) throw `cannot connect: ${hostErr}`;
     return useStore.getState().createSshTerminal(
-      { host: machineHost(opts.machine, cfg, user), cwd: opts.cwd, claude: opts.claude, name: machineLabel(opts.machine, cfg), machine: opts.machine },
+      { host, cwd: opts.cwd, claude: opts.claude, name: machineLabel(opts.machine, cfg), machine: opts.machine },
       placement,
     );
   },
@@ -631,7 +688,8 @@ export const useStore = create<WorkbenchState>((set) => ({
       set({ persistenceReady: true });
       return;
     }
-    set({ machines: sanitizeMachines(ws.machines) });
+    const { machines, dropped } = sanitizeMachines(ws.machines);
+    set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
     // openDefs sets persistenceReady itself: true when every def opened cleanly, false
     // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
     await openDefs(ws.terminals, ws.layout, set);
@@ -656,7 +714,8 @@ export const useStore = create<WorkbenchState>((set) => ({
       set({ persistError: "no workspace file found — saving is paused until a successful Reload" });
       return;
     }
-    set({ machines: sanitizeMachines(ws.machines) });
+    const { machines, dropped } = sanitizeMachines(ws.machines);
+    set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
     const wanted = new Set(ws.terminals.map((t) => t.id));
     const toClose = useStore.getState().order.filter((id) => !wanted.has(id));
     if (toClose.length > 0) {
@@ -805,6 +864,10 @@ export const useStore = create<WorkbenchState>((set) => ({
   async updateMachine(name, patch) {
     if (patch.alias !== undefined && patch.alias !== null && patch.alias.trim() !== "") {
       const err = validateAlias(patch.alias);
+      if (err) return err;
+    }
+    if (patch.user !== undefined && patch.user !== null) {
+      const err = validateUser(patch.user);
       if (err) return err;
     }
     if (patch.color !== undefined && !isMachineColor(patch.color)) return "unsupported colour";

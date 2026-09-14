@@ -96,7 +96,7 @@ pub fn status() -> Result<TailscaleStatus, String> {
     };
     let mut cmd = Command::new(cli);
     cmd.arg("status").arg("--json");
-    let done = run_with_timeout(cmd, Duration::from_secs(5))?;
+    let done = run_with_timeout(cmd, Duration::from_secs(5), "tailscale")?;
     if done.stdout.trim().is_empty() {
         let msg = done.stderr.trim();
         return Ok(not_running(if msg.is_empty() { "Tailscale did not respond".into() } else { msg.to_string() }, &user, None));
