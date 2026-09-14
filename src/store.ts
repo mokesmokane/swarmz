@@ -16,13 +16,17 @@ import {
   type Side,
 } from "./lib/layout";
 import {
+  bumpSync,
   EMPTY_SETTINGS,
   hostLabel,
   isMachineColor,
+  isNewer,
   isSafeRemotePath,
   isSafeSessionId,
   machineHost,
   machineLabel,
+  openingFor,
+  pickNewest,
   reconcileLayout,
   sanitizeLayout,
   startupIsSsh,
@@ -37,8 +41,10 @@ import {
   MACHINES_MAX,
   type MachineConfig,
   type Machines,
+  type SyncMeta,
   type TerminalSettings,
   type TerminalDef,
+  type Workspace,
 } from "./lib/workspace";
 
 const DEFAULT_COLS = 80;
@@ -49,6 +55,9 @@ export const SAVE_DEBOUNCE_MS = 500;
 export const SSH_POLL_MS = 500;
 export const SSH_POLL_TIMEOUT_MS = 120_000;
 export const SSH_SETTLE_MS = 300;
+
+export const SYNC_PULL_MS = 30_000;
+export const SYNC_STAT_MS = 5_000;
 
 // Note: this store does NOT import xtermRegistry directly (that would create
 // an import cycle, since xtermRegistry imports beforeSpawn/useStore from
@@ -94,6 +103,17 @@ export interface WorkbenchState {
   machines: Machines;
   tailscale: TailscaleStatus | null;
   tailscaleError: string | null;
+  selfMachine: string | null;
+  syncMeta: SyncMeta | null;
+  sync: {
+    enabled: boolean;
+    lastPullAt: string | null;
+    lastPushAt: string | null;
+    peersOk: number;
+    peersTotal: number;
+    error: string | null;
+    adopting: boolean;
+  };
 
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
   createSshTerminal(opts: SshTerminalOptions, placement?: Placement): Promise<string>;
@@ -113,6 +133,8 @@ export interface WorkbenchState {
   setDragging(id: string | null): void;
   loadWorkspace(): Promise<void>;
   reloadWorkspace(): Promise<void>;
+  pullWorkspace(): Promise<void>;
+  checkExternalChange(): Promise<void>;
   updateSettings(id: string, patch: Partial<TerminalSettings>): void;
   runStartup(id: string): Promise<void>;
   runRemoteStep(id: string): Promise<void>;
@@ -244,7 +266,7 @@ function machineDropNote(dropped: number): string {
   return `${dropped} machine ${dropped === 1 ? "entry" : "entries"} in workspace.json were invalid and were dropped`;
 }
 
-const KNOWN_DEF_KEYS = new Set(["id", "name", "cwd", "ssh", "claude", "command"]);
+const KNOWN_DEF_KEYS = new Set(["id", "name", "cwd", "ssh", "claude", "command", "origin"]);
 
 /** Fields on a loaded def that this app version does not know about; kept so they round-trip on save. */
 function extraFromDef(def: TerminalDef): Record<string, unknown> {
@@ -255,8 +277,19 @@ function extraFromDef(def: TerminalDef): Record<string, unknown> {
   return extra;
 }
 
-function settingsFromDef(d: TerminalDef): TerminalSettings {
-  return { ssh: d.ssh ?? null, claude: d.claude ?? null, command: d.command ?? null, extra: extraFromDef(d) };
+/** The settings a def should open with: `openingFor` resolves origin/foreign/ssh, plus this
+ * app version's unknown-field passthrough. Used for both newly-spawned defs and the bulk
+ * settings pass over already-open terminals (so an already-open foreign local keeps its
+ * derived ssh when the workspace is reconciled). */
+function settingsFromDef(d: TerminalDef, self: string | null, machines: Machines, user: string): TerminalSettings {
+  const opening = openingFor(d, self, machines, user);
+  // `origin` is pulled out and re-added last (after `extra`) rather than left wherever
+  // `openingFor` placed it, so this always produces the same key order as `EMPTY_SETTINGS`-based
+  // settings (ssh, claude, command, ..., extra, origin) — openDefs' bulk pass compares settings
+  // with JSON.stringify to decide whether an already-open terminal's startup bar should
+  // re-arm, and that comparison is key-order sensitive.
+  const { origin, ...rest } = opening.settings;
+  return { ...rest, extra: extraFromDef(d), origin: origin ?? self ?? null };
 }
 
 function regenerateIfUnsafe(def: TerminalDef): { def: TerminalDef; note: string | null } {
@@ -285,16 +318,20 @@ async function openDefs(
 ): Promise<{ anyFailed: boolean }> {
   const preOpenIds = new Set(useStore.getState().order);
   const normalized = new Map(allDefs.map((d) => [d.id, regenerateIfUnsafe(d)]));
+  const { selfMachine, machines, tailscale } = useStore.getState();
+  const defaultUser = tailscale?.user ?? "";
   let failedCount = 0;
   for (const def of defs) {
     const { def: regenerated, note: unsafeNote } = normalized.get(def.id) ?? regenerateIfUnsafe(def);
     try {
-      const { info, note } = await spawnDef(regenerated);
+      const opening = openingFor(regenerated, selfMachine, machines, defaultUser);
+      const { info, note } = await spawnDef({ ...regenerated, cwd: opening.cwd ?? (await homeDir()) });
       const startupNote = unsafeNote ?? note;
+      const settings = settingsFromDef(regenerated, selfMachine, machines, defaultUser);
       set((s) => ({
         terminals: { ...s.terminals, [info.id]: info },
         order: [...s.order, info.id],
-        settings: { ...s.settings, [info.id]: settingsFromDef(regenerated) },
+        settings: { ...s.settings, [info.id]: settings },
         startupNotes: startupNote ? { ...s.startupNotes, [info.id]: startupNote } : s.startupNotes,
         lastCwd: info.cwd,
       }));
@@ -309,7 +346,7 @@ async function openDefs(
       let startupNotes = s.startupNotes;
       for (const [id, { def: d, note }] of normalized) {
         if (s.terminals[id]) {
-          settings[id] = settingsFromDef(d);
+          settings[id] = settingsFromDef(d, selfMachine, machines, defaultUser);
           if (note) startupNotes = { ...startupNotes, [id]: note };
         }
       }
@@ -491,12 +528,16 @@ export const useStore = create<WorkbenchState>((set) => ({
   machines: {},
   tailscale: null,
   tailscaleError: null,
+  selfMachine: null,
+  syncMeta: null,
+  sync: { enabled: false, lastPullAt: null, lastPushAt: null, peersOk: 0, peersTotal: 0, error: null, adopting: false },
 
   async createTerminal(cwd, placement) {
     const id = crypto.randomUUID();
     await beforeSpawn.hook(id);
     const dims = beforeSpawn.size(id) ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
     const info = await ipc.createTerminal(id, cwd, dims.cols, dims.rows);
+    const origin = useStore.getState().selfMachine ?? null;
     set((s) => {
       const groupId = placement?.groupId ?? s.focusedGroupId;
       let layout = addTab(s.layout, info.id, groupId);
@@ -508,7 +549,7 @@ export const useStore = create<WorkbenchState>((set) => ({
         order: [...s.order, info.id],
         layout,
         lastCwd: cwd,
-        settings: { ...s.settings, [info.id]: EMPTY_SETTINGS },
+        settings: { ...s.settings, [info.id]: { ...EMPTY_SETTINGS, origin } },
         startupPending: { ...s.startupPending, [info.id]: false },
         ...focusFor(layout, info.id),
       };
@@ -532,6 +573,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       claude: opts.claude
         ? { enabled: true, sessionId: crypto.randomUUID(), skipPermissions: opts.claude.skipPermissions, started: false }
         : null,
+      origin: useStore.getState().selfMachine ?? null,
     };
     set((s) => {
       const groupId = placement?.groupId ?? s.focusedGroupId;
@@ -688,11 +730,14 @@ export const useStore = create<WorkbenchState>((set) => ({
       set({ persistenceReady: true });
       return;
     }
-    const { machines, dropped } = sanitizeMachines(ws.machines);
-    set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
     // openDefs sets persistenceReady itself: true when every def opened cleanly, false
     // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
+    // It runs before the machines are replaced from the file so that an already-known
+    // machine's user/color is still available for resolving a foreign local's ssh host.
     await openDefs(ws.terminals, ws.layout, set);
+    const { machines, dropped } = sanitizeMachines(ws.machines);
+    set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}), syncMeta: ws.sync ?? null });
+    lastSeenMtime = await ipc.workspaceStat().catch(() => null);
   },
 
   async reloadWorkspace() {
@@ -714,27 +759,64 @@ export const useStore = create<WorkbenchState>((set) => ({
       set({ persistError: "no workspace file found — saving is paused until a successful Reload" });
       return;
     }
-    const { machines, dropped } = sanitizeMachines(ws.machines);
-    set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
-    const wanted = new Set(ws.terminals.map((t) => t.id));
-    const toClose = useStore.getState().order.filter((id) => !wanted.has(id));
-    if (toClose.length > 0) {
-      const ok = await confirm(`Close ${toClose.length} terminal(s) that are not in workspace.json?`, { title: "Reload workspace" });
-      if (!ok) {
-        // Nothing changed — restore whatever readiness this reload started with.
-        set({ persistenceReady: wasReady });
-        return;
+    // Restore the pre-reload readiness before handing off: applyWorkspace re-derives
+    // "wasReady" from current state (to also serve the adopt path), and re-pauses
+    // immediately as its own first step.
+    set({ persistenceReady: wasReady });
+    await applyWorkspace(ws, { confirmClose: true });
+  },
+
+  async pullWorkspace() {
+    const s = useStore.getState();
+    if (!s.sync.enabled || s.sync.adopting || saveInFlight) return;
+    const peers = peerHosts();
+    const cands: Workspace[] = [];
+    let ok = 0;
+    const failed: string[] = [];
+    for (const p of peers) {
+      try {
+        const text = await ipc.workspacePull(p.host);
+        ok += 1;
+        if (text) {
+          const parsed = JSON.parse(text) as Workspace;
+          if (parsed && typeof parsed === "object" && parsed.sync) cands.push(parsed);
+        }
+      } catch (e) {
+        failed.push(`${p.name}: ${typeof e === "string" ? e : String(e)}`);
       }
-      for (const id of toClose) await useStore.getState().closeTerminal(id);
     }
-    const open = new Set(useStore.getState().order);
-    const { anyFailed } = await openDefs(ws.terminals.filter((d) => !open.has(d.id)), ws.layout, set, ws.terminals);
-    if (!anyFailed) {
-      // openDefs already set persistenceReady true; schedule an explicit save so the
-      // reconciled state (regenerated ids, rebuilt layout, etc.) is persisted right away.
-      set({ persistenceReady: true });
-      scheduleSave();
+    set((st) => ({
+      sync: {
+        ...st.sync,
+        lastPullAt: new Date().toISOString(),
+        peersOk: ok,
+        peersTotal: peers.length,
+        error: failed.length ? `pull failed for ${failed.join("; ")}` : null,
+      },
+    }));
+    const best = pickNewest(cands);
+    if (best && isNewer(best.sync, useStore.getState().syncMeta) && !saveInFlight) await adopt(best);
+  },
+
+  async checkExternalChange() {
+    const s = useStore.getState();
+    if (!s.sync.enabled || s.sync.adopting || saveInFlight) return;
+    const mtime = await ipc.workspaceStat().catch(() => null);
+    if (mtime === null || mtime === lastSeenMtime) return;
+    if (lastSeenMtime === null) {
+      // No baseline yet (e.g. this poll ran before `loadWorkspace`/a save ever recorded one):
+      // record this mtime and wait for the next tick rather than treating "unknown" as "changed".
+      lastSeenMtime = mtime;
+      return;
     }
+    lastSeenMtime = mtime;
+    let ws: Workspace | null = null;
+    try {
+      ws = await ipc.loadWorkspace();
+    } catch {
+      return;
+    }
+    if (ws && isNewer(ws.sync, useStore.getState().syncMeta)) await adopt(ws);
   },
 
   updateSettings(id, patch) {
@@ -855,7 +937,12 @@ export const useStore = create<WorkbenchState>((set) => ({
   async refreshTailscale() {
     try {
       const st = await ipc.tailscaleStatus();
-      set({ tailscale: st, tailscaleError: null });
+      set((s) => ({
+        tailscale: st,
+        tailscaleError: null,
+        selfMachine: st.self?.name ?? null,
+        sync: { ...s.sync, enabled: st.running && !!st.self },
+      }));
     } catch (e) {
       set({ tailscaleError: typeof e === "string" ? e : String(e) });
     }
@@ -894,17 +981,154 @@ export const useStore = create<WorkbenchState>((set) => ({
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** True only while a save's own `ipc.saveWorkspace` (and, when sync is on, its push) is actually
+ * in flight — unlike `saveTimer` (which is set the whole debounce window before that), this is
+ * what `pullWorkspace`/`checkExternalChange` guard against, so a pull made right after a local
+ * edit (before its debounce has even elapsed) isn't needlessly blocked by it. */
+let saveInFlight = false;
+
+/** Last mtime this app observed for workspace.json (via our own save or a stat poll), used to
+ * tell "someone else wrote the file" apart from silence. Reset for tests via `__resetSyncState`. */
+let lastSeenMtime: number | null = null;
+
+export function __resetSyncState() {
+  lastSeenMtime = null;
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  saveInFlight = false;
+}
+
+/**
+ * Reconciles the running app with a workspace snapshot: closes terminals absent from it (asking
+ * first unless `confirmClose` is false), opens the ones missing here, applies its machines, and
+ * records its sync metadata. Shared by `reloadWorkspace` (loading workspace.json by hand) and
+ * `adopt` (a newer copy pulled from, or noticed written by, a peer).
+ */
+async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean }): Promise<void> {
+  const wasReady = useStore.getState().persistenceReady;
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  useStore.setState({ persistenceReady: false });
+  const wanted = new Set(ws.terminals.map((t) => t.id));
+  const toClose = useStore.getState().order.filter((id) => !wanted.has(id));
+  if (toClose.length > 0) {
+    if (opts.confirmClose) {
+      const ok = await confirm(`Close ${toClose.length} terminal(s) that are not in workspace.json?`, { title: "Reload workspace" });
+      if (!ok) {
+        // Nothing changed — restore whatever readiness this started with.
+        useStore.setState({ persistenceReady: wasReady });
+        return;
+      }
+    }
+    for (const id of toClose) await useStore.getState().closeTerminal(id);
+  }
+  const open = new Set(useStore.getState().order);
+  const { anyFailed } = await openDefs(ws.terminals.filter((d) => !open.has(d.id)), ws.layout, useStore.setState, ws.terminals);
+  const { machines, dropped } = sanitizeMachines(ws.machines);
+  useStore.setState({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}), syncMeta: ws.sync ?? null });
+  if (!anyFailed) {
+    // openDefs already set persistenceReady true; schedule an explicit save so the
+    // reconciled state (regenerated ids, rebuilt layout, etc.) is persisted right away.
+    useStore.setState({ persistenceReady: true });
+    scheduleSave();
+  }
+}
+
+/** Online tailnet peers this machine can push/pull workspace.json with, resolved to a usable
+ * `user@host`; a peer whose host can't be resolved to a valid address is left out. */
+function peerHosts(): { name: string; host: string }[] {
+  const s = useStore.getState();
+  if (!s.tailscale?.running) return [];
+  return s.tailscale.peers
+    .filter((p) => p.online)
+    .map((p) => ({ name: p.name, host: machineHost(p.name, s.machines[p.name], s.tailscale?.user ?? "") }))
+    .filter((p) => validateHost(p.host) === null);
+}
+
+async function pushWorkspace(text: string) {
+  const peers = peerHosts();
+  if (peers.length === 0 || !useStore.getState().sync.enabled) return;
+  let ok = 0;
+  const failed: string[] = [];
+  for (const p of peers) {
+    try {
+      await ipc.workspacePush(p.host, text);
+      ok += 1;
+    } catch (e) {
+      failed.push(`${p.name}: ${typeof e === "string" ? e : String(e)}`);
+    }
+  }
+  useStore.setState((s) => ({
+    sync: {
+      ...s.sync,
+      lastPushAt: new Date().toISOString(),
+      peersOk: ok,
+      peersTotal: peers.length,
+      error: failed.length ? `push failed for ${failed.join("; ")}` : null,
+    },
+  }));
+}
+
+/** Adopts a peer's (or our own file's, per `checkExternalChange`) newer workspace: saves it
+ * verbatim so it's the durable copy, then reconciles the running app to match it. */
+async function adopt(ws: Workspace) {
+  useStore.setState((s) => ({ sync: { ...s.sync, adopting: true } }));
+  try {
+    await ipc.saveWorkspace(ws);
+    lastSeenMtime = await ipc.workspaceStat().catch(() => null);
+    useStore.setState({ syncMeta: ws.sync ?? null });
+    await applyWorkspace(ws, { confirmClose: false });
+  } finally {
+    useStore.setState((s) => ({ sync: { ...s.sync, adopting: false } }));
+  }
+}
+
 function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
     if (!useStore.getState().persistenceReady) return;
     const s = useStore.getState();
-    ipc
-      .saveWorkspace(toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines }))
-      .catch((e) => {
-        useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });
+    saveInFlight = true;
+    if (s.sync.enabled) {
+      const self = s.selfMachine ?? "unknown";
+      const sync = bumpSync(s.syncMeta, self);
+      useStore.setState({ syncMeta: sync });
+      const ws = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines, sync });
+      ipc
+        .saveWorkspace(ws)
+        .then(async () => {
+          lastSeenMtime = await ipc.workspaceStat().catch(() => null);
+          await pushWorkspace(JSON.stringify(ws, null, 2));
+        })
+        .catch((e) => {
+          useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });
+        })
+        .finally(() => {
+          saveInFlight = false;
+        });
+    } else {
+      const ws = toWorkspace({
+        order: s.order,
+        terminals: s.terminals,
+        settings: s.settings,
+        layout: s.layout,
+        machines: s.machines,
+        sync: s.syncMeta ?? undefined,
       });
+      ipc
+        .saveWorkspace(ws)
+        .catch((e) => {
+          useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });
+        })
+        .finally(() => {
+          saveInFlight = false;
+        });
+    }
   }, SAVE_DEBOUNCE_MS);
 }
 

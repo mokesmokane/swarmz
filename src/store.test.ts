@@ -30,6 +30,9 @@ vi.mock("./lib/ipc", () => {
       terminalForegroundBusy: vi.fn(async () => false),
       tailscaleStatus: vi.fn(async () => ({ running: true, message: null, user: "mokes", self: null, peers: [] })),
       tailscaleOpen: vi.fn(async () => {}),
+      workspacePull: vi.fn(async () => null),
+      workspacePush: vi.fn(async () => {}),
+      workspaceStat: vi.fn(async () => null),
     },
   };
 });
@@ -41,6 +44,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { ipc } from "./lib/ipc";
 import {
   __resetLoadGuard,
+  __resetSyncState,
   __stopAllPolling,
   SAVE_DEBOUNCE_MS,
   SSH_POLL_MS,
@@ -56,6 +60,7 @@ import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, shellQuote, toWorkspace, ty
 
 beforeEach(() => {
   __resetLoadGuard();
+  __resetSyncState();
   __stopAllPolling();
   useStore.setState({
     terminals: {},
@@ -75,15 +80,22 @@ beforeEach(() => {
     machines: {},
     tailscale: null,
     tailscaleError: null,
+    selfMachine: null,
+    syncMeta: null,
+    sync: { enabled: false, lastPullAt: null, lastPushAt: null, peersOk: 0, peersTotal: 0, error: null, adopting: false },
   });
   beforeSpawn.hook = async () => {};
   beforeSpawn.size = () => null;
   vi.mocked(ipc.saveWorkspace).mockClear();
-  vi.mocked(ipc.loadWorkspace).mockResolvedValue(null);
+  vi.mocked(ipc.loadWorkspace).mockClear().mockResolvedValue(null);
   vi.mocked(ipc.createTerminal).mockClear();
   vi.mocked(ipc.writeTerminal).mockClear();
   vi.mocked(ipc.sshCheck).mockReset().mockResolvedValue(false);
   vi.mocked(ipc.terminalForegroundBusy).mockReset().mockResolvedValue(false);
+  vi.mocked(ipc.workspacePush).mockClear();
+  vi.mocked(ipc.workspacePull).mockReset().mockResolvedValue(null);
+  vi.mocked(ipc.workspaceStat).mockReset().mockResolvedValue(null);
+  vi.mocked(confirm).mockClear();
 });
 
 describe("createTerminal", () => {
@@ -315,7 +327,9 @@ describe("loadWorkspace", () => {
     expect(s.order).toEqual(["t1", "t2"]);
     expect(vi.mocked(ipc.createTerminal).mock.calls.map((c) => [c[0], c[1], c[4]])).toEqual([
       ["t1", "/tmp/one", "one"],
-      ["t2", "/tmp/two", "two"],
+      // t2 is an ssh terminal: its local pty now always opens at home (consistent with
+      // createSshTerminal), since the saved local cwd is irrelevant once ssh takes over.
+      ["t2", "/home/me", "two"],
     ]);
     expect(s.settings.t2.claude?.sessionId).toBe("s2");
     expect(s.startupPending).toEqual({ t1: false, t2: true });
@@ -1004,5 +1018,103 @@ describe("machines and tailscale", () => {
     expect(Object.keys(s.machines).length).toBe(50);
     expect(s.machines.h59).toBeDefined();
     expect(s.machines.h0).toBeUndefined();
+  });
+});
+
+describe("shared workspace", () => {
+  const online = (name: string) => ({ name, hostName: name, ip: null, os: "macOS", online: true });
+  const ts = (peers: string[]) => ({ running: true, message: null, user: "mokes", self: online("here"), peers: peers.map(online) });
+
+  it("refreshTailscale records self and enables sync", async () => {
+    vi.mocked(ipc.tailscaleStatus).mockResolvedValueOnce(ts(["desk"]));
+    await useStore.getState().refreshTailscale();
+    expect(useStore.getState().selfMachine).toBe("here");
+    expect(useStore.getState().sync.enabled).toBe(true);
+  });
+
+  it("new terminals carry origin; saves bump the revision and push to online peers", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), sync: { ...useStore.getState().sync, enabled: true } });
+      const id = await useStore.getState().createTerminal("/tmp/a");
+      expect(useStore.getState().settings[id].origin).toBe("here");
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+      await vi.runAllTimersAsync();
+      const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
+      const ws = calls[calls.length - 1][0] as Workspace;
+      expect(ws.sync?.revision).toBe(1);
+      expect(ws.sync?.updatedBy).toBe("here");
+      expect(ws.terminals[0].origin).toBe("here");
+      expect(ipc.workspacePush).toHaveBeenCalledWith("mokes@desk", expect.stringContaining('"revision": 1'));
+      expect(useStore.getState().syncMeta?.revision).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("loadWorkspace opens a foreign local as a remote to its origin and stamps missing origins", async () => {
+    useStore.setState({ persistenceReady: false, selfMachine: "here", tailscale: ts(["desk"]), machines: { desk: { user: "root", color: "#ef4444", lastUsed: "t" } } });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1, layout: null, sync: { revision: 5, updatedAt: "t", updatedBy: "desk" },
+      terminals: [
+        { id: "f", name: "F", cwd: "/proj", ssh: null, claude: null, command: null, origin: "desk" },
+        { id: "l", name: "L", cwd: "/tmp/l", ssh: null, claude: null, command: null },
+      ],
+    });
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    const calls = vi.mocked(ipc.createTerminal).mock.calls;
+    expect(calls.find((c) => c[0] === "f")?.[1]).toBe("/home/me");
+    expect(s.settings.f.ssh).toEqual({ host: "root@desk", cwd: "/proj", machine: "desk" });
+    expect(s.settings.f.foreign).toEqual({ cwd: "/proj" });
+    expect(s.startupPending.f).toBe(true);
+    expect(s.settings.l.origin).toBe("here");
+    expect(s.syncMeta?.revision).toBe(5);
+  });
+
+  it("pullWorkspace adopts a newer peer copy without confirming, and skips older or pending", async () => {
+    useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), syncMeta: { revision: 2, updatedAt: "t", updatedBy: "here" }, sync: { ...useStore.getState().sync, enabled: true } });
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const newer: Workspace = {
+      version: 1, layout: null, sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
+      terminals: [{ id: "n1", name: "N", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" }],
+      machines: { desk: { alias: "Desk", lastUsed: "t" } },
+    };
+    vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(newer));
+    await useStore.getState().pullWorkspace();
+    let s = useStore.getState();
+    expect(ipc.workspacePull).toHaveBeenCalledWith("mokes@desk");
+    expect(ipc.saveWorkspace).toHaveBeenCalledWith(expect.objectContaining({ sync: newer.sync }));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(s.order).toEqual(["n1"]);
+    expect(s.terminals[a]).toBeUndefined();
+    expect(s.syncMeta?.revision).toBe(9);
+    expect(s.machines.desk.alias).toBe("Desk");
+    expect(s.sync.peersOk).toBe(1);
+
+    vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify({ ...newer, sync: { revision: 4, updatedAt: "t", updatedBy: "desk" } }));
+    await useStore.getState().pullWorkspace();
+    expect(useStore.getState().syncMeta?.revision).toBe(9);
+  });
+
+  it("pullWorkspace reports unreachable peers without failing", async () => {
+    useStore.setState({ selfMachine: "here", tailscale: ts(["desk", "home"]), sync: { ...useStore.getState().sync, enabled: true } });
+    vi.mocked(ipc.workspacePull).mockRejectedValueOnce("not reachable: refused").mockResolvedValueOnce(null);
+    await useStore.getState().pullWorkspace();
+    const s = useStore.getState();
+    expect(s.sync.peersTotal).toBe(2);
+    expect(s.sync.peersOk).toBe(1);
+    expect(s.sync.error).toContain("desk");
+  });
+
+  it("checkExternalChange adopts a newer file written by another machine and ignores our own write", async () => {
+    useStore.setState({ selfMachine: "here", syncMeta: { revision: 2, updatedAt: "t", updatedBy: "here" }, sync: { ...useStore.getState().sync, enabled: true } });
+    vi.mocked(ipc.workspaceStat).mockResolvedValueOnce(1000);
+    await useStore.getState().checkExternalChange();
+    expect(ipc.loadWorkspace).not.toHaveBeenCalled();
+    vi.mocked(ipc.workspaceStat).mockResolvedValueOnce(2000);
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({ version: 1, layout: null, terminals: [], sync: { revision: 3, updatedAt: "t3", updatedBy: "desk" } });
+    await useStore.getState().checkExternalChange();
+    expect(useStore.getState().syncMeta?.revision).toBe(3);
   });
 });
