@@ -730,13 +730,20 @@ export const useStore = create<WorkbenchState>((set) => ({
       set({ persistenceReady: true });
       return;
     }
+    // Machines are applied before openDefs (when the file actually carries a `machines`
+    // section) so that `openingFor` can resolve a foreign local's ssh user/color from the
+    // SAME file being loaded. A file with no `machines` key at all (e.g. a peer's copy that
+    // had none to report) leaves whatever machines this app already knows about untouched,
+    // rather than wiping them, since there's no user-facing way to delete a known machine
+    // that a full replace-with-nothing should honor.
+    if (ws.machines !== undefined) {
+      const { machines, dropped } = sanitizeMachines(ws.machines);
+      set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
+    }
     // openDefs sets persistenceReady itself: true when every def opened cleanly, false
     // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
-    // It runs before the machines are replaced from the file so that an already-known
-    // machine's user/color is still available for resolving a foreign local's ssh host.
     await openDefs(ws.terminals, ws.layout, set);
-    const { machines, dropped } = sanitizeMachines(ws.machines);
-    set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}), syncMeta: ws.sync ?? null });
+    set({ syncMeta: ws.sync ?? null });
     lastSeenMtime = await ipc.workspaceStat().catch(() => null);
   },
 
@@ -763,12 +770,15 @@ export const useStore = create<WorkbenchState>((set) => ({
     // "wasReady" from current state (to also serve the adopt path), and re-pauses
     // immediately as its own first step.
     set({ persistenceReady: wasReady });
-    await applyWorkspace(ws, { confirmClose: true });
+    await applyWorkspace(ws, { confirmClose: true, scheduleSave: true });
   },
 
   async pullWorkspace() {
     const s = useStore.getState();
-    if (!s.sync.enabled || s.sync.adopting || saveInFlight) return;
+    if (!s.sync.enabled || s.sync.adopting) return;
+    // Save (and revision-bump) any local edit before comparing against peers, so a pending
+    // debounced save can never land after — and clobber — an adoption below.
+    await flushPendingSave();
     const peers = peerHosts();
     const cands: Workspace[] = [];
     let ok = 0;
@@ -795,12 +805,14 @@ export const useStore = create<WorkbenchState>((set) => ({
       },
     }));
     const best = pickNewest(cands);
-    if (best && isNewer(best.sync, useStore.getState().syncMeta) && !saveInFlight) await adopt(best);
+    if (best && isNewer(best.sync, useStore.getState().syncMeta)) await adopt(best);
   },
 
   async checkExternalChange() {
     const s = useStore.getState();
-    if (!s.sync.enabled || s.sync.adopting || saveInFlight) return;
+    if (!s.sync.enabled || s.sync.adopting) return;
+    // Same reasoning as `pullWorkspace`: flush before comparing/adopting.
+    await flushPendingSave();
     const mtime = await ipc.workspaceStat().catch(() => null);
     if (mtime === null || mtime === lastSeenMtime) return;
     if (lastSeenMtime === null) {
@@ -981,11 +993,10 @@ export const useStore = create<WorkbenchState>((set) => ({
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** True only while a save's own `ipc.saveWorkspace` (and, when sync is on, its push) is actually
- * in flight — unlike `saveTimer` (which is set the whole debounce window before that), this is
- * what `pullWorkspace`/`checkExternalChange` guard against, so a pull made right after a local
- * edit (before its debounce has even elapsed) isn't needlessly blocked by it. */
-let saveInFlight = false;
+/** Non-null exactly while a save (the body `runSave` runs, whether invoked by the debounce
+ * timer or flushed early) is actually writing/pushing. `flushPendingSave` awaits this instead
+ * of racing a second save past it. */
+let savePromise: Promise<void> | null = null;
 
 /** Last mtime this app observed for workspace.json (via our own save or a stat poll), used to
  * tell "someone else wrote the file" apart from silence. Reset for tests via `__resetSyncState`. */
@@ -997,22 +1008,35 @@ export function __resetSyncState() {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  saveInFlight = false;
+  savePromise = null;
 }
 
 /**
  * Reconciles the running app with a workspace snapshot: closes terminals absent from it (asking
  * first unless `confirmClose` is false), opens the ones missing here, applies its machines, and
  * records its sync metadata. Shared by `reloadWorkspace` (loading workspace.json by hand) and
- * `adopt` (a newer copy pulled from, or noticed written by, a peer).
+ * `adopt` (a newer copy pulled from, or noticed written by, a peer). `scheduleSave` controls
+ * whether the reconciled state gets an explicit save afterwards: `reloadWorkspace` wants one
+ * (the user asked to reload, and reconciling may have changed regenerated ids/layout/etc that
+ * should be persisted); `adopt` does not — the file already *is* this exact state (adopt just
+ * wrote it verbatim), so scheduling one would just bump the revision and push it right back to
+ * the peer we got it from, which would adopt it and do the same, forever.
  */
-async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean }): Promise<void> {
+async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean; scheduleSave: boolean }): Promise<void> {
   const wasReady = useStore.getState().persistenceReady;
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
   useStore.setState({ persistenceReady: false });
+  // Machines are applied before openDefs (when the file actually carries a `machines`
+  // section) so `openingFor` can resolve a foreign local's ssh user/color from the same file
+  // being reconciled to. See the matching comment in `loadWorkspace` for why an absent
+  // `machines` key is left alone rather than treated as "clear what we know".
+  if (ws.machines !== undefined) {
+    const { machines, dropped } = sanitizeMachines(ws.machines);
+    useStore.setState({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
+  }
   const wanted = new Set(ws.terminals.map((t) => t.id));
   const toClose = useStore.getState().order.filter((id) => !wanted.has(id));
   if (toClose.length > 0) {
@@ -1028,13 +1052,13 @@ async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean }): P
   }
   const open = new Set(useStore.getState().order);
   const { anyFailed } = await openDefs(ws.terminals.filter((d) => !open.has(d.id)), ws.layout, useStore.setState, ws.terminals);
-  const { machines, dropped } = sanitizeMachines(ws.machines);
-  useStore.setState({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}), syncMeta: ws.sync ?? null });
+  useStore.setState({ syncMeta: ws.sync ?? null });
   if (!anyFailed) {
-    // openDefs already set persistenceReady true; schedule an explicit save so the
-    // reconciled state (regenerated ids, rebuilt layout, etc.) is persisted right away.
     useStore.setState({ persistenceReady: true });
-    scheduleSave();
+    // openDefs already set persistenceReady true; schedule an explicit save so the
+    // reconciled state (regenerated ids, rebuilt layout, etc.) is persisted right away —
+    // but only when asked to (see the doc comment above).
+    if (opts.scheduleSave) scheduleSave();
   }
 }
 
@@ -1078,62 +1102,93 @@ async function pushWorkspace(text: string) {
 async function adopt(ws: Workspace) {
   useStore.setState((s) => ({ sync: { ...s.sync, adopting: true } }));
   try {
+    // Nothing pending should be allowed to land after this write.
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    if (savePromise) await savePromise;
     await ipc.saveWorkspace(ws);
     lastSeenMtime = await ipc.workspaceStat().catch(() => null);
     useStore.setState({ syncMeta: ws.sync ?? null });
-    await applyWorkspace(ws, { confirmClose: false });
+    // `scheduleSave: false` — the file already is this exact state; see applyWorkspace's doc.
+    await applyWorkspace(ws, { confirmClose: false, scheduleSave: false });
   } finally {
     useStore.setState((s) => ({ sync: { ...s.sync, adopting: false } }));
   }
+}
+
+/** The actual save: bumps and pushes when sync is enabled, otherwise a plain save that leaves
+ * an existing `syncMeta` untouched. Run either by the debounce timer (`scheduleSave`) or
+ * immediately by `flushPendingSave`; both paths go through this so there is exactly one save
+ * implementation to keep in sync with `toWorkspace`/`bumpSync`/`pushWorkspace`. */
+function runSave(): Promise<void> {
+  if (!useStore.getState().persistenceReady) return Promise.resolve();
+  const s = useStore.getState();
+  let p: Promise<void>;
+  if (s.sync.enabled) {
+    const self = s.selfMachine ?? "unknown";
+    const sync = bumpSync(s.syncMeta, self);
+    useStore.setState({ syncMeta: sync });
+    const ws = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines, sync });
+    p = ipc
+      .saveWorkspace(ws)
+      .then(async () => {
+        lastSeenMtime = await ipc.workspaceStat().catch(() => null);
+        await pushWorkspace(JSON.stringify(ws, null, 2));
+      })
+      .catch((e) => {
+        useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });
+      });
+  } else {
+    const ws = toWorkspace({
+      order: s.order,
+      terminals: s.terminals,
+      settings: s.settings,
+      layout: s.layout,
+      machines: s.machines,
+      sync: s.syncMeta ?? undefined,
+    });
+    p = ipc.saveWorkspace(ws).catch((e) => {
+      useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });
+    });
+  }
+  savePromise = p.finally(() => {
+    savePromise = null;
+  });
+  return savePromise;
+}
+
+/** If a debounced save is scheduled, cancel the timer and run it right now instead (awaiting
+ * completion); if a save is already in flight, wait for it. Called at the top of
+ * `pullWorkspace`/`checkExternalChange` so a local edit is always saved (and its revision
+ * bumped) before comparing against a peer or an externally-changed file — otherwise the
+ * debounce could fire later and save the pre-adoption state over the adopted copy. */
+async function flushPendingSave(): Promise<void> {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    await runSave();
+    return;
+  }
+  if (savePromise) await savePromise;
 }
 
 function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    if (!useStore.getState().persistenceReady) return;
-    const s = useStore.getState();
-    saveInFlight = true;
-    if (s.sync.enabled) {
-      const self = s.selfMachine ?? "unknown";
-      const sync = bumpSync(s.syncMeta, self);
-      useStore.setState({ syncMeta: sync });
-      const ws = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines, sync });
-      ipc
-        .saveWorkspace(ws)
-        .then(async () => {
-          lastSeenMtime = await ipc.workspaceStat().catch(() => null);
-          await pushWorkspace(JSON.stringify(ws, null, 2));
-        })
-        .catch((e) => {
-          useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });
-        })
-        .finally(() => {
-          saveInFlight = false;
-        });
-    } else {
-      const ws = toWorkspace({
-        order: s.order,
-        terminals: s.terminals,
-        settings: s.settings,
-        layout: s.layout,
-        machines: s.machines,
-        sync: s.syncMeta ?? undefined,
-      });
-      ipc
-        .saveWorkspace(ws)
-        .catch((e) => {
-          useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });
-        })
-        .finally(() => {
-          saveInFlight = false;
-        });
-    }
+    void runSave();
   }, SAVE_DEBOUNCE_MS);
 }
 
 useStore.subscribe((s, prev) => {
   if (!s.persistenceReady) return;
+  // While adopting, every state change is the adoption reconciling itself (openDefs rebuilding
+  // `settings`/`terminals`/etc. references) to a file that's already durable — scheduling a
+  // save here would re-bump the revision and push it right back to the peer we just adopted
+  // from, which would adopt that and do the same, forever.
+  if (s.sync.adopting) return;
   if (
     s.terminals !== prev.terminals ||
     s.order !== prev.order ||

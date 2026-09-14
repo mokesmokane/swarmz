@@ -1117,4 +1117,55 @@ describe("shared workspace", () => {
     await useStore.getState().checkExternalChange();
     expect(useStore.getState().syncMeta?.revision).toBe(3);
   });
+
+  it("pull flushes a pending local save before adopting", async () => {
+    useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), sync: { ...useStore.getState().sync, enabled: true } });
+    // Arms the debounce (via the store subscription) without letting it fire.
+    await useStore.getState().createTerminal("/tmp/a");
+    const newer: Workspace = {
+      version: 1, layout: null, sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
+      terminals: [{ id: "n1", name: "N", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" }],
+    };
+    vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(newer));
+    await useStore.getState().pullWorkspace();
+    const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
+    expect(calls.length).toBe(2);
+    expect((calls[0][0] as Workspace).sync?.revision).toBe(1);
+    expect((calls[0][0] as Workspace).sync?.updatedBy).toBe("here");
+    expect((calls[1][0] as Workspace).sync).toEqual(newer.sync);
+    expect(useStore.getState().syncMeta?.revision).toBe(9);
+  });
+
+  it("adoption does not schedule a resave", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), sync: { ...useStore.getState().sync, enabled: true } });
+      const newer: Workspace = {
+        version: 1, layout: null, sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" },
+        terminals: [{ id: "n1", name: "N", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" }],
+      };
+      vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(newer));
+      await useStore.getState().pullWorkspace();
+      const savesAfterAdopt = vi.mocked(ipc.saveWorkspace).mock.calls.length;
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS * 2);
+      await vi.runAllTimersAsync();
+      expect(vi.mocked(ipc.saveWorkspace).mock.calls.length).toBe(savesAfterAdopt);
+      const pushedRevisions = vi.mocked(ipc.workspacePush).mock.calls.map((c) => (JSON.parse(c[1]) as Workspace).sync?.revision ?? 0);
+      expect(pushedRevisions.every((r) => r <= 9)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("machines from the same file are applied before foreign locals open", async () => {
+    useStore.setState({ persistenceReady: false, selfMachine: "here", machines: {} });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1, layout: null,
+      machines: { desk: { user: "root", lastUsed: "t" } },
+      terminals: [{ id: "f", name: "F", cwd: "/proj", ssh: null, claude: null, command: null, origin: "desk" }],
+    });
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(s.settings.f.ssh?.host).toBe("root@desk");
+  });
 });
