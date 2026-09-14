@@ -232,6 +232,12 @@ function focusFor(layout: Layout, termId: string | null) {
   return { focusedGroupId: g?.id ?? null, focusedTerminalId: g ? termId : null };
 }
 
+/** Defs with any repeated id dropped, keeping the first mention. */
+function dedupeById(defs: TerminalDef[]): TerminalDef[] {
+  const seen = new Set<string>();
+  return defs.filter((d) => (seen.has(d.id) ? false : (seen.add(d.id), true)));
+}
+
 function omit<T>(rec: Record<string, T>, id: string): Record<string, T> {
   const out = { ...rec };
   delete out[id];
@@ -258,6 +264,27 @@ let loadStarted = false;
 
 export function __resetLoadGuard() {
   loadStarted = false;
+}
+
+/**
+ * For each terminal the registry could not name as asked (it deduplicates, so a def called
+ * "swarmz" opened next to a live "swarmz" becomes "swarmz-2"), the name the workspace file asked
+ * for. The shared file keeps the requested name and the suffix stays machine-local — otherwise
+ * two Macs that each have to deduplicate the other's def would see a name difference in the
+ * post-adoption comparison, write their own spelling back, and rewrite each other forever.
+ * A rename by the user drops the entry: that name is a real change, not a local workaround.
+ */
+const requestedNames = new Map<string, string>();
+
+/** The store's terminals as the workspace file should spell them (see `requestedNames`). */
+function persistedTerminals(terminals: Record<string, TerminalInfo>): Record<string, TerminalInfo> {
+  if (requestedNames.size === 0) return terminals;
+  const out: Record<string, TerminalInfo> = {};
+  for (const [id, t] of Object.entries(terminals)) {
+    const requested = requestedNames.get(id);
+    out[id] = requested !== undefined && requested !== t.name ? { ...t, name: requested } : t;
+  }
+  return out;
 }
 
 const UNSAFE_SESSION_NOTE = "claude session id in workspace.json was invalid; a new session was created";
@@ -343,6 +370,10 @@ async function openDefs(
     try {
       const opening = openingFor(regenerated, selfMachine, machines, defaultUser, known);
       const { info, note } = await spawnDef({ ...regenerated, cwd: opening.cwd ?? (await homeDir()) });
+      // The registry renamed it to avoid a clash: remember what the file asked for, so this
+      // machine's suffix never travels back into the shared workspace.
+      if (info.name !== regenerated.name) requestedNames.set(info.id, regenerated.name);
+      else requestedNames.delete(info.id);
       const startupNote = unsafeNote ?? opening.note ?? note;
       const { settings } = settingsFromDef(regenerated, selfMachine, machines, defaultUser, known);
       set((s) => ({
@@ -676,6 +707,8 @@ export const useStore = create<WorkbenchState>((set) => ({
   async renameTerminal(id, name) {
     try {
       const info = await ipc.renameTerminal(id, name);
+      // The user picked this name: it is the one to share, whatever the file asked for before.
+      requestedNames.delete(id);
       set((s) => ({ terminals: { ...s.terminals, [id]: info } }));
       return null;
     } catch (e) {
@@ -752,9 +785,11 @@ export const useStore = create<WorkbenchState>((set) => ({
       return;
     }
     if (!ws) {
+      neverSyncedAtLoad = true;
       set({ persistenceReady: true });
       return;
     }
+    neverSyncedAtLoad = !ws.sync;
     // Machines are applied before openDefs (when the file actually carries a `machines`
     // section) so that `openingFor` can resolve a foreign local's ssh user/color from the
     // SAME file being loaded. A file with no `machines` key at all (e.g. a peer's copy that
@@ -804,10 +839,10 @@ export const useStore = create<WorkbenchState>((set) => ({
   async pullWorkspace() {
     const s = useStore.getState();
     if (!s.sync.enabled || s.sync.adopting) return;
-    // Read BEFORE the flush below: flushing writes a first `sync` block, so asking afterwards
-    // whether this machine has ever synced would always answer "yes" and the first-sync union
-    // would never run.
-    const neverSynced = s.syncMeta === null;
+    // Latched at load, not read from `syncMeta`: a local save (the launch debounce, say) writes
+    // a `sync` block of its own, and asking afterwards would answer "this machine has synced"
+    // for a machine that has only ever talked to itself.
+    const neverSynced = neverSyncedAtLoad && !firstPullDone;
     try {
       // Save (and revision-bump) any local edit before comparing against peers, so a pending
       // debounced save can never land after — and clobber — an adoption below. A machine that
@@ -848,7 +883,7 @@ export const useStore = create<WorkbenchState>((set) => ({
           parsed.sync &&
           typeof parsed.sync.revision === "number"
         ) {
-          cands.push(parsed);
+          cands.push({ ...parsed, terminals: dedupeById(parsed.terminals) });
         } else {
           malformed.push(p.name);
         }
@@ -874,15 +909,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (neverSynced) {
         // This machine has never synced, so its terminals are not an older copy of the peer's
         // workspace — they were never shared. Union them in rather than closing them.
-        const st = useStore.getState();
-        const localWs = toWorkspace({
-          order: st.order,
-          terminals: st.terminals,
-          settings: st.settings,
-          layout: st.layout,
-          machines: st.machines,
-        });
-        const merged = mergeForFirstSync(localWs, best);
+        const merged = mergeForFirstSync(currentWorkspace(), best);
         await adoptGuarded(merged);
         // The peers still hold `best`; if the union added anything, save it so the usual bump and
         // push carry it back to them and everyone converges on the union. That save runs on the
@@ -1124,6 +1151,15 @@ let syncOp: Promise<void> = Promise.resolve();
  */
 let firstPullDone = false;
 
+/**
+ * Whether the workspace this app started from had no `sync` block at all (or there was no file):
+ * this machine has never taken part in the sync. Latched at load rather than re-derived from
+ * `syncMeta`, because the first held-back save writes a `sync` block — re-deriving would end the
+ * hold-back after one save and make the first-sync union unreachable as soon as a debounced save
+ * beat the first pull to it.
+ */
+let neverSyncedAtLoad = false;
+
 function runExclusive(fn: () => Promise<void>): Promise<void> {
   const next = syncOp.then(fn, fn);
   syncOp = next.then(
@@ -1142,13 +1178,15 @@ export function __resetSyncState() {
   savePromise = null;
   syncOp = Promise.resolve();
   firstPullDone = false;
+  neverSyncedAtLoad = false;
+  requestedNames.clear();
 }
 
 /** `toWorkspace` of the live store, without sync metadata — what `sameWorkspaceContent`
  * compares against the file that was adopted. */
 function currentWorkspace(): Workspace {
   const s = useStore.getState();
-  return toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines });
+  return toWorkspace({ order: s.order, terminals: persistedTerminals(s.terminals), settings: s.settings, layout: s.layout, machines: s.machines });
 }
 
 /**
@@ -1177,7 +1215,10 @@ async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean; sche
     const { machines, dropped } = sanitizeMachines(ws.machines);
     useStore.setState({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
   }
-  const wanted = new Set(ws.terminals.map((t) => t.id));
+  // A file can name the same id twice (a truncated push, a hand-merged file); opening it twice
+  // would spawn two ptys for one id and list it twice in the sidebar. First mention wins.
+  const defs = dedupeById(ws.terminals);
+  const wanted = new Set(defs.map((t) => t.id));
   const toClose = useStore.getState().order.filter((id) => !wanted.has(id));
   if (toClose.length > 0) {
     if (opts.confirmClose) {
@@ -1197,7 +1238,7 @@ async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean; sche
     for (const id of toClose) await useStore.getState().closeTerminal(id);
   }
   const open = new Set(useStore.getState().order);
-  const { anyFailed } = await openDefs(ws.terminals.filter((d) => !open.has(d.id)), ws.layout, useStore.setState, ws.terminals);
+  const { anyFailed } = await openDefs(defs.filter((d) => !open.has(d.id)), ws.layout, useStore.setState, defs);
   // Take the file's terminal order too, not just its layout: `openDefs` appends whatever was
   // missing to the end, so the machine that had to open defs would otherwise list them in a
   // different order from the machine that wrote the file — and `toWorkspace` writes terminals in
@@ -1206,7 +1247,7 @@ async function applyWorkspace(ws: Workspace, opts: { confirmClose: boolean; sche
   // a declined confirm) keeps its place at the end.
   useStore.setState((s) => {
     const present = new Set(s.order);
-    const fromFile = ws.terminals.map((t) => t.id).filter((id) => present.has(id));
+    const fromFile = defs.map((t) => t.id).filter((id) => present.has(id));
     const known = new Set(fromFile);
     return { order: [...fromFile, ...s.order.filter((id) => !known.has(id))] };
   });
@@ -1311,12 +1352,19 @@ function runSave(): Promise<void> {
   let p: Promise<void>;
   if (s.sync.enabled) {
     const self = s.selfMachine ?? "unknown";
-    // A machine that has never synced keeps this save to itself until it has pulled (see
-    // `firstPullDone`): sending it would pre-empt the first-sync union.
-    const holdBack = s.syncMeta === null && !firstPullDone;
+    // A machine that has never synced keeps every save to itself until it has pulled (see
+    // `neverSyncedAtLoad`/`firstPullDone`): sending one would pre-empt the first-sync union.
+    const holdBack = neverSyncedAtLoad && !firstPullDone;
     const sync = bumpSync(s.syncMeta, self);
     useStore.setState({ syncMeta: sync });
-    const ws = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines, sync });
+    const ws = toWorkspace({
+      order: s.order,
+      terminals: persistedTerminals(s.terminals),
+      settings: s.settings,
+      layout: s.layout,
+      machines: s.machines,
+      sync,
+    });
     p = ipc
       .saveWorkspace(ws)
       .then(async () => {
@@ -1329,7 +1377,7 @@ function runSave(): Promise<void> {
   } else {
     const ws = toWorkspace({
       order: s.order,
-      terminals: s.terminals,
+      terminals: persistedTerminals(s.terminals),
       settings: s.settings,
       layout: s.layout,
       machines: s.machines,

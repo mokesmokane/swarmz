@@ -55,8 +55,8 @@ import {
   terminalColor,
   useStore,
 } from "./store";
-import { findGroup, findGroupOf, type GroupNode, type SplitNode } from "./lib/layout";
-import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, shellQuote, toWorkspace, type Workspace } from "./lib/workspace";
+import { findGroup, findGroupOf, type GroupNode, type Layout, type SplitNode } from "./lib/layout";
+import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, shellQuote, toWorkspace, type TerminalDef, type Workspace } from "./lib/workspace";
 
 beforeEach(() => {
   __resetLoadGuard();
@@ -1035,6 +1035,15 @@ describe("shared workspace", () => {
   // Sync always starts with a pull (App runs one on launch): until one has completed, a machine
   // that has never synced saves locally but holds its file back, so that its first-sync union is
   // not pre-empted by its own push. Tests about pushing therefore start the way the app does.
+  // A machine that has never synced, established the way the app does it: load a workspace file
+  // with no `sync` block. The never-synced state is latched at load, not re-derived from
+  // `syncMeta` (which this machine's own first save would fill in).
+  const loadNeverSynced = async (terminals: TerminalDef[], layout: Layout) => {
+    vi.mocked(ipc.tailscaleStatus).mockResolvedValueOnce(ts(["desk"]));
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({ version: 1, layout, terminals });
+    useStore.setState({ persistenceReady: false });
+    await useStore.getState().loadWorkspace();
+  };
   const launchPull = async () => {
     await useStore.getState().pullWorkspace();
     vi.mocked(ipc.workspacePull).mockClear();
@@ -1052,6 +1061,7 @@ describe("shared workspace", () => {
     vi.useFakeTimers();
     try {
       useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), sync: { ...useStore.getState().sync, enabled: true } });
+      noPendingSave();
       await launchPull();
       const id = await useStore.getState().createTerminal("/tmp/a");
       expect(useStore.getState().settings[id].origin).toBe("here");
@@ -1401,33 +1411,47 @@ describe("shared workspace", () => {
     }
   });
 
-  it("a machine that has never synced pulls before it ever pushes, and keeps its own terminals", async () => {
+  it("a machine that has never synced pushes nothing until its first pull, however many saves it makes", async () => {
     vi.useFakeTimers();
     try {
-      useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), syncMeta: null, sync: { ...useStore.getState().sync, enabled: true } });
-      // Arms the debounce: this save will fire while the pull below is still in flight.
-      const mine = await useStore.getState().createTerminal("/tmp/mine");
+      await loadNeverSynced([{ id: "mine", name: "mine", cwd: "/tmp/mine", ssh: null, claude: null, command: null }], group(["mine"]));
+      // Two local saves in the pre-first-pull window: the first writes a `sync` block, which must
+      // not be mistaken for "this machine has synced" by the second.
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+      await useStore.getState().createTerminal("/tmp/other");
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+      expect(vi.mocked(ipc.saveWorkspace).mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(useStore.getState().syncMeta?.revision).toBeGreaterThanOrEqual(2);
+      expect(ipc.workspacePush).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a machine that has never synced unions its terminals on the first pull, even after a local save", async () => {
+    vi.useFakeTimers();
+    try {
+      await loadNeverSynced([{ id: "mine", name: "mine", cwd: "/tmp/mine", ssh: null, claude: null, command: null }], group(["mine"]));
+      // The launch debounce fires BEFORE the pull: it writes a `sync` block locally, which must
+      // not turn this into "a machine with an older copy" (whose terminals adoption would close).
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+      expect(useStore.getState().syncMeta?.revision).toBe(1);
       const peer: Workspace = {
         version: 1, layout: group(["n1"]), sync: { revision: 4, updatedAt: "t4", updatedBy: "desk" },
         terminals: [{ id: "n1", name: "N", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "desk" }],
       };
-      vi.mocked(ipc.workspacePull).mockImplementationOnce(() => new Promise((r) => setTimeout(() => r(JSON.stringify(peer)), 600)));
-      const pull = useStore.getState().pullWorkspace();
-      await vi.advanceTimersByTimeAsync(700);
-      await pull;
+      vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(peer));
+      await useStore.getState().pullWorkspace();
       const s = useStore.getState();
-      // The debounced save did run (locally), but nothing left this machine before it had seen
-      // the peer's copy: pushing its own rev-1 file would have made the union merge its own
-      // workspace back into itself, and the peer would later close `mine` as a stale terminal.
-      expect(vi.mocked(ipc.saveWorkspace).mock.calls.length).toBeGreaterThan(0);
       expect(ipc.workspacePush).not.toHaveBeenCalled();
-      expect(s.order).toEqual(["n1", mine]);
+      expect(s.order).toEqual(["n1", "mine"]);
+      expect(s.terminals.mine).toBeDefined();
       expect(s.syncMeta?.revision).toBe(4);
       // The union is bumped and pushed back, so the peer converges on it too.
       await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
       const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
       const saved = calls[calls.length - 1][0] as Workspace;
-      expect(saved.terminals.map((t) => t.id)).toEqual(["n1", mine]);
+      expect(saved.terminals.map((t) => t.id)).toEqual(["n1", "mine"]);
       expect(saved.sync?.revision).toBe(5);
       expect(vi.mocked(ipc.workspacePush).mock.calls.some((c) => (JSON.parse(c[1]) as Workspace).sync?.revision === 5)).toBe(true);
     } finally {
@@ -1469,56 +1493,74 @@ describe("shared workspace", () => {
     }
   });
 
-  it("a name the registry has to change is written back once and then settles", async () => {
+  it("a name the registry had to change is machine-local, and never counts as sync drift", async () => {
     vi.useFakeTimers();
     try {
+      // The cross-machine case: the file legitimately holds two defs called "swarmz" (one is
+      // this machine's, one the peer's). Opening the peer's next to ours forces a suffix here —
+      // and would force one there too, so if each machine wrote its own spelling back they would
+      // rewrite each other forever.
       useStore.setState({
         selfMachine: "here", tailscale: ts(["desk"]),
         syncMeta: { revision: 1, updatedAt: "t1", updatedBy: "here" },
         sync: { ...useStore.getState().sync, enabled: true },
-        terminals: { local: { id: "local", name: "X", cwd: "/tmp/x", exited: null, error: null } },
+        terminals: { local: { id: "local", name: "swarmz", cwd: "/tmp/x", exited: null, error: null } },
         order: ["local"],
         settings: { local: { ...EMPTY_SETTINGS, origin: "here" } },
         layout: group(["local"]),
       });
       noPendingSave();
-      // The registry refuses duplicate names and suffixes the newcomer, so the adopted state
-      // cannot match the file exactly.
       vi.mocked(ipc.createTerminal).mockImplementation(async (id: string, cwd: string, _c?: number, _r?: number, name?: string) => {
         const taken = new Set(Object.values(useStore.getState().terminals).map((t) => t.name));
         const wanted = name ?? cwd.split("/").pop() ?? "shell";
-        return { id, name: taken.has(wanted) ? `${wanted} 2` : wanted, cwd, exited: null, error: null };
+        return { id, name: taken.has(wanted) ? `${wanted}-2` : wanted, cwd, exited: null, error: null };
       });
       const peer: Workspace = {
         version: 1, layout: group(["local", "n1"]), sync: { revision: 4, updatedAt: "t4", updatedBy: "desk" },
         terminals: [
-          { id: "local", name: "X", cwd: "/tmp/x", ssh: null, claude: null, command: null, origin: "here" },
-          { id: "n1", name: "X", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" },
+          { id: "local", name: "swarmz", cwd: "/tmp/x", ssh: null, claude: null, command: null, origin: "here" },
+          { id: "n1", name: "swarmz", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "desk" },
         ],
       };
       vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(peer));
       await useStore.getState().pullWorkspace();
-      expect(useStore.getState().terminals.n1.name).toBe("X 2");
+      expect(useStore.getState().terminals.n1.name).toBe("swarmz-2");
       const afterAdopt = vi.mocked(ipc.saveWorkspace).mock.calls.length;
       await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS * 2);
-      const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
-      // Exactly one write-back of the name the registry actually used.
-      expect(calls.length).toBe(afterAdopt + 1);
-      const saved = calls[calls.length - 1][0] as Workspace;
-      expect(saved.terminals.find((t) => t.id === "n1")?.name).toBe("X 2");
-      // Adopting what we just wrote (what the peer now holds) changes nothing: only the
-      // adoption's own write happens, no further drift.
-      const before = calls.length;
-      vi.mocked(ipc.workspacePull).mockResolvedValueOnce(
-        JSON.stringify({ ...saved, sync: { revision: 9, updatedAt: "t9", updatedBy: "desk" } }),
-      );
-      await useStore.getState().pullWorkspace();
-      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS * 2);
-      expect(vi.mocked(ipc.saveWorkspace).mock.calls.length).toBe(before + 1);
+      expect(vi.mocked(ipc.saveWorkspace).mock.calls.length).toBe(afterAdopt);
+      // A later save still writes the name the file asked for, not this machine's suffix.
+      useStore.getState().updateSettings("n1", { command: "ls" });
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+      let calls = vi.mocked(ipc.saveWorkspace).mock.calls;
+      expect((calls[calls.length - 1][0] as Workspace).terminals.find((t) => t.id === "n1")?.name).toBe("swarmz");
+      // A rename by the user is a real change and replaces it.
+      await useStore.getState().renameTerminal("n1", "other");
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+      calls = vi.mocked(ipc.saveWorkspace).mock.calls;
+      expect((calls[calls.length - 1][0] as Workspace).terminals.find((t) => t.id === "n1")?.name).toBe("other");
     } finally {
       vi.mocked(ipc.createTerminal).mockReset();
       vi.useRealTimers();
     }
+  });
+
+  it("opens a peer file that lists the same id twice only once", async () => {
+    useStore.setState({
+      selfMachine: "here", tailscale: ts(["desk"]),
+      syncMeta: { revision: 1, updatedAt: "t1", updatedBy: "here" },
+      sync: { ...useStore.getState().sync, enabled: true },
+    });
+    noPendingSave();
+    const def = { id: "n1", name: "N", cwd: "/tmp/n", ssh: null, claude: null, command: null, origin: "here" };
+    const peer: Workspace = {
+      version: 1, layout: group(["n1"]), sync: { revision: 4, updatedAt: "t4", updatedBy: "desk" },
+      terminals: [def, { ...def, name: "N again" }],
+    };
+    vi.mocked(ipc.workspacePull).mockResolvedValueOnce(JSON.stringify(peer));
+    await useStore.getState().pullWorkspace();
+    expect(useStore.getState().order).toEqual(["n1"]);
+    expect(vi.mocked(ipc.createTerminal).mock.calls.filter((c) => c[0] === "n1").length).toBe(1);
+    expect(useStore.getState().terminals.n1.name).toBe("N");
   });
 
   it("does not rewrite an older file while saving is paused", async () => {

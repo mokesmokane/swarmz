@@ -85,9 +85,12 @@ All copies are full copies; the newest `revision` wins.
 - **Peers**: only *online macOS* peers are pulled from and pushed to — anything
   else on the tailnet does not run swarmz, and every round would report a
   timeout against it. Pushes run in parallel.
-- **First sync**: a machine that has never synced (no local `sync`) has
-  terminals that are not an older copy of the peer's workspace — they were
-  never shared. Such a machine **pulls before it ever pushes**: it does not
+- **First sync**: a machine that has never synced has terminals that are not an
+  older copy of the peer's workspace — they were never shared. "Never synced"
+  is decided once, when the workspace file is loaded (no `sync` block, or no
+  file at all), and holds until this machine's first pull completes: its own
+  saves write a `sync` block, so re-deriving the state from the file would end
+  it after one save. Such a machine **pulls before it ever pushes**: it does not
   flush a pending save ahead of the pull, and a save made before that first
   pull completes is written locally but not pushed — otherwise its own file
   would reach the peers first and the union below would merge its copy back
@@ -102,7 +105,9 @@ All copies are full copies; the newest `revision` wins.
   command, origin), the layout structurally, machines as a map, `sync` ignored.
   It must not depend on the order things are written down, or two machines that
   reconcile the same file into the same terminals — listed differently — would
-  rewrite each other once per poll forever. For the same reason adoption also
+  rewrite each other once per poll forever. A terminal's name is machine-local
+  whenever the registry had to deduplicate it; the shared file keeps the name
+  that was requested. For the same reason adoption also
   takes the file's **sidebar order** (ids it lists, in its order, then anything
   local it does not mention), not just its layout. An adoption that fails
   before it reconciles writes nothing back.
