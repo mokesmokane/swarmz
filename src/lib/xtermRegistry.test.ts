@@ -2,8 +2,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalInfo } from "./ipc";
 
-const { instances } = vi.hoisted(() => ({
+const { instances, dataCallbacks } = vi.hoisted(() => ({
   instances: [] as { disposed: boolean; selection: string; element: HTMLElement | null }[],
+  dataCallbacks: {} as Record<string, (b: Uint8Array) => void>,
 }));
 
 vi.mock("@xterm/xterm", () => {
@@ -59,7 +60,10 @@ vi.mock("./ipc", () => ({
   ipc: {
     writeTerminal: vi.fn(async () => {}),
     resizeTerminal: vi.fn(async () => {}),
-    onData: vi.fn(async () => () => {}),
+    onData: vi.fn(async (_id: string, cb: (b: Uint8Array) => void) => {
+      dataCallbacks[_id] = cb;
+      return () => {};
+    }),
     onExit: vi.fn(async () => () => {}),
     terminalCwd: vi.fn(async () => null),
     setTerminalCwd: vi.fn(async (id: string, cwd: string) => ({ id, name: "x", cwd, exited: null, error: null })),
@@ -253,5 +257,24 @@ describe("folder tracking", () => {
     expect(decodeOsc7("/plain")).toBe("/plain");
     expect(decodeOsc7("nonsense")).toBeNull();
     expect(decodeOsc7("file://h/%ZZ")).toBeNull();
+  });
+});
+
+describe("resume failure scanning", () => {
+  it("reports the phrase for the watched session even when split across chunks", async () => {
+    const note = vi.fn();
+    useStore.setState({ noteResumeFailure: note, resumeWatch: { r: { sessionId: "abc", until: Date.now() + 10_000 } }, terminals: { r: { id: "r", name: "r", cwd: "/", exited: null, error: null } }, settings: { r: { ssh: null, claude: null, command: null, extra: {} } } });
+    await prepare("r");
+    const enc = new TextEncoder();
+    dataCallbacks.r(enc.encode("No conversation found with sess"));
+    dataCallbacks.r(enc.encode("ion ID abc\r\n"));
+    expect(note).toHaveBeenCalledWith("r", "abc");
+  });
+  it("ignores output when no watch is active or the id differs", async () => {
+    const note = vi.fn();
+    useStore.setState({ noteResumeFailure: note, resumeWatch: {}, terminals: { q: { id: "q", name: "q", cwd: "/", exited: null, error: null } }, settings: { q: { ssh: null, claude: null, command: null, extra: {} } } });
+    await prepare("q");
+    dataCallbacks.q(new TextEncoder().encode("No conversation found with session ID zzz\r\n"));
+    expect(note).not.toHaveBeenCalled();
   });
 });

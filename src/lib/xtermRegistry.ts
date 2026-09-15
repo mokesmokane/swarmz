@@ -37,6 +37,8 @@ interface Entry {
   onMouseUp: (() => void) | null;
   enterTimer: ReturnType<typeof setTimeout> | null;
   pollTimer: ReturnType<typeof setInterval> | null;
+  /** Recent decoded PTY output, kept while a resume watch is active, to scan for the "gone" phrase. */
+  tail: string;
 }
 
 const entries = new Map<string, Entry>();
@@ -91,6 +93,7 @@ function createEntry(id: string): Entry {
     onMouseUp: null,
     enterTimer: null,
     pollTimer: null,
+    tail: "",
   };
 
   term.onData((data) => {
@@ -108,7 +111,19 @@ function createEntry(id: string): Entry {
   });
 
   entry.ready = Promise.all([
-    ipc.onData(id, (bytes) => term.write(bytes)),
+    ipc.onData(id, (bytes) => {
+      term.write(bytes);
+      const watch = useStore.getState().resumeWatch[id];
+      if (!watch) {
+        entry.tail = "";
+        return;
+      }
+      entry.tail = (entry.tail + new TextDecoder().decode(bytes)).slice(-400);
+      if (entry.tail.includes(`No conversation found with session ID ${watch.sessionId}`)) {
+        entry.tail = "";
+        useStore.getState().noteResumeFailure(id, watch.sessionId);
+      }
+    }),
     ipc.onExit(id, (code) => {
       term.write(`\r\n\x1b[90m[process exited with code ${code ?? "unknown"}]\x1b[0m\r\n`);
       useStore.getState().markExited(id, code);

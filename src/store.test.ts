@@ -58,6 +58,7 @@ import {
   __stopAllPolling,
   AGENT_WATCH_BACKOFF_MS,
   AGENT_WATCH_UNAVAILABLE_AFTER,
+  RESUME_WATCH_MS,
   SAVE_DEBOUNCE_MS,
   SSH_POLL_MS,
   SSH_POLL_TIMEOUT_MS,
@@ -105,6 +106,7 @@ beforeEach(async () => {
     agentState: {},
     agentHooksError: null,
     windowFocused: true,
+    resumeWatch: {},
   });
   beforeSpawn.hook = async () => {};
   beforeSpawn.size = () => null;
@@ -2329,5 +2331,44 @@ describe("selectSession", () => {
     const id = await useStore.getState().createTerminal("/tmp/a");
     await useStore.getState().selectSession(id, "zz", { connect: true });
     expect(useStore.getState().settings[id].claude).toBeNull();
+  });
+});
+
+describe("dead session detection", () => {
+  it("typing a resume line arms a 10 s watch", async () => {
+    vi.useFakeTimers();
+    try {
+      const id = await useStore.getState().createTerminal("/tmp/a");
+      useStore.getState().updateSettings(id, { claude: { enabled: true, sessionId: "gone", skipPermissions: false, started: true } });
+      await useStore.getState().runStartup(id);
+      expect(useStore.getState().resumeWatch[id]).toMatchObject({ sessionId: "gone" });
+      await vi.advanceTimersByTimeAsync(RESUME_WATCH_MS + 1);
+      expect(useStore.getState().resumeWatch[id]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("noteResumeFailure removes the record, unstarts the session, and notes it", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.setState((s) => ({
+      settings: { ...s.settings, [id]: { ...s.settings[id], claude: { enabled: true, sessionId: "gone", skipPermissions: false, started: true }, sessions: [{ sessionId: "gone", cwd: "/tmp/a", skipPermissions: false, startedAt: "t", lastActiveAt: "t" }, { sessionId: "keep", cwd: "/k", skipPermissions: false, startedAt: "t", lastActiveAt: "t" }] } },
+      resumeWatch: { [id]: { sessionId: "gone", until: Date.now() + 5000 } },
+    }));
+    useStore.getState().noteResumeFailure(id, "gone");
+    const s = useStore.getState();
+    expect(s.settings[id].sessions?.map((r) => r.sessionId)).toEqual(["keep"]);
+    expect(s.settings[id].claude?.started).toBe(false);
+    expect(s.startupNotes[id]).toBe("session gone is gone; Connect starts a new one");
+    expect(s.startupPending[id]).toBe(true);
+    expect(s.resumeWatch[id]).toBeUndefined();
+  });
+  it("a failure for a session that is not the current one only drops the record", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.setState((s) => ({
+      settings: { ...s.settings, [id]: { ...s.settings[id], claude: { enabled: true, sessionId: "cur", skipPermissions: false, started: true }, sessions: [{ sessionId: "other", cwd: "/o", skipPermissions: false, startedAt: "t", lastActiveAt: "t" }] } },
+    }));
+    useStore.getState().noteResumeFailure(id, "other");
+    expect(useStore.getState().settings[id].claude?.started).toBe(true);
+    expect(useStore.getState().settings[id].sessions).toEqual([]);
   });
 });

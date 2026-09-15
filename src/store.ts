@@ -50,12 +50,20 @@ import {
 } from "./lib/workspace";
 import { applyAgentEvent as foldAgentEvent, OFFLINE, type AgentState } from "./lib/agentState";
 import type { AgentEventPayload } from "./lib/ipc";
-import { bumpSession, isSafeFolder, promoteSession, sanitizeSessions, upsertSession } from "./lib/sessions";
+import { bumpSession, isSafeFolder, promoteSession, removeSession, sanitizeSessions, upsertSession } from "./lib/sessions";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 
 export const SAVE_DEBOUNCE_MS = 500;
+
+export const RESUME_WATCH_MS = 10_000;
+
+/** The session id typed in a `--resume <id>` line, or null when the line doesn't resume one. */
+function resumedSessionIn(line: string): string | null {
+  const m = /--resume ([A-Za-z0-9-]{1,64})/.exec(line);
+  return m ? m[1] : null;
+}
 
 export const SSH_POLL_MS = 500;
 export const SSH_POLL_TIMEOUT_MS = 120_000;
@@ -276,6 +284,8 @@ export interface WorkbenchState {
   windowFocused: boolean;
   /** When each terminal last copied a selection to the clipboard (ms since epoch), for the pane's "Copied" flash. */
   copiedAt: Record<string, number>;
+  /** Armed for 10 s after typing a `--resume <sessionId>` line, while xtermRegistry scans for Claude reporting it gone. */
+  resumeWatch: Record<string, { sessionId: string; until: number }>;
 
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
   createSshTerminal(opts: SshTerminalOptions, placement?: Placement): Promise<string>;
@@ -311,6 +321,8 @@ export interface WorkbenchState {
   flashCopied(id: string): void;
   setTerminalCwd(id: string, cwd: string, source: "poll" | "osc7" | "hook"): Promise<void>;
   selectSession(id: string, sessionId: string, opts: { connect: boolean }): Promise<void>;
+  watchResume(id: string, sessionId: string): void;
+  noteResumeFailure(id: string, sessionId: string): void;
   installAgentHooks(): Promise<void>;
   ensureAgentWatchers(): Promise<void>;
   agentWatchEnded(payload: { host: string | null; gen: number }): Promise<void>;
@@ -760,6 +772,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   agentHooksError: null,
   windowFocused: true,
   copiedAt: {},
+  resumeWatch: {},
 
   async createTerminal(cwd, placement) {
     const id = crypto.randomUUID();
@@ -1192,6 +1205,8 @@ export const useStore = create<WorkbenchState>((set) => ({
       return;
     }
     await ipc.writeTerminal(id, steps[0].line + "\r");
+    const resumed0 = resumedSessionIn(steps[0].line);
+    if (resumed0) useStore.getState().watchResume(id, resumed0);
     set((st) => {
       if (!st.terminals[id]) return {};
       return {
@@ -1216,6 +1231,8 @@ export const useStore = create<WorkbenchState>((set) => ({
       return;
     }
     await ipc.writeTerminal(id, remote.line + "\r");
+    const resumedRemote = resumedSessionIn(remote.line);
+    if (resumedRemote) useStore.getState().watchResume(id, resumedRemote);
     set((st) => {
       if (!st.terminals[id]) return {};
       return { startupPending: { ...st.startupPending, [id]: false } };
@@ -1441,8 +1458,35 @@ export const useStore = create<WorkbenchState>((set) => ({
     }
     const claude = startupSteps(after.settings[id] ?? EMPTY_SETTINGS, id).find((st) => st.via === "local")?.line;
     if (!claude) return;
-    await ipc.writeTerminal(id, `cd ${shellQuote(rec.cwd)} && ${claude}\r`);
+    const line = `cd ${shellQuote(rec.cwd)} && ${claude}`;
+    await ipc.writeTerminal(id, line + "\r");
+    const resumedLocal = resumedSessionIn(line);
+    if (resumedLocal) useStore.getState().watchResume(id, resumedLocal);
     set((st) => ({ startupPending: { ...st.startupPending, [id]: false }, startupNotes: omit(st.startupNotes, id) }));
+  },
+
+  watchResume(id, sessionId) {
+    const until = Date.now() + RESUME_WATCH_MS;
+    set((s) => ({ resumeWatch: { ...s.resumeWatch, [id]: { sessionId, until } } }));
+    setTimeout(() => {
+      set((s) => (s.resumeWatch[id]?.until === until ? { resumeWatch: omit(s.resumeWatch, id) } : {}));
+    }, RESUME_WATCH_MS);
+  },
+
+  noteResumeFailure(id, sessionId) {
+    set((s) => {
+      const cur = s.settings[id];
+      if (!cur) return {};
+      const isCurrent = cur.claude?.enabled && cur.claude.sessionId === sessionId;
+      const claude = isCurrent && cur.claude ? { ...cur.claude, started: false } : cur.claude;
+      return {
+        settings: { ...s.settings, [id]: { ...cur, claude, sessions: removeSession(cur.sessions, sessionId) } },
+        resumeWatch: omit(s.resumeWatch, id),
+        ...(isCurrent
+          ? { startupNotes: { ...s.startupNotes, [id]: `session ${sessionId} is gone; Connect starts a new one` }, startupPending: { ...s.startupPending, [id]: true } }
+          : {}),
+      };
+    });
   },
 
   setWindowFocused(focused) {
