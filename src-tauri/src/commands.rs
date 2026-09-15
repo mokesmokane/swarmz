@@ -302,17 +302,20 @@ pub async fn agents_install_remote(host: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || crate::agents::install_remote(&host)).await.map_err(|e| e.to_string())?
 }
 
-/// Starts tailing the agent log for `host` (None = this machine). Already watching is a no-op.
+/// Starts tailing the agent log for `host` (None = this machine) and returns the generation of
+/// the watcher now running for it, so the caller can tell a `agent:watch-ended` from that
+/// watcher apart from one from a watcher it has already replaced. Already watching is a no-op
+/// that returns the running watcher's generation.
 #[tauri::command]
-pub fn agents_watch(app: AppHandle, state: State<AppState>, host: Option<String>) -> Result<(), String> {
+pub fn agents_watch(app: AppHandle, state: State<AppState>, host: Option<String>) -> Result<u64, String> {
     let mut watchers = state.watchers.lock().unwrap();
-    if watchers.contains_key(&host) {
-        return Ok(());
+    if let Some((gen, _)) = watchers.get(&host) {
+        return Ok(*gen);
     }
     let gen = state.next_gen.fetch_add(1, Ordering::SeqCst);
     let watcher = crate::agents::spawn_watcher(app, host.clone(), gen)?;
     watchers.insert(host, (gen, watcher));
-    Ok(())
+    Ok(gen)
 }
 
 #[tauri::command]

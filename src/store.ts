@@ -70,12 +70,15 @@ export function __setLaunchedAt(iso: string) {
 
 export const AGENT_WATCH_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 
-/** Hosts with a live log watcher, hosts whose hooks were installed this run, and retry state. */
+/** Hosts with a live log watcher, hosts whose hooks were installed this run, and retry state.
+ * `gen` is the core's generation for the watcher we last asked for, so an `agent:watch-ended`
+ * from a watcher we have already replaced cannot unwatch the new one. */
 const agentWatch = {
   watching: new Set<string>(),
   installed: new Set<string>(),
   attempts: new Map<string, number>(),
   retry: new Map<string, ReturnType<typeof setTimeout>>(),
+  gen: new Map<string | null, number>(),
 };
 
 /** Pending retry timer for the local (host === null) watcher, deduped so two `agentWatchEnded`
@@ -88,6 +91,7 @@ export function __resetAgentWatchers() {
   agentWatch.attempts.clear();
   for (const t of agentWatch.retry.values()) clearTimeout(t);
   agentWatch.retry.clear();
+  agentWatch.gen.clear();
   if (localRetry) clearTimeout(localRetry);
   localRetry = null;
 }
@@ -1300,7 +1304,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (!agentWatch.watching.has(host) && !agentWatch.retry.has(host)) {
         agentWatch.watching.add(host);
         try {
-          await ipc.agentsWatch(host);
+          agentWatch.gen.set(host, await ipc.agentsWatch(host));
           agentWatch.attempts.delete(host);
         } catch {
           agentWatch.watching.delete(host);
@@ -1312,7 +1316,8 @@ export const useStore = create<WorkbenchState>((set) => ({
     }
   },
 
-  agentWatchEnded({ host }) {
+  agentWatchEnded(payload) {
+    const { host } = payload;
     if (host === null) {
       ipc.agentsUnwatch(null).catch(() => {});
       if (localRetry) clearTimeout(localRetry);
@@ -1322,6 +1327,9 @@ export const useStore = create<WorkbenchState>((set) => ({
       }, AGENT_WATCH_BACKOFF_MS[0]);
       return;
     }
+    // An end from a watcher we already replaced says nothing about the one running now.
+    if (payload.gen !== agentWatch.gen.get(host)) return;
+    agentWatch.gen.delete(host);
     agentWatch.watching.delete(host);
     ipc.agentsUnwatch(host).catch(() => {});
     if (wantedAgentHosts(useStore.getState()).has(host)) scheduleAgentRewatch(host);

@@ -35,7 +35,7 @@ vi.mock("./lib/ipc", () => {
       workspaceStat: vi.fn(async () => null),
       agentsInstallLocal: vi.fn(async () => false),
       agentsInstallRemote: vi.fn(async () => false),
-      agentsWatch: vi.fn(async () => {}),
+      agentsWatch: vi.fn(async () => 1),
       agentsUnwatch: vi.fn(async () => {}),
       onAgentEvent: vi.fn(async () => () => {}),
       onAgentWatchEnded: vi.fn(async () => () => {}),
@@ -118,7 +118,7 @@ beforeEach(() => {
   vi.mocked(confirm).mockClear();
   vi.mocked(ipc.agentsInstallLocal).mockReset().mockResolvedValue(false);
   vi.mocked(ipc.agentsInstallRemote).mockReset().mockResolvedValue(false);
-  vi.mocked(ipc.agentsWatch).mockClear();
+  vi.mocked(ipc.agentsWatch).mockReset().mockResolvedValue(1);
   vi.mocked(ipc.agentsUnwatch).mockClear();
   __setLaunchedAt("2026-09-15T09:00:00Z");
 });
@@ -1866,11 +1866,34 @@ describe("agent state", () => {
       // so this second end-and-retry is a fresh first hop (1000ms), not a second (2000ms) one:
       // check "not yet" partway through that hop rather than at the original 1000ms mark, which
       // would already have fired it.
-      useStore.getState().agentWatchEnded({ host: "me@box", gen: 2 });
+      useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
       await vi.advanceTimersByTimeAsync(500);
       expect(ipc.agentsWatch).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(1000);
       expect(ipc.agentsWatch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a watch-ended from a watcher that has already been replaced", async () => {
+    vi.useFakeTimers();
+    try {
+      const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", machine: "box" });
+      __stopAllPolling();
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+      await useStore.getState().ensureAgentWatchers();
+      vi.mocked(ipc.agentsWatch).mockClear();
+      // gen 7 belongs to a watcher this store already replaced: its death says nothing about
+      // the watcher that is running now.
+      useStore.getState().agentWatchEnded({ host: "me@box", gen: 7 });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(ipc.agentsWatch).not.toHaveBeenCalled();
+      useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ipc.agentsWatch).toHaveBeenCalledWith("me@box");
     } finally {
       vi.useRealTimers();
     }
@@ -1891,7 +1914,7 @@ describe("agent state", () => {
       }
       expect(useStore.getState().startupNotes[id]).toBe("agent state unavailable for box");
     } finally {
-      vi.mocked(ipc.agentsWatch).mockReset().mockResolvedValue(undefined);
+      vi.mocked(ipc.agentsWatch).mockReset().mockResolvedValue(1);
       vi.useRealTimers();
     }
   });

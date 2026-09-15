@@ -73,7 +73,8 @@ export const ipc = {
   workspaceStat: () => invoke<number | null>("workspace_stat"),
   agentsInstallLocal: () => invoke<boolean>("agents_install_local"),
   agentsInstallRemote: (host: string) => invoke<boolean>("agents_install_remote", { host }),
-  agentsWatch: (host: string | null) => invoke<void>("agents_watch", { host }),
+  /** Resolves with the generation of the watcher now running for `host` (see `agents_watch`). */
+  agentsWatch: (host: string | null) => invoke<number>("agents_watch", { host }),
   agentsUnwatch: (host: string | null) => invoke<void>("agents_unwatch", { host }),
   onAgentEvent: (cb: (p: AgentEventPayload) => void): Promise<UnlistenFn> =>
     listen<AgentEventPayload>("agent:event", (e) => cb(e.payload)),
