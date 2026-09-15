@@ -58,7 +58,7 @@ Claude Code lifecycle hooks (installed once per machine into `~/.claude/settings
 
 ### Folder tracking and session history
 
-A tile's saved folder is live: local tiles poll the shell's cwd (`terminal_cwd`, via `lsof`) 300 ms after Enter and every 5 s, and every tile honours the OSC 7 directory escape; hook events also carry Claude's cwd. Changes route through `setTerminalCwd` (registry for local, `settings.ssh.cwd` for ssh, `settings.foreign.cwd` for foreign locals). `src/lib/sessions.ts` keeps each tile's `sessions` list (newest first, max 20); `applyAgentEvent` adopts the live session on SessionStart, `selectSession` goes back to one, and a `--resume` that Claude reports as gone removes the record.
+A tile's saved folder is live: local tiles poll the shell's own pid for its cwd (`terminal_cwd`, via `lsof`) 300 ms after Enter and every 5 s while the window is focused, and every tile honours the OSC 7 directory escape, for ssh and foreign tiles only once ssh is connected so a local prompt cannot overwrite the remote folder; hook events also carry Claude's cwd. Changes route through `setTerminalCwd` (registry for local, `settings.ssh.cwd` for ssh, `settings.foreign.cwd` for foreign locals). `src/lib/sessions.ts` keeps each tile's `sessions` list (newest first, max 20); `applyAgentEvent` adopts the live session on SessionStart, `selectSession` goes back to one (moving a local shell with `cd` first), and a `--resume` that Claude reports as gone removes the record.
 
 ## Tests
 

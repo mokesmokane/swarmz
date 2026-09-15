@@ -81,7 +81,9 @@ The shell is on another Mac. Two sources, in priority order:
 1. **OSC 7.** xterm's parser registers an OSC 7 handler per terminal
    (`term.parser.registerOscHandler(7, …)`). The payload is a
    `file://host/path` URL; the path (percent-decoded) becomes
-   `settings.ssh.cwd` when it differs. Most prompt integrations (Terminal.app
+   `settings.ssh.cwd` when it differs, but only while the tile's ssh is
+   connected (`sshConnected`), so the local prompt's own OSC 7 before or
+   after the remote session never overwrites the remote folder. Most prompt integrations (Terminal.app
    defaults, iTerm shell integration, oh-my-zsh, starship) emit it.
 2. **Claude hooks.** Every hook event carries `cwd`; SessionStart and
    UserPromptSubmit from that tile set `settings.ssh.cwd` when it differs
