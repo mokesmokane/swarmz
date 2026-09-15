@@ -142,12 +142,18 @@ pub fn remote_read_command() -> &'static str {
     "cat ~/.swarmz/hooks/claude.sh 2>/dev/null; printf '\\n%s\\n' __SWARMZ_SEP_7f3a__; cat ~/.claude/settings.json 2>/dev/null; true"
 }
 
-pub fn remote_write_script_command() -> &'static str {
-    "mkdir -p ~/.swarmz/hooks && cat > ~/.swarmz/hooks/claude.sh.tmp.$$ && chmod 755 ~/.swarmz/hooks/claude.sh.tmp.$$ && mv -f ~/.swarmz/hooks/claude.sh.tmp.$$ ~/.swarmz/hooks/claude.sh"
+/// Writes `len` bytes of stdin to the hook script, atomically. `cat` cannot tell a pipe that
+/// closed because we timed out from one that ended because the payload was complete — both are
+/// a clean EOF and exit 0 — so the temp file's size is checked against what we meant to send
+/// before anything replaces the real file.
+pub fn remote_write_script_command(len: usize) -> String {
+    format!("mkdir -p ~/.swarmz/hooks && cat > ~/.swarmz/hooks/claude.sh.tmp.$$ && [ \"$(wc -c < ~/.swarmz/hooks/claude.sh.tmp.$$ | tr -d ' ')\" -eq {len} ] && chmod 755 ~/.swarmz/hooks/claude.sh.tmp.$$ && mv -f ~/.swarmz/hooks/claude.sh.tmp.$$ ~/.swarmz/hooks/claude.sh || {{ rm -f ~/.swarmz/hooks/claude.sh.tmp.$$; exit 1; }}")
 }
 
-pub fn remote_write_settings_command() -> &'static str {
-    "mkdir -p ~/.claude && cat > ~/.claude/settings.json.tmp.$$ && mv -f ~/.claude/settings.json.tmp.$$ ~/.claude/settings.json"
+/// Writes `len` bytes of stdin to `~/.claude/settings.json`, atomically and only at full
+/// length: a truncated write here would replace the user's whole Claude config.
+pub fn remote_write_settings_command(len: usize) -> String {
+    format!("mkdir -p ~/.claude && cat > ~/.claude/settings.json.tmp.$$ && [ \"$(wc -c < ~/.claude/settings.json.tmp.$$ | tr -d ' ')\" -eq {len} ] && mv -f ~/.claude/settings.json.tmp.$$ ~/.claude/settings.json || {{ rm -f ~/.claude/settings.json.tmp.$$; exit 1; }}")
 }
 
 /// Splits the reply of `remote_read_command` into (script, settings), each None when empty.
@@ -204,7 +210,7 @@ pub fn install_remote(host: &str) -> Result<bool, String> {
     let mut wrote = false;
     if script.as_deref().and_then(script_version) != Some(HOOK_VERSION) || script.as_deref() != Some(HOOK_SCRIPT) {
         let mut cmd = ssh_command(&host)?;
-        cmd.arg(remote_write_script_command());
+        cmd.arg(remote_write_script_command(HOOK_SCRIPT.len()));
         let done = run_with_timeout_input(cmd, Duration::from_secs(10), "ssh", Some(HOOK_SCRIPT.as_bytes()))?;
         if !done.status.success() {
             return Err(ssh_failure(&done, "remote script write"));
@@ -214,8 +220,9 @@ pub fn install_remote(host: &str) -> Result<bool, String> {
     let (merged, changed) = install_hooks(settings.as_deref())?;
     if changed || settings.is_none() {
         let mut cmd = ssh_command(&host)?;
-        cmd.arg(remote_write_settings_command());
-        let done = run_with_timeout_input(cmd, Duration::from_secs(10), "ssh", Some(format!("{merged}\n").as_bytes()))?;
+        let payload = format!("{merged}\n");
+        cmd.arg(remote_write_settings_command(payload.len()));
+        let done = run_with_timeout_input(cmd, Duration::from_secs(10), "ssh", Some(payload.as_bytes()))?;
         if !done.status.success() {
             return Err(ssh_failure(&done, "remote settings write"));
         }
@@ -544,12 +551,58 @@ mod tests {
         assert!(read.contains("cat ~/.swarmz/hooks/claude.sh"));
         assert!(read.contains("cat ~/.claude/settings.json"));
         assert!(read.contains(REMOTE_SEPARATOR));
-        let ws = remote_write_script_command();
+        let ws = remote_write_script_command(42);
         assert!(ws.contains("mkdir -p ~/.swarmz/hooks"));
         assert!(ws.contains("chmod 755"));
-        let wc = remote_write_settings_command();
+        assert!(ws.contains("-eq 42"));
+        let wc = remote_write_settings_command(7);
         assert!(wc.contains("mkdir -p ~/.claude"));
         assert!(wc.contains("mv -f"));
+        assert!(wc.contains("-eq 7"));
+    }
+
+    /// Runs one of the remote write commands locally with `HOME` pointed at a temp dir, the way
+    /// the remote shell runs it, and feeds it `payload` on stdin.
+    fn run_remote_write(command: &str, home: &std::path::Path, payload: &[u8]) -> bool {
+        use std::io::Write;
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .env("HOME", home)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(payload).unwrap();
+        child.wait().unwrap().success()
+    }
+
+    #[test]
+    fn remote_writes_refuse_a_payload_that_arrived_short() {
+        let home = std::env::temp_dir().join(format!("swarmz-remote-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+
+        let settings = b"{\"hooks\":{}}\n";
+        let target = home.join(".claude/settings.json");
+        assert!(run_remote_write(&remote_write_settings_command(settings.len()), &home, settings));
+        assert_eq!(std::fs::read(&target).unwrap(), settings);
+
+        // A local timeout closes the pipe cleanly, so `cat` still exits 0 with half a file: the
+        // length check is what stops that half replacing the user's config.
+        assert!(!run_remote_write(&remote_write_settings_command(settings.len()), &home, &settings[..4]));
+        assert_eq!(std::fs::read(&target).unwrap(), settings);
+        assert_eq!(std::fs::read_dir(home.join(".claude")).unwrap().count(), 1);
+
+        let script = home.join(".swarmz/hooks/claude.sh");
+        assert!(run_remote_write(&remote_write_script_command(HOOK_SCRIPT.len()), &home, HOOK_SCRIPT.as_bytes()));
+        assert_eq!(std::fs::read_to_string(&script).unwrap(), HOOK_SCRIPT);
+        assert!(!run_remote_write(&remote_write_script_command(HOOK_SCRIPT.len()), &home, b"#!/bin/sh\n"));
+        assert_eq!(std::fs::read_to_string(&script).unwrap(), HOOK_SCRIPT);
+        assert_eq!(std::fs::read_dir(home.join(".swarmz/hooks")).unwrap().count(), 1);
+
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
