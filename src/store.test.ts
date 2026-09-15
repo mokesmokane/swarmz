@@ -1800,9 +1800,31 @@ describe("agent state", () => {
     __stopAllPolling();
     const old = { ts: "2026-09-15T08:00:00Z" };
     useStore.getState().applyAgentEvent(ev(local, "SessionStart", old));
-    useStore.getState().applyAgentEvent(ev(remote, "SessionStart", old));
+    useStore.getState().applyAgentEvent(ev(remote, "SessionStart", old, "me@box"));
     expect(useStore.getState().agentState[local]).toBeUndefined();
     expect(useStore.getState().agentState[remote]?.status).toBe("idle");
+  });
+
+  it("ignores an event from a machine other than the one the tile runs on", async () => {
+    const local = await useStore.getState().createTerminal("/tmp/a");
+    const box = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p" });
+    __stopAllPolling();
+    // Replay out of this Mac's own log: whatever it describes died with the app, and it was
+    // never this tile's Claude anyway.
+    useStore.getState().applyAgentEvent(ev(box, "SessionStart", { ts: "2026-09-15T08:00:00Z" }));
+    expect(useStore.getState().agentState[box]).toBeUndefined();
+    // Same terminal id seen on a third machine's log (ids travel in the shared workspace).
+    useStore.getState().applyAgentEvent(ev(box, "SessionStart", {}, "me@other"));
+    expect(useStore.getState().agentState[box]).toBeUndefined();
+    useStore.getState().applyAgentEvent(ev(box, "SessionStart"));
+    expect(useStore.getState().agentState[box]).toBeUndefined();
+    useStore.getState().applyAgentEvent(ev(local, "SessionStart", {}, "me@box"));
+    expect(useStore.getState().agentState[local]).toBeUndefined();
+    // The logs that do describe these tiles still apply.
+    useStore.getState().applyAgentEvent(ev(box, "SessionStart", {}, "me@box"));
+    expect(useStore.getState().agentState[box]?.status).toBe("idle");
+    useStore.getState().applyAgentEvent(ev(local, "SessionStart"));
+    expect(useStore.getState().agentState[local]?.status).toBe("idle");
   });
 
   it("exit, restart and close reset the state", async () => {

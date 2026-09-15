@@ -1265,9 +1265,13 @@ export const useStore = create<WorkbenchState>((set) => ({
       const id = event.terminal;
       if (!s.terminals[id]) return {};
       const settings = s.settings[id] ?? EMPTY_SETTINGS;
+      // A log only describes the machine it lives on: terminal ids travel in the shared
+      // workspace, so the same id can appear in another Mac's log for a tile that is not this
+      // one. Match the tile to the host the event came from (null = this Mac).
+      if (host === null ? settings.ssh != null : settings.ssh?.host?.trim() !== host) return {};
       // Replay from before this run: a Claude in one of our own PTYs died with the app, so only a
       // remote's (possibly still alive elsewhere) history counts.
-      if (event.ts < APP_LAUNCHED_AT && !settings.ssh) return {};
+      if (event.ts < APP_LAUNCHED_AT && host === null) return {};
       const focused = s.windowFocused && s.focusedTerminalId === id;
       const next = foldAgentEvent(s.agentState[id], event, focused);
       const patch: Partial<WorkbenchState> = {};
