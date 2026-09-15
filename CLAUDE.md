@@ -52,6 +52,10 @@ SSH uses OpenSSH multiplexing with a control socket under `~/.swarmz/ssh/%C` (`S
 - Adoption must converge: comparisons use `sameWorkspaceContent` (order-insensitive, ignores `sync`) so two machines never ping-pong revisions over terminal order. Keep any new comparison order-insensitive.
 - Tailscale is only used for discovery: `tailscale status --json` via the CLI (`tailscale.rs`), short MagicDNS name as the machine key. Login is plain ssh over the tailnet.
 
+### Agent state
+
+Claude Code lifecycle hooks (installed once per machine into `~/.claude/settings.json`, script at `~/.swarmz/hooks/claude.sh`) append one line per event to `~/.swarmz/agents/events.log` on the machine Claude runs on. `agents.rs` tails that file locally and over the shared ssh socket for each tailnet machine with a connected tile, emitting `agent:event`. `src/lib/agentState.ts` is the pure reducer (offline / working / idle / blocked, plus `unseen`); the store owns watcher lifecycle, replay rules and the `claude.started` flip on the first `UserPromptSubmit`. Remote claude lines carry `SWARMZ_TERMINAL_ID=<id>` because the remote shell does not inherit the local env.
+
 ## Tests
 
 - Store and lib tests run in node; component tests need `// @vitest-environment jsdom` as the first line. Every frontend test mocks `./lib/ipc` (and `@tauri-apps/api/path`, `@tauri-apps/plugin-dialog` where used) with `vi.mock`; look at `src/store.test.ts` for the reusable fake registry pattern.
