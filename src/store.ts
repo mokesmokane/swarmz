@@ -49,6 +49,7 @@ import {
 } from "./lib/workspace";
 import { applyAgentEvent as foldAgentEvent, OFFLINE, type AgentState } from "./lib/agentState";
 import type { AgentEventPayload } from "./lib/ipc";
+import { sanitizeSessions } from "./lib/sessions";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -466,7 +467,7 @@ function machineDropNote(dropped: number): string {
   return `${dropped} machine ${dropped === 1 ? "entry" : "entries"} in workspace.json were invalid and were dropped`;
 }
 
-const KNOWN_DEF_KEYS = new Set(["id", "name", "cwd", "ssh", "claude", "command", "origin"]);
+const KNOWN_DEF_KEYS = new Set(["id", "name", "cwd", "ssh", "claude", "command", "origin", "sessions"]);
 
 /** Fields on a loaded def that this app version does not know about; kept so they round-trip on save. */
 function extraFromDef(def: TerminalDef): Record<string, unknown> {
@@ -495,7 +496,7 @@ function settingsFromDef(
   // with JSON.stringify to decide whether an already-open terminal's startup bar should
   // re-arm, and that comparison is key-order sensitive.
   const { origin, ...rest } = opening.settings;
-  return { settings: { ...rest, extra: extraFromDef(d), origin: origin ?? self ?? null }, note: opening.note };
+  return { settings: { ...rest, sessions: sanitizeSessions(d.sessions), extra: extraFromDef(d), origin: origin ?? self ?? null }, note: opening.note };
 }
 
 /** Machine names this app can actually reach: tailnet peers plus every machine recorded in

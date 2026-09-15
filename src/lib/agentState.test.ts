@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { applyAgentEvent, BLOCKING_NOTIFICATIONS, dotPresentation, OFFLINE, statusClasses, type AgentEvent, type AgentState } from "./agentState";
 
 const ev = (event: string, extra: Partial<AgentEvent> = {}): AgentEvent => ({
-  ts: "2026-09-15T10:00:00Z", terminal: "t", event, sessionId: "s1", notificationType: null, source: null, ...extra,
+  ts: "2026-09-15T10:00:00Z", terminal: "t", event, sessionId: "s1", notificationType: null, source: null, cwd: null, permissionMode: null, ...extra,
 });
 
 describe("applyAgentEvent", () => {

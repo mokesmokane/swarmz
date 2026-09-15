@@ -16,6 +16,8 @@ export interface AgentEvent {
   sessionId: string | null;
   notificationType: string | null;
   source: string | null;
+  cwd: string | null;
+  permissionMode: string | null;
 }
 
 export const OFFLINE: AgentState = { status: "offline", sessionId: null, since: "", lastEvent: "", unseen: false };

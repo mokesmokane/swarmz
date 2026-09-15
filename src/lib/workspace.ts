@@ -1,4 +1,5 @@
 import { addTab, allGroups, removeTerminal, type Layout, type LayoutNode } from "./layout";
+import type { SessionRecord } from "./sessions";
 
 export interface SshConfig {
   host: string;
@@ -21,6 +22,8 @@ export interface TerminalSettings {
   origin?: string | null;
   /** In-memory marker for a local terminal whose origin is another machine; never persisted. */
   foreign?: { cwd: string } | null;
+  /** Claude sessions that ran in this tile, newest first. */
+  sessions?: SessionRecord[];
   /** Fields carried in workspace.json that this app version does not know about; preserved on save. */
   extra?: Record<string, unknown>;
 }
@@ -389,6 +392,7 @@ export function sameWorkspaceContent(a: Workspace, b: Workspace): boolean {
         claude: t.claude ?? null,
         command: t.command ?? null,
         origin: t.origin ?? null,
+        sessions: t.sessions ?? [],
       };
     }
     return stableJson({ terminals, layout: ws.layout, machines: ws.machines ?? {} });
@@ -419,6 +423,7 @@ export function toWorkspace(input: {
         claude: s.claude,
         command: s.command,
         ...(s.origin ? { origin: s.origin } : {}),
+        ...(s.sessions?.length ? { sessions: s.sessions } : {}),
       };
     });
   const machines = input.machines ?? {};

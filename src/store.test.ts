@@ -28,6 +28,8 @@ vi.mock("./lib/ipc", () => {
       sshCheck: vi.fn(async () => false),
       sshListDir: vi.fn(async () => ({ path: "/", parent: null, dirs: [] })),
       terminalForegroundBusy: vi.fn(async () => false),
+      terminalCwd: vi.fn(async () => null),
+      setTerminalCwd: vi.fn(async (id: string, cwd: string) => ({ id, name: "x", cwd, exited: null, error: null })),
       tailscaleStatus: vi.fn(async () => ({ running: true, message: null, user: "mokes", self: null, peers: [] })),
       tailscaleOpen: vi.fn(async () => {}),
       workspacePull: vi.fn(async () => null),
@@ -1739,7 +1741,7 @@ describe("agent state", () => {
     host: string | null = null,
   ) => ({
     host,
-    event: { ts: "2026-09-15T10:00:00Z", terminal, event, sessionId: "s1", notificationType: null, source: null, ...extra },
+    event: { ts: "2026-09-15T10:00:00Z", terminal, event, sessionId: "s1", notificationType: null, source: null, cwd: null, permissionMode: null, ...extra },
   });
 
   it("applies live events to known terminals and ignores unknown ones", async () => {

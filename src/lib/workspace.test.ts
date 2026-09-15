@@ -532,3 +532,25 @@ describe("toWorkspace with sync and foreign locals", () => {
     expect(ws.terminals[1]).toMatchObject({ id: "l", cwd: "/here", origin: "here" });
   });
 });
+
+describe("sessions in the workspace file", () => {
+  const sess = [{ sessionId: "s1", cwd: "/p", skipPermissions: false, startedAt: "t", lastActiveAt: "t" }];
+  it("toWorkspace writes sessions and sameWorkspaceContent compares them", () => {
+    const base = {
+      order: ["a"],
+      terminals: { a: { id: "a", name: "A", cwd: "/p" } },
+      settings: { a: { ...EMPTY_SETTINGS, sessions: sess } },
+      layout: { kind: "group" as const, id: "g", tabs: ["a"], active: "a" },
+      machines: {},
+    };
+    const ws = toWorkspace(base);
+    expect(ws.terminals[0].sessions).toEqual(sess);
+    const without = toWorkspace({ ...base, settings: { a: EMPTY_SETTINGS } });
+    expect(sameWorkspaceContent(ws, without)).toBe(false);
+    expect(sameWorkspaceContent(ws, toWorkspace(base))).toBe(true);
+  });
+  it("omits the key when there are no sessions", () => {
+    const ws = toWorkspace({ order: ["a"], terminals: { a: { id: "a", name: "A", cwd: "/p" } }, settings: { a: EMPTY_SETTINGS }, layout: null, machines: {} });
+    expect("sessions" in ws.terminals[0]).toBe(false);
+  });
+});

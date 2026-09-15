@@ -51,6 +51,8 @@ vi.mock("./ipc", () => ({
     resizeTerminal: vi.fn(async () => {}),
     onData: vi.fn(async () => () => {}),
     onExit: vi.fn(async () => () => {}),
+    terminalCwd: vi.fn(async () => null),
+    setTerminalCwd: vi.fn(async (id: string, cwd: string) => ({ id, name: "x", cwd, exited: null, error: null })),
   },
 }));
 
