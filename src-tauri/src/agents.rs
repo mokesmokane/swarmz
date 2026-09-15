@@ -136,7 +136,7 @@ pub const REMOTE_SEPARATOR: &str = "__SWARMZ_SEP_7f3a__";
 
 pub fn remote_read_command() -> &'static str {
     // Each cat may fail (file absent); the separator always prints so the reply splits.
-    "cat ~/.swarmz/hooks/claude.sh 2>/dev/null; printf '\\n%s\\n' __SWARMZ_SEP_7f3a__; cat ~/.claude/settings.json 2>/dev/null"
+    "cat ~/.swarmz/hooks/claude.sh 2>/dev/null; printf '\\n%s\\n' __SWARMZ_SEP_7f3a__; cat ~/.claude/settings.json 2>/dev/null; true"
 }
 
 pub fn remote_write_script_command() -> &'static str {
@@ -437,5 +437,48 @@ mod tests {
         let (script, settings) = split_remote_read(&format!("#!/bin/sh\n# SWARMZ_HOOK_VERSION=1\n{REMOTE_SEPARATOR}\n{{\"a\":1}}\n"));
         assert_eq!(script_version(script.as_deref().unwrap()), Some(1));
         assert_eq!(settings.as_deref(), Some("{\"a\":1}\n"));
+    }
+
+    #[test]
+    fn remote_read_command_succeeds_with_missing_files() {
+        let home = std::env::temp_dir().join(format!("swarmz-remote-read-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+
+        // First run: no files exist, should succeed and return None/None
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(remote_read_command());
+        cmd.env("HOME", &home);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let output = cmd.output().unwrap();
+        assert!(output.status.success(), "remote_read_command failed with missing files: {}", String::from_utf8_lossy(&output.stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let (script, settings) = split_remote_read(&stdout);
+        assert_eq!(script, None);
+        assert_eq!(settings, None);
+
+        // Second run: create both files and verify they are read
+        std::fs::create_dir_all(home.join(".swarmz/hooks")).unwrap();
+        std::fs::write(home.join(".swarmz/hooks/claude.sh"), HOOK_SCRIPT).unwrap();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/settings.json"), r#"{"a":1}"#).unwrap();
+
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(remote_read_command());
+        cmd.env("HOME", &home);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let output = cmd.output().unwrap();
+        assert!(output.status.success(), "remote_read_command failed with files present: {}", String::from_utf8_lossy(&output.stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let (script, settings) = split_remote_read(&stdout);
+        assert!(script.is_some(), "script should be read");
+        assert!(settings.is_some(), "settings should be read");
+        assert_eq!(script.as_deref(), Some(HOOK_SCRIPT));
+        assert_eq!(settings.as_deref(), Some(r#"{"a":1}"#));
+
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }
