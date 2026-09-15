@@ -33,6 +33,12 @@ pub fn remote_paste_command(name: &str, len: usize) -> String {
     )
 }
 
+/// True for a path the remote can be trusted to have printed: absolute and free of control
+/// characters, which could otherwise smuggle terminal escapes into the tile we type it into.
+pub fn usable_path(s: &str) -> bool {
+    s.starts_with('/') && !crate::remote::has_control_chars(s)
+}
+
 /// Pushes `png` to `host` over the shared ssh socket, returning the absolute remote path.
 pub fn push_png(host: &str, png: &[u8]) -> Result<String, String> {
     let host = validate_host(host)?;
@@ -53,9 +59,10 @@ pub fn push_png(host: &str, png: &[u8]) -> Result<String, String> {
             done.stderr.trim().to_string()
         });
     }
+    // Login-shell banners and the like share this stdout, so never type it into a tile unchecked.
     let path = done.stdout.trim();
-    if path.is_empty() {
-        return Err("the remote did not report where the image landed".into());
+    if !usable_path(path) {
+        return Err("remote returned an unusable path".into());
     }
     Ok(path.to_string())
 }
@@ -102,6 +109,15 @@ mod tests {
     #[test]
     fn paste_name_is_stamped_with_the_millisecond() {
         assert_eq!(paste_name(1700000000000), "paste-1700000000000.png");
+    }
+
+    #[test]
+    fn usable_path_takes_only_an_absolute_path_free_of_control_characters() {
+        assert!(usable_path("/Users/me/.swarmz/paste/x.png"));
+        assert!(!usable_path("rel/x.png"));
+        // A login-shell banner or a hostile path could otherwise type escapes into the tile.
+        assert!(!usable_path("/a\x1b[31mb"));
+        assert!(!usable_path(""));
     }
 
     #[test]

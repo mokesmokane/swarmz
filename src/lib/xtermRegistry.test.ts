@@ -422,6 +422,45 @@ describe("Ctrl+V in an ssh tile", () => {
     }
   });
 
+  it("ignores a second Ctrl+V while the first push is still in flight", async () => {
+    let resolve: (v: string | null) => void = () => {};
+    vi.mocked(ipc.pasteImageToRemote).mockImplementation(() => new Promise<string | null>((r) => (resolve = r)));
+    const send = tile("p7", { ssh: true, connected: true });
+    try {
+      send(IMAGE_PASTE_KEY);
+      await vi.waitFor(() => expect(ipc.pasteImageToRemote).toHaveBeenCalledTimes(1));
+      // An impatient second press must not start a second push, nor leak a raw \x16 into the
+      // prompt the first push is about to type a path into.
+      send(IMAGE_PASTE_KEY);
+      expect(ipc.pasteImageToRemote).toHaveBeenCalledTimes(1);
+      expect(ipc.writeTerminal).not.toHaveBeenCalled();
+
+      resolve(PATH);
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("p7", PATH));
+      expect(ipc.writeTerminal).toHaveBeenCalledTimes(1);
+
+      // Once it settled the tile accepts Ctrl+V again.
+      send(IMAGE_PASTE_KEY);
+      await vi.waitFor(() => expect(ipc.pasteImageToRemote).toHaveBeenCalledTimes(2));
+    } finally {
+      resolve(null);
+      dispose("p7");
+    }
+  });
+
+  it("frees the tile again after a failed push", async () => {
+    vi.mocked(ipc.pasteImageToRemote).mockRejectedValue("not reachable: x");
+    const send = tile("p8", { ssh: true, connected: true });
+    try {
+      send(IMAGE_PASTE_KEY);
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("p8", IMAGE_PASTE_KEY));
+      send(IMAGE_PASTE_KEY);
+      await vi.waitFor(() => expect(ipc.pasteImageToRemote).toHaveBeenCalledTimes(2));
+    } finally {
+      dispose("p8");
+    }
+  });
+
   it("forwards ordinary typing in a connected ssh tile unchanged", async () => {
     const send = tile("p6", { ssh: true, connected: true });
     try {

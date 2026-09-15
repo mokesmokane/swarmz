@@ -79,15 +79,24 @@ function connectedSshHost(id: string): string | null {
   return host && s.sshConnected[id] === true ? host : null;
 }
 
+/** Tiles with a push in flight. A screenshot over a slow link takes seconds, and the user has no
+ * feedback until the path appears, so an impatient second Ctrl+V is dropped rather than starting
+ * a second upload or leaking a raw `\x16` into the prompt the first one is about to type into. */
+const pasting = new Set<string>();
+
 /** Pushes the clipboard image to `host` and types the remote path it landed at, so the user can
  * add their prompt and press Enter. With no image on the clipboard, or when the push fails,
  * Ctrl+V goes through to Claude, whose own paste handling then takes over. */
 async function sendImageOrForward(id: string, host: string): Promise<void> {
+  if (pasting.has(id)) return;
+  pasting.add(id);
   let path: string | null = null;
   try {
     path = await ipc.pasteImageToRemote(host);
   } catch {
     // not reachable, no clipboard access, …
+  } finally {
+    pasting.delete(id);
   }
   if (path) {
     await ipc.writeTerminal(id, path).catch(() => {});

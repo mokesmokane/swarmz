@@ -67,7 +67,7 @@ pub fn list_command(path: Option<&str>) -> String {
 /// True if `s` contains an ASCII control character (`\x00`-`\x1f` or `\x7f`), which must never
 /// be accepted as part of a remote path: it could otherwise be used to smuggle terminal escape
 /// sequences or confuse the marker-line parsing below.
-fn has_control_chars(s: &str) -> bool {
+pub(crate) fn has_control_chars(s: &str) -> bool {
     s.chars().any(|c| (c as u32) < 0x20 || c as u32 == 0x7f)
 }
 
