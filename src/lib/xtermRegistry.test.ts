@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalInfo } from "./ipc";
 
 const { instances, dataCallbacks } = vi.hoisted(() => ({
@@ -112,9 +112,24 @@ describe("xtermRegistry dispose-on-removal subscription", () => {
 });
 
 describe("copy selection to clipboard on mouse-up", () => {
+  // These tiles are never in `terminals`, so the store subscription that disposes removed
+  // terminals never reaches them: without this bookkeeping each one leaks a real 5 s cwd-poll
+  // interval into every test that runs after, including the fake-timer ones below.
+  const openIds: string[] = [];
+  const opened: { disposed: boolean }[] = [];
+  function open(id: string, container: HTMLElement) {
+    openIds.push(id);
+    const r = attach(id, container);
+    opened.push(r.term as unknown as { disposed: boolean });
+    return r;
+  }
+  afterEach(() => {
+    while (openIds.length) dispose(openIds.pop()!);
+  });
+
   it("copies the selected text when the mouse is released over the terminal", () => {
     const container = document.createElement("div");
-    const { term } = attach("c", container);
+    const { term } = open("c", container);
     (term as unknown as { selection: string }).selection = "hello world";
 
     term.element!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
@@ -125,7 +140,7 @@ describe("copy selection to clipboard on mouse-up", () => {
 
   it("flashes the pane once the clipboard write succeeds", async () => {
     const container = document.createElement("div");
-    const { term } = attach("c2", container);
+    const { term } = open("c2", container);
     (term as unknown as { selection: string }).selection = "copied text";
     useStore.setState({ copiedAt: {} });
 
@@ -137,7 +152,7 @@ describe("copy selection to clipboard on mouse-up", () => {
   it("does not flash when the clipboard write fails", async () => {
     vi.mocked(writeText).mockRejectedValueOnce(new Error("denied"));
     const container = document.createElement("div");
-    const { term } = attach("c3", container);
+    const { term } = open("c3", container);
     (term as unknown as { selection: string }).selection = "x";
     useStore.setState({ copiedAt: {} });
     term.element!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
@@ -147,13 +162,13 @@ describe("copy selection to clipboard on mouse-up", () => {
 
   it("lets Option-drag select inside programs that track the mouse", () => {
     const container = document.createElement("div");
-    const { term } = attach("c4", container);
+    const { term } = open("c4", container);
     expect((term as unknown as { options: { macOptionClickForcesSelection?: boolean } }).options.macOptionClickForcesSelection).toBe(true);
   });
 
   it("does not copy when there is no selection", () => {
     const container = document.createElement("div");
-    const { term } = attach("d", container);
+    const { term } = open("d", container);
 
     term.element!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
 
@@ -162,7 +177,7 @@ describe("copy selection to clipboard on mouse-up", () => {
 
   it("stops copying once the terminal is disposed", () => {
     const container = document.createElement("div");
-    const { term } = attach("e", container);
+    const { term } = open("e", container);
     (term as unknown as { selection: string }).selection = "goodbye";
     const element = term.element!;
 
@@ -175,16 +190,22 @@ describe("copy selection to clipboard on mouse-up", () => {
   it("keeps copying, once per mouse-up, after being re-parented into another container", () => {
     const container1 = document.createElement("div");
     const container2 = document.createElement("div");
-    const { term } = attach("f", container1);
+    const { term } = open("f", container1);
     (term as unknown as { selection: string }).selection = "reparented";
 
-    attach("f", container2);
+    open("f", container2);
     expect(term.element!.parentElement).toBe(container2);
 
     term.element!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
 
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith("reparented");
+  });
+
+  // Runs last in this describe: every terminal the tests above attached must be gone, and with
+  // it the real interval `attach` starts.
+  it("leaves no terminal of its own attached", () => {
+    expect(opened.filter((t) => !t.disposed)).toEqual([]);
   });
 });
 
