@@ -76,9 +76,12 @@ export const AGENT_WATCH_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 const agentWatch = {
   watching: new Set<string>(),
   installed: new Set<string>(),
-  attempts: new Map<string, number>(),
+  attempts: new Map<string | null, number>(),
   retry: new Map<string, ReturnType<typeof setTimeout>>(),
   gen: new Map<string | null, number>(),
+  /** When the watch we last asked for was issued, and the delay we waited before asking. */
+  startedAt: new Map<string | null, number>(),
+  delay: new Map<string | null, number>(),
 };
 
 /** Pending retry timer for the local (host === null) watcher, deduped so two `agentWatchEnded`
@@ -92,6 +95,8 @@ export function __resetAgentWatchers() {
   for (const t of agentWatch.retry.values()) clearTimeout(t);
   agentWatch.retry.clear();
   agentWatch.gen.clear();
+  agentWatch.startedAt.clear();
+  agentWatch.delay.clear();
   if (localRetry) clearTimeout(localRetry);
   localRetry = null;
 }
@@ -124,6 +129,17 @@ async function bailIfUnwanted(host: string): Promise<boolean> {
 /** After this many failed re-watches (1+2+4+8+16 s ≈ 30 s) the tile gets a note. */
 export const AGENT_WATCH_UNAVAILABLE_AFTER = 5;
 
+/**
+ * Evidence that the watcher for `host` really ran: an event from it, or a watcher that outlived
+ * the wait that started it. `agents_watch` resolving is not evidence — the core resolves it as
+ * soon as it has spawned `tail`/`ssh`, long before ssh has connected — so an unreachable host
+ * would otherwise reset its backoff on every hop and never escalate.
+ */
+function agentWatchSurvived(host: string | null) {
+  agentWatch.attempts.delete(host);
+  agentWatch.delay.delete(host);
+}
+
 function scheduleAgentRewatch(host: string) {
   const n = agentWatch.attempts.get(host) ?? 0;
   agentWatch.attempts.set(host, n + 1);
@@ -136,6 +152,7 @@ function scheduleAgentRewatch(host: string) {
     }
   }
   const delay = AGENT_WATCH_BACKOFF_MS[Math.min(n, AGENT_WATCH_BACKOFF_MS.length - 1)];
+  agentWatch.delay.set(host, delay);
   const existing = agentWatch.retry.get(host);
   if (existing) clearTimeout(existing);
   agentWatch.retry.set(
@@ -1233,7 +1250,9 @@ export const useStore = create<WorkbenchState>((set) => ({
     return null;
   },
 
-  applyAgentEvent({ event }) {
+  applyAgentEvent({ host, event }) {
+    // The log reached us, so whatever watcher is tailing it is up.
+    agentWatchSurvived(host);
     set((s) => {
       const id = event.terminal;
       if (!s.terminals[id]) return {};
@@ -1304,8 +1323,8 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (!agentWatch.watching.has(host) && !agentWatch.retry.has(host)) {
         agentWatch.watching.add(host);
         try {
+          agentWatch.startedAt.set(host, Date.now());
           agentWatch.gen.set(host, await ipc.agentsWatch(host));
-          agentWatch.attempts.delete(host);
         } catch {
           agentWatch.watching.delete(host);
           scheduleAgentRewatch(host);
@@ -1332,6 +1351,8 @@ export const useStore = create<WorkbenchState>((set) => ({
     agentWatch.gen.delete(host);
     agentWatch.watching.delete(host);
     ipc.agentsUnwatch(host).catch(() => {});
+    const lived = Date.now() - (agentWatch.startedAt.get(host) ?? 0);
+    if (lived > (agentWatch.delay.get(host) ?? 0)) agentWatchSurvived(host);
     if (wantedAgentHosts(useStore.getState()).has(host)) scheduleAgentRewatch(host);
   },
 }));

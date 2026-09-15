@@ -1727,8 +1727,13 @@ describe("shared workspace", () => {
 });
 
 describe("agent state", () => {
-  const ev = (terminal: string, event: string, extra: Partial<import("./lib/agentState").AgentEvent> = {}) => ({
-    host: null,
+  const ev = (
+    terminal: string,
+    event: string,
+    extra: Partial<import("./lib/agentState").AgentEvent> = {},
+    host: string | null = null,
+  ) => ({
+    host,
     event: { ts: "2026-09-15T10:00:00Z", terminal, event, sessionId: "s1", notificationType: null, source: null, ...extra },
   });
 
@@ -1849,28 +1854,71 @@ describe("agent state", () => {
     expect(ipc.agentsInstallRemote).toHaveBeenCalledTimes(2);
   });
 
-  it("re-watches with backoff when a watcher ends while its host is still wanted", async () => {
+  /** The tile a backoff test needs: one connected ssh terminal on "me@box" whose ssh is live,
+   * with a watcher already running (generation 1, per the ipc fake). */
+  async function connectedBoxTile(): Promise<string> {
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", machine: "box" });
+    __stopAllPolling();
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    await useStore.getState().ensureAgentWatchers();
+    vi.mocked(ipc.agentsWatch).mockClear();
+    return id;
+  }
+
+  it("escalates the re-watch backoff while each new watcher dies before its delay is up", async () => {
     vi.useFakeTimers();
     try {
-      const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", machine: "box" });
-      __stopAllPolling();
-      useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
-      await useStore.getState().ensureAgentWatchers();
-      vi.mocked(ipc.agentsWatch).mockClear();
+      await connectedBoxTile();
+      // Each hop: the watcher dies at once, so the next wait is the next step of the backoff.
+      for (const delay of [1000, 2000, 4000]) {
+        const before = vi.mocked(ipc.agentsWatch).mock.calls.length;
+        useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(ipc.agentsWatch).toHaveBeenCalledTimes(before);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(ipc.agentsWatch).toHaveBeenCalledTimes(before + 1);
+        expect(ipc.agentsWatch).toHaveBeenLastCalledWith("me@box");
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a watcher that outlives its own backoff delay resets it", async () => {
+    vi.useFakeTimers();
+    try {
+      await connectedBoxTile();
       useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
-      expect(ipc.agentsUnwatch).toHaveBeenCalledWith("me@box");
-      expect(ipc.agentsWatch).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1000);
-      expect(ipc.agentsWatch).toHaveBeenCalledWith("me@box");
-      // A successful re-watch resets the backoff (see scheduleAgentRewatch/ensureAgentWatchers),
-      // so this second end-and-retry is a fresh first hop (1000ms), not a second (2000ms) one:
-      // check "not yet" partway through that hop rather than at the original 1000ms mark, which
-      // would already have fired it.
-      useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
-      await vi.advanceTimersByTimeAsync(500);
       expect(ipc.agentsWatch).toHaveBeenCalledTimes(1);
+      // This watcher runs for five seconds — far longer than the one second wait that started
+      // it — so its death is a fresh failure, not the second hop of the old one.
+      await vi.advanceTimersByTimeAsync(5000);
+      useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
       await vi.advanceTimersByTimeAsync(1000);
       expect(ipc.agentsWatch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an event from a host proves its watcher alive and resets the backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      const id = await connectedBoxTile();
+      useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
+      await vi.advanceTimersByTimeAsync(1000);
+      useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(ipc.agentsWatch).toHaveBeenCalledTimes(2);
+      useStore.getState().applyAgentEvent(ev(id, "SessionStart", {}, "me@box"));
+      // Without that event the next wait would be the third hop (4s); the event puts it back
+      // on the first.
+      useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ipc.agentsWatch).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
     }
@@ -1902,19 +1950,17 @@ describe("agent state", () => {
   it("notes on the tile once re-watching has failed for about 30 seconds", async () => {
     vi.useFakeTimers();
     try {
-      const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", machine: "box" });
-      __stopAllPolling();
-      useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
-      await useStore.getState().ensureAgentWatchers();
-      vi.mocked(ipc.agentsWatch).mockRejectedValue("boom");
-      let gen = 1;
+      const id = await connectedBoxTile();
+      // `agents_watch` resolving only means the core spawned ssh, not that it connected: an
+      // unreachable host keeps handing back watchers that die on their own, and that is what
+      // has to escalate into the note.
       for (let i = 0; i < AGENT_WATCH_UNAVAILABLE_AFTER; i++) {
-        useStore.getState().agentWatchEnded({ host: "me@box", gen: gen++ });
+        expect(useStore.getState().startupNotes[id]).toBeUndefined();
+        useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
         await vi.advanceTimersByTimeAsync(AGENT_WATCH_BACKOFF_MS[Math.min(i, AGENT_WATCH_BACKOFF_MS.length - 1)]);
       }
       expect(useStore.getState().startupNotes[id]).toBe("agent state unavailable for box");
     } finally {
-      vi.mocked(ipc.agentsWatch).mockReset().mockResolvedValue(1);
       vi.useRealTimers();
     }
   });
