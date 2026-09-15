@@ -492,7 +492,7 @@ describe("settings and startup", () => {
     expect(useStore.getState().startupPending.a).toBe(false);
   });
 
-  it("runStartup writes the line, marks claude started, and clears pending and notes", async () => {
+  it("runStartup writes the line, does not mark claude started, and clears pending and notes", async () => {
     useStore.setState({
       terminals: { a: { id: "a", name: "a", cwd: "/a", exited: null, error: null } },
       order: ["a"],
@@ -504,7 +504,7 @@ describe("settings and startup", () => {
     await useStore.getState().runStartup("a");
     expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", "claude --session-id sid\r");
     const s = useStore.getState();
-    expect(s.settings.a.claude?.started).toBe(true);
+    expect(s.settings.a.claude?.started).toBe(false);
     expect(s.startupPending.a).toBe(false);
     expect(s.startupNotes.a).toBeUndefined();
     useStore.setState({ startupNotes: { a: "another note" } });
@@ -740,7 +740,7 @@ describe("ssh two-step startup", () => {
       const s = useStore.getState();
       expect(s.sshConnected.a).toBe(true);
       expect(s.sshConnecting.a).toBeUndefined();
-      expect(s.settings.a.claude?.started).toBe(true);
+      expect(s.settings.a.claude?.started).toBe(false);
       expect(s.startupPending.a).toBe(false);
     } finally {
       vi.useRealTimers();
@@ -799,7 +799,7 @@ describe("ssh two-step startup", () => {
       expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", `cd ${shellQuote("/remote/proj")} && SWARMZ_TERMINAL_ID=a claude --session-id sid\r`);
       const s = useStore.getState();
       expect(s.settings.a.ssh?.cwd).toBe("/remote/proj");
-      expect(s.settings.a.claude?.started).toBe(true);
+      expect(s.settings.a.claude?.started).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -1945,5 +1945,22 @@ describe("agent state", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("UserPromptSubmit with the tile's session id marks the Claude session started", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(id, { claude: { enabled: true, sessionId: "s1", skipPermissions: false, started: false } });
+    useStore.getState().applyAgentEvent(ev(id, "UserPromptSubmit", { sessionId: "other" }));
+    expect(useStore.getState().settings[id].claude?.started).toBe(false);
+    useStore.getState().applyAgentEvent(ev(id, "UserPromptSubmit", { sessionId: "s1" }));
+    expect(useStore.getState().settings[id].claude?.started).toBe(true);
+  });
+
+  it("runStartup no longer marks the session started", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(id, { claude: { enabled: true, sessionId: "s1", skipPermissions: false, started: false } });
+    await useStore.getState().runStartup(id);
+    expect(ipc.writeTerminal).toHaveBeenCalledWith(id, "claude --session-id s1\r");
+    expect(useStore.getState().settings[id].claude?.started).toBe(false);
   });
 });

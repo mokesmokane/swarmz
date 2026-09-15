@@ -34,7 +34,6 @@ import {
   startupIsSsh,
   startupLine,
   startupSteps,
-  startupUsesClaude,
   toWorkspace,
   touchMachine,
   validateAlias,
@@ -1116,10 +1115,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     await ipc.writeTerminal(id, steps[0].line + "\r");
     set((st) => {
       if (!st.terminals[id]) return {};
-      const cur = st.settings[id] ?? EMPTY_SETTINGS;
-      const claude = !isSsh && startupUsesClaude(cur) && cur.claude ? { ...cur.claude, started: true } : cur.claude;
       return {
-        settings: { ...st.settings, [id]: { ...cur, claude } },
         startupPending: { ...st.startupPending, [id]: false },
         startupNotes: omit(st.startupNotes, id),
       };
@@ -1143,9 +1139,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     await ipc.writeTerminal(id, remote.line + "\r");
     set((st) => {
       if (!st.terminals[id]) return {};
-      const cur = st.settings[id] ?? EMPTY_SETTINGS;
-      const claude = startupUsesClaude(cur) && cur.claude ? { ...cur.claude, started: true } : cur.claude;
-      return { settings: { ...st.settings, [id]: { ...cur, claude } }, startupPending: { ...st.startupPending, [id]: false } };
+      return { startupPending: { ...st.startupPending, [id]: false } };
     });
   },
 
@@ -1245,8 +1239,14 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (event.ts < APP_LAUNCHED_AT && !settings.ssh) return {};
       const focused = s.windowFocused && s.focusedTerminalId === id;
       const next = foldAgentEvent(s.agentState[id], event, focused);
-      if (!next) return {};
-      return { agentState: { ...s.agentState, [id]: next } };
+      const patch: Partial<WorkbenchState> = {};
+      if (next) patch.agentState = { ...s.agentState, [id]: next };
+      // The first prompt is what makes a session resumable: only now is `--resume` valid.
+      const c = settings.claude;
+      if (event.event === "UserPromptSubmit" && c?.enabled && !c.started && event.sessionId === c.sessionId) {
+        patch.settings = { ...s.settings, [id]: { ...settings, claude: { ...c, started: true } } };
+      }
+      return patch;
     });
   },
 
