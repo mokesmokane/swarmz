@@ -770,7 +770,10 @@ export const useStore = create<WorkbenchState>((set) => ({
   focusGroup(groupId) {
     set((s) => {
       const group = allGroups(s.layout).find((g) => g.id === groupId);
-      return { focusedGroupId: groupId, focusedTerminalId: group?.active ?? null };
+      const id = group?.active ?? null;
+      const cur = id ? s.agentState[id] : undefined;
+      const agentState = id && s.windowFocused && cur?.unseen ? { ...s.agentState, [id]: { ...cur, unseen: false } } : s.agentState;
+      return { focusedGroupId: groupId, focusedTerminalId: id, agentState };
     });
   },
 

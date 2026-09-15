@@ -1762,6 +1762,18 @@ describe("agent state", () => {
     void b;
   });
 
+  it("focusing a group clears unseen on its active terminal", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    const group = findGroupOf(useStore.getState().layout, a)!;
+    useStore.getState().splitTerminal(b, group.id, "right");
+    useStore.getState().applyAgentEvent(ev(a, "Notification", { notificationType: "permission_prompt" }));
+    expect(useStore.getState().agentState[a].unseen).toBe(true);
+    useStore.getState().focusGroup(group.id);
+    expect(useStore.getState().focusedTerminalId).toBe(a);
+    expect(useStore.getState().agentState[a].unseen).toBe(false);
+  });
+
   it("replayed events before launch apply only to ssh terminals", async () => {
     const local = await useStore.getState().createTerminal("/tmp/a");
     const remote = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p" });
