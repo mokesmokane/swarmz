@@ -30,6 +30,8 @@ pub fn run() {
             commands::ssh_open_master,
             commands::ssh_list_dir,
             commands::terminal_foreground_busy,
+            commands::terminal_cwd,
+            commands::set_terminal_cwd,
             commands::tailscale_status,
             commands::tailscale_open,
             commands::workspace_pull,

@@ -120,6 +120,33 @@ impl PtySession {
             let _ = k.kill();
         }
     }
+
+    /// The working directory of the process in the foreground of this PTY (the shell when
+    /// nothing else is running), via `lsof`. `libproc` does not implement the lookup on macOS;
+    /// `lsof -a -p <pid> -d cwd -Fn` costs about 16 ms. None when unknown.
+    #[cfg(unix)]
+    pub fn cwd(&self) -> Option<String> {
+        let shell_pid = self.shell_pid?;
+        let leader = self.master.lock().ok()?.process_group_leader().map(|p| p as u32);
+        let pid = leader.unwrap_or(shell_pid);
+        let out = std::process::Command::new("lsof")
+            .arg("-a").arg("-p").arg(pid.to_string()).arg("-d").arg("cwd").arg("-Fn")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        parse_lsof_cwd(&String::from_utf8_lossy(&out.stdout))
+    }
+
+    #[cfg(not(unix))]
+    pub fn cwd(&self) -> Option<String> {
+        None
+    }
+}
+
+/// `lsof -Fn` prints one field per line with a one-letter prefix; the cwd is the first `n` line.
+pub fn parse_lsof_cwd(stdout: &str) -> Option<String> {
+    stdout.lines().find_map(|l| l.strip_prefix('n')).filter(|p| p.starts_with('/')).map(|p| p.to_string())
 }
 
 #[cfg(test)]
@@ -214,5 +241,43 @@ mod tests {
         assert_eq!(busy, Some(true), "sleep should become the pty's foreground process group");
 
         session.kill();
+    }
+}
+
+#[cfg(test)]
+mod cwd_tests {
+    use super::*;
+
+    #[test]
+    fn parse_lsof_cwd_takes_the_n_line() {
+        assert_eq!(parse_lsof_cwd("p123\nfcwd\nn/Users/me/proj\n"), Some("/Users/me/proj".to_string()));
+        assert_eq!(parse_lsof_cwd("p123\n"), None);
+        assert_eq!(parse_lsof_cwd(""), None);
+        // A directory containing a newline cannot be represented; the first n-line wins.
+        assert_eq!(parse_lsof_cwd("n/a\nn/b\n"), Some("/a".to_string()));
+    }
+
+    #[test]
+    fn cwd_of_a_shell_that_changed_directory() {
+        let spec = SpawnSpec {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "cd /tmp && sleep 5".to_string()],
+            cwd: "/".to_string(),
+            env: vec![],
+            cols: 80,
+            rows: 24,
+        };
+        let session = PtySession::spawn(spec, |_| {}, |_| {}).unwrap();
+        // Give the shell a moment to run the cd.
+        let mut got = None;
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            got = session.cwd();
+            if got.as_deref() == Some("/tmp") || got.as_deref() == Some("/private/tmp") {
+                break;
+            }
+        }
+        session.kill();
+        assert!(matches!(got.as_deref(), Some("/tmp") | Some("/private/tmp")), "got {got:?}");
     }
 }

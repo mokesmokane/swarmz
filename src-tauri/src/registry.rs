@@ -97,6 +97,16 @@ impl TerminalRegistry {
         Ok(entry.clone())
     }
 
+    pub fn set_cwd(&mut self, id: &str, cwd: &str) -> Result<TerminalInfo, RegistryError> {
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or_else(|| RegistryError::NotFound(id.to_string()))?;
+        entry.cwd = cwd.to_string();
+        Ok(entry.clone())
+    }
+
     pub fn set_exited(&mut self, id: &str, code: Option<i32>, error: Option<String>) {
         if let Some(entry) = self.entries.iter_mut().find(|t| t.id == id) {
             entry.exited = Some(code.unwrap_or(-1));
@@ -228,6 +238,16 @@ mod tests {
             Err(RegistryError::DuplicateId("1".into()))
         );
         assert_eq!(r.list().len(), 1);
+    }
+
+    #[test]
+    fn set_cwd_updates_the_entry_and_rejects_unknown_ids() {
+        let mut reg = TerminalRegistry::new();
+        reg.add("a".into(), None, "/one".into()).unwrap();
+        let info = reg.set_cwd("a", "/two").unwrap();
+        assert_eq!(info.cwd, "/two");
+        assert_eq!(reg.get("a").unwrap().cwd, "/two");
+        assert_eq!(reg.set_cwd("nope", "/x"), Err(RegistryError::NotFound("nope".into())));
     }
 
     #[test]

@@ -153,6 +153,23 @@ pub fn terminal_foreground_busy(state: State<'_, AppState>, id: String) -> Resul
 }
 
 #[tauri::command]
+pub async fn terminal_cwd(state: State<'_, AppState>, id: String) -> Result<Option<String>, String> {
+    let session = state.sessions.lock().unwrap().get(&id).map(|(_, s)| s.clone());
+    let Some(session) = session else { return Ok(None) };
+    tauri::async_runtime::spawn_blocking(move || session.cwd()).await.map_err(|e| e.to_string())
+}
+
+/// Records the folder a tile's shell has moved to. Absolute paths only; the directory need not
+/// exist here (a foreign tile's folder lives on another machine).
+#[tauri::command]
+pub fn set_terminal_cwd(state: State<'_, AppState>, id: String, cwd: String) -> Result<TerminalInfo, String> {
+    if !cwd.starts_with('/') || cwd.chars().any(|c| c.is_control()) {
+        return Err("folder must be an absolute path without control characters".into());
+    }
+    state.registry.lock().unwrap().set_cwd(&id, &cwd).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn rename_terminal(state: State<'_, AppState>, id: String, name: String) -> Result<TerminalInfo, String> {
     state.registry.lock().unwrap().rename(&id, &name).map_err(|e| e.to_string())
 }

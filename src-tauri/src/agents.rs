@@ -240,6 +240,8 @@ pub struct AgentEvent {
     pub session_id: Option<String>,
     pub notification_type: Option<String>,
     pub source: Option<String>,
+    pub cwd: Option<String>,
+    pub permission_mode: Option<String>,
 }
 
 /// One log line: `ts \t terminal \t event \t json`. None when malformed.
@@ -261,6 +263,8 @@ pub fn parse_line(line: &str) -> Option<AgentEvent> {
         session_id: s("session_id"),
         notification_type: s("notification_type"),
         source: s("source"),
+        cwd: s("cwd"),
+        permission_mode: s("permission_mode"),
     })
 }
 
@@ -355,6 +359,20 @@ pub fn spawn_watcher(app: AppHandle, host: Option<String>, gen: u64) -> Result<W
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+
+    #[test]
+    fn parse_line_reads_cwd_and_permission_mode() {
+        let line = "t\tid\tSessionStart\t{\"session_id\":\"s\",\"cwd\":\"/p\",\"permission_mode\":\"bypassPermissions\"}";
+        let ev = parse_line(line).unwrap();
+        assert_eq!(ev.cwd.as_deref(), Some("/p"));
+        assert_eq!(ev.permission_mode.as_deref(), Some("bypassPermissions"));
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(v["cwd"], "/p");
+        assert_eq!(v["permissionMode"], "bypassPermissions");
+        let none = parse_line("t\tid\tStop\t{}").unwrap();
+        assert_eq!(none.cwd, None);
+        assert_eq!(none.permission_mode, None);
+    }
 
     #[test]
     fn script_has_version_header_and_is_parsed() {
