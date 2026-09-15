@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/ipc", () => ({
@@ -118,6 +118,25 @@ describe("TerminalPane connect card", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await vi.waitFor(() => expect(ipc.closeTerminal).toHaveBeenCalledWith(ID));
     await vi.waitFor(() => expect(useStore.getState().terminals[ID]).toBeUndefined());
+  });
+
+  it("shows a Copied pill for about a second after a copy", () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ startupPending: { [ID]: false }, copiedAt: {} });
+      render(<TerminalPane id={ID} />);
+      expect(screen.queryByText("Copied")).toBeNull();
+      act(() => {
+        useStore.setState({ copiedAt: { [ID]: Date.now() } });
+      });
+      expect(screen.getByText("Copied")).toBeTruthy();
+      act(() => {
+        vi.advanceTimersByTime(1200);
+      });
+      expect(screen.queryByText("Copied")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not show the card when nothing is pending", () => {

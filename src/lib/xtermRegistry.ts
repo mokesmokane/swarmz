@@ -25,6 +25,8 @@ function createEntry(id: string): Entry {
     fontFamily: "Menlo, Monaco, 'Courier New', monospace",
     fontSize: 13,
     scrollback: 5000,
+    // Programs that track the mouse (herdr, vim, …) swallow drags; Option-drag still selects.
+    macOptionClickForcesSelection: true,
     theme: {
       background: "#0f1115",
       foreground: "#d4d4d8",
@@ -72,7 +74,7 @@ export function attach(id: string, container: HTMLElement): { term: Terminal; fi
   if (!entry.opened) {
     entry.term.open(container);
     entry.opened = true;
-    entry.onMouseUp = () => copySelection(entry.term);
+    entry.onMouseUp = () => copySelection(id, entry.term);
     entry.term.element?.addEventListener("mouseup", entry.onMouseUp);
   } else if (entry.term.element && entry.term.element.parentElement !== container) {
     container.appendChild(entry.term.element);
@@ -81,11 +83,13 @@ export function attach(id: string, container: HTMLElement): { term: Terminal; fi
   return { term: entry.term, fit: entry.fit };
 }
 
-function copySelection(term: Terminal): void {
+function copySelection(id: string, term: Terminal): void {
   if (!term.hasSelection()) return;
   const selection = term.getSelection();
   if (!selection) return;
-  void writeText(selection).catch(() => {});
+  writeText(selection)
+    .then(() => useStore.getState().flashCopied(id))
+    .catch(() => {});
 }
 
 export function applyColor(id: string): void {

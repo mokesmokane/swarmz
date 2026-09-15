@@ -4,6 +4,9 @@ import { attach, fitAndFocus } from "../lib/xtermRegistry";
 import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary, tintBackground } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
 
+/** How long the "Copied" pill stays after a selection is copied. */
+export const COPIED_FLASH_MS = 1000;
+
 export function TerminalPane({ id }: { id: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const info = useStore((s) => s.terminals[id]);
@@ -22,6 +25,8 @@ export function TerminalPane({ id }: { id: string }) {
   const connected = useStore((s) => s.sshConnected[id] === true);
   const cancelConnecting = useStore((s) => s.cancelConnecting);
   const chooseRemoteDir = useStore((s) => s.chooseRemoteDir);
+  const copiedAt = useStore((s) => s.copiedAt[id]);
+  const [copiedVisible, setCopiedVisible] = useState(false);
   const [picking, setPicking] = useState(false);
   const [typedPath, setTypedPath] = useState("");
   // No terminal id: the card is for the reader, and `SWARMZ_TERMINAL_ID=<uuid>` in front of the
@@ -68,6 +73,13 @@ export function TerminalPane({ id }: { id: string }) {
   useEffect(() => {
     if (focused) fitAndFocus(id);
   }, [focused, id]);
+
+  useEffect(() => {
+    if (!copiedAt) return;
+    setCopiedVisible(true);
+    const t = setTimeout(() => setCopiedVisible(false), COPIED_FLASH_MS);
+    return () => clearTimeout(t);
+  }, [copiedAt]);
 
   return (
     <div className="relative h-full w-full" style={{ backgroundColor: tintBackground("#0f1115", color) }}>
@@ -122,6 +134,9 @@ export function TerminalPane({ id }: { id: string }) {
           }}
           onClose={() => setPicking(false)}
         />
+      )}
+      {copiedVisible && (
+        <div className="pointer-events-none absolute right-3 top-3 z-20 rounded bg-neutral-800/95 px-2 py-0.5 text-xs text-neutral-200 shadow">Copied</div>
       )}
       <div ref={ref} data-testid="terminal-mount" className={`absolute inset-0 p-1 ${bar ? "pt-9" : ""} ${overlay === "pending" ? "invisible" : ""}`} />
       {info?.exited !== null && info?.exited !== undefined && (

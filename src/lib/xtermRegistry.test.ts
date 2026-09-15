@@ -11,8 +11,9 @@ vi.mock("@xterm/xterm", () => {
     disposed = false;
     element: HTMLElement | null = null;
     selection = "";
-    options: { theme?: Record<string, string> } = {};
-    constructor() {
+    options: { theme?: Record<string, string>; macOptionClickForcesSelection?: boolean } = {};
+    constructor(options: Record<string, unknown> = {}) {
+      this.options = { ...(options as { theme?: Record<string, string>; macOptionClickForcesSelection?: boolean }) };
       instances.push(this);
     }
     onData() {}
@@ -103,6 +104,34 @@ describe("copy selection to clipboard on mouse-up", () => {
 
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith("hello world");
+  });
+
+  it("flashes the pane once the clipboard write succeeds", async () => {
+    const container = document.createElement("div");
+    const { term } = attach("c2", container);
+    (term as unknown as { selection: string }).selection = "copied text";
+    useStore.setState({ copiedAt: {} });
+
+    term.element!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    expect(useStore.getState().copiedAt.c2).toBeUndefined();
+    await vi.waitFor(() => expect(typeof useStore.getState().copiedAt.c2).toBe("number"));
+  });
+
+  it("does not flash when the clipboard write fails", async () => {
+    vi.mocked(writeText).mockRejectedValueOnce(new Error("denied"));
+    const container = document.createElement("div");
+    const { term } = attach("c3", container);
+    (term as unknown as { selection: string }).selection = "x";
+    useStore.setState({ copiedAt: {} });
+    term.element!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useStore.getState().copiedAt.c3).toBeUndefined();
+  });
+
+  it("lets Option-drag select inside programs that track the mouse", () => {
+    const container = document.createElement("div");
+    const { term } = attach("c4", container);
+    expect((term as unknown as { options: { macOptionClickForcesSelection?: boolean } }).options.macOptionClickForcesSelection).toBe(true);
   });
 
   it("does not copy when there is no selection", () => {

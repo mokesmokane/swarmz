@@ -272,6 +272,8 @@ export interface WorkbenchState {
   agentState: Record<string, AgentState>;
   agentHooksError: string | null;
   windowFocused: boolean;
+  /** When each terminal last copied a selection to the clipboard (ms since epoch), for the pane's "Copied" flash. */
+  copiedAt: Record<string, number>;
 
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
   createSshTerminal(opts: SshTerminalOptions, placement?: Placement): Promise<string>;
@@ -304,6 +306,7 @@ export interface WorkbenchState {
   updateMachine(name: string, patch: { alias?: string | null; user?: string | null; color?: string | null }): Promise<string | null>;
   applyAgentEvent(payload: AgentEventPayload): void;
   setWindowFocused(focused: boolean): void;
+  flashCopied(id: string): void;
   installAgentHooks(): Promise<void>;
   ensureAgentWatchers(): Promise<void>;
   agentWatchEnded(payload: { host: string | null; gen: number }): Promise<void>;
@@ -752,6 +755,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   agentState: {},
   agentHooksError: null,
   windowFocused: true,
+  copiedAt: {},
 
   async createTerminal(cwd, placement) {
     const id = crypto.randomUUID();
@@ -1325,6 +1329,10 @@ export const useStore = create<WorkbenchState>((set) => ({
       }
       return patch;
     });
+  },
+
+  flashCopied(id) {
+    set((s) => ({ copiedAt: { ...s.copiedAt, [id]: Date.now() } }));
   },
 
   setWindowFocused(focused) {
