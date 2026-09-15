@@ -1906,4 +1906,44 @@ describe("agent state", () => {
       vi.useRealTimers();
     }
   });
+
+  it("does not watch a host whose tile closed while its hooks were installing", async () => {
+    let resolveInstall!: (v: boolean) => void;
+    const installPromise = new Promise<boolean>((resolve) => {
+      resolveInstall = resolve;
+    });
+    vi.mocked(ipc.agentsInstallRemote).mockReturnValueOnce(installPromise);
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", machine: "box" });
+    __stopAllPolling();
+    // Marking connected fires the store's subscription, which starts ensureAgentWatchers() in the
+    // background; it marks "me@box" installed and pauses on the controlled install promise above.
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    // The tile closes while that install call is still in flight. The reentrant call this
+    // triggers finds nothing in `watching` yet to clean up — that's the bug: the stale `wanted`
+    // snapshot captured by the still-paused call is the only thing that knows about this host.
+    await useStore.getState().closeTerminal(id);
+    resolveInstall(true);
+    // Flush the resumed call's remaining awaits: a real macrotask boundary drains every pending
+    // microtask, regardless of how many hops its continuation needs.
+    await new Promise((r) => setTimeout(r, 0));
+    const watchedBox = vi.mocked(ipc.agentsWatch).mock.calls.some(([h]) => h === "me@box");
+    if (watchedBox) {
+      expect(ipc.agentsUnwatch).toHaveBeenCalledWith("me@box");
+    } else {
+      expect(ipc.agentsWatch).not.toHaveBeenCalledWith("me@box");
+    }
+  });
+
+  it("a second local watch-ended within a second schedules one re-watch", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.getState().agentWatchEnded({ host: null, gen: 1 });
+      useStore.getState().agentWatchEnded({ host: null, gen: 2 });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ipc.agentsWatch).toHaveBeenCalledTimes(1);
+      expect(ipc.agentsWatch).toHaveBeenCalledWith(null);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

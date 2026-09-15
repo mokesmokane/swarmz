@@ -79,12 +79,18 @@ const agentWatch = {
   retry: new Map<string, ReturnType<typeof setTimeout>>(),
 };
 
+/** Pending retry timer for the local (host === null) watcher, deduped so two `agentWatchEnded`
+ * events in a row (or before the first retry fires) don't queue two "watch local" calls. */
+let localRetry: ReturnType<typeof setTimeout> | null = null;
+
 export function __resetAgentWatchers() {
   agentWatch.watching.clear();
   agentWatch.installed.clear();
   agentWatch.attempts.clear();
   for (const t of agentWatch.retry.values()) clearTimeout(t);
   agentWatch.retry.clear();
+  if (localRetry) clearTimeout(localRetry);
+  localRetry = null;
 }
 
 /** ssh hosts that currently have a connected tile, with one terminal id per host for notes. */
@@ -95,6 +101,21 @@ function wantedAgentHosts(s: WorkbenchState): Map<string, string> {
     if (host && s.sshConnected[id] && s.terminals[id]?.exited === null && !out.has(host)) out.set(host, id);
   }
   return out;
+}
+
+/**
+ * `ensureAgentWatchers` awaits ipc calls per host, and a tile can close while one is in flight —
+ * `wanted`, computed once at that call's entry, goes stale. Called after every await in its
+ * per-host loop: rolls back (unwatching if a watch was already marked) and reports whether the
+ * caller should stop working on this host.
+ */
+async function bailIfUnwanted(host: string): Promise<boolean> {
+  if (wantedAgentHosts(useStore.getState()).has(host)) return false;
+  if (agentWatch.watching.has(host)) {
+    agentWatch.watching.delete(host);
+    await ipc.agentsUnwatch(host).catch(() => {});
+  }
+  return true;
 }
 
 /** After this many failed re-watches (1+2+4+8+16 s ≈ 30 s) the tile gets a note. */
@@ -1272,6 +1293,9 @@ export const useStore = create<WorkbenchState>((set) => ({
           const machine = s.settings[id]?.ssh?.machine ?? hostLabel(host);
           set((st) => ({ startupNotes: { ...st.startupNotes, [id]: `could not install Claude hooks on ${machine}: ${typeof e === "string" ? e : String(e)}` } }));
         }
+        // The tile may have closed while that install call was in flight: `wanted` above is a
+        // snapshot taken at entry, so check the live state before acting on it further.
+        if (await bailIfUnwanted(host)) continue;
       }
       if (!agentWatch.watching.has(host) && !agentWatch.retry.has(host)) {
         agentWatch.watching.add(host);
@@ -1281,7 +1305,9 @@ export const useStore = create<WorkbenchState>((set) => ({
         } catch {
           agentWatch.watching.delete(host);
           scheduleAgentRewatch(host);
+          continue;
         }
+        if (await bailIfUnwanted(host)) continue;
       }
     }
   },
@@ -1289,7 +1315,11 @@ export const useStore = create<WorkbenchState>((set) => ({
   agentWatchEnded({ host }) {
     if (host === null) {
       ipc.agentsUnwatch(null).catch(() => {});
-      setTimeout(() => ipc.agentsWatch(null).catch(() => {}), AGENT_WATCH_BACKOFF_MS[0]);
+      if (localRetry) clearTimeout(localRetry);
+      localRetry = setTimeout(() => {
+        localRetry = null;
+        ipc.agentsWatch(null).catch(() => {});
+      }, AGENT_WATCH_BACKOFF_MS[0]);
       return;
     }
     agentWatch.watching.delete(host);
