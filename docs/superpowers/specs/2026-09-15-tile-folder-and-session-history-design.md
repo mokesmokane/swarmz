@@ -112,7 +112,8 @@ spec §6):
 | Event | Effect on `T` |
 |-------|---------------|
 | `SessionStart` with session `S`, folder `D`, mode `M` | Upsert `S` at the head of `T.sessions` with `cwd: D`, `skipPermissions: M === "bypassPermissions"`, `lastActiveAt: now`, keeping an existing `startedAt`; cap at 20. If `T.claude` is null or `T.claude.sessionId !== S`, set `T.claude = { enabled: true, sessionId: S, skipPermissions, started: false }`. Update the folder per §3 (`D` is authoritative for this event). |
-| `UserPromptSubmit`, `Stop`, `StopFailure`, `Notification` | Bump `lastActiveAt` of the record for the event's session if present; the `started` flip from the hooks spec is unchanged. UserPromptSubmit also applies the folder rule. |
+| `UserPromptSubmit` | Bump `lastActiveAt` of the record for the event's session if present, and apply the folder rule; the `started` flip from the hooks spec is unchanged. |
+| `Stop`, `StopFailure`, `Notification` | No change to history or folder; the `started` flip from the hooks spec is unchanged. |
 | `SessionEnd` | No change to history or folder. |
 
 A tile with a custom `command` is not adopted (Claude there is incidental).
@@ -163,7 +164,10 @@ Saves flow through the existing subscription (settings, terminals).
 `sessions`, `cwd` and `claude` changes save and push like any other change.
 Two Macs both adopting the same tile's session produce identical records
 (same id, same folder), so adoption converges; `lastActiveAt` may differ by
-a few seconds and the newer revision wins as usual.
+a few seconds and the newer revision wins as usual. This is why only
+`SessionStart` and `UserPromptSubmit` write history (§4): every change to a
+tile's settings is a debounced save, a revision bump and a push to every
+online peer, and `Stop`/`Notification` fire several times per Claude turn.
 
 ## 8. Error handling
 

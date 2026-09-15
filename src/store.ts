@@ -1373,10 +1373,13 @@ export const useStore = create<WorkbenchState>((set) => ({
             next2 = { ...base, sessions, claude };
             folderToApply = cwd;
           }
-        } else if (["UserPromptSubmit", "Stop", "StopFailure", "Notification"].includes(event.event)) {
+        } else if (event.event === "UserPromptSubmit") {
+          // Only prompts bump the record. Stop/StopFailure/Notification arrive several times a
+          // turn and a new `settings` identity is a save, a revision bump and a push to every
+          // peer, so they leave history alone (folder/session spec §4, §7).
           const bumped = bumpSession(base.sessions, event.sessionId, now);
           if (bumped) next2 = { ...base, sessions: bumped };
-          if (event.event === "UserPromptSubmit" && event.cwd && isSafeFolder(event.cwd)) folderToApply = event.cwd;
+          if (event.cwd && isSafeFolder(event.cwd)) folderToApply = event.cwd;
         }
         if (next2) patch.settings = { ...(patch.settings ?? s.settings), [id]: next2 };
       }

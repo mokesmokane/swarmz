@@ -2213,13 +2213,20 @@ describe("agent state", () => {
     expect(s.sessions?.[0].startedAt).toBe("2026-09-15T10:00:00Z");
   });
 
-  it("prompts and stops bump lastActiveAt and prompts apply the folder", async () => {
+  it("prompts bump lastActiveAt and apply the folder; stops and notifications leave settings alone", async () => {
     const id = await useStore.getState().createTerminal("/tmp/a");
     useStore.getState().applyAgentEvent(ev(id, "SessionStart", { sessionId: "s", cwd: "/tmp/a", ts: "2026-09-15T10:00:00Z" }));
     useStore.getState().applyAgentEvent(ev(id, "UserPromptSubmit", { sessionId: "s", cwd: "/tmp/moved", ts: "2026-09-15T10:01:00Z" }));
     await vi.waitFor(() => expect(useStore.getState().terminals[id].cwd).toBe("/tmp/moved"));
+    expect(useStore.getState().settings[id].sessions?.[0].lastActiveAt).toBe("2026-09-15T10:01:00Z");
+    // Every new settings identity is a debounced save, a revision bump and an ssh push to
+    // every peer; a Claude turn emits several of these, so they must not touch settings.
+    const before = useStore.getState().settings[id];
     useStore.getState().applyAgentEvent(ev(id, "Stop", { sessionId: "s", ts: "2026-09-15T10:02:00Z" }));
-    expect(useStore.getState().settings[id].sessions?.[0].lastActiveAt).toBe("2026-09-15T10:02:00Z");
+    useStore.getState().applyAgentEvent(ev(id, "Notification", { sessionId: "s", ts: "2026-09-15T10:03:00Z" }));
+    useStore.getState().applyAgentEvent(ev(id, "StopFailure", { sessionId: "s", ts: "2026-09-15T10:04:00Z" }));
+    expect(useStore.getState().settings[id]).toBe(before);
+    expect(useStore.getState().settings[id].sessions?.[0].lastActiveAt).toBe("2026-09-15T10:01:00Z");
   });
 
   it("an ssh tile's folder follows the hook's cwd into settings.ssh.cwd", async () => {
