@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useStore, terminalColor } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
-import { statusClasses } from "../lib/agentState";
+import { dotPresentation } from "../lib/agentState";
 
 function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? p;
@@ -100,14 +100,14 @@ function Row({ id }: { id: string }) {
       }
     >
       {(() => {
-        const hasAgent = !!agent && agent.status !== "offline";
-        const cls = exited ? "bg-neutral-600" : hasAgent ? statusClasses(agent) : color ? "" : "bg-emerald-500";
+        const dot = dotPresentation(exited, agent, color);
+        const title = dot.title ? `${dot.title} · ${relativeTime(agent!.since)}` : undefined;
         return (
           <span
             data-testid={`agent-dot-${id}`}
-            className={`h-2 w-2 shrink-0 rounded-full ${cls}`}
-            style={{ backgroundColor: !exited && !hasAgent && color ? color : undefined }}
-            title={hasAgent ? `${agent.status} · ${agent.lastEvent} · ${relativeTime(agent.since)}` : undefined}
+            className={`h-2 w-2 shrink-0 rounded-full ${dot.className}`}
+            style={{ backgroundColor: dot.backgroundColor }}
+            title={title}
           />
         );
       })()}

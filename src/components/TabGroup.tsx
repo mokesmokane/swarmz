@@ -2,7 +2,7 @@ import { useState, type DragEvent } from "react";
 import type { GroupNode, Side } from "../lib/layout";
 import { useStore, terminalColor, type Placement } from "../store";
 import { machineLabel } from "../lib/workspace";
-import { statusClasses } from "../lib/agentState";
+import { dotPresentation } from "../lib/agentState";
 import { TerminalPane } from "./TerminalPane";
 
 export const DRAG_MIME = "application/x-swarmz-terminal";
@@ -28,14 +28,13 @@ const ZONES: { side: Side; className: string }[] = [
 function TabDot({ id, exited }: { id: string; exited: boolean }) {
   const color = useStore((s) => terminalColor(s, id));
   const agent = useStore((s) => s.agentState[id]);
-  const hasAgent = !!agent && agent.status !== "offline";
-  const cls = exited ? "bg-neutral-600" : hasAgent ? statusClasses(agent) : color ? "" : "bg-emerald-500";
+  const dot = dotPresentation(exited, agent, color);
   return (
     <span
       data-testid={`tab-dot-${id}`}
-      className={`h-2 w-2 rounded-full ${cls}`}
-      style={{ backgroundColor: !exited && !hasAgent && color ? color : undefined }}
-      title={hasAgent ? `${agent.status} · ${agent.lastEvent}` : undefined}
+      className={`h-2 w-2 rounded-full ${dot.className}`}
+      style={{ backgroundColor: dot.backgroundColor }}
+      title={dot.title}
     />
   );
 }

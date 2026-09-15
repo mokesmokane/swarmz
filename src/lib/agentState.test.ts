@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyAgentEvent, BLOCKING_NOTIFICATIONS, OFFLINE, statusClasses, type AgentEvent, type AgentState } from "./agentState";
+import { applyAgentEvent, BLOCKING_NOTIFICATIONS, dotPresentation, OFFLINE, statusClasses, type AgentEvent, type AgentState } from "./agentState";
 
 const ev = (event: string, extra: Partial<AgentEvent> = {}): AgentEvent => ({
   ts: "2026-09-15T10:00:00Z", terminal: "t", event, sessionId: "s1", notificationType: null, source: null, ...extra,
@@ -65,5 +65,58 @@ describe("statusClasses", () => {
     expect(statusClasses({ ...OFFLINE, status: "blocked" })).toBe("bg-red-500");
     expect(statusClasses({ ...OFFLINE, status: "blocked", unseen: true })).toBe("bg-red-500 ring-2 ring-red-500/50");
     expect(statusClasses({ ...OFFLINE, status: "idle", unseen: true })).toBe("bg-green-500 ring-2 ring-green-500/50");
+  });
+});
+
+describe("dotPresentation", () => {
+  it("exited beats everything: grey, no background, no title", () => {
+    expect(dotPresentation(true, undefined, "#f59e0b")).toEqual({
+      className: "bg-neutral-600",
+      backgroundColor: undefined,
+      title: undefined,
+    });
+  });
+
+  it("exited beats an unseen blocked agent", () => {
+    const blocked: AgentState = { ...OFFLINE, status: "blocked", unseen: true };
+    expect(dotPresentation(true, blocked, "#f59e0b")).toEqual({
+      className: "bg-neutral-600",
+      backgroundColor: undefined,
+      title: undefined,
+    });
+  });
+
+  it("a non-offline agent state beats the machine colour: status classes, no background, status · lastEvent title", () => {
+    const working: AgentState = { ...OFFLINE, status: "working", lastEvent: "UserPromptSubmit" };
+    expect(dotPresentation(false, working, "#f59e0b")).toEqual({
+      className: statusClasses(working),
+      backgroundColor: undefined,
+      title: "working · UserPromptSubmit",
+    });
+  });
+
+  it("an offline agent state is treated as no agent: falls through to machine colour", () => {
+    const offline: AgentState = { ...OFFLINE };
+    expect(dotPresentation(false, offline, "#f59e0b")).toEqual({
+      className: "",
+      backgroundColor: "#f59e0b",
+      title: undefined,
+    });
+  });
+
+  it("no agent, with a machine colour: empty class, inline background, no title", () => {
+    expect(dotPresentation(false, undefined, "#f59e0b")).toEqual({
+      className: "",
+      backgroundColor: "#f59e0b",
+      title: undefined,
+    });
+  });
+
+  it("no agent, no machine colour: emerald default, no background, no title", () => {
+    expect(dotPresentation(false, undefined, null)).toEqual({
+      className: "bg-emerald-500",
+      backgroundColor: undefined,
+      title: undefined,
+    });
   });
 });

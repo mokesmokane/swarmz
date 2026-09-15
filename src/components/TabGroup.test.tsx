@@ -69,6 +69,7 @@ describe("tab dot", () => {
     const dot = screen.getByTestId(`tab-dot-${ID}`);
     expect(dot.className).toContain("bg-amber-400");
     expect(dot.className).not.toContain("ring-2");
+    expect(dot.title).toBe("working · UserPromptSubmit");
   });
 
   it("keeps exited grey even with agent state", () => {

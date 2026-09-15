@@ -74,6 +74,26 @@ export function statusClasses(state: AgentState | undefined): string {
   return s.unseen ? `bg-${c} ring-2 ring-${c}/50` : `bg-${c}`;
 }
 
+export interface DotPresentation {
+  className: string;
+  backgroundColor: string | undefined;
+  title: string | undefined;
+}
+
+/**
+ * Decides a terminal dot's colour and title, shared by the sidebar row dot and the tab dot.
+ * Precedence: exited (grey, no title) beats a non-offline agent state (status colour + ring,
+ * "<status> · <lastEvent>" title) beats the machine's configured colour (inline background, no
+ * title) beats the emerald "has activity, no colour" default.
+ */
+export function dotPresentation(exited: boolean, agent: AgentState | undefined, machineColor: string | null): DotPresentation {
+  if (exited) return { className: "bg-neutral-600", backgroundColor: undefined, title: undefined };
+  const hasAgent = !!agent && agent.status !== "offline";
+  if (hasAgent) return { className: statusClasses(agent), backgroundColor: undefined, title: `${agent.status} · ${agent.lastEvent}` };
+  if (machineColor) return { className: "", backgroundColor: machineColor, title: undefined };
+  return { className: "bg-emerald-500", backgroundColor: undefined, title: undefined };
+}
+
 // Tailwind class inventory (scanned, never executed):
 // bg-neutral-500 bg-amber-400 bg-green-500 bg-red-500
 // ring-2 ring-neutral-500/50 ring-amber-400/50 ring-green-500/50 ring-red-500/50
