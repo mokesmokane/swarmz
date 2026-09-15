@@ -103,13 +103,16 @@ export function startupSteps(s: TerminalSettings, terminalId?: string): Step[] {
   const host = validHost(s);
   if (host) {
     const steps: Step[] = [{ via: "local", line: sshLine(host) }];
+    // The remote shell does not inherit our env, so the tile id is exported there first (a UUID,
+    // so no quoting): the hook script then reports any Claude in that shell, including one the
+    // user starts by hand later, not just the one swarmz launches now.
+    const parts: string[] = [];
+    if (terminalId) parts.push(`export SWARMZ_TERMINAL_ID=${terminalId}`);
     if (s.ssh?.cwd) {
-      const cd = `cd ${shellQuote(s.ssh.cwd)}`;
-      // The remote shell does not inherit our env, so the id rides on the claude line itself
-      // (a UUID, so no quoting) for the hook script to find.
-      const remoteClaude = claude && terminalId ? `SWARMZ_TERMINAL_ID=${terminalId} ${claude}` : claude;
-      steps.push({ via: "remote", line: remoteClaude ? `${cd} && ${remoteClaude}` : cd });
+      parts.push(`cd ${shellQuote(s.ssh.cwd)}`);
+      if (claude) parts.push(claude);
     }
+    if (parts.length) steps.push({ via: "remote", line: parts.join(" && ") });
     return steps;
   }
   return claude ? [{ via: "local", line: claude }] : [];

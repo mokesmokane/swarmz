@@ -144,18 +144,22 @@ describe("startupLine", () => {
     expect(startupLine({ ssh: { host: "h; ls" }, claude: null, command: null })).toBeNull();
   });
 
-  it("prefixes the remote line with the terminal id when Claude runs there", () => {
-    const steps = startupSteps({ ssh: { host: "me@host", cwd: "/proj" }, claude, command: null }, "11111111-2222-3333-4444-555555555555");
+  it("every remote step exports the terminal id so a Claude started by hand there reports too", () => {
+    const id = "11111111-2222-3333-4444-555555555555";
+    const steps = startupSteps({ ssh: { host: "me@host", cwd: "/proj" }, claude, command: null }, id);
     expect(steps[1]).toEqual({
       via: "remote",
-      line: `cd ${shellQuote("/proj")} && SWARMZ_TERMINAL_ID=11111111-2222-3333-4444-555555555555 claude --session-id ${claude.sessionId}`,
+      line: `export SWARMZ_TERMINAL_ID=${id} && cd ${shellQuote("/proj")} && claude --session-id ${claude.sessionId}`,
     });
-    // No Claude on the remote: nothing to identify, no prefix.
-    expect(startupSteps({ ssh: { host: "me@host", cwd: "/proj" }, claude: null, command: null }, "t1")[1].line).toBe(`cd ${shellQuote("/proj")}`);
+    // No Claude on the remote: still export, then cd, so a hand-started claude is tracked.
+    expect(startupSteps({ ssh: { host: "me@host", cwd: "/proj" }, claude: null, command: null }, "t1")[1].line).toBe(`export SWARMZ_TERMINAL_ID=t1 && cd ${shellQuote("/proj")}`);
+    // No folder yet: the export alone is the remote step (the folder picker follows).
+    expect(startupSteps({ ssh: { host: "me@host" }, claude: null, command: null }, "t1")[1]).toEqual({ via: "remote", line: "export SWARMZ_TERMINAL_ID=t1" });
     // Local Claude already inherits the env var from the spawn.
     expect(startupSteps({ ...EMPTY_SETTINGS, claude }, "t1")[0].line).toBe(`claude --session-id ${claude.sessionId}`);
-    // Without an id the line is unchanged (display-only callers).
+    // Without an id the lines are unchanged (display-only callers), and no remote step without a folder.
     expect(startupLine({ ssh: { host: "me@host", cwd: "/proj" }, claude, command: null })).not.toContain("SWARMZ_TERMINAL_ID");
+    expect(startupSteps({ ssh: { host: "me@host" }, claude: null, command: null })).toHaveLength(1);
   });
 });
 
