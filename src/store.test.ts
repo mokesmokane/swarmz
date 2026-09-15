@@ -632,6 +632,23 @@ describe("reloadWorkspace", () => {
     expect(useStore.getState().startupPending[a]).toBe(false);
   });
 
+  it("does not re-arm the startup bar when only the tile's session history is in the file", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().applyAgentEvent({
+      host: null,
+      event: { ts: "2026-09-15T10:00:00Z", terminal: a, event: "SessionStart", sessionId: "s1", notificationType: null, source: null, cwd: "/tmp/a", permissionMode: null },
+    });
+    expect(useStore.getState().settings[a].sessions).toHaveLength(1);
+    useStore.getState().skipStartup(a);
+    expect(useStore.getState().startupPending[a]).toBe(false);
+    const s = useStore.getState();
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce(
+      toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines }),
+    );
+    await useStore.getState().reloadWorkspace();
+    expect(useStore.getState().startupPending[a]).toBe(false);
+  });
+
   it("gates the debounced save during reload and persists the reconciled state after", async () => {
     vi.useFakeTimers();
     try {

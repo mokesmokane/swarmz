@@ -507,9 +507,9 @@ function settingsFromDef(
   const opening = openingFor(d, self, machines, user, known);
   // `origin` is pulled out and re-added last (after `extra`) rather than left wherever
   // `openingFor` placed it, so this always produces the same key order as `EMPTY_SETTINGS`-based
-  // settings (ssh, claude, command, ..., extra, origin) — openDefs' bulk pass compares settings
-  // with JSON.stringify to decide whether an already-open terminal's startup bar should
-  // re-arm, and that comparison is key-order sensitive.
+  // settings (ssh, claude, command, ..., extra, origin). Nothing depends on that order any more
+  // (openDefs' bulk pass compares a key-ordered `startupKey` projection, not the whole object),
+  // but keeping it makes the two shapes easy to diff by eye.
   const { origin, ...rest } = opening.settings;
   return { settings: { ...rest, sessions: sanitizeSessions(d.sessions), extra: extraFromDef(d), origin: origin ?? self ?? null }, note: opening.note };
 }
@@ -538,6 +538,13 @@ function regenerateIfUnsafe(def: TerminalDef): { def: TerminalDef; note: string 
     note = note ?? UNSAFE_CWD_NOTE;
   }
   return { def: out, note };
+}
+
+/** The parts of a tile's settings that decide what Connect would type. `sessions` changes on
+ * every hook event (and `extra`/`origin` are pure passthrough), so only these fields may re-arm
+ * an already-open tile's startup bar when the workspace is reconciled. */
+function startupKey(x: TerminalSettings | undefined): string {
+  return JSON.stringify({ ssh: x?.ssh ?? null, claude: x?.claude ?? null, command: x?.command ?? null, origin: x?.origin ?? null, foreign: x?.foreign ?? null });
 }
 
 async function openDefs(
@@ -593,7 +600,7 @@ async function openDefs(
       const startupPending: Record<string, boolean> = { ...s.startupPending };
       for (const id of s.order) {
         const wasOpenBefore = preOpenIds.has(id);
-        const changed = !wasOpenBefore || JSON.stringify(settings[id]) !== JSON.stringify(s.settings[id]);
+        const changed = !wasOpenBefore || startupKey(settings[id]) !== startupKey(s.settings[id]);
         if (changed) startupPending[id] = startupLine(settings[id] ?? EMPTY_SETTINGS) !== null;
       }
       const keep =
