@@ -340,3 +340,24 @@ pub fn agents_unwatch(state: State<AppState>, host: Option<String>) -> Result<()
     state.watchers.lock().unwrap().remove(&host);
     Ok(())
 }
+
+/// Pushes the local clipboard image to `host` as a PNG under `~/.swarmz/paste/` and returns the
+/// absolute remote path, or None when the clipboard holds no image. Claude Code's own Ctrl+V
+/// reads the clipboard of the machine it runs on, which for an ssh tile is the wrong Mac.
+#[tauri::command]
+pub async fn paste_image_to_remote(app: AppHandle, host: String) -> Result<Option<String>, String> {
+    // The clipboard plugin warns against reading on the main thread, and the ssh round trip
+    // must not block it either.
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+        // An error here is the ordinary "there is no image on the clipboard" answer as well as
+        // a real failure; either way the caller falls back to Claude's own Ctrl+V.
+        let Ok(image) = app.clipboard().read_image() else {
+            return Ok(None);
+        };
+        let png = crate::paste::png_from_rgba(image.width(), image.height(), image.rgba())?;
+        crate::paste::push_png(&host, &png).map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod commands;
+pub mod paste;
 pub mod pty;
 pub mod registry;
 pub mod remote;
@@ -41,6 +42,7 @@ pub fn run() {
             commands::agents_install_remote,
             commands::agents_watch,
             commands::agents_unwatch,
+            commands::paste_image_to_remote,
         ])
         .setup(|_app| {
             let _ = remote::ensure_ssh_dir();
