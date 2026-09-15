@@ -8,6 +8,26 @@ import { tintBackground } from "./workspace";
 
 const BASE_BG = "#0f1115";
 
+export const CWD_POLL_AFTER_ENTER_MS = 300;
+export const CWD_POLL_INTERVAL_MS = 5000;
+
+/** The path inside an OSC 7 payload (`file://host/path`, `file:///path`, or a bare path). */
+export function decodeOsc7(data: string): string | null {
+  let path = data;
+  if (data.startsWith("file://")) {
+    const rest = data.slice("file://".length);
+    const slash = rest.indexOf("/");
+    if (slash < 0) return null;
+    path = rest.slice(slash);
+  }
+  if (!path.startsWith("/")) return null;
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return null;
+  }
+}
+
 interface Entry {
   term: Terminal;
   fit: FitAddon;
@@ -15,9 +35,34 @@ interface Entry {
   unlisten: UnlistenFn[];
   opened: boolean;
   onMouseUp: (() => void) | null;
+  enterTimer: ReturnType<typeof setTimeout> | null;
+  pollTimer: ReturnType<typeof setInterval> | null;
 }
 
 const entries = new Map<string, Entry>();
+
+function localTileAlive(id: string): boolean {
+  const s = useStore.getState();
+  return !!s.terminals[id] && s.terminals[id].exited === null && !s.settings[id]?.ssh;
+}
+
+async function pollCwd(id: string): Promise<void> {
+  if (!localTileAlive(id)) return;
+  try {
+    const cwd = await ipc.terminalCwd(id);
+    if (cwd) await useStore.getState().setTerminalCwd(id, cwd, "poll");
+  } catch {
+    // lsof missing or the tile is gone; the next poll or OSC 7 will catch up
+  }
+}
+
+function scheduleEnterPoll(id: string, entry: Entry): void {
+  if (entry.enterTimer) clearTimeout(entry.enterTimer);
+  entry.enterTimer = setTimeout(() => {
+    entry.enterTimer = null;
+    void pollCwd(id);
+  }, CWD_POLL_AFTER_ENTER_MS);
+}
 
 function createEntry(id: string): Entry {
   const term = new Terminal({
@@ -36,15 +81,32 @@ function createEntry(id: string): Entry {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+
+  const entry: Entry = {
+    term,
+    fit,
+    ready: Promise.resolve(),
+    unlisten: [],
+    opened: false,
+    onMouseUp: null,
+    enterTimer: null,
+    pollTimer: null,
+  };
+
   term.onData((data) => {
     // Writes to an already-exited pane are expected to fail; ignore.
     void ipc.writeTerminal(id, data).catch(() => {});
+    if (data.includes("\r")) scheduleEnterPoll(id, entry);
   });
   term.onResize(({ cols, rows }) => {
     void ipc.resizeTerminal(id, cols, rows).catch(() => {});
   });
+  term.parser.registerOscHandler(7, (data) => {
+    const path = decodeOsc7(data);
+    if (path) void useStore.getState().setTerminalCwd(id, path, "osc7");
+    return true;
+  });
 
-  const entry: Entry = { term, fit, ready: Promise.resolve(), unlisten: [], opened: false, onMouseUp: null };
   entry.ready = Promise.all([
     ipc.onData(id, (bytes) => term.write(bytes)),
     ipc.onExit(id, (code) => {
@@ -76,6 +138,7 @@ export function attach(id: string, container: HTMLElement): { term: Terminal; fi
     entry.opened = true;
     entry.onMouseUp = () => copySelection(id, entry.term);
     entry.term.element?.addEventListener("mouseup", entry.onMouseUp);
+    entry.pollTimer = setInterval(() => void pollCwd(id), CWD_POLL_INTERVAL_MS);
   } else if (entry.term.element && entry.term.element.parentElement !== container) {
     container.appendChild(entry.term.element);
   }
@@ -115,6 +178,8 @@ export function dispose(id: string): void {
   if (!entry) return;
   entry.unlisten.forEach((fn) => fn());
   if (entry.onMouseUp) entry.term.element?.removeEventListener("mouseup", entry.onMouseUp);
+  if (entry.enterTimer) clearTimeout(entry.enterTimer);
+  if (entry.pollTimer) clearInterval(entry.pollTimer);
   entry.term.dispose();
   entries.delete(id);
 }

@@ -16,7 +16,17 @@ vi.mock("@xterm/xterm", () => {
       this.options = { ...(options as { theme?: Record<string, string>; macOptionClickForcesSelection?: boolean }) };
       instances.push(this);
     }
-    onData() {}
+    dataHandler: ((d: string) => void) | null = null;
+    oscHandlers: Record<number, (data: string) => boolean | Promise<boolean>> = {};
+    parser = {
+      registerOscHandler: (n: number, cb: (data: string) => boolean | Promise<boolean>) => {
+        this.oscHandlers[n] = cb;
+        return { dispose: () => {} };
+      },
+    };
+    onData(cb: (d: string) => void) {
+      this.dataHandler = cb;
+    }
     onResize() {}
     write() {}
     loadAddon() {}
@@ -60,7 +70,8 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn(async 
 
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useStore } from "../store";
-import { attach, dispose, prepare } from "./xtermRegistry";
+import { ipc } from "./ipc";
+import { CWD_POLL_AFTER_ENTER_MS, CWD_POLL_INTERVAL_MS, attach, decodeOsc7, dispose, prepare } from "./xtermRegistry";
 
 function info(id: string, name = id): TerminalInfo {
   return { id, name, cwd: "/tmp/x", exited: null, error: null };
@@ -170,5 +181,77 @@ describe("copy selection to clipboard on mouse-up", () => {
 
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith("reparented");
+  });
+});
+
+describe("folder tracking", () => {
+  beforeEach(() => {
+    useStore.setState({
+      terminals: { f: { id: "f", name: "f", cwd: "/a", exited: null, error: null } },
+      order: ["f"],
+      settings: { f: { ssh: null, claude: null, command: null, extra: {} } },
+    });
+    vi.mocked(ipc.terminalCwd).mockReset().mockResolvedValue("/b");
+    vi.mocked(ipc.setTerminalCwd).mockClear();
+  });
+
+  it("polls the folder 300 ms after Enter and applies a change", async () => {
+    vi.useFakeTimers();
+    try {
+      const { term } = attach("f", document.createElement("div"));
+      (term as unknown as { dataHandler: (d: string) => void }).dataHandler("\r");
+      expect(ipc.terminalCwd).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(CWD_POLL_AFTER_ENTER_MS);
+      expect(ipc.terminalCwd).toHaveBeenCalledWith("f");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ipc.setTerminalCwd).toHaveBeenCalledWith("f", "/b");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("polls on the interval and stops after dispose", async () => {
+    vi.useFakeTimers();
+    try {
+      attach("f", document.createElement("div"));
+      await vi.advanceTimersByTimeAsync(CWD_POLL_INTERVAL_MS);
+      expect(ipc.terminalCwd).toHaveBeenCalledTimes(1);
+      dispose("f");
+      await vi.advanceTimersByTimeAsync(CWD_POLL_INTERVAL_MS * 2);
+      expect(ipc.terminalCwd).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never polls an ssh tile or an exited tile", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState((s) => ({ settings: { ...s.settings, f: { ...s.settings.f, ssh: { host: "me@box", cwd: "/p" } } } }));
+      const { term } = attach("f", document.createElement("div"));
+      (term as unknown as { dataHandler: (d: string) => void }).dataHandler("\r");
+      await vi.advanceTimersByTimeAsync(CWD_POLL_INTERVAL_MS + CWD_POLL_AFTER_ENTER_MS);
+      expect(ipc.terminalCwd).not.toHaveBeenCalled();
+      useStore.setState((s) => ({ settings: { ...s.settings, f: { ...s.settings.f, ssh: null } }, terminals: { f: { ...s.terminals.f, exited: 0 } } }));
+      await vi.advanceTimersByTimeAsync(CWD_POLL_INTERVAL_MS);
+      expect(ipc.terminalCwd).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("OSC 7 applies the decoded path for any tile", async () => {
+    const { term } = attach("f", document.createElement("div"));
+    const handler = (term as unknown as { oscHandlers: Record<number, (d: string) => boolean> }).oscHandlers[7];
+    expect(handler("file://box/Users/me/my%20proj")).toBe(true);
+    await vi.waitFor(() => expect(ipc.setTerminalCwd).toHaveBeenCalledWith("f", "/Users/me/my proj"));
+  });
+
+  it("decodeOsc7 handles hostless and malformed payloads", () => {
+    expect(decodeOsc7("file://localhost/a/b")).toBe("/a/b");
+    expect(decodeOsc7("file:///a/b")).toBe("/a/b");
+    expect(decodeOsc7("/plain")).toBe("/plain");
+    expect(decodeOsc7("nonsense")).toBeNull();
+    expect(decodeOsc7("file://h/%ZZ")).toBeNull();
   });
 });
