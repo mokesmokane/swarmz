@@ -89,14 +89,21 @@ pub fn find_cli() -> Option<PathBuf> {
     CANDIDATES.iter().map(Path::new).find(|p| p.exists()).map(|p| p.to_path_buf())
 }
 
+/// The bundled Tailscale binary is both the GUI app and the CLI: without a TERM in its
+/// environment it assumes it is being launched as the app and prints "The Tailscale GUI failed
+/// to start" to stdout. Launched from Finder, swarmz has no TERM, so always provide one.
+fn status_command(cli: &Path) -> Command {
+    let mut cmd = Command::new(cli);
+    cmd.arg("status").arg("--json").env("TERM", "dumb");
+    cmd
+}
+
 pub fn status() -> Result<TailscaleStatus, String> {
     let user = std::env::var("USER").unwrap_or_default();
     let Some(cli) = find_cli() else {
         return Ok(not_running("Tailscale is not installed".into(), &user, None));
     };
-    let mut cmd = Command::new(cli);
-    cmd.arg("status").arg("--json");
-    let done = run_with_timeout(cmd, Duration::from_secs(5), "tailscale")?;
+    let done = run_with_timeout(status_command(&cli), Duration::from_secs(5), "tailscale")?;
     if done.stdout.trim().is_empty() {
         let msg = done.stderr.trim();
         return Ok(not_running(if msg.is_empty() { "Tailscale did not respond".into() } else { msg.to_string() }, &user, None));
@@ -112,6 +119,20 @@ pub fn open_app() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_command_sets_term_so_the_bundled_binary_acts_as_a_cli() {
+        // Launched from Finder the app has no TERM; without one the Tailscale binary tries to
+        // start the GUI and prints "The Tailscale GUI failed to start" to stdout instead of JSON.
+        let cmd = status_command(Path::new("/x/Tailscale"));
+        let envs: Vec<(String, Option<String>)> = cmd
+            .get_envs()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned())))
+            .collect();
+        assert!(envs.iter().any(|(k, v)| k == "TERM" && v.as_deref() == Some("dumb")), "{envs:?}");
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, ["status", "--json"]);
+    }
 
     const SAMPLE: &str = r#"{
       "BackendState": "Running",

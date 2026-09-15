@@ -8,6 +8,7 @@ pub mod tailscale;
 pub mod workspace;
 
 use commands::AppState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -43,6 +44,15 @@ pub fn run() {
             let _ = remote::ensure_ssh_dir();
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Log watchers are child processes (tail / ssh tail); dropping them here kills them
+            // so a quit does not leave orphans behind, which would otherwise outlive the app.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.watchers.lock().unwrap().clear();
+                }
+            }
+        });
 }
