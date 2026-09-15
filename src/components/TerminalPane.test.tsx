@@ -85,6 +85,9 @@ describe("TerminalPane connect card", () => {
     const card = screen.getByRole("dialog", { name: /connect/i });
     expect(card.textContent).toContain("Connect to Desk Mac, open /proj, resume Claude (permissions skipped)");
     expect(card.textContent).toContain("ssh -t");
+    expect(card.textContent).toContain("claude --dangerously-skip-permissions --resume abc");
+    // The id only exists so the remote hook can name the tile; showing it in the card is noise.
+    expect(card.textContent).not.toContain("SWARMZ_TERMINAL_ID");
     expect(screen.getByTestId("terminal-mount").className).toContain("invisible");
   });
 

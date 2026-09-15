@@ -24,7 +24,9 @@ export function TerminalPane({ id }: { id: string }) {
   const chooseRemoteDir = useStore((s) => s.chooseRemoteDir);
   const [picking, setPicking] = useState(false);
   const [typedPath, setTypedPath] = useState("");
-  const line = startupLine(settings, id);
+  // No terminal id: the card is for the reader, and `SWARMZ_TERMINAL_ID=<uuid>` in front of the
+  // remote claude line is plumbing for the hook script, not something to explain here.
+  const line = startupLine(settings);
   const summary = startupSummary(settings, machines);
   const needsFolder = connected && needsRemoteFolder(settings);
   // Exactly one overlay renders at a time; connecting takes precedence over needing a folder,
