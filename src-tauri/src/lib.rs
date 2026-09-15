@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod commands;
 pub mod pty;
 pub mod registry;
