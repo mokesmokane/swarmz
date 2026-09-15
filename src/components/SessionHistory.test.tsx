@@ -74,6 +74,13 @@ describe("SessionHistory", () => {
     expect(select).toHaveBeenCalledWith(ID, "old", { connect: true });
     expect(onPick).toHaveBeenCalled();
   });
+  it("renders nothing for a tile with a custom command", () => {
+    // Claude in a command tile is incidental: it is never adopted, so there is nothing to
+    // go back to and `selectSession` would clobber the command.
+    useStore.setState((s) => ({ settings: { ...s.settings, [ID]: { ...s.settings[ID], command: "npm run dev" } } }));
+    const { container } = render(<SessionHistory id={ID} />);
+    expect(container.textContent).toBe("");
+  });
   it("caps at five rows", () => {
     const many = Array.from({ length: 8 }, (_, i) => rec(`s${i}`, `/p${i}`, `2026-09-15T0${i}:00:00Z`));
     useStore.setState((s) => ({ settings: { ...s.settings, [ID]: { ...s.settings[ID], sessions: many } } }));

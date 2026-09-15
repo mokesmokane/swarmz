@@ -2379,6 +2379,15 @@ describe("selectSession", () => {
     expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toMatch(/^ssh -t /);
     expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p/old");
   });
+  it("a tile with a custom command never goes back", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.setState((s) => ({ settings: { ...s.settings, [id]: { ...s.settings[id], command: "npm run dev", sessions: [rec("old", "/tmp/old", "t1")] } } }));
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().selectSession(id, "old", { connect: true });
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+    expect(useStore.getState().settings[id].claude).toBeNull();
+    expect(useStore.getState().settings[id].command).toBe("npm run dev");
+  });
   it("unknown session ids are ignored", async () => {
     const id = await useStore.getState().createTerminal("/tmp/a");
     await useStore.getState().selectSession(id, "zz", { connect: true });

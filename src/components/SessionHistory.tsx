@@ -21,9 +21,12 @@ function basename(p: string): string {
 export function SessionHistory({ id, onPick }: { id: string; onPick?: () => void }) {
   const sessions = useStore((s) => s.settings[id]?.sessions);
   const current = useStore((s) => s.settings[id]?.claude?.sessionId ?? null);
+  const command = useStore((s) => s.settings[id]?.command);
   const selectSession = useStore((s) => s.selectSession);
   const rows = (sessions ?? []).filter((r) => r.sessionId !== current).slice(0, MAX_ROWS);
-  if (rows.length === 0) return null;
+  // Claude in a custom-command tile is incidental and never adopted (spec §4); `selectSession`
+  // bails out for these, so offering a row would do nothing.
+  if (rows.length === 0 || command?.trim()) return null;
   return (
     <div className="flex flex-col gap-1">
       <div className="text-xs uppercase tracking-wide text-neutral-500">Previous sessions in this tile</div>

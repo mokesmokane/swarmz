@@ -180,4 +180,11 @@ describe("session history popover", () => {
     render(<Sidebar />);
     expect(screen.queryByRole("button", { name: "Previous sessions" })).toBeNull();
   });
+  it("hides the history button for a tile with a custom command", () => {
+    useStore.setState((s) => ({
+      settings: { ...s.settings, [ID]: { ...s.settings[ID], command: "npm run dev", claude: { enabled: true, sessionId: "cur", skipPermissions: false, started: true }, sessions: [{ sessionId: "old", cwd: "/b", skipPermissions: false, startedAt: "t", lastActiveAt: "t" }] } },
+    }));
+    render(<Sidebar />);
+    expect(screen.queryByRole("button", { name: "Previous sessions" })).toBeNull();
+  });
 });

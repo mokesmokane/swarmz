@@ -63,7 +63,11 @@ function Row({ id }: { id: string }) {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const suppressBlur = useRef(false);
-  const hasHistory = useStore((s) => (s.settings[id]?.sessions ?? []).some((r) => r.sessionId !== s.settings[id]?.claude?.sessionId));
+  // Command tiles are never adopted and cannot go back (spec §4), so the button would open an
+  // empty popover; SessionHistory hides itself for the same reason.
+  const hasHistory = useStore(
+    (s) => !s.settings[id]?.command?.trim() && (s.settings[id]?.sessions ?? []).some((r) => r.sessionId !== s.settings[id]?.claude?.sessionId),
+  );
   const [historyOpen, setHistoryOpen] = useState(false);
 
   if (!t) return null;

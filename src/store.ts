@@ -1436,6 +1436,10 @@ export const useStore = create<WorkbenchState>((set) => ({
     const settings = s.settings[id] ?? EMPTY_SETTINGS;
     const rec = settings.sessions?.find((r) => r.sessionId === sessionId);
     if (!s.terminals[id] || !rec) return;
+    // A command tile is never adopted (spec §4), so it has no history to go back to; going
+    // back would also make its startup line `cd <folder> && <command>`. SessionHistory hides
+    // itself for these tiles, so this only catches a stale record or a direct caller.
+    if (settings.command?.trim()) return;
     const now = new Date().toISOString();
     set((st) => {
       const cur = st.settings[id] ?? EMPTY_SETTINGS;
