@@ -74,19 +74,15 @@ export const AGENT_WATCH_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
  * `gen` is the core's generation for the watcher we last asked for, so an `agent:watch-ended`
  * from a watcher we have already replaced cannot unwatch the new one. */
 const agentWatch = {
-  watching: new Set<string>(),
+  watching: new Set<string | null>(),
   installed: new Set<string>(),
   attempts: new Map<string | null, number>(),
-  retry: new Map<string, ReturnType<typeof setTimeout>>(),
+  retry: new Map<string | null, ReturnType<typeof setTimeout>>(),
   gen: new Map<string | null, number>(),
   /** When the watch we last asked for was issued, and the delay we waited before asking. */
   startedAt: new Map<string | null, number>(),
   delay: new Map<string | null, number>(),
 };
-
-/** Pending retry timer for the local (host === null) watcher, deduped so two `agentWatchEnded`
- * events in a row (or before the first retry fires) don't queue two "watch local" calls. */
-let localRetry: ReturnType<typeof setTimeout> | null = null;
 
 export function __resetAgentWatchers() {
   agentWatch.watching.clear();
@@ -97,13 +93,15 @@ export function __resetAgentWatchers() {
   agentWatch.gen.clear();
   agentWatch.startedAt.clear();
   agentWatch.delay.clear();
-  if (localRetry) clearTimeout(localRetry);
-  localRetry = null;
 }
 
-/** ssh hosts that currently have a connected tile, with one terminal id per host for notes. */
-function wantedAgentHosts(s: WorkbenchState): Map<string, string> {
-  const out = new Map<string, string>();
+/**
+ * Hosts that should have a log watcher, with one terminal id per host for notes. This machine
+ * (`null`, no tile of its own) is always wanted; an ssh host is wanted while it has a connected
+ * tile.
+ */
+function wantedAgentHosts(s: WorkbenchState): Map<string | null, string | null> {
+  const out = new Map<string | null, string | null>([[null, null]]);
   for (const id of s.order) {
     const host = s.settings[id]?.ssh?.host?.trim();
     if (host && s.sshConnected[id] && s.terminals[id]?.exited === null && !out.has(host)) out.set(host, id);
@@ -117,7 +115,7 @@ function wantedAgentHosts(s: WorkbenchState): Map<string, string> {
  * per-host loop: rolls back (unwatching if a watch was already marked) and reports whether the
  * caller should stop working on this host.
  */
-async function bailIfUnwanted(host: string): Promise<boolean> {
+async function bailIfUnwanted(host: string | null): Promise<boolean> {
   if (wantedAgentHosts(useStore.getState()).has(host)) return false;
   if (agentWatch.watching.has(host)) {
     agentWatch.watching.delete(host);
@@ -129,6 +127,9 @@ async function bailIfUnwanted(host: string): Promise<boolean> {
 /** After this many failed re-watches (1+2+4+8+16 s ≈ 30 s) the tile gets a note. */
 export const AGENT_WATCH_UNAVAILABLE_AFTER = 5;
 
+/** Sidebar line for a local watcher that keeps dying; the remote equivalent is a tile note. */
+export const AGENT_UNAVAILABLE_LOCAL = "agent state unavailable on this Mac";
+
 /**
  * Evidence that the watcher for `host` really ran: an event from it, or a watcher that outlived
  * the wait that started it. `agents_watch` resolving is not evidence — the core resolves it as
@@ -138,17 +139,24 @@ export const AGENT_WATCH_UNAVAILABLE_AFTER = 5;
 function agentWatchSurvived(host: string | null) {
   agentWatch.attempts.delete(host);
   agentWatch.delay.delete(host);
+  if (host === null && useStore.getState().agentHooksError === AGENT_UNAVAILABLE_LOCAL) {
+    useStore.setState({ agentHooksError: null });
+  }
 }
 
-function scheduleAgentRewatch(host: string) {
+function scheduleAgentRewatch(host: string | null) {
   const n = agentWatch.attempts.get(host) ?? 0;
   agentWatch.attempts.set(host, n + 1);
   if (n + 1 === AGENT_WATCH_UNAVAILABLE_AFTER) {
-    const s = useStore.getState();
-    const id = wantedAgentHosts(s).get(host);
-    if (id) {
-      const machine = s.settings[id]?.ssh?.machine ?? hostLabel(host);
-      useStore.setState((st) => ({ startupNotes: { ...st.startupNotes, [id]: `agent state unavailable for ${machine}` } }));
+    if (host === null) {
+      useStore.setState({ agentHooksError: AGENT_UNAVAILABLE_LOCAL });
+    } else {
+      const s = useStore.getState();
+      const id = wantedAgentHosts(s).get(host);
+      if (id) {
+        const machine = s.settings[id]?.ssh?.machine ?? hostLabel(host);
+        useStore.setState((st) => ({ startupNotes: { ...st.startupNotes, [id]: `agent state unavailable for ${machine}` } }));
+      }
     }
   }
   const delay = AGENT_WATCH_BACKOFF_MS[Math.min(n, AGENT_WATCH_BACKOFF_MS.length - 1)];
@@ -906,7 +914,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     // own errors, so a machine without Tailscale just carries on with `selfMachine` null.
     if (useStore.getState().selfMachine === null) await useStore.getState().refreshTailscale();
     void useStore.getState().installAgentHooks();
-    ipc.agentsWatch(null).catch(() => {});
+    void useStore.getState().ensureAgentWatchers();
     let ws: Awaited<ReturnType<typeof ipc.loadWorkspace>> = null;
     try {
       ws = await ipc.loadWorkspace();
@@ -1307,14 +1315,14 @@ export const useStore = create<WorkbenchState>((set) => ({
     for (const [host, id] of wanted) {
       // Mark before awaiting: the subscription and an explicit call can run this concurrently,
       // and the second must see the first's claim, not race it into a duplicate install.
-      if (!agentWatch.installed.has(host)) {
+      if (host !== null && !agentWatch.installed.has(host)) {
         agentWatch.installed.add(host);
         try {
           await ipc.agentsInstallRemote(host);
         } catch (e) {
           agentWatch.installed.delete(host);
-          const machine = s.settings[id]?.ssh?.machine ?? hostLabel(host);
-          set((st) => ({ startupNotes: { ...st.startupNotes, [id]: `could not install Claude hooks on ${machine}: ${typeof e === "string" ? e : String(e)}` } }));
+          const machine = (id ? s.settings[id]?.ssh?.machine : null) ?? hostLabel(host);
+          if (id) set((st) => ({ startupNotes: { ...st.startupNotes, [id]: `could not install Claude hooks on ${machine}: ${typeof e === "string" ? e : String(e)}` } }));
         }
         // The tile may have closed while that install call was in flight: `wanted` above is a
         // snapshot taken at entry, so check the live state before acting on it further.
@@ -1337,15 +1345,6 @@ export const useStore = create<WorkbenchState>((set) => ({
 
   agentWatchEnded(payload) {
     const { host } = payload;
-    if (host === null) {
-      ipc.agentsUnwatch(null).catch(() => {});
-      if (localRetry) clearTimeout(localRetry);
-      localRetry = setTimeout(() => {
-        localRetry = null;
-        ipc.agentsWatch(null).catch(() => {});
-      }, AGENT_WATCH_BACKOFF_MS[0]);
-      return;
-    }
     // An end from a watcher we already replaced says nothing about the one running now.
     if (payload.gen !== agentWatch.gen.get(host)) return;
     agentWatch.gen.delete(host);

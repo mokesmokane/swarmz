@@ -187,6 +187,7 @@ export function Sidebar() {
   const dismiss = useStore((s) => s.dismissPersistError);
   const agentHooksError = useStore((s) => s.agentHooksError);
   const installAgentHooks = useStore((s) => s.installAgentHooks);
+  const ensureAgentWatchers = useStore((s) => s.ensureAgentWatchers);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<"closed" | "open" | "ssh">("closed");
@@ -255,7 +256,7 @@ export function Sidebar() {
       {agentHooksError && (
         <div className="flex items-start gap-2 px-3 py-1 text-xs text-amber-300">
           <span className="flex-1">{agentHooksError}</span>
-          <button className="text-neutral-400 hover:text-neutral-100" onClick={() => void installAgentHooks()}>Retry</button>
+          <button className="text-neutral-400 hover:text-neutral-100" onClick={() => void installAgentHooks().then(ensureAgentWatchers)}>Retry</button>
         </div>
       )}
       <div className="flex-1 space-y-0.5 overflow-y-auto p-2">

@@ -74,7 +74,7 @@ const omitKey = <T,>(o: Record<string, T>, k: string): Record<string, T> => {
   return rest;
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   __resetLoadGuard();
   __resetSyncState();
   __resetAgentWatchers();
@@ -119,8 +119,13 @@ beforeEach(() => {
   vi.mocked(ipc.agentsInstallLocal).mockReset().mockResolvedValue(false);
   vi.mocked(ipc.agentsInstallRemote).mockReset().mockResolvedValue(false);
   vi.mocked(ipc.agentsWatch).mockReset().mockResolvedValue(1);
-  vi.mocked(ipc.agentsUnwatch).mockClear();
   __setLaunchedAt("2026-09-15T09:00:00Z");
+  // Resetting the store above replaces `order`, which fires the store's watcher subscription:
+  // let that call finish, then drop what it did so every test starts with no watcher at all.
+  await new Promise((r) => setTimeout(r, 0));
+  __resetAgentWatchers();
+  vi.mocked(ipc.agentsWatch).mockClear();
+  vi.mocked(ipc.agentsUnwatch).mockClear();
 });
 
 describe("createTerminal", () => {
@@ -2006,11 +2011,53 @@ describe("agent state", () => {
   it("a second local watch-ended within a second schedules one re-watch", async () => {
     vi.useFakeTimers();
     try {
+      await useStore.getState().ensureAgentWatchers();
+      expect(ipc.agentsWatch).toHaveBeenCalledWith(null);
+      vi.mocked(ipc.agentsWatch).mockClear();
       useStore.getState().agentWatchEnded({ host: null, gen: 1 });
-      useStore.getState().agentWatchEnded({ host: null, gen: 2 });
+      useStore.getState().agentWatchEnded({ host: null, gen: 1 });
       await vi.advanceTimersByTimeAsync(1000);
       expect(ipc.agentsWatch).toHaveBeenCalledTimes(1);
       expect(ipc.agentsWatch).toHaveBeenCalledWith(null);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("escalates the local backoff too and reports the local watcher as unavailable", async () => {
+    vi.useFakeTimers();
+    try {
+      await useStore.getState().ensureAgentWatchers();
+      vi.mocked(ipc.agentsWatch).mockClear();
+      for (let i = 0; i < AGENT_WATCH_UNAVAILABLE_AFTER; i++) {
+        expect(useStore.getState().agentHooksError).toBeNull();
+        useStore.getState().agentWatchEnded({ host: null, gen: 1 });
+        const delay = AGENT_WATCH_BACKOFF_MS[Math.min(i, AGENT_WATCH_BACKOFF_MS.length - 1)];
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(ipc.agentsWatch).toHaveBeenCalledTimes(i);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(ipc.agentsWatch).toHaveBeenLastCalledWith(null);
+      }
+      expect(useStore.getState().agentHooksError).toBe("agent state unavailable on this Mac");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a local watcher that survives clears the unavailable error", async () => {
+    vi.useFakeTimers();
+    try {
+      await useStore.getState().ensureAgentWatchers();
+      for (let i = 0; i < AGENT_WATCH_UNAVAILABLE_AFTER; i++) {
+        useStore.getState().agentWatchEnded({ host: null, gen: 1 });
+        await vi.advanceTimersByTimeAsync(AGENT_WATCH_BACKOFF_MS[Math.min(i, AGENT_WATCH_BACKOFF_MS.length - 1)]);
+      }
+      expect(useStore.getState().agentHooksError).toBe("agent state unavailable on this Mac");
+      // The watcher started by the last retry runs for a minute before dying: that is a live
+      // local log, not the same failure going round again.
+      await vi.advanceTimersByTimeAsync(60_000);
+      useStore.getState().agentWatchEnded({ host: null, gen: 1 });
+      expect(useStore.getState().agentHooksError).toBeNull();
     } finally {
       vi.useRealTimers();
     }
