@@ -76,7 +76,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn(async 
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useStore } from "../store";
 import { ipc } from "./ipc";
-import { CWD_POLL_AFTER_ENTER_MS, CWD_POLL_INTERVAL_MS, IMAGE_PASTE_KEY, attach, decodeOsc7, dispose, prepare } from "./xtermRegistry";
+import { CWD_POLL_AFTER_ENTER_MS, CWD_POLL_INTERVAL_MS, IMAGE_PASTE_KEY, attach, decodeOsc52, decodeOsc7, dispose, prepare } from "./xtermRegistry";
 
 function info(id: string, name = id): TerminalInfo {
   return { id, name, cwd: "/tmp/x", exited: null, error: null };
@@ -207,6 +207,47 @@ describe("copy selection to clipboard on mouse-up", () => {
   // it the real interval `attach` starts.
   it("leaves no terminal of its own attached", () => {
     expect(opened.filter((t) => !t.disposed)).toEqual([]);
+  });
+});
+
+describe("OSC 52 clipboard writes from programs in the terminal", () => {
+  const handlerFor = (term: unknown) => (term as { oscHandlers: Record<number, (d: string) => boolean> }).oscHandlers[52];
+
+  beforeEach(() => {
+    useStore.setState({ terminals: { o: { id: "o", name: "o", cwd: "/", exited: null, error: null } }, order: ["o"], settings: { o: { ssh: null, claude: null, command: null, extra: {} } }, copiedAt: {} });
+    vi.mocked(writeText).mockClear();
+  });
+
+  it("copies the base64 payload to the clipboard and flashes the pane", async () => {
+    const { term } = attach("o", document.createElement("div"));
+    const payload = btoa(unescape(encodeURIComponent("hello wörld")));
+    expect(handlerFor(term)(`c;${payload}`)).toBe(true);
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("hello wörld"));
+    await vi.waitFor(() => expect(typeof useStore.getState().copiedAt.o).toBe("number"));
+  });
+
+  it("accepts any selection parameter and a missing one", async () => {
+    const { term } = attach("o", document.createElement("div"));
+    handlerFor(term)(`;${btoa("a")}`);
+    handlerFor(term)(`ps;${btoa("b")}`);
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+  });
+
+  it("refuses clipboard queries and malformed or oversized payloads", async () => {
+    const { term } = attach("o", document.createElement("div"));
+    expect(handlerFor(term)("c;?")).toBe(true);
+    expect(handlerFor(term)("c;not*base64!")).toBe(true);
+    expect(handlerFor(term)("c")).toBe(true);
+    expect(handlerFor(term)(`c;${"QUFB".repeat(400_000)}`)).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("decodeOsc52 returns the text or null", () => {
+    expect(decodeOsc52(`c;${btoa("x y")}`)).toBe("x y");
+    expect(decodeOsc52("c;?")).toBeNull();
+    expect(decodeOsc52("")).toBeNull();
+    expect(decodeOsc52("c;")).toBeNull();
   });
 });
 

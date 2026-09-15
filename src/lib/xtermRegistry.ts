@@ -15,6 +15,30 @@ export const CWD_POLL_INTERVAL_MS = 5000;
  * the remote Mac's clipboard, not the one the user just copied into. */
 export const IMAGE_PASTE_KEY = "\x16";
 
+/** Largest OSC 52 payload honoured (base64 chars); anything bigger is dropped, not truncated. */
+export const OSC52_MAX_CHARS = 1_000_000;
+
+/**
+ * The text a program asked to copy via OSC 52 (`Pc ; Pd`, Pd base64), or null for a clipboard
+ * query (`?`, refused so a program can never read the clipboard), a malformed payload, or one
+ * over `OSC52_MAX_CHARS`.
+ */
+export function decodeOsc52(data: string): string | null {
+  const semi = data.indexOf(";");
+  if (semi < 0) return null;
+  const payload = data.slice(semi + 1);
+  if (!payload || payload === "?" || payload.length > OSC52_MAX_CHARS) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(payload)) return null;
+  try {
+    const bin = atob(payload);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
 /** The path inside an OSC 7 payload (`file://host/path`, `file:///path`, or a bare path). */
 export function decodeOsc7(data: string): string | null {
   let path = data;
@@ -145,6 +169,17 @@ function createEntry(id: string): Entry {
   });
   term.onResize(({ cols, rows }) => {
     void ipc.resizeTerminal(id, cols, rows).catch(() => {});
+  });
+  // Programs in the terminal (Claude Code among them) copy their own selections by sending the
+  // text base64-encoded in OSC 52; real terminals put it on the clipboard, xterm.js ignores it.
+  term.parser.registerOscHandler(52, (data) => {
+    const text = decodeOsc52(data);
+    if (text !== null) {
+      writeText(text)
+        .then(() => useStore.getState().flashCopied(id))
+        .catch(() => {});
+    }
+    return true;
   });
   term.parser.registerOscHandler(7, (data) => {
     const path = decodeOsc7(data);
