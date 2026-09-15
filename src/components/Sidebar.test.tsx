@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/ipc", () => ({
@@ -56,6 +56,8 @@ beforeEach(() => {
     startupNotes: {},
     persistError: null,
     machines: { box: { alias: "desk", color: "#f59e0b", lastUsed: "t" } },
+    agentState: {},
+    agentHooksError: null,
     tailscale: {
       running: true,
       message: null,
@@ -131,5 +133,34 @@ describe("Sidebar", () => {
     render(<Sidebar />);
 
     expect(screen.getByRole("button", { name: /Sync off/ }).textContent).toContain("Sync off");
+  });
+});
+
+describe("agent status dot", () => {
+  it("uses the agent colour and ring, keeps exited grey, and shows the hooks error with retry", () => {
+    useStore.setState({
+      settings: { [ID]: { ssh: null, claude: null, command: null, extra: {} } },
+      machines: {},
+      agentState: { [ID]: { status: "blocked", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "Notification", unseen: true } },
+      agentHooksError: "could not install Claude hooks: nope",
+    });
+    render(<Sidebar />);
+    const dot = screen.getByTestId(`agent-dot-${ID}`);
+    expect(dot.className).toContain("bg-red-500");
+    expect(dot.className).toContain("ring-2");
+    expect(dot.title).toContain("blocked");
+    expect(dot.title).toContain("Notification");
+    expect(screen.getByText("could not install Claude hooks: nope")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    act(() => {
+      useStore.setState({ terminals: { [ID]: { ...useStore.getState().terminals[ID], exited: 1 } } });
+    });
+    expect(screen.getByTestId(`agent-dot-${ID}`).className).toContain("bg-neutral-600");
+  });
+
+  it("shows the machine colour when there is no agent state", () => {
+    render(<Sidebar />);
+    const dot = screen.getByTestId(`agent-dot-${ID}`);
+    expect(dot.style.backgroundColor).toBe("rgb(245, 158, 11)");
   });
 });

@@ -3,9 +3,20 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useStore, terminalColor } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
+import { statusClasses } from "../lib/agentState";
 
 function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? p;
+}
+
+function relativeTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "just now";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.round(m / 60)}h ago`;
 }
 
 function SyncLine() {
@@ -38,6 +49,7 @@ function Row({ id }: { id: string }) {
   // returns a new object every render re-renders forever. terminalColor is safe because it
   // already narrows machineFor's result down to a primitive.
   const color = useStore((s) => terminalColor(s, id));
+  const agent = useStore((s) => s.agentState[id]);
   const machineName = useStore((s) => s.settings[id]?.ssh?.machine ?? null);
   const machineCwd = useStore((s) => s.settings[id]?.ssh?.cwd ?? "");
   const online = useStore((s) =>
@@ -87,10 +99,18 @@ function Row({ id }: { id: string }) {
           : t.cwd
       }
     >
-      <span
-        className={`h-2 w-2 shrink-0 rounded-full ${exited ? "bg-neutral-600" : color ? "" : "bg-emerald-500"}`}
-        style={{ backgroundColor: exited ? undefined : (color ?? undefined) }}
-      />
+      {(() => {
+        const hasAgent = !!agent && agent.status !== "offline";
+        const cls = exited ? "bg-neutral-600" : hasAgent ? statusClasses(agent) : color ? "" : "bg-emerald-500";
+        return (
+          <span
+            data-testid={`agent-dot-${id}`}
+            className={`h-2 w-2 shrink-0 rounded-full ${cls}`}
+            style={{ backgroundColor: !exited && !hasAgent && color ? color : undefined }}
+            title={hasAgent ? `${agent.status} · ${agent.lastEvent} · ${relativeTime(agent.since)}` : undefined}
+          />
+        );
+      })()}
       <div className="min-w-0 flex-1">
         {editing ? (
           <div>
@@ -165,6 +185,8 @@ export function Sidebar() {
   const reloadWorkspace = useStore((s) => s.reloadWorkspace);
   const persistError = useStore((s) => s.persistError);
   const dismiss = useStore((s) => s.dismissPersistError);
+  const agentHooksError = useStore((s) => s.agentHooksError);
+  const installAgentHooks = useStore((s) => s.installAgentHooks);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<"closed" | "open" | "ssh">("closed");
@@ -228,6 +250,12 @@ export function Sidebar() {
         <div className="flex items-start gap-2 px-3 py-1 text-xs text-amber-300">
           <span className="flex-1">{persistError}</span>
           <button className="text-neutral-500 hover:text-neutral-200" onClick={dismiss} title="Dismiss">×</button>
+        </div>
+      )}
+      {agentHooksError && (
+        <div className="flex items-start gap-2 px-3 py-1 text-xs text-amber-300">
+          <span className="flex-1">{agentHooksError}</span>
+          <button className="text-neutral-400 hover:text-neutral-100" onClick={() => void installAgentHooks()}>Retry</button>
         </div>
       )}
       <div className="flex-1 space-y-0.5 overflow-y-auto p-2">

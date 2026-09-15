@@ -2,6 +2,7 @@ import { useState, type DragEvent } from "react";
 import type { GroupNode, Side } from "../lib/layout";
 import { useStore, terminalColor, type Placement } from "../store";
 import { machineLabel } from "../lib/workspace";
+import { statusClasses } from "../lib/agentState";
 import { TerminalPane } from "./TerminalPane";
 
 export const DRAG_MIME = "application/x-swarmz-terminal";
@@ -26,10 +27,15 @@ const ZONES: { side: Side; className: string }[] = [
 /** Reads this one tab's colour without re-rendering the whole tab strip on every colour change. */
 function TabDot({ id, exited }: { id: string; exited: boolean }) {
   const color = useStore((s) => terminalColor(s, id));
+  const agent = useStore((s) => s.agentState[id]);
+  const hasAgent = !!agent && agent.status !== "offline";
+  const cls = exited ? "bg-neutral-600" : hasAgent ? statusClasses(agent) : color ? "" : "bg-emerald-500";
   return (
     <span
-      className={`h-2 w-2 rounded-full ${color ? "" : exited ? "bg-neutral-600" : "bg-emerald-500"}`}
-      style={{ backgroundColor: color ?? undefined }}
+      data-testid={`tab-dot-${id}`}
+      className={`h-2 w-2 rounded-full ${cls}`}
+      style={{ backgroundColor: !exited && !hasAgent && color ? color : undefined }}
+      title={hasAgent ? `${agent.status} · ${agent.lastEvent}` : undefined}
     />
   );
 }
