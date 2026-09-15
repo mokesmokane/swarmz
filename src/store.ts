@@ -31,6 +31,7 @@ import {
   reconcileLayout,
   sameWorkspaceContent,
   sanitizeLayout,
+  shellQuote,
   startupIsSsh,
   startupLine,
   startupSteps,
@@ -49,7 +50,7 @@ import {
 } from "./lib/workspace";
 import { applyAgentEvent as foldAgentEvent, OFFLINE, type AgentState } from "./lib/agentState";
 import type { AgentEventPayload } from "./lib/ipc";
-import { bumpSession, isSafeFolder, sanitizeSessions, upsertSession } from "./lib/sessions";
+import { bumpSession, isSafeFolder, promoteSession, sanitizeSessions, upsertSession } from "./lib/sessions";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -309,6 +310,7 @@ export interface WorkbenchState {
   setWindowFocused(focused: boolean): void;
   flashCopied(id: string): void;
   setTerminalCwd(id: string, cwd: string, source: "poll" | "osc7" | "hook"): Promise<void>;
+  selectSession(id: string, sessionId: string, opts: { connect: boolean }): Promise<void>;
   installAgentHooks(): Promise<void>;
   ensureAgentWatchers(): Promise<void>;
   agentWatchEnded(payload: { host: string | null; gen: number }): Promise<void>;
@@ -1392,6 +1394,45 @@ export const useStore = create<WorkbenchState>((set) => ({
       set((st) => (st.terminals[id] ? { terminals: { ...st.terminals, [id]: { ...st.terminals[id], cwd: info.cwd } } } : {}));
     } catch {
       // registry refused (unknown id or bad path); the next poll will try again
+    }
+  },
+
+  async selectSession(id, sessionId, { connect }) {
+    const s = useStore.getState();
+    const settings = s.settings[id] ?? EMPTY_SETTINGS;
+    const rec = settings.sessions?.find((r) => r.sessionId === sessionId);
+    if (!s.terminals[id] || !rec) return;
+    const now = new Date().toISOString();
+    set((st) => {
+      const cur = st.settings[id] ?? EMPTY_SETTINGS;
+      return {
+        settings: {
+          ...st.settings,
+          [id]: { ...cur, claude: { enabled: true, sessionId, skipPermissions: rec.skipPermissions, started: true }, sessions: promoteSession(cur.sessions ?? [], sessionId, now) },
+        },
+        startupNotes: omit(st.startupNotes, id),
+      };
+    });
+    await useStore.getState().setTerminalCwd(id, rec.cwd, "hook");
+    const after = useStore.getState();
+    const isSsh = !!after.settings[id]?.ssh;
+    if (connect) {
+      await useStore.getState().runStartup(id);
+      return;
+    }
+    const busy = await safeForegroundBusy(id);
+    const live = isSsh ? await tileLive(id, after.settings[id]!.ssh!.host) : !busy;
+    if (!live || (isSsh && busy)) {
+      set((st) => ({ startupNotes: { ...st.startupNotes, [id]: "switch takes effect on next Connect" } }));
+      return;
+    }
+    if (isSsh) {
+      await useStore.getState().runRemoteStep(id);
+    } else {
+      const claude = startupSteps(after.settings[id] ?? EMPTY_SETTINGS, id).find((st) => st.via === "local")?.line;
+      if (!claude) return;
+      await ipc.writeTerminal(id, `cd ${shellQuote(rec.cwd)} && ${claude}\r`);
+      set((st) => ({ startupPending: { ...st.startupPending, [id]: false } }));
     }
   },
 

@@ -4,6 +4,7 @@ import { useStore, terminalColor } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
 import { dotPresentation } from "../lib/agentState";
+import { SessionHistory } from "./SessionHistory";
 
 function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? p;
@@ -62,6 +63,8 @@ function Row({ id }: { id: string }) {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const suppressBlur = useRef(false);
+  const hasHistory = useStore((s) => (s.settings[id]?.sessions ?? []).some((r) => r.sessionId !== s.settings[id]?.claude?.sessionId));
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   if (!t) return null;
   const exited = t.exited !== null;
@@ -162,6 +165,19 @@ function Row({ id }: { id: string }) {
           </>
         )}
       </div>
+      {hasHistory && (
+        <button
+          className="rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"
+          onClick={(e) => {
+            e.stopPropagation();
+            setHistoryOpen((v) => !v);
+          }}
+          title="Previous sessions"
+          aria-label="Previous sessions"
+        >
+          ↺
+        </button>
+      )}
       <button
         className="rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"
         onClick={(e) => {
@@ -175,7 +191,16 @@ function Row({ id }: { id: string }) {
     </div>
   );
 
-  return row;
+  return (
+    <div className="relative">
+      {row}
+      {historyOpen && (
+        <div className="absolute left-2 right-2 z-30 mt-1 rounded border border-neutral-700 bg-neutral-900 p-2 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <SessionHistory id={id} onPick={() => setHistoryOpen(false)} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function Sidebar() {

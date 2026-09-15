@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/ipc", () => ({
@@ -164,5 +164,20 @@ describe("agent status dot", () => {
     render(<Sidebar />);
     const dot = screen.getByTestId(`agent-dot-${ID}`);
     expect(dot.style.backgroundColor).toBe("rgb(245, 158, 11)");
+  });
+});
+
+describe("session history popover", () => {
+  it("shows a history button when the tile has previous sessions and opens the list", () => {
+    useStore.setState((s) => ({
+      settings: { ...s.settings, [ID]: { ...s.settings[ID], claude: { enabled: true, sessionId: "cur", skipPermissions: false, started: true }, sessions: [{ sessionId: "cur", cwd: "/a", skipPermissions: false, startedAt: "t", lastActiveAt: "t" }, { sessionId: "old", cwd: "/b", skipPermissions: false, startedAt: "t", lastActiveAt: "t" }] } },
+    }));
+    render(<Sidebar />);
+    fireEvent.click(screen.getByRole("button", { name: "Previous sessions" }));
+    expect(screen.getByTestId("session-row-old")).toBeTruthy();
+  });
+  it("hides the history button without previous sessions", () => {
+    render(<Sidebar />);
+    expect(screen.queryByRole("button", { name: "Previous sessions" })).toBeNull();
   });
 });

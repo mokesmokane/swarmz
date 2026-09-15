@@ -147,4 +147,14 @@ describe("TerminalPane connect card", () => {
     expect(screen.queryByRole("dialog", { name: /connect/i })).toBeNull();
     expect(screen.getByTestId("terminal-mount").className).not.toContain("invisible");
   });
+
+  it("the connect card lists previous sessions", () => {
+    useStore.setState((s) => ({
+      settings: { ...s.settings, [ID]: { ...s.settings[ID], sessions: [{ sessionId: "abc", cwd: "/proj", skipPermissions: true, startedAt: "t", lastActiveAt: "t" }, { sessionId: "old", cwd: "/other", skipPermissions: false, startedAt: "t", lastActiveAt: "t" }] } },
+    }));
+    render(<TerminalPane id={ID} />);
+    expect(screen.getByText("Previous sessions in this tile")).toBeTruthy();
+    expect(screen.getByTestId("session-row-old")).toBeTruthy();
+    expect(screen.queryByTestId("session-row-abc")).toBeNull();
+  });
 });

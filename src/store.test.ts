@@ -2268,3 +2268,45 @@ describe("setTerminalCwd", () => {
     expect(useStore.getState().terminals[id].cwd).toBe("/tmp/a");
   });
 });
+
+describe("selectSession", () => {
+  const rec = (sid: string, cwd: string, t: string) => ({ sessionId: sid, cwd, skipPermissions: sid === "old", startedAt: t, lastActiveAt: t });
+  it("makes the record current, applies its folder, moves it to the head, and connects when asked", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.setState((s) => ({
+      settings: { ...s.settings, [id]: { ...s.settings[id], claude: { enabled: true, sessionId: "cur", skipPermissions: false, started: true }, sessions: [rec("cur", "/tmp/a", "t2"), rec("old", "/tmp/old", "t1")] } },
+      startupPending: { ...s.startupPending, [id]: true },
+    }));
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().selectSession(id, "old", { connect: true });
+    const s = useStore.getState();
+    expect(s.settings[id].claude).toEqual({ enabled: true, sessionId: "old", skipPermissions: true, started: true });
+    expect(s.settings[id].sessions?.map((r) => r.sessionId)).toEqual(["old", "cur"]);
+    expect(s.terminals[id].cwd).toBe("/tmp/old");
+    expect(ipc.writeTerminal).toHaveBeenCalledWith(id, expect.stringContaining("--resume old"));
+    expect(s.startupPending[id]).toBe(false);
+  });
+  it("without connect and with a busy shell it only becomes current and notes the switch", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.setState((s) => ({ settings: { ...s.settings, [id]: { ...s.settings[id], sessions: [rec("old", "/tmp/old", "t1")] } } }));
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValueOnce(true);
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().selectSession(id, "old", { connect: false });
+    expect(useStore.getState().settings[id].claude?.sessionId).toBe("old");
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+    expect(useStore.getState().startupNotes[id]).toBe("switch takes effect on next Connect");
+  });
+  it("without connect and an idle local shell it types the resume line", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.setState((s) => ({ settings: { ...s.settings, [id]: { ...s.settings[id], sessions: [rec("old", "/tmp/old", "t1")] } } }));
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValueOnce(false);
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().selectSession(id, "old", { connect: false });
+    expect(ipc.writeTerminal).toHaveBeenCalledWith(id, expect.stringMatching(/^cd '\/tmp\/old' && claude .*--resume old\r$/));
+  });
+  it("unknown session ids are ignored", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    await useStore.getState().selectSession(id, "zz", { connect: true });
+    expect(useStore.getState().settings[id].claude).toBeNull();
+  });
+});

@@ -3,6 +3,7 @@ import { useStore, terminalColor } from "../store";
 import { attach, fitAndFocus } from "../lib/xtermRegistry";
 import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary, tintBackground } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
+import { SessionHistory } from "./SessionHistory";
 
 /** How long the "Copied" pill stays after a selection is copied. */
 export const COPIED_FLASH_MS = 1000;
@@ -94,6 +95,7 @@ export function TerminalPane({ id }: { id: string }) {
             <div className="text-base font-medium text-neutral-100">{summary ?? "Run startup"}</div>
             <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded bg-neutral-950 px-3 py-2 font-mono text-xs text-neutral-400" title={line ?? undefined}>{line}</pre>
             {note && <div className="text-xs text-amber-300">{note}</div>}
+            <SessionHistory id={id} />
             <div className="flex items-center gap-2 pt-1">
               <button className="rounded bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-500" onClick={() => void runStartup(id)}>Connect</button>
               <button className="rounded px-3 py-1.5 text-neutral-300 hover:bg-neutral-800" onClick={() => skipStartup(id)} title="Open a plain local shell instead">Skip</button>
