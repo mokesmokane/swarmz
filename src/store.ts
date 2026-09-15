@@ -1500,8 +1500,12 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (!cur) return {};
       const isCurrent = cur.claude?.enabled && cur.claude.sessionId === sessionId;
       const claude = isCurrent && cur.claude ? { ...cur.claude, started: false } : cur.claude;
+      // An empty list and no list mean the same thing (`toWorkspace` omits both), so dropping
+      // the last record leaves the key off rather than writing `[]`.
+      const left = removeSession(cur.sessions, sessionId);
+      const sessions = left.length ? left : undefined;
       return {
-        settings: { ...s.settings, [id]: { ...cur, claude, sessions: removeSession(cur.sessions, sessionId) } },
+        settings: { ...s.settings, [id]: { ...cur, claude, sessions } },
         resumeWatch: omit(s.resumeWatch, id),
         ...(isCurrent
           ? { startupNotes: { ...s.startupNotes, [id]: `session ${sessionId} is gone; Connect starts a new one` }, startupPending: { ...s.startupPending, [id]: true } }

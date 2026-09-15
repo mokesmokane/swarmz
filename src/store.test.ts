@@ -2430,6 +2430,7 @@ describe("dead session detection", () => {
     }));
     useStore.getState().noteResumeFailure(id, "other");
     expect(useStore.getState().settings[id].claude?.started).toBe(true);
-    expect(useStore.getState().settings[id].sessions).toEqual([]);
+    // An empty list and no list are the same thing; `toWorkspace` omits both, so keep one shape.
+    expect(useStore.getState().settings[id].sessions).toBeUndefined();
   });
 });
