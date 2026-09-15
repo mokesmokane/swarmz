@@ -1,4 +1,8 @@
 use serde_json::{json, Map, Value};
+use crate::remote::{run_with_timeout, run_with_timeout_input, validate_host, CONTROL_PATH};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
 
 pub const HOOK_VERSION: u32 = 1;
 
@@ -84,6 +88,137 @@ pub fn install_hooks(settings: Option<&str>) -> Result<(String, bool), String> {
     let after = serde_json::to_string(&root).map_err(|e| e.to_string())?;
     let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
     Ok((pretty, before != after))
+}
+
+fn home_dir() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+}
+
+fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+    let parent = path.parent().ok_or_else(|| format!("{} has no parent", path.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&tmp, text).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("could not replace {}: {e}", path.display()))
+}
+
+/// Installs the hook script and settings entries under `home`. Returns true when something
+/// was written. Never touches a settings file it cannot parse.
+pub fn install_local_in(home: &Path) -> Result<bool, String> {
+    let mut wrote = false;
+    let script_path = home.join(".swarmz").join("hooks").join("claude.sh");
+    let current = std::fs::read_to_string(&script_path).ok();
+    if current.as_deref().and_then(script_version) != Some(HOOK_VERSION) || current.as_deref() != Some(HOOK_SCRIPT) {
+        write_atomic(&script_path, HOOK_SCRIPT)?;
+        wrote = true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("could not chmod {}: {e}", script_path.display()))?;
+    }
+    let settings_path = home.join(".claude").join("settings.json");
+    let existing = std::fs::read_to_string(&settings_path).ok();
+    let (merged, changed) = install_hooks(existing.as_deref())?;
+    if changed || existing.is_none() {
+        write_atomic(&settings_path, &format!("{merged}\n"))?;
+        wrote = true;
+    }
+    Ok(wrote)
+}
+
+pub fn install_local() -> Result<bool, String> {
+    install_local_in(&home_dir())
+}
+
+pub const REMOTE_SEPARATOR: &str = "__SWARMZ_SEP_7f3a__";
+
+pub fn remote_read_command() -> &'static str {
+    // Each cat may fail (file absent); the separator always prints so the reply splits.
+    "cat ~/.swarmz/hooks/claude.sh 2>/dev/null; printf '\\n%s\\n' __SWARMZ_SEP_7f3a__; cat ~/.claude/settings.json 2>/dev/null"
+}
+
+pub fn remote_write_script_command() -> &'static str {
+    "mkdir -p ~/.swarmz/hooks && cat > ~/.swarmz/hooks/claude.sh.tmp.$$ && chmod 755 ~/.swarmz/hooks/claude.sh.tmp.$$ && mv -f ~/.swarmz/hooks/claude.sh.tmp.$$ ~/.swarmz/hooks/claude.sh"
+}
+
+pub fn remote_write_settings_command() -> &'static str {
+    "mkdir -p ~/.claude && cat > ~/.claude/settings.json.tmp.$$ && mv -f ~/.claude/settings.json.tmp.$$ ~/.claude/settings.json"
+}
+
+/// Splits the reply of `remote_read_command` into (script, settings), each None when empty.
+pub fn split_remote_read(stdout: &str) -> (Option<String>, Option<String>) {
+    let sep_line = format!("\n{REMOTE_SEPARATOR}\n");
+    let (a, b) = match stdout.find(&sep_line) {
+        Some(i) => (&stdout[..i], &stdout[i + sep_line.len()..]),
+        None => (stdout, ""),
+    };
+    let clean = |s: &str| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed == REMOTE_SEPARATOR {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    };
+    (clean(a), clean(b))
+}
+
+fn ssh_command(host: &str) -> Result<Command, String> {
+    crate::remote::ensure_ssh_dir()?;
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-o").arg(format!("ControlPath={CONTROL_PATH}"))
+        .arg("-o").arg("ControlMaster=auto")
+        .arg("-o").arg("ControlPersist=10m")
+        .arg("-o").arg("BatchMode=yes")
+        .arg("-o").arg("ConnectTimeout=5")
+        .arg(host);
+    Ok(cmd)
+}
+
+fn ssh_failure(done: &crate::remote::Finished, what: &str) -> String {
+    if done.status.code() == Some(255) {
+        format!("not reachable: {}", done.stderr.trim())
+    } else if done.stderr.trim().is_empty() {
+        format!("{what} failed (exit {:?})", done.status.code())
+    } else {
+        done.stderr.trim().to_string()
+    }
+}
+
+/// Installs the hook on `host` over the shared ssh socket. Returns true when something was
+/// written there.
+pub fn install_remote(host: &str) -> Result<bool, String> {
+    let host = validate_host(host)?;
+    let mut cmd = ssh_command(&host)?;
+    cmd.arg(remote_read_command());
+    let done = run_with_timeout(cmd, Duration::from_secs(10), "ssh")?;
+    if !done.status.success() {
+        return Err(ssh_failure(&done, "remote read"));
+    }
+    let (script, settings) = split_remote_read(&done.stdout);
+    let mut wrote = false;
+    if script.as_deref().and_then(script_version) != Some(HOOK_VERSION) || script.as_deref() != Some(HOOK_SCRIPT) {
+        let mut cmd = ssh_command(&host)?;
+        cmd.arg(remote_write_script_command());
+        let done = run_with_timeout_input(cmd, Duration::from_secs(10), "ssh", Some(HOOK_SCRIPT.as_bytes()))?;
+        if !done.status.success() {
+            return Err(ssh_failure(&done, "remote script write"));
+        }
+        wrote = true;
+    }
+    let (merged, changed) = install_hooks(settings.as_deref())?;
+    if changed || settings.is_none() {
+        let mut cmd = ssh_command(&host)?;
+        cmd.arg(remote_write_settings_command());
+        let done = run_with_timeout_input(cmd, Duration::from_secs(10), "ssh", Some(format!("{merged}\n").as_bytes()))?;
+        if !done.status.success() {
+            return Err(ssh_failure(&done, "remote settings write"));
+        }
+        wrote = true;
+    }
+    Ok(wrote)
 }
 
 #[cfg(test)]
@@ -238,5 +373,69 @@ mod tests {
     fn install_refuses_malformed_settings() {
         let err = install_hooks(Some("{ not json")).unwrap_err();
         assert!(err.contains("settings.json"), "{err}");
+    }
+
+    #[test]
+    fn install_local_writes_script_and_settings_then_is_a_no_op() {
+        let home = std::env::temp_dir().join(format!("swarmz-install-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(install_local_in(&home).unwrap());
+        let script = std::fs::read_to_string(home.join(".swarmz/hooks/claude.sh")).unwrap();
+        assert_eq!(script, HOOK_SCRIPT);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(home.join(".swarmz/hooks/claude.sh")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+        let settings = std::fs::read_to_string(home.join(".claude/settings.json")).unwrap();
+        assert!(settings.contains(SCRIPT_MARKER));
+        assert!(!install_local_in(&home).unwrap());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn install_local_replaces_an_older_script() {
+        let home = std::env::temp_dir().join(format!("swarmz-install2-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".swarmz/hooks")).unwrap();
+        std::fs::write(home.join(".swarmz/hooks/claude.sh"), "#!/bin/sh\n# SWARMZ_HOOK_VERSION=0\nexit 0\n").unwrap();
+        assert!(install_local_in(&home).unwrap());
+        assert_eq!(std::fs::read_to_string(home.join(".swarmz/hooks/claude.sh")).unwrap(), HOOK_SCRIPT);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn install_local_leaves_malformed_settings_alone() {
+        let home = std::env::temp_dir().join(format!("swarmz-install3-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/settings.json"), "{ nope").unwrap();
+        let err = install_local_in(&home).unwrap_err();
+        assert!(err.contains("settings.json"));
+        assert_eq!(std::fs::read_to_string(home.join(".claude/settings.json")).unwrap(), "{ nope");
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn remote_commands_read_both_files_and_write_atomically() {
+        let read = remote_read_command();
+        assert!(read.contains("cat ~/.swarmz/hooks/claude.sh"));
+        assert!(read.contains("cat ~/.claude/settings.json"));
+        assert!(read.contains(REMOTE_SEPARATOR));
+        let ws = remote_write_script_command();
+        assert!(ws.contains("mkdir -p ~/.swarmz/hooks"));
+        assert!(ws.contains("chmod 755"));
+        let wc = remote_write_settings_command();
+        assert!(wc.contains("mkdir -p ~/.claude"));
+        assert!(wc.contains("mv -f"));
+    }
+
+    #[test]
+    fn split_remote_read_handles_missing_files() {
+        let (script, settings) = split_remote_read(&format!("{REMOTE_SEPARATOR}\n"));
+        assert_eq!(script, None);
+        assert_eq!(settings, None);
+        let (script, settings) = split_remote_read(&format!("#!/bin/sh\n# SWARMZ_HOOK_VERSION=1\n{REMOTE_SEPARATOR}\n{{\"a\":1}}\n"));
+        assert_eq!(script_version(script.as_deref().unwrap()), Some(1));
+        assert_eq!(settings.as_deref(), Some("{\"a\":1}\n"));
     }
 }
