@@ -1099,6 +1099,24 @@ describe("shared workspace", () => {
     expect(s.syncMeta?.revision).toBe(5);
   });
 
+  it("loadWorkspace opens a remote that targets this machine as a local and saves it as one", async () => {
+    useStore.setState({ persistenceReady: false, selfMachine: "here", tailscale: ts(["desk"]), machines: { here: { lastUsed: "t" } } });
+    const claude = { enabled: true, sessionId: "abc", skipPermissions: true, started: true };
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1, layout: null, sync: { revision: 5, updatedAt: "t", updatedBy: "desk" },
+      terminals: [{ id: "r", name: "here", cwd: "/home/desk", ssh: { host: "mokes@here", cwd: "/proj", machine: "here" }, claude, command: null, origin: "desk" }],
+    });
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(vi.mocked(ipc.createTerminal).mock.calls.find((c) => c[0] === "r")?.[1]).toBe("/proj");
+    expect(s.settings.r.ssh).toBeNull();
+    expect(s.settings.r.origin).toBe("here");
+    expect(s.settings.r.claude).toEqual(claude);
+    expect(s.startupPending.r).toBe(true);
+    const saved = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines });
+    expect(saved.terminals[0]).toMatchObject({ id: "r", cwd: "/proj", ssh: null, origin: "here", claude });
+  });
+
   it("pullWorkspace adopts a newer peer copy without confirming, and skips older or pending", async () => {
     useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), syncMeta: { revision: 2, updatedAt: "t", updatedBy: "here" }, sync: { ...useStore.getState().sync, enabled: true } });
     const a = await useStore.getState().createTerminal("/tmp/a");

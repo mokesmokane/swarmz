@@ -115,6 +115,25 @@ export function startupLine(s: TerminalSettings): string | null {
   return steps.length ? steps.map((st) => st.line).join(" ⏎ ") : null;
 }
 
+/** Plain-language form of the startup steps for the connect card, or null when there are none. */
+export function startupSummary(s: TerminalSettings, machines: Machines): string | null {
+  const command = trimmedCommand(s);
+  if (command) return `Run ${command}`;
+  const c = safeClaude(s);
+  const claudePart = c ? `${c.started ? "resume" : "start"} Claude${c.skipPermissions ? " (permissions skipped)" : ""}` : null;
+  const host = validHost(s);
+  if (host) {
+    const machine = s.ssh?.machine;
+    const label = machine ? machineLabel(machine, machines[machine]) : hostLabel(host);
+    const parts = [`Connect to ${label}`];
+    if (s.ssh?.cwd) parts.push(`open ${s.ssh.cwd}`);
+    if (claudePart) parts.push(claudePart);
+    return parts.join(", ");
+  }
+  if (!claudePart) return null;
+  return claudePart.charAt(0).toUpperCase() + claudePart.slice(1);
+}
+
 export function needsRemoteFolder(s: TerminalSettings): boolean {
   return startupIsSsh(s) && !s.ssh?.cwd;
 }
@@ -292,6 +311,12 @@ export function openingFor(
 ): { cwd: string | null; settings: TerminalSettings; note: string | null } {
   const origin = def.origin ?? null;
   const base: TerminalSettings = { ssh: def.ssh ?? null, claude: def.claude ?? null, command: def.command ?? null, origin };
+  // A remote created elsewhere that points at THIS machine is really one of ours: open it as a
+  // local in the remote folder. It is then saved as a local def with `origin` = self, which the
+  // rule below turns back into a remote on every other machine.
+  if (def.ssh && self && def.ssh.machine === self) {
+    return { cwd: def.ssh.cwd ?? null, settings: { ...base, ssh: null, origin: self }, note: null };
+  }
   if (def.ssh) return { cwd: null, settings: base, note: null };
   if (self && origin && origin !== self) {
     if (!knownMachines.has(origin)) return { cwd: def.cwd, settings: base, note: unknownOriginNote(origin) };

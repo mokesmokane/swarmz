@@ -23,6 +23,7 @@ import {
   sshLine,
   startupIsSsh,
   startupLine,
+  startupSummary,
   startupSteps,
   startupUsesClaude,
   tintBackground,
@@ -57,6 +58,24 @@ describe("claudeLine", () => {
     expect(claudeLine({ ...claude, skipPermissions: true })).toBe(
       `claude --dangerously-skip-permissions --session-id ${claude.sessionId}`,
     );
+  });
+});
+
+describe("startupSummary", () => {
+  it("is null with no startup", () => {
+    expect(startupSummary(EMPTY_SETTINGS, {})).toBeNull();
+  });
+  it("describes an ssh connection by machine alias, folder and claude", () => {
+    const s = { ssh: { host: "root@desk", cwd: "/proj", machine: "desk" }, claude: { ...claude, started: true }, command: null };
+    expect(startupSummary(s, { desk: { alias: "Desk Mac", lastUsed: "t" } })).toBe("Connect to Desk Mac, open /proj, resume Claude");
+  });
+  it("falls back to the host label and says when Claude is new or skips permissions", () => {
+    const s = { ssh: { host: "me@host.example.com" }, claude: { ...claude, skipPermissions: true }, command: null };
+    expect(startupSummary(s, {})).toBe("Connect to host, start Claude (permissions skipped)");
+  });
+  it("describes a local claude session and a custom command", () => {
+    expect(startupSummary({ ...EMPTY_SETTINGS, claude: { ...claude, started: true } }, {})).toBe("Resume Claude");
+    expect(startupSummary({ ...EMPTY_SETTINGS, command: " npm run dev " }, {})).toBe("Run npm run dev");
   });
 });
 
@@ -388,6 +407,30 @@ describe("openingFor", () => {
     expect(o.settings.origin).toBe("desk");
     expect(o.settings.claude?.sessionId).toBe("s");
     expect(o.note).toBeNull();
+  });
+  it("a remote whose target machine is this one opens as a local in the remote folder", () => {
+    const claude = { enabled: true, sessionId: "s", skipPermissions: true, started: true };
+    const def = { ...base, cwd: "/home", ssh: { host: "mokes@here", cwd: "/proj", machine: "here" }, claude, origin: "desk" };
+    const o = openingFor(def, "here", machines, "mokes", known);
+    expect(o.cwd).toBe("/proj");
+    expect(o.settings.ssh).toBeNull();
+    expect(o.settings.foreign).toBeUndefined();
+    expect(o.settings.origin).toBe("here");
+    expect(o.settings.claude).toEqual(claude);
+    expect(o.note).toBeNull();
+  });
+  it("a remote targeting this machine with no folder opens in home", () => {
+    const def = { ...base, cwd: "/home", ssh: { host: "mokes@here", cwd: null, machine: "here" }, origin: "desk" };
+    const o = openingFor(def, "here", machines, "mokes", known);
+    expect(o.cwd).toBeNull();
+    expect(o.settings.ssh).toBeNull();
+    expect(o.settings.origin).toBe("here");
+  });
+  it("a remote by raw host with no machine stays remote even on the target", () => {
+    const def = { ...base, ssh: { host: "mokes@here", cwd: "/proj" }, origin: "desk" };
+    const o = openingFor(def, "here", machines, "mokes", known);
+    expect(o.cwd).toBeNull();
+    expect(o.settings.ssh).toEqual(def.ssh);
   });
   it("a local from a machine we do not know opens locally with a note", () => {
     const o = openingFor({ ...base, origin: "gone" }, "here", machines, "mokes", known);

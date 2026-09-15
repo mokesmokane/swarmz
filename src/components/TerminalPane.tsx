@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore, terminalColor } from "../store";
 import { attach, fitAndFocus } from "../lib/xtermRegistry";
-import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, tintBackground } from "../lib/workspace";
+import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary, tintBackground } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
 
 export function TerminalPane({ id }: { id: string }) {
@@ -16,6 +16,8 @@ export function TerminalPane({ id }: { id: string }) {
   const note = useStore((s) => s.startupNotes[id]);
   const runStartup = useStore((s) => s.runStartup);
   const skipStartup = useStore((s) => s.skipStartup);
+  const closeTerminal = useStore((s) => s.closeTerminal);
+  const machines = useStore((s) => s.machines);
   const connecting = useStore((s) => s.sshConnecting[id] === true);
   const connected = useStore((s) => s.sshConnected[id] === true);
   const cancelConnecting = useStore((s) => s.cancelConnecting);
@@ -23,16 +25,19 @@ export function TerminalPane({ id }: { id: string }) {
   const [picking, setPicking] = useState(false);
   const [typedPath, setTypedPath] = useState("");
   const line = startupLine(settings);
+  const summary = startupSummary(settings, machines);
   const needsFolder = connected && needsRemoteFolder(settings);
-  // Exactly one bar renders at a time; connecting takes precedence over needing a folder, which
-  // takes precedence over the pending (Run/Skip) bar.
-  const bar: "connecting" | "folder" | "pending" | null = connecting
+  // Exactly one overlay renders at a time; connecting takes precedence over needing a folder,
+  // which takes precedence over the pending connect card. The card covers the whole tile and
+  // hides the shell until the user chooses; the other two are thin bars above a visible shell.
+  const overlay: "connecting" | "folder" | "pending" | null = connecting
     ? "connecting"
     : needsFolder
       ? "folder"
       : pending && line
         ? "pending"
         : null;
+  const bar = overlay === "pending" ? null : overlay;
 
   useEffect(() => {
     const el = ref.current;
@@ -65,12 +70,23 @@ export function TerminalPane({ id }: { id: string }) {
   return (
     <div className="relative h-full w-full" style={{ backgroundColor: tintBackground("#0f1115", color) }}>
       {color && <div className="absolute inset-x-0 top-0 z-20 h-0.5" style={{ backgroundColor: color }} />}
-      {bar === "pending" && (
-        <div className="absolute inset-x-0 top-0 z-10 flex max-h-24 items-start gap-2 overflow-y-auto border-b border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-300">
-          <span className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono" title={line ?? undefined}>{line}</span>
-          {note && <span className="truncate text-amber-300" title={note}>{note}</span>}
-          <button className="rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-500" onClick={() => void runStartup(id)}>Run</button>
-          <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={() => skipStartup(id)}>Skip</button>
+      {overlay === "pending" && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center p-6">
+          <div
+            role="dialog"
+            aria-label="Connect"
+            className="flex w-full max-w-lg flex-col gap-3 rounded-lg border border-neutral-700 bg-neutral-900/95 p-5 text-sm text-neutral-200 shadow-xl"
+          >
+            <div className="text-base font-medium text-neutral-100">{summary ?? "Run startup"}</div>
+            <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded bg-neutral-950 px-3 py-2 font-mono text-xs text-neutral-400" title={line ?? undefined}>{line}</pre>
+            {note && <div className="text-xs text-amber-300">{note}</div>}
+            <div className="flex items-center gap-2 pt-1">
+              <button className="rounded bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-500" onClick={() => void runStartup(id)}>Connect</button>
+              <button className="rounded px-3 py-1.5 text-neutral-300 hover:bg-neutral-800" onClick={() => skipStartup(id)} title="Open a plain local shell instead">Skip</button>
+              <span className="flex-1" />
+              <button className="rounded px-3 py-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-red-300" onClick={() => closeTerminal(id).catch(() => {})} title="Remove this terminal from the workspace">Close</button>
+            </div>
+          </div>
         </div>
       )}
       {bar === "connecting" && (
@@ -105,7 +121,7 @@ export function TerminalPane({ id }: { id: string }) {
           onClose={() => setPicking(false)}
         />
       )}
-      <div ref={ref} className={`absolute inset-0 p-1 ${bar ? "pt-9" : ""}`} />
+      <div ref={ref} data-testid="terminal-mount" className={`absolute inset-0 p-1 ${bar ? "pt-9" : ""} ${overlay === "pending" ? "invisible" : ""}`} />
       {info?.exited !== null && info?.exited !== undefined && (
         <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-neutral-900/95 px-3 py-2 text-sm text-neutral-300 border-t border-neutral-700">
           <span>
