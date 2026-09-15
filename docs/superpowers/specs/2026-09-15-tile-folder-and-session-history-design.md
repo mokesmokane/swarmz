@@ -133,12 +133,7 @@ tooltip, excluding the current session. Clicking a row:
 
 ### 5.2 Sidebar settings panel
 
-The same list under "Previous sessions" for the tile. Clicking a row does
-steps 1 to 3 and, if the tile's shell is idle (`terminal_foreground_busy`
-false, and for ssh tiles `tileLive` true), types the resume line
-(`startupSteps` with the tile id, remote step for ssh). If the shell is busy
-the row only becomes current and the pane shows the note "switch takes
-effect on next Connect".
+The sidebar row shows a ↺ button on hover when the tile has a previous session; it opens a popover with the same list. Clicking a row behaves exactly as in the connect card (makes it current and connects). `selectSession` keeps the `connect: false` behaviour for callers but no UI surface uses it.
 
 ### 5.3 Dead sessions
 

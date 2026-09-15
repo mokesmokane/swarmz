@@ -56,6 +56,10 @@ SSH uses OpenSSH multiplexing with a control socket under `~/.swarmz/ssh/%C` (`S
 
 Claude Code lifecycle hooks (installed once per machine into `~/.claude/settings.json`, script at `~/.swarmz/hooks/claude.sh`) append one line per event to `~/.swarmz/agents/events.log` on the machine Claude runs on. `agents.rs` tails that file locally and over the shared ssh socket for each tailnet machine with a connected tile, emitting `agent:event`. `src/lib/agentState.ts` is the pure reducer (offline / working / idle / blocked, plus `unseen`); the store owns watcher lifecycle, replay rules and the `claude.started` flip on the first `UserPromptSubmit`. Remote claude lines carry `SWARMZ_TERMINAL_ID=<id>` because the remote shell does not inherit the local env.
 
+### Folder tracking and session history
+
+A tile's saved folder is live: local tiles poll the shell's cwd (`terminal_cwd`, via `lsof`) 300 ms after Enter and every 5 s, and every tile honours the OSC 7 directory escape; hook events also carry Claude's cwd. Changes route through `setTerminalCwd` (registry for local, `settings.ssh.cwd` for ssh, `settings.foreign.cwd` for foreign locals). `src/lib/sessions.ts` keeps each tile's `sessions` list (newest first, max 20); `applyAgentEvent` adopts the live session on SessionStart, `selectSession` goes back to one, and a `--resume` that Claude reports as gone removes the record.
+
 ## Tests
 
 - Store and lib tests run in node; component tests need `// @vitest-environment jsdom` as the first line. Every frontend test mocks `./lib/ipc` (and `@tauri-apps/api/path`, `@tauri-apps/plugin-dialog` where used) with `vi.mock`; look at `src/store.test.ts` for the reusable fake registry pattern.
