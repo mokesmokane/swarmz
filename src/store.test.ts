@@ -49,10 +49,13 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true) }
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { ipc } from "./lib/ipc";
 import {
+  __resetAgentWatchers,
   __resetLoadGuard,
   __resetSyncState,
   __setLaunchedAt,
   __stopAllPolling,
+  AGENT_WATCH_BACKOFF_MS,
+  AGENT_WATCH_UNAVAILABLE_AFTER,
   SAVE_DEBOUNCE_MS,
   SSH_POLL_MS,
   SSH_POLL_TIMEOUT_MS,
@@ -65,9 +68,16 @@ import {
 import { findGroup, findGroupOf, type GroupNode, type Layout, type SplitNode } from "./lib/layout";
 import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, shellQuote, toWorkspace, type TerminalDef, type Workspace } from "./lib/workspace";
 
+const omitKey = <T,>(o: Record<string, T>, k: string): Record<string, T> => {
+  const { [k]: _drop, ...rest } = o;
+  void _drop;
+  return rest;
+};
+
 beforeEach(() => {
   __resetLoadGuard();
   __resetSyncState();
+  __resetAgentWatchers();
   __stopAllPolling();
   useStore.setState({
     terminals: {},
@@ -1806,5 +1816,94 @@ describe("agent state", () => {
     expect(ipc.agentsWatch).toHaveBeenCalledWith(null);
     await useStore.getState().installAgentHooks();
     expect(useStore.getState().agentHooksError).toBeNull();
+  });
+
+  it("watches a host when its tile connects, installs hooks there once, and unwatches when the tile closes", async () => {
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", machine: "box" });
+    __stopAllPolling();
+    vi.mocked(ipc.agentsWatch).mockClear();
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    await useStore.getState().ensureAgentWatchers();
+    expect(ipc.agentsWatch).toHaveBeenCalledWith("me@box");
+    expect(ipc.agentsInstallRemote).toHaveBeenCalledWith("me@box");
+    expect(ipc.agentsInstallRemote).toHaveBeenCalledTimes(1);
+    await useStore.getState().ensureAgentWatchers();
+    expect(ipc.agentsInstallRemote).toHaveBeenCalledTimes(1);
+    expect(ipc.agentsWatch).toHaveBeenCalledTimes(1);
+    await useStore.getState().closeTerminal(id);
+    await useStore.getState().ensureAgentWatchers();
+    expect(ipc.agentsUnwatch).toHaveBeenCalledWith("me@box");
+  });
+
+  it("a remote install failure becomes a startup note on that tile and is retried on the next connect", async () => {
+    vi.mocked(ipc.agentsInstallRemote).mockRejectedValueOnce("not reachable: x");
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", machine: "box" });
+    __stopAllPolling();
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    await useStore.getState().ensureAgentWatchers();
+    expect(useStore.getState().startupNotes[id]).toBe("could not install Claude hooks on box: not reachable: x");
+    useStore.setState((s) => ({ sshConnected: omitKey(s.sshConnected, id) }));
+    await useStore.getState().ensureAgentWatchers();
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    await useStore.getState().ensureAgentWatchers();
+    expect(ipc.agentsInstallRemote).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-watches with backoff when a watcher ends while its host is still wanted", async () => {
+    vi.useFakeTimers();
+    try {
+      const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", machine: "box" });
+      __stopAllPolling();
+      useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+      await useStore.getState().ensureAgentWatchers();
+      vi.mocked(ipc.agentsWatch).mockClear();
+      useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
+      expect(ipc.agentsUnwatch).toHaveBeenCalledWith("me@box");
+      expect(ipc.agentsWatch).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ipc.agentsWatch).toHaveBeenCalledWith("me@box");
+      // A successful re-watch resets the backoff (see scheduleAgentRewatch/ensureAgentWatchers),
+      // so this second end-and-retry is a fresh first hop (1000ms), not a second (2000ms) one:
+      // check "not yet" partway through that hop rather than at the original 1000ms mark, which
+      // would already have fired it.
+      useStore.getState().agentWatchEnded({ host: "me@box", gen: 2 });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(ipc.agentsWatch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ipc.agentsWatch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("notes on the tile once re-watching has failed for about 30 seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", machine: "box" });
+      __stopAllPolling();
+      useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+      await useStore.getState().ensureAgentWatchers();
+      vi.mocked(ipc.agentsWatch).mockRejectedValue("boom");
+      let gen = 1;
+      for (let i = 0; i < AGENT_WATCH_UNAVAILABLE_AFTER; i++) {
+        useStore.getState().agentWatchEnded({ host: "me@box", gen: gen++ });
+        await vi.advanceTimersByTimeAsync(AGENT_WATCH_BACKOFF_MS[Math.min(i, AGENT_WATCH_BACKOFF_MS.length - 1)]);
+      }
+      expect(useStore.getState().startupNotes[id]).toBe("agent state unavailable for box");
+    } finally {
+      vi.mocked(ipc.agentsWatch).mockReset().mockResolvedValue(undefined);
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not re-watch a host nobody wants any more", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.getState().agentWatchEnded({ host: "me@nowhere", gen: 9 });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(ipc.agentsWatch).not.toHaveBeenCalledWith("me@nowhere");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -69,6 +69,60 @@ export function __setLaunchedAt(iso: string) {
   APP_LAUNCHED_AT = iso;
 }
 
+export const AGENT_WATCH_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+
+/** Hosts with a live log watcher, hosts whose hooks were installed this run, and retry state. */
+const agentWatch = {
+  watching: new Set<string>(),
+  installed: new Set<string>(),
+  attempts: new Map<string, number>(),
+  retry: new Map<string, ReturnType<typeof setTimeout>>(),
+};
+
+export function __resetAgentWatchers() {
+  agentWatch.watching.clear();
+  agentWatch.installed.clear();
+  agentWatch.attempts.clear();
+  for (const t of agentWatch.retry.values()) clearTimeout(t);
+  agentWatch.retry.clear();
+}
+
+/** ssh hosts that currently have a connected tile, with one terminal id per host for notes. */
+function wantedAgentHosts(s: WorkbenchState): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const id of s.order) {
+    const host = s.settings[id]?.ssh?.host?.trim();
+    if (host && s.sshConnected[id] && s.terminals[id]?.exited === null && !out.has(host)) out.set(host, id);
+  }
+  return out;
+}
+
+/** After this many failed re-watches (1+2+4+8+16 s ≈ 30 s) the tile gets a note. */
+export const AGENT_WATCH_UNAVAILABLE_AFTER = 5;
+
+function scheduleAgentRewatch(host: string) {
+  const n = agentWatch.attempts.get(host) ?? 0;
+  agentWatch.attempts.set(host, n + 1);
+  if (n + 1 === AGENT_WATCH_UNAVAILABLE_AFTER) {
+    const s = useStore.getState();
+    const id = wantedAgentHosts(s).get(host);
+    if (id) {
+      const machine = s.settings[id]?.ssh?.machine ?? hostLabel(host);
+      useStore.setState((st) => ({ startupNotes: { ...st.startupNotes, [id]: `agent state unavailable for ${machine}` } }));
+    }
+  }
+  const delay = AGENT_WATCH_BACKOFF_MS[Math.min(n, AGENT_WATCH_BACKOFF_MS.length - 1)];
+  const existing = agentWatch.retry.get(host);
+  if (existing) clearTimeout(existing);
+  agentWatch.retry.set(
+    host,
+    setTimeout(() => {
+      agentWatch.retry.delete(host);
+      void useStore.getState().ensureAgentWatchers();
+    }, delay),
+  );
+}
+
 // Note: this store does NOT import xtermRegistry directly (that would create
 // an import cycle, since xtermRegistry imports beforeSpawn/useStore from
 // here). Instead xtermRegistry registers its `size` function onto this
@@ -160,6 +214,8 @@ export interface WorkbenchState {
   applyAgentEvent(payload: AgentEventPayload): void;
   setWindowFocused(focused: boolean): void;
   installAgentHooks(): Promise<void>;
+  ensureAgentWatchers(): Promise<void>;
+  agentWatchEnded(payload: { host: string | null; gen: number }): void;
 }
 
 /**
@@ -1190,6 +1246,56 @@ export const useStore = create<WorkbenchState>((set) => ({
       set({ agentHooksError: `could not install Claude hooks: ${typeof e === "string" ? e : String(e)}` });
     }
   },
+
+  async ensureAgentWatchers() {
+    const s = useStore.getState();
+    const wanted = wantedAgentHosts(s);
+    for (const host of Array.from(agentWatch.watching)) {
+      if (!wanted.has(host)) {
+        agentWatch.watching.delete(host);
+        agentWatch.attempts.delete(host);
+        const t = agentWatch.retry.get(host);
+        if (t) clearTimeout(t);
+        agentWatch.retry.delete(host);
+        await ipc.agentsUnwatch(host).catch(() => {});
+      }
+    }
+    for (const [host, id] of wanted) {
+      // Mark before awaiting: the subscription and an explicit call can run this concurrently,
+      // and the second must see the first's claim, not race it into a duplicate install.
+      if (!agentWatch.installed.has(host)) {
+        agentWatch.installed.add(host);
+        try {
+          await ipc.agentsInstallRemote(host);
+        } catch (e) {
+          agentWatch.installed.delete(host);
+          const machine = s.settings[id]?.ssh?.machine ?? hostLabel(host);
+          set((st) => ({ startupNotes: { ...st.startupNotes, [id]: `could not install Claude hooks on ${machine}: ${typeof e === "string" ? e : String(e)}` } }));
+        }
+      }
+      if (!agentWatch.watching.has(host) && !agentWatch.retry.has(host)) {
+        agentWatch.watching.add(host);
+        try {
+          await ipc.agentsWatch(host);
+          agentWatch.attempts.delete(host);
+        } catch {
+          agentWatch.watching.delete(host);
+          scheduleAgentRewatch(host);
+        }
+      }
+    }
+  },
+
+  agentWatchEnded({ host }) {
+    if (host === null) {
+      ipc.agentsUnwatch(null).catch(() => {});
+      setTimeout(() => ipc.agentsWatch(null).catch(() => {}), AGENT_WATCH_BACKOFF_MS[0]);
+      return;
+    }
+    agentWatch.watching.delete(host);
+    ipc.agentsUnwatch(host).catch(() => {});
+    if (wantedAgentHosts(useStore.getState()).has(host)) scheduleAgentRewatch(host);
+  },
 }));
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1534,4 +1640,8 @@ useStore.subscribe((s, prev) => {
   ) {
     scheduleSave();
   }
+});
+
+useStore.subscribe((s, prev) => {
+  if (s.sshConnected !== prev.sshConnected || s.order !== prev.order) void s.ensureAgentWatchers();
 });
