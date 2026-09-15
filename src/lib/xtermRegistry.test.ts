@@ -228,6 +228,27 @@ describe("folder tracking", () => {
     }
   });
 
+  it("skips interval ticks while the window is unfocused but still polls after Enter", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ windowFocused: false });
+      const { term } = attach("f", document.createElement("div"));
+      await vi.advanceTimersByTimeAsync(CWD_POLL_INTERVAL_MS * 2);
+      expect(ipc.terminalCwd).not.toHaveBeenCalled();
+      // Enter is the user acting on this tile, so it is polled either way.
+      (term as unknown as { dataHandler: (d: string) => void }).dataHandler("\r");
+      await vi.advanceTimersByTimeAsync(CWD_POLL_AFTER_ENTER_MS);
+      expect(ipc.terminalCwd).toHaveBeenCalledTimes(1);
+      useStore.setState({ windowFocused: true });
+      await vi.advanceTimersByTimeAsync(CWD_POLL_INTERVAL_MS);
+      expect(ipc.terminalCwd).toHaveBeenCalledTimes(2);
+    } finally {
+      useStore.setState({ windowFocused: true });
+      dispose("f");
+      vi.useRealTimers();
+    }
+  });
+
   it("never polls an ssh tile or an exited tile", async () => {
     vi.useFakeTimers();
     try {

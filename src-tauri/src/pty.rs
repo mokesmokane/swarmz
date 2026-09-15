@@ -121,16 +121,16 @@ impl PtySession {
         }
     }
 
-    /// The working directory of the process in the foreground of this PTY (the shell when
-    /// nothing else is running), via `lsof`. `libproc` does not implement the lookup on macOS;
-    /// `lsof -a -p <pid> -d cwd -Fn` costs about 16 ms. None when unknown.
+    /// The working directory of the shell this PTY spawned, via `lsof`. Deliberately the
+    /// shell's own pid and never the pty's foreground process group: a `(cd /other && make)`
+    /// subshell is where a command is running, not where the tile is. `libproc` does not
+    /// implement the lookup on macOS; `lsof -a -p <pid> -d cwd -Fn` costs about 16 ms.
+    /// None when unknown.
     #[cfg(unix)]
     pub fn cwd(&self) -> Option<String> {
         let shell_pid = self.shell_pid?;
-        let leader = self.master.lock().ok()?.process_group_leader().map(|p| p as u32);
-        let pid = leader.unwrap_or(shell_pid);
         let out = std::process::Command::new("lsof")
-            .arg("-a").arg("-p").arg(pid.to_string()).arg("-d").arg("cwd").arg("-Fn")
+            .arg("-a").arg("-p").arg(shell_pid.to_string()).arg("-d").arg("cwd").arg("-Fn")
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .output()
@@ -255,6 +255,38 @@ mod cwd_tests {
         assert_eq!(parse_lsof_cwd(""), None);
         // A directory containing a newline cannot be represented; the first n-line wins.
         assert_eq!(parse_lsof_cwd("n/a\nn/b\n"), Some("/a".to_string()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cwd_ignores_a_foreground_subshell_that_changed_directory() {
+        // `(cd /tmp && sleep 5)` is a subshell: it becomes the pty's foreground process group
+        // leader, but the tile's folder is still the shell's own. `bash -i` because job control
+        // (and thus a distinct foreground group) needs an interactive shell.
+        let spec = SpawnSpec {
+            program: "/bin/bash".to_string(),
+            args: vec!["-i".to_string()],
+            cwd: "/".to_string(),
+            env: vec![("TERM".to_string(), "xterm-256color".to_string())],
+            cols: 80,
+            rows: 24,
+        };
+        let session = PtySession::spawn(spec, |_| {}, |_| {}).unwrap();
+        // Wait for the shell to be up and idle before handing it the subshell.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && session.foreground_busy() != Some(false) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        session.write(b"(cd /tmp && sleep 5)\n").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && session.foreground_busy() != Some(true) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let busy = session.foreground_busy();
+        let got = session.cwd();
+        session.kill();
+        assert_eq!(busy, Some(true), "the subshell should be the pty's foreground group");
+        assert_eq!(got.as_deref(), Some("/"), "got {got:?}");
     }
 
     #[test]

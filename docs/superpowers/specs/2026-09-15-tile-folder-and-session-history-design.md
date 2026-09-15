@@ -59,15 +59,16 @@ store mirrors it in `terminals[id].cwd` as today.
 The core polls the shell's working directory:
 
 - `pty::cwd(&self) -> Option<String>`: runs
-  `lsof -a -p <pid> -d cwd -Fn` for the PTY's foreground process group
-  leader when one is known, else the shell pid, and returns the path after
-  the `n` prefix. `lsof` is used because `libproc` does not implement the
+  `lsof -a -p <shell pid> -d cwd -Fn` and returns the path after the `n`
+  prefix. Always the shell's own pid, never the PTY's foreground process
+  group: a `(cd /other && make)` subshell is where a command is running, not
+  where the tile is. `lsof` is used because `libproc` does not implement the
   lookup on macOS; it costs about 16 ms.
 - Tauri command `terminal_cwd(id) -> Option<String>`.
 - The frontend asks after every Enter typed into a tile (300 ms later, so
-  the `cd` has run) and every 5 s for tiles whose shell is not busy
-  (`terminal_foreground_busy` false), never for exited tiles. Each check is
-  one call; results equal to the current value are dropped.
+  the `cd` has run) and every 5 s, never for exited tiles. The 5 s interval
+  tick is skipped while the window is unfocused; the Enter poll always runs.
+  Each check is one call; results equal to the current value are dropped.
 - A changed value goes through the new Tauri command
   `set_terminal_cwd(id, cwd)`, which validates the id and updates the
   registry, then the store updates `terminals[id].cwd`, which the existing

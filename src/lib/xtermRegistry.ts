@@ -155,7 +155,12 @@ export function attach(id: string, container: HTMLElement): { term: Terminal; fi
     entry.opened = true;
     entry.onMouseUp = () => copySelection(id, entry.term);
     entry.term.element?.addEventListener("mouseup", entry.onMouseUp);
-    entry.pollTimer = setInterval(() => void pollCwd(id), CWD_POLL_INTERVAL_MS);
+    // Background ticks are pure overhead while the user is in another app; an Enter in this
+    // tile always polls (scheduleEnterPoll), focused or not.
+    entry.pollTimer = setInterval(() => {
+      if (useStore.getState().windowFocused === false) return;
+      void pollCwd(id);
+    }, CWD_POLL_INTERVAL_MS);
   } else if (entry.term.element && entry.term.element.parentElement !== container) {
     container.appendChild(entry.term.element);
   }
