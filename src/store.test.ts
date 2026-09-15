@@ -726,7 +726,7 @@ describe("ssh two-step startup", () => {
       vi.mocked(ipc.sshCheck).mockResolvedValue(true);
       vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
       await vi.advanceTimersByTimeAsync(SSH_POLL_MS + SSH_SETTLE_MS + 10);
-      expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", `cd ${shellQuote("/proj")} && claude --session-id sid\r`);
+      expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", `cd ${shellQuote("/proj")} && SWARMZ_TERMINAL_ID=a claude --session-id sid\r`);
       const s = useStore.getState();
       expect(s.sshConnected.a).toBe(true);
       expect(s.sshConnecting.a).toBeUndefined();
@@ -786,7 +786,7 @@ describe("ssh two-step startup", () => {
       expect(useStore.getState().sshConnected.a).toBe(true);
       expect(vi.mocked(ipc.writeTerminal).mock.calls.length).toBe(1);
       await useStore.getState().chooseRemoteDir("a", "/remote/proj");
-      expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", `cd ${shellQuote("/remote/proj")} && claude --session-id sid\r`);
+      expect(ipc.writeTerminal).toHaveBeenLastCalledWith("a", `cd ${shellQuote("/remote/proj")} && SWARMZ_TERMINAL_ID=a claude --session-id sid\r`);
       const s = useStore.getState();
       expect(s.settings.a.ssh?.cwd).toBe("/remote/proj");
       expect(s.settings.a.claude?.started).toBe(true);
@@ -889,7 +889,7 @@ describe("ssh two-step startup", () => {
     vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
     await useStore.getState().runStartup("a");
     expect(vi.mocked(ipc.writeTerminal).mock.calls.map((c) => c[1])).toEqual([
-      `cd ${shellQuote("/proj")} && claude --session-id sid\r`,
+      `cd ${shellQuote("/proj")} && SWARMZ_TERMINAL_ID=a claude --session-id sid\r`,
     ]);
     const s = useStore.getState();
     expect(s.sshConnected.a).toBe(true);

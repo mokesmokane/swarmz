@@ -143,6 +143,20 @@ describe("startupLine", () => {
     expect(startupLine({ ssh: { host: "h; ls" }, claude, command: null })).toBe(`claude --session-id ${claude.sessionId}`);
     expect(startupLine({ ssh: { host: "h; ls" }, claude: null, command: null })).toBeNull();
   });
+
+  it("prefixes the remote line with the terminal id when Claude runs there", () => {
+    const steps = startupSteps({ ssh: { host: "me@host", cwd: "/proj" }, claude, command: null }, "11111111-2222-3333-4444-555555555555");
+    expect(steps[1]).toEqual({
+      via: "remote",
+      line: `cd ${shellQuote("/proj")} && SWARMZ_TERMINAL_ID=11111111-2222-3333-4444-555555555555 claude --session-id ${claude.sessionId}`,
+    });
+    // No Claude on the remote: nothing to identify, no prefix.
+    expect(startupSteps({ ssh: { host: "me@host", cwd: "/proj" }, claude: null, command: null }, "t1")[1].line).toBe(`cd ${shellQuote("/proj")}`);
+    // Local Claude already inherits the env var from the spawn.
+    expect(startupSteps({ ...EMPTY_SETTINGS, claude }, "t1")[0].line).toBe(`claude --session-id ${claude.sessionId}`);
+    // Without an id the line is unchanged (display-only callers).
+    expect(startupLine({ ssh: { host: "me@host", cwd: "/proj" }, claude, command: null })).not.toContain("SWARMZ_TERMINAL_ID");
+  });
 });
 
 describe("startupUsesClaude", () => {

@@ -24,7 +24,7 @@ export function TerminalPane({ id }: { id: string }) {
   const chooseRemoteDir = useStore((s) => s.chooseRemoteDir);
   const [picking, setPicking] = useState(false);
   const [typedPath, setTypedPath] = useState("");
-  const line = startupLine(settings);
+  const line = startupLine(settings, id);
   const summary = startupSummary(settings, machines);
   const needsFolder = connected && needsRemoteFolder(settings);
   // Exactly one overlay renders at a time; connecting takes precedence over needing a folder,

@@ -1019,7 +1019,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     const s = useStore.getState();
     if (s.sshConnecting[id]) return;
     const settings = s.settings[id] ?? EMPTY_SETTINGS;
-    const steps = startupSteps(settings);
+    const steps = startupSteps(settings, id);
     if (steps.length === 0) return;
     const isSsh = startupIsSsh(settings);
     const host = settings.ssh?.host?.trim();
@@ -1053,7 +1053,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   async runRemoteStep(id) {
     const s = useStore.getState();
     if (!s.sshConnected[id] || !s.terminals[id]) return;
-    const remote = startupSteps(s.settings[id] ?? EMPTY_SETTINGS).find((st) => st.via === "remote");
+    const remote = startupSteps(s.settings[id] ?? EMPTY_SETTINGS, id).find((st) => st.via === "remote");
     if (!remote) return;
     const host = s.settings[id]?.ssh?.host?.trim();
     if (!host || !(await tileLive(id, host))) {

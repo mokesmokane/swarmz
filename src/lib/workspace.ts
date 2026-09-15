@@ -92,7 +92,7 @@ export function startupIsSsh(s: TerminalSettings): boolean {
   return trimmedCommand(s) === null && validHost(s) !== null;
 }
 
-export function startupSteps(s: TerminalSettings): Step[] {
+export function startupSteps(s: TerminalSettings, terminalId?: string): Step[] {
   const command = trimmedCommand(s);
   if (command) return [{ via: "local", line: command }];
   const claudeConfig = safeClaude(s);
@@ -102,7 +102,10 @@ export function startupSteps(s: TerminalSettings): Step[] {
     const steps: Step[] = [{ via: "local", line: sshLine(host) }];
     if (s.ssh?.cwd) {
       const cd = `cd ${shellQuote(s.ssh.cwd)}`;
-      steps.push({ via: "remote", line: claude ? `${cd} && ${claude}` : cd });
+      // The remote shell does not inherit our env, so the id rides on the claude line itself
+      // (a UUID, so no quoting) for the hook script to find.
+      const remoteClaude = claude && terminalId ? `SWARMZ_TERMINAL_ID=${terminalId} ${claude}` : claude;
+      steps.push({ via: "remote", line: remoteClaude ? `${cd} && ${remoteClaude}` : cd });
     }
     return steps;
   }
@@ -110,8 +113,8 @@ export function startupSteps(s: TerminalSettings): Step[] {
 }
 
 /** Display form of the startup steps, or null when there are none. */
-export function startupLine(s: TerminalSettings): string | null {
-  const steps = startupSteps(s);
+export function startupLine(s: TerminalSettings, terminalId?: string): string | null {
+  const steps = startupSteps(s, terminalId);
   return steps.length ? steps.map((st) => st.line).join(" ⏎ ") : null;
 }
 
