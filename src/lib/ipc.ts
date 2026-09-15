@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Workspace } from "./workspace";
+import type { AgentEvent } from "./agentState";
 
 export interface TerminalInfo {
   id: string;
@@ -30,6 +31,11 @@ export interface TailscaleStatus {
   user: string;
   self: TailscaleMachine | null;
   peers: TailscaleMachine[];
+}
+
+export interface AgentEventPayload {
+  host: string | null;
+  event: AgentEvent;
 }
 
 function base64ToBytes(s: string): Uint8Array {
@@ -65,4 +71,12 @@ export const ipc = {
   workspacePull: (host: string) => invoke<string | null>("workspace_pull", { host }),
   workspacePush: (host: string, contents: string) => invoke<void>("workspace_push", { host, contents }),
   workspaceStat: () => invoke<number | null>("workspace_stat"),
+  agentsInstallLocal: () => invoke<boolean>("agents_install_local"),
+  agentsInstallRemote: (host: string) => invoke<boolean>("agents_install_remote", { host }),
+  agentsWatch: (host: string | null) => invoke<void>("agents_watch", { host }),
+  agentsUnwatch: (host: string | null) => invoke<void>("agents_unwatch", { host }),
+  onAgentEvent: (cb: (p: AgentEventPayload) => void): Promise<UnlistenFn> =>
+    listen<AgentEventPayload>("agent:event", (e) => cb(e.payload)),
+  onAgentWatchEnded: (cb: (p: { host: string | null; gen: number }) => void): Promise<UnlistenFn> =>
+    listen<{ host: string | null; gen: number }>("agent:watch-ended", (e) => cb(e.payload)),
 };

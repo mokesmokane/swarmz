@@ -27,6 +27,12 @@ vi.mock("../lib/ipc", () => ({
     terminalForegroundBusy: vi.fn(async () => false),
     tailscaleStatus: vi.fn(async () => ({ running: true, message: null, user: "mokes", self: null, peers: [] })),
     tailscaleOpen: vi.fn(async () => {}),
+    agentsInstallLocal: vi.fn(async () => false),
+    agentsInstallRemote: vi.fn(async () => false),
+    agentsWatch: vi.fn(async () => {}),
+    agentsUnwatch: vi.fn(async () => {}),
+    onAgentEvent: vi.fn(async () => () => {}),
+    onAgentWatchEnded: vi.fn(async () => () => {}),
   },
 }));
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn(async () => "/home/me") }));

@@ -48,6 +48,8 @@ import {
   type TerminalDef,
   type Workspace,
 } from "./lib/workspace";
+import { applyAgentEvent as foldAgentEvent, OFFLINE, type AgentState } from "./lib/agentState";
+import type { AgentEventPayload } from "./lib/ipc";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -60,6 +62,12 @@ export const SSH_SETTLE_MS = 300;
 
 export const SYNC_PULL_MS = 30_000;
 export const SYNC_STAT_MS = 5_000;
+
+/** When this app run started: hook events older than this are replay from before launch. */
+export let APP_LAUNCHED_AT = new Date().toISOString();
+export function __setLaunchedAt(iso: string) {
+  APP_LAUNCHED_AT = iso;
+}
 
 // Note: this store does NOT import xtermRegistry directly (that would create
 // an import cycle, since xtermRegistry imports beforeSpawn/useStore from
@@ -116,6 +124,9 @@ export interface WorkbenchState {
     error: string | null;
     adopting: boolean;
   };
+  agentState: Record<string, AgentState>;
+  agentHooksError: string | null;
+  windowFocused: boolean;
 
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
   createSshTerminal(opts: SshTerminalOptions, placement?: Placement): Promise<string>;
@@ -146,6 +157,9 @@ export interface WorkbenchState {
   dismissPersistError(): void;
   refreshTailscale(): Promise<void>;
   updateMachine(name: string, patch: { alias?: string | null; user?: string | null; color?: string | null }): Promise<string | null>;
+  applyAgentEvent(payload: AgentEventPayload): void;
+  setWindowFocused(focused: boolean): void;
+  installAgentHooks(): Promise<void>;
 }
 
 /**
@@ -588,6 +602,9 @@ export const useStore = create<WorkbenchState>((set) => ({
   selfMachine: null,
   syncMeta: null,
   sync: { enabled: false, lastPullAt: null, lastPushAt: null, peersOk: 0, peersTotal: 0, error: null, adopting: false },
+  agentState: {},
+  agentHooksError: null,
+  windowFocused: true,
 
   async createTerminal(cwd, placement) {
     const id = crypto.randomUUID();
@@ -690,6 +707,7 @@ export const useStore = create<WorkbenchState>((set) => ({
         startupNotes: omit(s.startupNotes, id),
         sshConnected: omit(s.sshConnected, id),
         sshConnecting: omit(s.sshConnecting, id),
+        agentState: omit(s.agentState, id),
         ...focusFor(layout, fallback),
       };
     });
@@ -704,6 +722,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       startupPending: { ...s.startupPending, [id]: startupLine(s.settings[id] ?? EMPTY_SETTINGS) !== null },
       sshConnected: omit(s.sshConnected, id),
       sshConnecting: omit(s.sshConnecting, id),
+      agentState: s.agentState[id] ? { ...s.agentState, [id]: OFFLINE } : s.agentState,
     }));
     // The fit addon only fires onResize when dimensions change, so if the
     // new PTY already matches dims (e.g. same terminal, no relayout since
@@ -732,6 +751,7 @@ export const useStore = create<WorkbenchState>((set) => ({
         terminals: { ...s.terminals, [id]: { ...t, exited: code ?? -1 } },
         sshConnected: omit(s.sshConnected, id),
         sshConnecting: omit(s.sshConnecting, id),
+        agentState: s.agentState[id] ? { ...s.agentState, [id]: OFFLINE } : s.agentState,
       };
     });
   },
@@ -741,7 +761,9 @@ export const useStore = create<WorkbenchState>((set) => ({
       const g = findGroupOf(s.layout, id);
       if (!g) return {};
       const layout = setActive(s.layout, g.id, id);
-      return { layout, focusedGroupId: g.id, focusedTerminalId: id };
+      const cur = s.agentState[id];
+      const agentState = s.windowFocused && cur?.unseen ? { ...s.agentState, [id]: { ...cur, unseen: false } } : s.agentState;
+      return { layout, focusedGroupId: g.id, focusedTerminalId: id, agentState };
     });
   },
 
@@ -783,6 +805,8 @@ export const useStore = create<WorkbenchState>((set) => ({
     // caller to refresh Tailscale afterwards would be too late. `refreshTailscale` swallows its
     // own errors, so a machine without Tailscale just carries on with `selfMachine` null.
     if (useStore.getState().selfMachine === null) await useStore.getState().refreshTailscale();
+    void useStore.getState().installAgentHooks();
+    ipc.agentsWatch(null).catch(() => {});
     let ws: Awaited<ReturnType<typeof ipc.loadWorkspace>> = null;
     try {
       ws = await ipc.loadWorkspace();
@@ -1129,6 +1153,39 @@ export const useStore = create<WorkbenchState>((set) => ({
       }
     }
     return null;
+  },
+
+  applyAgentEvent({ event }) {
+    set((s) => {
+      const id = event.terminal;
+      if (!s.terminals[id]) return {};
+      const settings = s.settings[id] ?? EMPTY_SETTINGS;
+      // Replay from before this run: a Claude in one of our own PTYs died with the app, so only a
+      // remote's (possibly still alive elsewhere) history counts.
+      if (event.ts < APP_LAUNCHED_AT && !settings.ssh) return {};
+      const focused = s.windowFocused && s.focusedTerminalId === id;
+      const next = foldAgentEvent(s.agentState[id], event, focused);
+      if (!next) return {};
+      return { agentState: { ...s.agentState, [id]: next } };
+    });
+  },
+
+  setWindowFocused(focused) {
+    set((s) => {
+      const id = s.focusedTerminalId;
+      const cur = id ? s.agentState[id] : undefined;
+      if (!focused || !id || !cur?.unseen) return { windowFocused: focused };
+      return { windowFocused: focused, agentState: { ...s.agentState, [id]: { ...cur, unseen: false } } };
+    });
+  },
+
+  async installAgentHooks() {
+    try {
+      await ipc.agentsInstallLocal();
+      set({ agentHooksError: null });
+    } catch (e) {
+      set({ agentHooksError: `could not install Claude hooks: ${typeof e === "string" ? e : String(e)}` });
+    }
   },
 }));
 

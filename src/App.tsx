@@ -3,6 +3,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Workbench } from "./components/Workbench";
 import { splitShortcut } from "./lib/shortcuts";
 import { findGroup } from "./lib/layout";
+import { ipc } from "./lib/ipc";
 import { SYNC_PULL_MS, SYNC_STAT_MS, useStore } from "./store";
 import "./lib/xtermRegistry";
 
@@ -51,6 +52,20 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    const unlisten: Array<() => void> = [];
+    void ipc.onAgentEvent((p) => useStore.getState().applyAgentEvent(p)).then((fn) => unlisten.push(fn));
+    const onFocus = () => useStore.getState().setWindowFocused(true);
+    const onBlur = () => useStore.getState().setWindowFocused(false);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      unlisten.forEach((fn) => fn());
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+    };
   }, []);
 
   return (

@@ -33,6 +33,12 @@ vi.mock("./lib/ipc", () => {
       workspacePull: vi.fn(async () => null),
       workspacePush: vi.fn(async () => {}),
       workspaceStat: vi.fn(async () => null),
+      agentsInstallLocal: vi.fn(async () => false),
+      agentsInstallRemote: vi.fn(async () => false),
+      agentsWatch: vi.fn(async () => {}),
+      agentsUnwatch: vi.fn(async () => {}),
+      onAgentEvent: vi.fn(async () => () => {}),
+      onAgentWatchEnded: vi.fn(async () => () => {}),
     },
   };
 });
@@ -45,6 +51,7 @@ import { ipc } from "./lib/ipc";
 import {
   __resetLoadGuard,
   __resetSyncState,
+  __setLaunchedAt,
   __stopAllPolling,
   SAVE_DEBOUNCE_MS,
   SSH_POLL_MS,
@@ -83,6 +90,9 @@ beforeEach(() => {
     selfMachine: null,
     syncMeta: null,
     sync: { enabled: false, lastPullAt: null, lastPushAt: null, peersOk: 0, peersTotal: 0, error: null, adopting: false },
+    agentState: {},
+    agentHooksError: null,
+    windowFocused: true,
   });
   beforeSpawn.hook = async () => {};
   beforeSpawn.size = () => null;
@@ -96,6 +106,11 @@ beforeEach(() => {
   vi.mocked(ipc.workspacePull).mockReset().mockResolvedValue(null);
   vi.mocked(ipc.workspaceStat).mockReset().mockResolvedValue(null);
   vi.mocked(confirm).mockClear();
+  vi.mocked(ipc.agentsInstallLocal).mockReset().mockResolvedValue(false);
+  vi.mocked(ipc.agentsInstallRemote).mockReset().mockResolvedValue(false);
+  vi.mocked(ipc.agentsWatch).mockClear();
+  vi.mocked(ipc.agentsUnwatch).mockClear();
+  __setLaunchedAt("2026-09-15T09:00:00Z");
 });
 
 describe("createTerminal", () => {
@@ -1698,5 +1713,86 @@ describe("shared workspace", () => {
     expect(s.order).toEqual([]);
     expect(s.sync.error).toContain("desk");
     expect(s.sync.error).toContain("malformed");
+  });
+});
+
+describe("agent state", () => {
+  const ev = (terminal: string, event: string, extra: Partial<import("./lib/agentState").AgentEvent> = {}) => ({
+    host: null,
+    event: { ts: "2026-09-15T10:00:00Z", terminal, event, sessionId: "s1", notificationType: null, source: null, ...extra },
+  });
+
+  it("applies live events to known terminals and ignores unknown ones", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().applyAgentEvent(ev(id, "SessionStart"));
+    expect(useStore.getState().agentState[id].status).toBe("idle");
+    useStore.getState().applyAgentEvent(ev("nope", "SessionStart"));
+    expect(useStore.getState().agentState.nope).toBeUndefined();
+  });
+
+  it("marks unseen only when the terminal is not focused in a focused window", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    useStore.getState().focusTerminal(b);
+    useStore.getState().applyAgentEvent(ev(a, "UserPromptSubmit"));
+    useStore.getState().applyAgentEvent(ev(a, "Stop"));
+    expect(useStore.getState().agentState[a].unseen).toBe(true);
+    useStore.getState().applyAgentEvent(ev(b, "UserPromptSubmit"));
+    useStore.getState().applyAgentEvent(ev(b, "Stop"));
+    expect(useStore.getState().agentState[b].unseen).toBe(false);
+    useStore.getState().setWindowFocused(false);
+    useStore.getState().applyAgentEvent(ev(b, "UserPromptSubmit"));
+    useStore.getState().applyAgentEvent(ev(b, "Stop"));
+    expect(useStore.getState().agentState[b].unseen).toBe(true);
+  });
+
+  it("focusing a terminal in a focused window clears unseen; window focus clears the focused one", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    useStore.getState().applyAgentEvent(ev(a, "Notification", { notificationType: "permission_prompt" }));
+    expect(useStore.getState().agentState[a].unseen).toBe(true);
+    useStore.getState().focusTerminal(a);
+    expect(useStore.getState().agentState[a].unseen).toBe(false);
+    useStore.getState().setWindowFocused(false);
+    useStore.getState().applyAgentEvent(ev(a, "Notification", { notificationType: "permission_prompt" }));
+    expect(useStore.getState().agentState[a].unseen).toBe(true);
+    useStore.getState().setWindowFocused(true);
+    expect(useStore.getState().agentState[a].unseen).toBe(false);
+    expect(useStore.getState().focusedTerminalId).toBe(a);
+    void b;
+  });
+
+  it("replayed events before launch apply only to ssh terminals", async () => {
+    const local = await useStore.getState().createTerminal("/tmp/a");
+    const remote = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p" });
+    __stopAllPolling();
+    const old = { ts: "2026-09-15T08:00:00Z" };
+    useStore.getState().applyAgentEvent(ev(local, "SessionStart", old));
+    useStore.getState().applyAgentEvent(ev(remote, "SessionStart", old));
+    expect(useStore.getState().agentState[local]).toBeUndefined();
+    expect(useStore.getState().agentState[remote]?.status).toBe("idle");
+  });
+
+  it("exit, restart and close reset the state", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().applyAgentEvent(ev(id, "UserPromptSubmit"));
+    useStore.getState().markExited(id, 0);
+    expect(useStore.getState().agentState[id].status).toBe("offline");
+    useStore.getState().applyAgentEvent(ev(id, "UserPromptSubmit"));
+    await useStore.getState().restartTerminal(id);
+    expect(useStore.getState().agentState[id].status).toBe("offline");
+    await useStore.getState().closeTerminal(id);
+    expect(useStore.getState().agentState[id]).toBeUndefined();
+  });
+
+  it("loadWorkspace installs hooks locally, records a failure, and starts the local watcher", async () => {
+    vi.mocked(ipc.agentsInstallLocal).mockRejectedValueOnce("no write access");
+    useStore.setState({ persistenceReady: false });
+    await useStore.getState().loadWorkspace();
+    expect(ipc.agentsInstallLocal).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(useStore.getState().agentHooksError).toBe("could not install Claude hooks: no write access"));
+    expect(ipc.agentsWatch).toHaveBeenCalledWith(null);
+    await useStore.getState().installAgentHooks();
+    expect(useStore.getState().agentHooksError).toBeNull();
   });
 });
