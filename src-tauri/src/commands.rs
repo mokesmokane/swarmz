@@ -14,6 +14,7 @@ pub struct AppState {
     pub registry: Mutex<TerminalRegistry>,
     pub sessions: Mutex<HashMap<String, (u64, Arc<PtySession>)>>,
     pub next_gen: AtomicU64,
+    pub watchers: Mutex<HashMap<Option<String>, (u64, crate::agents::Watcher)>>,
 }
 
 /// Removes the session for `id` only if its recorded generation matches `gen`.
@@ -289,4 +290,33 @@ pub async fn workspace_push(host: String, contents: String) -> Result<(), String
 #[tauri::command]
 pub async fn workspace_stat() -> Result<Option<u64>, String> {
     tauri::async_runtime::spawn_blocking(crate::sync::stat_local).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn agents_install_local() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(crate::agents::install_local).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn agents_install_remote(host: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::agents::install_remote(&host)).await.map_err(|e| e.to_string())?
+}
+
+/// Starts tailing the agent log for `host` (None = this machine). Already watching is a no-op.
+#[tauri::command]
+pub fn agents_watch(app: AppHandle, state: State<AppState>, host: Option<String>) -> Result<(), String> {
+    let mut watchers = state.watchers.lock().unwrap();
+    if watchers.contains_key(&host) {
+        return Ok(());
+    }
+    let gen = state.next_gen.fetch_add(1, Ordering::SeqCst);
+    let watcher = crate::agents::spawn_watcher(app, host.clone(), gen)?;
+    watchers.insert(host, (gen, watcher));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn agents_unwatch(state: State<AppState>, host: Option<String>) -> Result<(), String> {
+    state.watchers.lock().unwrap().remove(&host);
+    Ok(())
 }

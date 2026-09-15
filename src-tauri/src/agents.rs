@@ -1,8 +1,11 @@
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 use crate::remote::{run_with_timeout, run_with_timeout_input, validate_host, CONTROL_PATH};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
+use tauri::{AppHandle, Emitter};
 
 pub const HOOK_VERSION: u32 = 1;
 
@@ -219,6 +222,126 @@ pub fn install_remote(host: &str) -> Result<bool, String> {
         wrote = true;
     }
     Ok(wrote)
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEvent {
+    pub ts: String,
+    pub terminal: String,
+    pub event: String,
+    pub session_id: Option<String>,
+    pub notification_type: Option<String>,
+    pub source: Option<String>,
+}
+
+/// One log line: `ts \t terminal \t event \t json`. None when malformed.
+pub fn parse_line(line: &str) -> Option<AgentEvent> {
+    let mut parts = line.splitn(4, '\t');
+    let ts = parts.next()?.trim();
+    let terminal = parts.next()?.trim();
+    let event = parts.next()?.trim();
+    let json = parts.next()?;
+    if ts.is_empty() || terminal.is_empty() || event.is_empty() {
+        return None;
+    }
+    let v: Value = serde_json::from_str(json).ok()?;
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(|x| x.to_string());
+    Some(AgentEvent {
+        ts: ts.to_string(),
+        terminal: terminal.to_string(),
+        event: event.to_string(),
+        session_id: s("session_id"),
+        notification_type: s("notification_type"),
+        source: s("source"),
+    })
+}
+
+pub fn local_log_path() -> PathBuf {
+    home_dir().join(".swarmz").join("agents").join("events.log")
+}
+
+const REMOTE_TAIL: &str = "mkdir -p ~/.swarmz/agents && touch ~/.swarmz/agents/events.log && exec tail -n 200 -F ~/.swarmz/agents/events.log";
+
+/// The process that streams the log: local `tail`, or `ssh host tail` over the shared socket.
+pub fn watch_command(host: Option<&str>) -> Result<Command, String> {
+    match host {
+        None => {
+            let path = local_log_path();
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+            }
+            if !path.exists() {
+                std::fs::write(&path, "").map_err(|e| format!("could not create {}: {e}", path.display()))?;
+            }
+            let mut cmd = Command::new("tail");
+            cmd.arg("-n").arg("200").arg("-F").arg(&path);
+            Ok(cmd)
+        }
+        Some(h) => {
+            let host = validate_host(h)?;
+            crate::remote::ensure_ssh_dir()?;
+            // Options must precede the host: anything after it is the remote command.
+            let mut cmd = Command::new("ssh");
+            cmd.arg("-o").arg(format!("ControlPath={CONTROL_PATH}"))
+                .arg("-o").arg("ControlMaster=auto")
+                .arg("-o").arg("ControlPersist=10m")
+                .arg("-o").arg("BatchMode=yes")
+                .arg("-o").arg("ConnectTimeout=5")
+                .arg("-o").arg("ServerAliveInterval=15")
+                .arg(&host)
+                .arg(REMOTE_TAIL);
+            Ok(cmd)
+        }
+    }
+}
+
+#[derive(Serialize, Clone)]
+struct EventPayload {
+    host: Option<String>,
+    event: AgentEvent,
+}
+
+#[derive(Serialize, Clone)]
+struct EndedPayload {
+    host: Option<String>,
+    gen: u64,
+}
+
+pub struct Watcher {
+    child: Child,
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Starts the tail process and a thread that emits `agent:event` per parsed line and
+/// `agent:watch-ended` when the process exits. `gen` lets the store ignore an ended event from
+/// a watcher it has already replaced.
+pub fn spawn_watcher(app: AppHandle, host: Option<String>, gen: u64) -> Result<Watcher, String> {
+    let mut cmd = watch_command(host.as_deref())?;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("could not start log watcher: {e}"))?;
+    let stdout = child.stdout.take().ok_or("watcher has no stdout")?;
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if let Some(event) = parse_line(&line) {
+                let _ = app.emit("agent:event", EventPayload { host: host.clone(), event });
+            }
+        }
+        let _ = app.emit("agent:watch-ended", EndedPayload { host, gen });
+    });
+    Ok(Watcher { child })
 }
 
 #[cfg(test)]
@@ -480,5 +603,64 @@ mod tests {
         assert_eq!(settings.as_deref(), Some(r#"{"a":1}"#));
 
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn parse_line_reads_session_start() {
+        let line = "2026-09-15T10:00:00Z\tt-1\tSessionStart\t{\"session_id\":\"abc\",\"hook_event_name\":\"SessionStart\",\"source\":\"startup\",\"cwd\":\"/p\"}";
+        let ev = parse_line(line).unwrap();
+        assert_eq!(ev.ts, "2026-09-15T10:00:00Z");
+        assert_eq!(ev.terminal, "t-1");
+        assert_eq!(ev.event, "SessionStart");
+        assert_eq!(ev.session_id.as_deref(), Some("abc"));
+        assert_eq!(ev.source.as_deref(), Some("startup"));
+        assert_eq!(ev.notification_type, None);
+    }
+
+    #[test]
+    fn parse_line_reads_notification_type() {
+        let line = "2026-09-15T10:00:01Z\tt-1\tNotification\t{\"session_id\":\"abc\",\"notification_type\":\"permission_prompt\"}";
+        let ev = parse_line(line).unwrap();
+        assert_eq!(ev.notification_type.as_deref(), Some("permission_prompt"));
+    }
+
+    #[test]
+    fn parse_line_rejects_short_or_bad_lines() {
+        assert!(parse_line("").is_none());
+        assert!(parse_line("a\tb\tc").is_none());
+        assert!(parse_line("a\tb\tc\tnot json").is_none());
+        assert!(parse_line("a\t\tStop\t{}").is_none());
+    }
+
+    #[test]
+    fn parse_line_serialises_camel_case() {
+        let ev = parse_line("t\tid\tStop\t{\"session_id\":\"s\"}").unwrap();
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(v["sessionId"], "s");
+        assert!(v.get("notificationType").is_some());
+    }
+
+    #[test]
+    fn watch_commands_tail_the_log() {
+        let local = watch_command(None).unwrap();
+        let args: Vec<String> = local.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(local.get_program(), "tail");
+        assert_eq!(args[..3], ["-n".to_string(), "200".to_string(), "-F".to_string()]);
+        assert!(args[3].ends_with(".swarmz/agents/events.log"));
+
+        let remote = watch_command(Some("me@box")).unwrap();
+        assert_eq!(remote.get_program(), "ssh");
+        let args: Vec<String> = remote.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.contains(&"ServerAliveInterval=15".to_string()));
+        let host_at = args.iter().position(|a| a == "me@box").unwrap();
+        assert_eq!(host_at, args.len() - 2, "host must be last before the remote command");
+        let script = args.last().unwrap();
+        assert!(script.contains("mkdir -p ~/.swarmz/agents"));
+        assert!(script.contains("tail -n 200 -F ~/.swarmz/agents/events.log"));
+    }
+
+    #[test]
+    fn watch_command_rejects_bad_host() {
+        assert!(watch_command(Some("bad host")).is_err());
     }
 }

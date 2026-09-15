@@ -33,6 +33,10 @@ pub fn run() {
             commands::workspace_pull,
             commands::workspace_push,
             commands::workspace_stat,
+            commands::agents_install_local,
+            commands::agents_install_remote,
+            commands::agents_watch,
+            commands::agents_unwatch,
         ])
         .setup(|_app| {
             let _ = remote::ensure_ssh_dir();
