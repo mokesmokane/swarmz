@@ -1974,6 +1974,44 @@ describe("agent state", () => {
     }
   });
 
+  it("a later successful install clears the install note, leaving other notes alone", async () => {
+    vi.mocked(ipc.agentsInstallRemote).mockRejectedValueOnce("not reachable: x");
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", machine: "box" });
+    const other = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/q", machine: "box" });
+    __stopAllPolling();
+    useStore.setState((s) => ({
+      sshConnected: { ...s.sshConnected, [id]: true },
+      startupNotes: { ...s.startupNotes, [other]: "connection not detected; click Run to try again" },
+    }));
+    await useStore.getState().ensureAgentWatchers();
+    expect(useStore.getState().startupNotes[id]).toBe("could not install Claude hooks on box: not reachable: x");
+    useStore.setState((s) => ({ sshConnected: omitKey(s.sshConnected, id) }));
+    await useStore.getState().ensureAgentWatchers();
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    await useStore.getState().ensureAgentWatchers();
+    expect(useStore.getState().startupNotes[id]).toBeUndefined();
+    expect(useStore.getState().startupNotes[other]).toBe("connection not detected; click Run to try again");
+  });
+
+  it("a remote watcher that survives clears the unavailable note", async () => {
+    vi.useFakeTimers();
+    try {
+      const id = await connectedBoxTile();
+      for (let i = 0; i < AGENT_WATCH_UNAVAILABLE_AFTER; i++) {
+        await useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
+        await vi.advanceTimersByTimeAsync(AGENT_WATCH_BACKOFF_MS[Math.min(i, AGENT_WATCH_BACKOFF_MS.length - 1)]);
+      }
+      expect(useStore.getState().startupNotes[id]).toBe("agent state unavailable for box");
+      useStore.setState((s) => ({ startupNotes: { ...s.startupNotes, keep: "something else entirely" } }));
+      await vi.advanceTimersByTimeAsync(60_000);
+      await useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
+      expect(useStore.getState().startupNotes[id]).toBeUndefined();
+      expect(useStore.getState().startupNotes.keep).toBe("something else entirely");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("forgets a host whose ssh dropped instead of re-watching it forever", async () => {
     vi.useFakeTimers();
     try {

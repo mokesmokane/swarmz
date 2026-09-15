@@ -130,6 +130,24 @@ export const AGENT_WATCH_UNAVAILABLE_AFTER = 5;
 /** Sidebar line for a local watcher that keeps dying; the remote equivalent is a tile note. */
 export const AGENT_UNAVAILABLE_LOCAL = "agent state unavailable on this Mac";
 
+/** The two tile notes this module writes, by prefix: each is cleared when what it reports
+ * starts working again, and nothing else on the tile is touched. */
+const AGENT_INSTALL_NOTE = "could not install Claude hooks on ";
+const AGENT_UNAVAILABLE_NOTE = "agent state unavailable for ";
+
+/** Drops `prefix` notes from every tile on `host`; notes the rest of the app wrote stay. */
+function clearAgentNotes(host: string, prefix: string) {
+  useStore.setState((s) => {
+    let startupNotes = s.startupNotes;
+    for (const id of s.order) {
+      if (s.settings[id]?.ssh?.host?.trim() === host && startupNotes[id]?.startsWith(prefix)) {
+        startupNotes = omit(startupNotes, id);
+      }
+    }
+    return startupNotes === s.startupNotes ? {} : { startupNotes };
+  });
+}
+
 /**
  * Evidence that the watcher for `host` really ran: an event from it, or a watcher that outlived
  * the wait that started it. `agents_watch` resolving is not evidence — the core resolves it as
@@ -139,8 +157,10 @@ export const AGENT_UNAVAILABLE_LOCAL = "agent state unavailable on this Mac";
 function agentWatchSurvived(host: string | null) {
   agentWatch.attempts.delete(host);
   agentWatch.delay.delete(host);
-  if (host === null && useStore.getState().agentHooksError === AGENT_UNAVAILABLE_LOCAL) {
-    useStore.setState({ agentHooksError: null });
+  if (host === null) {
+    if (useStore.getState().agentHooksError === AGENT_UNAVAILABLE_LOCAL) useStore.setState({ agentHooksError: null });
+  } else {
+    clearAgentNotes(host, AGENT_UNAVAILABLE_NOTE);
   }
 }
 
@@ -177,7 +197,7 @@ function scheduleAgentRewatch(host: string | null) {
       const id = wantedAgentHosts(s).get(host);
       if (id) {
         const machine = s.settings[id]?.ssh?.machine ?? hostLabel(host);
-        useStore.setState((st) => ({ startupNotes: { ...st.startupNotes, [id]: `agent state unavailable for ${machine}` } }));
+        useStore.setState((st) => ({ startupNotes: { ...st.startupNotes, [id]: `${AGENT_UNAVAILABLE_NOTE}${machine}` } }));
       }
     }
   }
@@ -1345,10 +1365,11 @@ export const useStore = create<WorkbenchState>((set) => ({
         agentWatch.installed.add(host);
         try {
           await ipc.agentsInstallRemote(host);
+          clearAgentNotes(host, AGENT_INSTALL_NOTE);
         } catch (e) {
           agentWatch.installed.delete(host);
           const machine = (id ? s.settings[id]?.ssh?.machine : null) ?? hostLabel(host);
-          if (id) set((st) => ({ startupNotes: { ...st.startupNotes, [id]: `could not install Claude hooks on ${machine}: ${typeof e === "string" ? e : String(e)}` } }));
+          if (id) set((st) => ({ startupNotes: { ...st.startupNotes, [id]: `${AGENT_INSTALL_NOTE}${machine}: ${typeof e === "string" ? e : String(e)}` } }));
         }
         // The tile may have closed while that install call was in flight: `wanted` above is a
         // snapshot taken at entry, so check the live state before acting on it further.
