@@ -1,12 +1,17 @@
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalInfo } from "./ipc";
 
-const { instances } = vi.hoisted(() => ({ instances: [] as { disposed: boolean }[] }));
+const { instances } = vi.hoisted(() => ({
+  instances: [] as { disposed: boolean; selection: string; element: HTMLElement | null }[],
+}));
 
 vi.mock("@xterm/xterm", () => {
   class Terminal {
     disposed = false;
     element: HTMLElement | null = null;
+    selection = "";
+    options: { theme?: Record<string, string> } = {};
     constructor() {
       instances.push(this);
     }
@@ -14,8 +19,17 @@ vi.mock("@xterm/xterm", () => {
     onResize() {}
     write() {}
     loadAddon() {}
-    open() {}
+    open(container: HTMLElement) {
+      this.element = document.createElement("div");
+      container.appendChild(this.element);
+    }
     focus() {}
+    hasSelection() {
+      return this.selection.length > 0;
+    }
+    getSelection() {
+      return this.selection;
+    }
     dispose() {
       this.disposed = true;
     }
@@ -39,8 +53,11 @@ vi.mock("./ipc", () => ({
   },
 }));
 
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn(async () => {}) }));
+
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useStore } from "../store";
-import { prepare } from "./xtermRegistry";
+import { attach, dispose, prepare } from "./xtermRegistry";
 
 function info(id: string, name = id): TerminalInfo {
   return { id, name, cwd: "/tmp/x", exited: null, error: null };
@@ -48,6 +65,7 @@ function info(id: string, name = id): TerminalInfo {
 
 beforeEach(() => {
   useStore.setState({ terminals: {} });
+  vi.mocked(writeText).mockClear();
 });
 
 describe("xtermRegistry dispose-on-removal subscription", () => {
@@ -72,5 +90,54 @@ describe("xtermRegistry dispose-on-removal subscription", () => {
     useStore.setState({ terminals: {} });
     expect(termA.disposed).toBe(true);
     expect(termB.disposed).toBe(false);
+  });
+});
+
+describe("copy selection to clipboard on mouse-up", () => {
+  it("copies the selected text when the mouse is released over the terminal", () => {
+    const container = document.createElement("div");
+    const { term } = attach("c", container);
+    (term as unknown as { selection: string }).selection = "hello world";
+
+    term.element!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledWith("hello world");
+  });
+
+  it("does not copy when there is no selection", () => {
+    const container = document.createElement("div");
+    const { term } = attach("d", container);
+
+    term.element!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("stops copying once the terminal is disposed", () => {
+    const container = document.createElement("div");
+    const { term } = attach("e", container);
+    (term as unknown as { selection: string }).selection = "goodbye";
+    const element = term.element!;
+
+    dispose("e");
+    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("keeps copying, once per mouse-up, after being re-parented into another container", () => {
+    const container1 = document.createElement("div");
+    const container2 = document.createElement("div");
+    const { term } = attach("f", container1);
+    (term as unknown as { selection: string }).selection = "reparented";
+
+    attach("f", container2);
+    expect(term.element!.parentElement).toBe(container2);
+
+    term.element!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledWith("reparented");
   });
 });

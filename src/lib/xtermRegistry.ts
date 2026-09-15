@@ -1,6 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { ipc } from "./ipc";
 import { beforeSpawn, terminalColor, useStore } from "../store";
 import { tintBackground } from "./workspace";
@@ -13,6 +14,7 @@ interface Entry {
   ready: Promise<void>;
   unlisten: UnlistenFn[];
   opened: boolean;
+  onMouseUp: (() => void) | null;
 }
 
 const entries = new Map<string, Entry>();
@@ -40,7 +42,7 @@ function createEntry(id: string): Entry {
     void ipc.resizeTerminal(id, cols, rows).catch(() => {});
   });
 
-  const entry: Entry = { term, fit, ready: Promise.resolve(), unlisten: [], opened: false };
+  const entry: Entry = { term, fit, ready: Promise.resolve(), unlisten: [], opened: false, onMouseUp: null };
   entry.ready = Promise.all([
     ipc.onData(id, (bytes) => term.write(bytes)),
     ipc.onExit(id, (code) => {
@@ -70,11 +72,20 @@ export function attach(id: string, container: HTMLElement): { term: Terminal; fi
   if (!entry.opened) {
     entry.term.open(container);
     entry.opened = true;
+    entry.onMouseUp = () => copySelection(entry.term);
+    entry.term.element?.addEventListener("mouseup", entry.onMouseUp);
   } else if (entry.term.element && entry.term.element.parentElement !== container) {
     container.appendChild(entry.term.element);
   }
   applyColor(id);
   return { term: entry.term, fit: entry.fit };
+}
+
+function copySelection(term: Terminal): void {
+  if (!term.hasSelection()) return;
+  const selection = term.getSelection();
+  if (!selection) return;
+  void writeText(selection).catch(() => {});
 }
 
 export function applyColor(id: string): void {
@@ -99,6 +110,7 @@ export function dispose(id: string): void {
   const entry = entries.get(id);
   if (!entry) return;
   entry.unlisten.forEach((fn) => fn());
+  if (entry.onMouseUp) entry.term.element?.removeEventListener("mouseup", entry.onMouseUp);
   entry.term.dispose();
   entries.delete(id);
 }
