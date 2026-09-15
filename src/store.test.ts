@@ -2283,7 +2283,7 @@ describe("selectSession", () => {
     expect(s.settings[id].claude).toEqual({ enabled: true, sessionId: "old", skipPermissions: true, started: true });
     expect(s.settings[id].sessions?.map((r) => r.sessionId)).toEqual(["old", "cur"]);
     expect(s.terminals[id].cwd).toBe("/tmp/old");
-    expect(ipc.writeTerminal).toHaveBeenCalledWith(id, expect.stringContaining("--resume old"));
+    expect(ipc.writeTerminal).toHaveBeenCalledWith(id, expect.stringMatching(/^cd '\/tmp\/old' && claude .*--resume old\r$/));
     expect(s.startupPending[id]).toBe(false);
   });
   it("without connect and with a busy shell it only becomes current and notes the switch", async () => {
@@ -2296,6 +2296,16 @@ describe("selectSession", () => {
     expect(ipc.writeTerminal).not.toHaveBeenCalled();
     expect(useStore.getState().startupNotes[id]).toBe("switch takes effect on next Connect");
   });
+  it("with connect and a busy local shell it only becomes current and notes the switch", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.setState((s) => ({ settings: { ...s.settings, [id]: { ...s.settings[id], sessions: [rec("old", "/tmp/old", "t1")] } } }));
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValueOnce(true);
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().selectSession(id, "old", { connect: true });
+    expect(useStore.getState().settings[id].claude?.sessionId).toBe("old");
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+    expect(useStore.getState().startupNotes[id]).toBe("switch takes effect on next Connect");
+  });
   it("without connect and an idle local shell it types the resume line", async () => {
     const id = await useStore.getState().createTerminal("/tmp/a");
     useStore.setState((s) => ({ settings: { ...s.settings, [id]: { ...s.settings[id], sessions: [rec("old", "/tmp/old", "t1")] } } }));
@@ -2303,6 +2313,17 @@ describe("selectSession", () => {
     vi.mocked(ipc.writeTerminal).mockClear();
     await useStore.getState().selectSession(id, "old", { connect: false });
     expect(ipc.writeTerminal).toHaveBeenCalledWith(id, expect.stringMatching(/^cd '\/tmp\/old' && claude .*--resume old\r$/));
+  });
+  it("connects an ssh tile via runStartup, typing the ssh line and applying the record's remote folder", async () => {
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p" });
+    __stopAllPolling();
+    // __stopAllPolling only clears the interval; the poller startPolling kicked off during
+    // creation already flipped sshConnecting, which would otherwise short-circuit runStartup.
+    useStore.setState((s) => ({ sshConnecting: omitKey(s.sshConnecting, id), settings: { ...s.settings, [id]: { ...s.settings[id], sessions: [rec("old", "/p/old", "t1")] } } }));
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().selectSession(id, "old", { connect: true });
+    expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toMatch(/^ssh -t /);
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p/old");
   });
   it("unknown session ids are ignored", async () => {
     const id = await useStore.getState().createTerminal("/tmp/a");

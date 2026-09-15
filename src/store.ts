@@ -1416,24 +1416,33 @@ export const useStore = create<WorkbenchState>((set) => ({
     await useStore.getState().setTerminalCwd(id, rec.cwd, "hook");
     const after = useStore.getState();
     const isSsh = !!after.settings[id]?.ssh;
-    if (connect) {
-      await useStore.getState().runStartup(id);
+    if (isSsh) {
+      const host = after.settings[id]!.ssh!.host;
+      const live = await tileLive(id, host);
+      if (connect || !live) {
+        await useStore.getState().runStartup(id);
+        return;
+      }
+      const busy = await safeForegroundBusy(id);
+      if (busy) {
+        set((st) => ({ startupNotes: { ...st.startupNotes, [id]: "switch takes effect on next Connect" } }));
+        return;
+      }
+      await useStore.getState().runRemoteStep(id);
       return;
     }
+    // Local tile: whether or not we're connecting, a fresh/idle shell needs an explicit `cd` to
+    // the record's folder before the claude line — resuming in place would land in the tile's
+    // current directory, not the one the session was recorded under.
     const busy = await safeForegroundBusy(id);
-    const live = isSsh ? await tileLive(id, after.settings[id]!.ssh!.host) : !busy;
-    if (!live || (isSsh && busy)) {
+    if (busy) {
       set((st) => ({ startupNotes: { ...st.startupNotes, [id]: "switch takes effect on next Connect" } }));
       return;
     }
-    if (isSsh) {
-      await useStore.getState().runRemoteStep(id);
-    } else {
-      const claude = startupSteps(after.settings[id] ?? EMPTY_SETTINGS, id).find((st) => st.via === "local")?.line;
-      if (!claude) return;
-      await ipc.writeTerminal(id, `cd ${shellQuote(rec.cwd)} && ${claude}\r`);
-      set((st) => ({ startupPending: { ...st.startupPending, [id]: false } }));
-    }
+    const claude = startupSteps(after.settings[id] ?? EMPTY_SETTINGS, id).find((st) => st.via === "local")?.line;
+    if (!claude) return;
+    await ipc.writeTerminal(id, `cd ${shellQuote(rec.cwd)} && ${claude}\r`);
+    set((st) => ({ startupPending: { ...st.startupPending, [id]: false }, startupNotes: omit(st.startupNotes, id) }));
   },
 
   setWindowFocused(focused) {
