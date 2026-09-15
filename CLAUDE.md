@@ -44,6 +44,8 @@ Terminals always spawn the user's login shell locally. SSH connections, Claude s
 
 SSH uses OpenSSH multiplexing with a control socket under `~/.swarmz/ssh/%C` (`SSH_OPTS` in TS, `CONTROL_PATH` in `remote.rs`). The interactive terminal session becomes the master; the core's short-lived commands (`ssh_check`, `ssh_list_dir`, `workspace_pull/push`) reuse it with `BatchMode=yes` and never prompt.
 
+Ctrl+V in a connected ssh tile with an image on the local clipboard pushes it as a PNG to `~/.swarmz/paste/` on the remote and types the path (`paste.rs`, `IMAGE_PASTE_KEY` in the registry); text paste is untouched.
+
 ### Workspace persistence and tailnet sync
 
 - Saves are debounced (`SAVE_DEBOUNCE_MS`) and written atomically by Rust (`workspace.rs`, tmp + rename; a corrupt file is moved aside as `workspace.json.broken-*`).

@@ -5,7 +5,7 @@ import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary, tintBac
 import { RemoteDirPicker } from "./RemoteDirPicker";
 import { SessionHistory } from "./SessionHistory";
 
-/** How long the "Copied" pill stays after a selection is copied. */
+/** How long the "Copied" and "Image sent to remote" pills stay after a copy or a remote paste. */
 export const COPIED_FLASH_MS = 1000;
 
 export function TerminalPane({ id }: { id: string }) {
@@ -28,6 +28,8 @@ export function TerminalPane({ id }: { id: string }) {
   const chooseRemoteDir = useStore((s) => s.chooseRemoteDir);
   const copiedAt = useStore((s) => s.copiedAt[id]);
   const [copiedVisible, setCopiedVisible] = useState(false);
+  const pastedAt = useStore((s) => s.pastedAt[id]);
+  const [pastedVisible, setPastedVisible] = useState(false);
   const [picking, setPicking] = useState(false);
   const [typedPath, setTypedPath] = useState("");
   // No terminal id: the card is for the reader, and `SWARMZ_TERMINAL_ID=<uuid>` in front of the
@@ -46,6 +48,8 @@ export function TerminalPane({ id }: { id: string }) {
         ? "pending"
         : null;
   const bar = overlay === "pending" ? null : overlay;
+  // Both pills sit in the same corner, so only the newer one shows.
+  const pill = pastedVisible ? "Image sent to remote" : copiedVisible ? "Copied" : null;
 
   useEffect(() => {
     const el = ref.current;
@@ -81,6 +85,13 @@ export function TerminalPane({ id }: { id: string }) {
     const t = setTimeout(() => setCopiedVisible(false), COPIED_FLASH_MS);
     return () => clearTimeout(t);
   }, [copiedAt]);
+
+  useEffect(() => {
+    if (!pastedAt) return;
+    setPastedVisible(true);
+    const t = setTimeout(() => setPastedVisible(false), COPIED_FLASH_MS);
+    return () => clearTimeout(t);
+  }, [pastedAt]);
 
   return (
     <div className="relative h-full w-full" style={{ backgroundColor: tintBackground("#0f1115", color) }}>
@@ -137,8 +148,8 @@ export function TerminalPane({ id }: { id: string }) {
           onClose={() => setPicking(false)}
         />
       )}
-      {copiedVisible && (
-        <div className="pointer-events-none absolute right-3 top-3 z-20 rounded bg-neutral-800/95 px-2 py-0.5 text-xs text-neutral-200 shadow">Copied</div>
+      {pill && (
+        <div className="pointer-events-none absolute right-3 top-3 z-20 rounded bg-neutral-800/95 px-2 py-0.5 text-xs text-neutral-200 shadow">{pill}</div>
       )}
       <div ref={ref} data-testid="terminal-mount" className={`absolute inset-0 p-1 ${bar ? "pt-9" : ""} ${overlay === "pending" ? "invisible" : ""}`} />
       {info?.exited !== null && info?.exited !== undefined && (

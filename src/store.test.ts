@@ -37,6 +37,7 @@ vi.mock("./lib/ipc", () => {
       workspaceStat: vi.fn(async () => null),
       agentsInstallLocal: vi.fn(async () => false),
       agentsInstallRemote: vi.fn(async () => false),
+      pasteImageToRemote: vi.fn(async () => null),
       agentsWatch: vi.fn(async () => 1),
       agentsUnwatch: vi.fn(async () => {}),
       onAgentEvent: vi.fn(async () => () => {}),
@@ -2432,5 +2433,16 @@ describe("dead session detection", () => {
     expect(useStore.getState().settings[id].claude?.started).toBe(true);
     // An empty list and no list are the same thing; `toWorkspace` omits both, so keep one shape.
     expect(useStore.getState().settings[id].sessions).toBeUndefined();
+  });
+});
+
+describe("paste flash", () => {
+  it("flashPasted stamps the tile so the pane can show its pill", () => {
+    useStore.setState({ pastedAt: {} });
+    const before = Date.now();
+    useStore.getState().flashPasted("t1");
+    const at = useStore.getState().pastedAt.t1;
+    expect(at).toBeGreaterThanOrEqual(before);
+    expect(useStore.getState().pastedAt.t2).toBeUndefined();
   });
 });

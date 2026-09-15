@@ -67,6 +67,7 @@ vi.mock("./ipc", () => ({
     onExit: vi.fn(async () => () => {}),
     terminalCwd: vi.fn(async () => null),
     setTerminalCwd: vi.fn(async (id: string, cwd: string) => ({ id, name: "x", cwd, exited: null, error: null })),
+    pasteImageToRemote: vi.fn(async () => null as string | null),
   },
 }));
 
@@ -75,7 +76,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn(async 
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useStore } from "../store";
 import { ipc } from "./ipc";
-import { CWD_POLL_AFTER_ENTER_MS, CWD_POLL_INTERVAL_MS, attach, decodeOsc7, dispose, prepare } from "./xtermRegistry";
+import { CWD_POLL_AFTER_ENTER_MS, CWD_POLL_INTERVAL_MS, IMAGE_PASTE_KEY, attach, decodeOsc7, dispose, prepare } from "./xtermRegistry";
 
 function info(id: string, name = id): TerminalInfo {
   return { id, name, cwd: "/tmp/x", exited: null, error: null };
@@ -339,5 +340,96 @@ describe("resume failure scanning", () => {
     await prepare("q");
     dataCallbacks.q(new TextEncoder().encode("No conversation found with session ID zzz\r\n"));
     expect(note).not.toHaveBeenCalled();
+  });
+});
+
+describe("Ctrl+V in an ssh tile", () => {
+  const PATH = "/Users/me/.swarmz/paste/paste-1.png";
+
+  function tile(id: string, opts: { ssh?: boolean; connected?: boolean } = {}) {
+    useStore.setState({
+      terminals: { [id]: { id, name: id, cwd: "/a", exited: null, error: null } },
+      settings: { [id]: { ssh: opts.ssh ? { host: "me@box", cwd: "/p" } : null, claude: null, command: null, extra: {} } },
+      sshConnected: opts.connected ? { [id]: true } : {},
+      pastedAt: {},
+    });
+    const { term } = attach(id, document.createElement("div"));
+    return (term as unknown as { dataHandler: (d: string) => void }).dataHandler;
+  }
+
+  beforeEach(() => {
+    vi.mocked(ipc.writeTerminal).mockClear();
+    vi.mocked(ipc.pasteImageToRemote).mockReset().mockResolvedValue(null);
+  });
+
+  it("sends the clipboard image to the remote and types its path instead of Ctrl+V", async () => {
+    vi.mocked(ipc.pasteImageToRemote).mockResolvedValue(PATH);
+    const send = tile("p1", { ssh: true, connected: true });
+    try {
+      send(IMAGE_PASTE_KEY);
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("p1", PATH));
+      expect(ipc.pasteImageToRemote).toHaveBeenCalledWith("me@box");
+      // No newline: the user adds their prompt and presses Enter themselves.
+      expect(ipc.writeTerminal).not.toHaveBeenCalledWith("p1", IMAGE_PASTE_KEY);
+      expect(typeof useStore.getState().pastedAt.p1).toBe("number");
+    } finally {
+      dispose("p1");
+    }
+  });
+
+  it("falls back to Claude's own Ctrl+V when the clipboard holds no image", async () => {
+    const send = tile("p2", { ssh: true, connected: true });
+    try {
+      send(IMAGE_PASTE_KEY);
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("p2", IMAGE_PASTE_KEY));
+      expect(useStore.getState().pastedAt.p2).toBeUndefined();
+    } finally {
+      dispose("p2");
+    }
+  });
+
+  it("falls back to Ctrl+V when the push fails", async () => {
+    vi.mocked(ipc.pasteImageToRemote).mockRejectedValue("not reachable: x");
+    const send = tile("p3", { ssh: true, connected: true });
+    try {
+      send(IMAGE_PASTE_KEY);
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("p3", IMAGE_PASTE_KEY));
+      expect(useStore.getState().pastedAt.p3).toBeUndefined();
+    } finally {
+      dispose("p3");
+    }
+  });
+
+  it("leaves a local tile's Ctrl+V alone", async () => {
+    const send = tile("p4");
+    try {
+      send(IMAGE_PASTE_KEY);
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("p4", IMAGE_PASTE_KEY));
+      expect(ipc.pasteImageToRemote).not.toHaveBeenCalled();
+    } finally {
+      dispose("p4");
+    }
+  });
+
+  it("leaves an ssh tile that is not connected yet alone", async () => {
+    const send = tile("p5", { ssh: true });
+    try {
+      send(IMAGE_PASTE_KEY);
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("p5", IMAGE_PASTE_KEY));
+      expect(ipc.pasteImageToRemote).not.toHaveBeenCalled();
+    } finally {
+      dispose("p5");
+    }
+  });
+
+  it("forwards ordinary typing in a connected ssh tile unchanged", async () => {
+    const send = tile("p6", { ssh: true, connected: true });
+    try {
+      send("hello\r");
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("p6", "hello\r"));
+      expect(ipc.pasteImageToRemote).not.toHaveBeenCalled();
+    } finally {
+      dispose("p6");
+    }
   });
 });

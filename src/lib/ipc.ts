@@ -78,6 +78,8 @@ export const ipc = {
   /** Resolves with the generation of the watcher now running for `host` (see `agents_watch`). */
   agentsWatch: (host: string | null) => invoke<number>("agents_watch", { host }),
   agentsUnwatch: (host: string | null) => invoke<void>("agents_unwatch", { host }),
+  /** Pushes the local clipboard image to `host` as a PNG, resolving with its absolute remote path, or null when the clipboard holds no image. */
+  pasteImageToRemote: (host: string) => invoke<string | null>("paste_image_to_remote", { host }),
   onAgentEvent: (cb: (p: AgentEventPayload) => void): Promise<UnlistenFn> =>
     listen<AgentEventPayload>("agent:event", (e) => cb(e.payload)),
   onAgentWatchEnded: (cb: (p: { host: string | null; gen: number }) => void): Promise<UnlistenFn> =>

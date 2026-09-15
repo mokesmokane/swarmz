@@ -11,6 +11,10 @@ const BASE_BG = "#0f1115";
 export const CWD_POLL_AFTER_ENTER_MS = 300;
 export const CWD_POLL_INTERVAL_MS = 5000;
 
+/** Ctrl+V. Claude Code reads it as "paste the image on my clipboard", which for an ssh tile is
+ * the remote Mac's clipboard, not the one the user just copied into. */
+export const IMAGE_PASTE_KEY = "\x16";
+
 /** The path inside an OSC 7 payload (`file://host/path`, `file:///path`, or a bare path). */
 export function decodeOsc7(data: string): string | null {
   let path = data;
@@ -68,6 +72,31 @@ function scheduleEnterPoll(id: string, entry: Entry): void {
   }, CWD_POLL_AFTER_ENTER_MS);
 }
 
+/** The host of a tile whose ssh session is up, or null for a local or still-connecting tile. */
+function connectedSshHost(id: string): string | null {
+  const s = useStore.getState();
+  const host = s.settings[id]?.ssh?.host;
+  return host && s.sshConnected[id] === true ? host : null;
+}
+
+/** Pushes the clipboard image to `host` and types the remote path it landed at, so the user can
+ * add their prompt and press Enter. With no image on the clipboard, or when the push fails,
+ * Ctrl+V goes through to Claude, whose own paste handling then takes over. */
+async function sendImageOrForward(id: string, host: string): Promise<void> {
+  let path: string | null = null;
+  try {
+    path = await ipc.pasteImageToRemote(host);
+  } catch {
+    // not reachable, no clipboard access, …
+  }
+  if (path) {
+    await ipc.writeTerminal(id, path).catch(() => {});
+    useStore.getState().flashPasted(id);
+  } else {
+    await ipc.writeTerminal(id, IMAGE_PASTE_KEY).catch(() => {});
+  }
+}
+
 function createEntry(id: string): Entry {
   const term = new Terminal({
     cursorBlink: true,
@@ -99,8 +128,10 @@ function createEntry(id: string): Entry {
   };
 
   term.onData((data) => {
+    const host = data === IMAGE_PASTE_KEY ? connectedSshHost(id) : null;
     // Writes to an already-exited pane are expected to fail; ignore.
-    void ipc.writeTerminal(id, data).catch(() => {});
+    if (host) void sendImageOrForward(id, host);
+    else void ipc.writeTerminal(id, data).catch(() => {});
     if (data.includes("\r")) scheduleEnterPoll(id, entry);
   });
   term.onResize(({ cols, rows }) => {

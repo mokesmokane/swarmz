@@ -25,6 +25,7 @@ vi.mock("../lib/ipc", () => ({
     tailscaleOpen: vi.fn(async () => {}),
     agentsInstallLocal: vi.fn(async () => false),
     agentsInstallRemote: vi.fn(async () => false),
+    pasteImageToRemote: vi.fn(async () => null),
     agentsWatch: vi.fn(async () => 1),
     agentsUnwatch: vi.fn(async () => {}),
     onAgentEvent: vi.fn(async () => () => {}),
@@ -136,6 +137,25 @@ describe("TerminalPane connect card", () => {
         vi.advanceTimersByTime(1200);
       });
       expect(screen.queryByText("Copied")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows an Image sent pill for about a second after a remote paste", () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ startupPending: { [ID]: false }, copiedAt: {}, pastedAt: {} });
+      render(<TerminalPane id={ID} />);
+      expect(screen.queryByText("Image sent to remote")).toBeNull();
+      act(() => {
+        useStore.setState({ pastedAt: { [ID]: Date.now() } });
+      });
+      expect(screen.getByText("Image sent to remote")).toBeTruthy();
+      act(() => {
+        vi.advanceTimersByTime(1200);
+      });
+      expect(screen.queryByText("Image sent to remote")).toBeNull();
     } finally {
       vi.useRealTimers();
     }

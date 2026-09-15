@@ -31,6 +31,7 @@ vi.mock("../lib/ipc", () => ({
     tailscaleOpen: vi.fn(async () => {}),
     agentsInstallLocal: vi.fn(async () => false),
     agentsInstallRemote: vi.fn(async () => false),
+    pasteImageToRemote: vi.fn(async () => null),
     agentsWatch: vi.fn(async () => 1),
     agentsUnwatch: vi.fn(async () => {}),
     onAgentEvent: vi.fn(async () => () => {}),

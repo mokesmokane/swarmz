@@ -284,6 +284,8 @@ export interface WorkbenchState {
   windowFocused: boolean;
   /** When each terminal last copied a selection to the clipboard (ms since epoch), for the pane's "Copied" flash. */
   copiedAt: Record<string, number>;
+  /** When each terminal last pushed a clipboard image to its remote (ms since epoch), for the pane's paste flash. */
+  pastedAt: Record<string, number>;
   /** Armed for 10 s after typing a `--resume <sessionId>` line, while xtermRegistry scans for Claude reporting it gone. */
   resumeWatch: Record<string, { sessionId: string; until: number }>;
 
@@ -319,6 +321,7 @@ export interface WorkbenchState {
   applyAgentEvent(payload: AgentEventPayload): void;
   setWindowFocused(focused: boolean): void;
   flashCopied(id: string): void;
+  flashPasted(id: string): void;
   setTerminalCwd(id: string, cwd: string, source: "poll" | "osc7" | "hook"): Promise<void>;
   selectSession(id: string, sessionId: string, opts: { connect: boolean }): Promise<void>;
   watchResume(id: string, sessionId: string): void;
@@ -779,6 +782,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   agentHooksError: null,
   windowFocused: true,
   copiedAt: {},
+  pastedAt: {},
   resumeWatch: {},
 
   async createTerminal(cwd, placement) {
@@ -1390,6 +1394,10 @@ export const useStore = create<WorkbenchState>((set) => ({
 
   flashCopied(id) {
     set((s) => ({ copiedAt: { ...s.copiedAt, [id]: Date.now() } }));
+  },
+
+  flashPasted(id) {
+    set((s) => ({ pastedAt: { ...s.pastedAt, [id]: Date.now() } }));
   },
 
   async setTerminalCwd(id, cwd, source) {
