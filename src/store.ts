@@ -49,7 +49,7 @@ import {
 } from "./lib/workspace";
 import { applyAgentEvent as foldAgentEvent, OFFLINE, type AgentState } from "./lib/agentState";
 import type { AgentEventPayload } from "./lib/ipc";
-import { sanitizeSessions } from "./lib/sessions";
+import { isSafeFolder, sanitizeSessions } from "./lib/sessions";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -308,6 +308,7 @@ export interface WorkbenchState {
   applyAgentEvent(payload: AgentEventPayload): void;
   setWindowFocused(focused: boolean): void;
   flashCopied(id: string): void;
+  setTerminalCwd(id: string, cwd: string, source: "poll" | "osc7" | "hook"): Promise<void>;
   installAgentHooks(): Promise<void>;
   ensureAgentWatchers(): Promise<void>;
   agentWatchEnded(payload: { host: string | null; gen: number }): Promise<void>;
@@ -1334,6 +1335,38 @@ export const useStore = create<WorkbenchState>((set) => ({
 
   flashCopied(id) {
     set((s) => ({ copiedAt: { ...s.copiedAt, [id]: Date.now() } }));
+  },
+
+  async setTerminalCwd(id, cwd, _source) {
+    const s = useStore.getState();
+    const t = s.terminals[id];
+    if (!t || !isSafeFolder(cwd)) return;
+    const settings = s.settings[id] ?? EMPTY_SETTINGS;
+    if (settings.foreign) {
+      if (settings.foreign.cwd === cwd) return;
+      set((st) => {
+        const cur = st.settings[id];
+        if (!cur?.foreign) return {};
+        return { settings: { ...st.settings, [id]: { ...cur, foreign: { cwd }, ssh: cur.ssh ? { ...cur.ssh, cwd } : cur.ssh } } };
+      });
+      return;
+    }
+    if (settings.ssh) {
+      if (settings.ssh.cwd === cwd) return;
+      set((st) => {
+        const cur = st.settings[id];
+        if (!cur?.ssh) return {};
+        return { settings: { ...st.settings, [id]: { ...cur, ssh: { ...cur.ssh, cwd } } } };
+      });
+      return;
+    }
+    if (t.cwd === cwd) return;
+    try {
+      const info = await ipc.setTerminalCwd(id, cwd);
+      set((st) => (st.terminals[id] ? { terminals: { ...st.terminals, [id]: { ...st.terminals[id], cwd: info.cwd } } } : {}));
+    } catch {
+      // registry refused (unknown id or bad path); the next poll will try again
+    }
   },
 
   setWindowFocused(focused) {

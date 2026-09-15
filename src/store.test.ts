@@ -2173,3 +2173,44 @@ describe("agent state", () => {
     expect(useStore.getState().settings[id].claude?.started).toBe(false);
   });
 });
+
+describe("setTerminalCwd", () => {
+  it("local tile: updates the registry then the store", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    await useStore.getState().setTerminalCwd(id, "/tmp/b", "poll");
+    expect(ipc.setTerminalCwd).toHaveBeenCalledWith(id, "/tmp/b");
+    expect(useStore.getState().terminals[id].cwd).toBe("/tmp/b");
+  });
+  it("ssh tile: updates settings.ssh.cwd and never calls the registry", async () => {
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p" });
+    __stopAllPolling();
+    vi.mocked(ipc.setTerminalCwd).mockClear();
+    await useStore.getState().setTerminalCwd(id, "/q", "osc7");
+    expect(ipc.setTerminalCwd).not.toHaveBeenCalled();
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/q");
+  });
+  it("foreign local: updates settings.foreign.cwd", async () => {
+    const id = await useStore.getState().createTerminal("/home/me");
+    useStore.setState((s) => ({
+      settings: { ...s.settings, [id]: { ...s.settings[id], ssh: { host: "root@desk", cwd: "/proj", machine: "desk" }, foreign: { cwd: "/proj" }, origin: "desk" } },
+    }));
+    await useStore.getState().setTerminalCwd(id, "/proj/sub", "hook");
+    expect(useStore.getState().settings[id].foreign?.cwd).toBe("/proj/sub");
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/proj/sub");
+  });
+  it("ignores unchanged, relative, and unsafe values, and unknown ids", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    vi.mocked(ipc.setTerminalCwd).mockClear();
+    await useStore.getState().setTerminalCwd(id, "/tmp/a", "poll");
+    await useStore.getState().setTerminalCwd(id, "rel", "poll");
+    await useStore.getState().setTerminalCwd(id, "/bad\x1b", "poll");
+    await useStore.getState().setTerminalCwd("nope", "/x", "poll");
+    expect(ipc.setTerminalCwd).not.toHaveBeenCalled();
+  });
+  it("a registry failure leaves the store untouched", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    vi.mocked(ipc.setTerminalCwd).mockRejectedValueOnce("no");
+    await useStore.getState().setTerminalCwd(id, "/tmp/b", "poll");
+    expect(useStore.getState().terminals[id].cwd).toBe("/tmp/a");
+  });
+});
