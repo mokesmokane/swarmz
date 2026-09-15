@@ -1431,7 +1431,8 @@ describe("shared workspace", () => {
     const s = useStore.getState();
     expect(vi.mocked(ipc.createTerminal).mock.calls.find((c) => c[0] === "g")?.[1]).toBe("/proj");
     expect(s.settings.g.ssh).toBeNull();
-    expect(s.settings.g.foreign).toBeUndefined();
+    // Its folder still belongs to the origin machine, so it stays protected from a home fallback.
+    expect(s.settings.g.foreign).toEqual({ cwd: "/proj" });
     expect(s.startupNotes.g).toBe("origin machine gone is not on your tailnet; opened locally");
   });
 

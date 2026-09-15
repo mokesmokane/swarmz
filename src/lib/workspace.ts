@@ -325,7 +325,10 @@ export function openingFor(
   }
   if (def.ssh) return { cwd: null, settings: base, note: null };
   if (self && origin && origin !== self) {
-    if (!knownMachines.has(origin)) return { cwd: def.cwd, settings: base, note: unknownOriginNote(origin) };
+    // Opened here as a plain shell because the origin cannot be reached. Its folder still belongs
+    // to the origin machine: keep it as `foreign` so a home fallback (the folder rarely exists
+    // here) is never written back over the def's real folder.
+    if (!knownMachines.has(origin)) return { cwd: def.cwd, settings: { ...base, foreign: { cwd: def.cwd } }, note: unknownOriginNote(origin) };
     return {
       cwd: null,
       settings: { ...base, ssh: { host: machineHost(origin, machines[origin], defaultUser), cwd: def.cwd, machine: origin }, foreign: { cwd: def.cwd } },

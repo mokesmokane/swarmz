@@ -446,13 +446,32 @@ describe("openingFor", () => {
     expect(o.cwd).toBeNull();
     expect(o.settings.ssh).toEqual(def.ssh);
   });
-  it("a local from a machine we do not know opens locally with a note", () => {
+  it("a local from a machine we do not know opens locally with a note but keeps its folder protected", () => {
     const o = openingFor({ ...base, origin: "gone" }, "here", machines, "mokes", known);
     expect(o.cwd).toBe("/proj");
     expect(o.settings.ssh).toBeNull();
-    expect(o.settings.foreign).toBeUndefined();
+    // The folder belongs to the origin machine: if it is missing here and the shell falls back to
+    // home, the def must still be written back with its own folder, never with the fallback.
+    expect(o.settings.foreign).toEqual({ cwd: "/proj" });
     expect(o.settings.origin).toBe("gone");
     expect(o.note).toBe("origin machine gone is not on your tailnet; opened locally");
+  });
+});
+
+describe("a foreign def that had to open locally", () => {
+  it("is written back with its own folder even when the shell fell back to home", () => {
+    const def = { id: "f", name: "F", cwd: "/on/origin", ssh: null, claude: null, command: null, origin: "gone" };
+    const o = openingFor(def, "here", {}, "mokes", new Set());
+    const ws = toWorkspace({
+      order: ["f"],
+      terminals: { f: { id: "f", name: "F", cwd: "/home/me" } }, // the registry holds the fallback
+      settings: { f: { ...o.settings, extra: {} } },
+      layout: null,
+      machines: {},
+    });
+    expect(ws.terminals[0].cwd).toBe("/on/origin");
+    expect(ws.terminals[0].ssh).toBeNull();
+    expect(ws.terminals[0].origin).toBe("gone");
   });
 });
 
