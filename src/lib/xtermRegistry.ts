@@ -52,7 +52,9 @@ async function pollCwd(id: string): Promise<void> {
   if (!localTileAlive(id)) return;
   try {
     const cwd = await ipc.terminalCwd(id);
-    if (cwd) await useStore.getState().setTerminalCwd(id, cwd, "poll");
+    // `lsof` takes ~16 ms; the tile may have exited or turned into an ssh tile meanwhile, and
+    // this local path would then be the wrong Mac's.
+    if (cwd && localTileAlive(id)) await useStore.getState().setTerminalCwd(id, cwd, "poll");
   } catch {
     // lsof missing or the tile is gone; the next poll or OSC 7 will catch up
   }

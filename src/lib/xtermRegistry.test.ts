@@ -244,6 +244,27 @@ describe("folder tracking", () => {
     }
   });
 
+  it("drops a poll whose answer arrives after the tile became an ssh tile", async () => {
+    const apply = vi.fn(async () => {});
+    const real = useStore.getState().setTerminalCwd;
+    useStore.setState({ setTerminalCwd: apply });
+    try {
+      let resolve: (v: string) => void = () => {};
+      vi.mocked(ipc.terminalCwd).mockReset().mockImplementation(() => new Promise<string>((r) => (resolve = r)));
+      const { term } = attach("f", document.createElement("div"));
+      (term as unknown as { dataHandler: (d: string) => void }).dataHandler("\r");
+      await vi.waitFor(() => expect(ipc.terminalCwd).toHaveBeenCalledWith("f"));
+      // The user typed `ssh` and the tile became remote while `lsof` was still running: the
+      // local path it is about to return is not this tile's folder any more.
+      useStore.setState((s) => ({ settings: { ...s.settings, f: { ...s.settings.f, ssh: { host: "me@box", cwd: "/p" } } } }));
+      resolve("/Users/me");
+      await new Promise((r) => setTimeout(r, 0));
+      expect(apply).not.toHaveBeenCalled();
+    } finally {
+      useStore.setState({ setTerminalCwd: real });
+    }
+  });
+
   it("OSC 7 applies the decoded path for any tile", async () => {
     const { term } = attach("f", document.createElement("div"));
     const handler = (term as unknown as { oscHandlers: Record<number, (d: string) => boolean> }).oscHandlers[7];

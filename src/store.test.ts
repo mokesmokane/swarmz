@@ -2258,9 +2258,37 @@ describe("setTerminalCwd", () => {
     const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p" });
     __stopAllPolling();
     vi.mocked(ipc.setTerminalCwd).mockClear();
-    await useStore.getState().setTerminalCwd(id, "/q", "osc7");
+    await useStore.getState().setTerminalCwd(id, "/q", "hook");
     expect(ipc.setTerminalCwd).not.toHaveBeenCalled();
     expect(useStore.getState().settings[id].ssh?.cwd).toBe("/q");
+  });
+  it("ssh tile: OSC 7 counts only once ssh is up, and a poll never counts", async () => {
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p" });
+    __stopAllPolling();
+    useStore.setState((s) => ({ sshConnected: omitKey(s.sshConnected, id) }));
+    // Before the ssh line has connected, OSC 7 is the *local* shell announcing the local
+    // home directory: it must not become the tile's remote folder.
+    await useStore.getState().setTerminalCwd(id, "/Users/me", "osc7");
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p");
+    await useStore.getState().setTerminalCwd(id, "/Users/me", "poll");
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p");
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    await useStore.getState().setTerminalCwd(id, "/p/deeper", "osc7");
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p/deeper");
+    await useStore.getState().setTerminalCwd(id, "/Users/me", "poll");
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p/deeper");
+  });
+  it("foreign local: OSC 7 counts only once ssh is up", async () => {
+    const id = await useStore.getState().createTerminal("/home/me");
+    useStore.setState((s) => ({
+      settings: { ...s.settings, [id]: { ...s.settings[id], ssh: { host: "root@desk", cwd: "/proj", machine: "desk" }, foreign: { cwd: "/proj" }, origin: "desk" } },
+      sshConnected: omitKey(s.sshConnected, id),
+    }));
+    await useStore.getState().setTerminalCwd(id, "/Users/me", "osc7");
+    expect(useStore.getState().settings[id].foreign?.cwd).toBe("/proj");
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    await useStore.getState().setTerminalCwd(id, "/proj/sub", "osc7");
+    expect(useStore.getState().settings[id].foreign?.cwd).toBe("/proj/sub");
   });
   it("foreign local: updates settings.foreign.cwd", async () => {
     const id = await useStore.getState().createTerminal("/home/me");

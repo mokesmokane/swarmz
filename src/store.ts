@@ -1389,11 +1389,18 @@ export const useStore = create<WorkbenchState>((set) => ({
     set((s) => ({ copiedAt: { ...s.copiedAt, [id]: Date.now() } }));
   },
 
-  async setTerminalCwd(id, cwd, _source) {
+  async setTerminalCwd(id, cwd, source) {
     const s = useStore.getState();
     const t = s.terminals[id];
     if (!t || !isSafeFolder(cwd)) return;
     const settings = s.settings[id] ?? EMPTY_SETTINGS;
+    // A remote tile is a local shell that typed `ssh`: until that connected, its OSC 7 and its
+    // `lsof` cwd describe *this* Mac, and writing either into the tile's remote folder would
+    // break Connect. Hook events are already matched to the host they came from (§4).
+    if (settings.foreign || settings.ssh) {
+      if (source === "poll") return;
+      if (source === "osc7" && s.sshConnected[id] !== true) return;
+    }
     if (settings.foreign) {
       if (settings.foreign.cwd === cwd) return;
       set((st) => {
