@@ -49,7 +49,7 @@ import {
 } from "./lib/workspace";
 import { applyAgentEvent as foldAgentEvent, OFFLINE, type AgentState } from "./lib/agentState";
 import type { AgentEventPayload } from "./lib/ipc";
-import { isSafeFolder, sanitizeSessions } from "./lib/sessions";
+import { bumpSession, isSafeFolder, sanitizeSessions, upsertSession } from "./lib/sessions";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -1309,8 +1309,9 @@ export const useStore = create<WorkbenchState>((set) => ({
   applyAgentEvent({ host, event }) {
     // The log reached us, so whatever watcher is tailing it is up.
     agentWatchSurvived(host);
+    const id = event.terminal;
+    let folderToApply: string | null = null;
     set((s) => {
-      const id = event.terminal;
       if (!s.terminals[id]) return {};
       const settings = s.settings[id] ?? EMPTY_SETTINGS;
       // A log only describes the machine it lives on: terminal ids travel in the shared
@@ -1329,8 +1330,33 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (event.event === "UserPromptSubmit" && c?.enabled && !c.started && event.sessionId === c.sessionId) {
         patch.settings = { ...s.settings, [id]: { ...settings, claude: { ...c, started: true } } };
       }
+      // Session adoption and history (folder/session spec §4).
+      const trimmed = settings.command?.trim();
+      if (!trimmed && event.sessionId) {
+        const now = event.ts;
+        const base = patch.settings?.[id] ?? settings;
+        let next2: TerminalSettings | null = null;
+        if (event.event === "SessionStart") {
+          const skipPermissions = event.permissionMode === "bypassPermissions";
+          const cwd = event.cwd && isSafeFolder(event.cwd) ? event.cwd : (base.sessions?.find((r) => r.sessionId === event.sessionId)?.cwd ?? null);
+          if (cwd) {
+            const sessions = upsertSession(base.sessions, { sessionId: event.sessionId, cwd, skipPermissions }, now);
+            const claude = base.claude?.enabled && base.claude.sessionId === event.sessionId
+              ? base.claude
+              : { enabled: true, sessionId: event.sessionId, skipPermissions, started: false };
+            next2 = { ...base, sessions, claude };
+            folderToApply = cwd;
+          }
+        } else if (["UserPromptSubmit", "Stop", "StopFailure", "Notification"].includes(event.event)) {
+          const bumped = bumpSession(base.sessions, event.sessionId, now);
+          if (bumped) next2 = { ...base, sessions: bumped };
+          if (event.event === "UserPromptSubmit" && event.cwd && isSafeFolder(event.cwd)) folderToApply = event.cwd;
+        }
+        if (next2) patch.settings = { ...(patch.settings ?? s.settings), [id]: next2 };
+      }
       return patch;
     });
+    if (folderToApply) void useStore.getState().setTerminalCwd(id, folderToApply, "hook");
   },
 
   flashCopied(id) {

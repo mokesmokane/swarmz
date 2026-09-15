@@ -2172,6 +2172,60 @@ describe("agent state", () => {
     expect(ipc.writeTerminal).toHaveBeenCalledWith(id, "claude --session-id s1\r");
     expect(useStore.getState().settings[id].claude?.started).toBe(false);
   });
+
+  it("SessionStart with a new session id adopts it, records it, and applies its folder", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().applyAgentEvent(ev(id, "SessionStart", { sessionId: "new1", cwd: "/tmp/sub", permissionMode: "bypassPermissions" }));
+    await vi.waitFor(() => expect(useStore.getState().terminals[id].cwd).toBe("/tmp/sub"));
+    const s = useStore.getState().settings[id];
+    expect(s.claude).toEqual({ enabled: true, sessionId: "new1", skipPermissions: true, started: false });
+    expect(s.sessions?.[0]).toMatchObject({ sessionId: "new1", cwd: "/tmp/sub", skipPermissions: true });
+  });
+
+  it("SessionStart with the current session id only bumps the record", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(id, { claude: { enabled: true, sessionId: "cur", skipPermissions: false, started: true } });
+    useStore.getState().applyAgentEvent(ev(id, "SessionStart", { sessionId: "cur", cwd: "/tmp/a", permissionMode: "default", ts: "2026-09-15T10:00:00Z" }));
+    useStore.getState().applyAgentEvent(ev(id, "SessionStart", { sessionId: "cur", cwd: "/tmp/a", permissionMode: "default", ts: "2026-09-15T10:05:00Z" }));
+    const s = useStore.getState().settings[id];
+    expect(s.claude?.started).toBe(true);
+    expect(s.sessions).toHaveLength(1);
+    expect(s.sessions?.[0].lastActiveAt).toBe("2026-09-15T10:05:00Z");
+    expect(s.sessions?.[0].startedAt).toBe("2026-09-15T10:00:00Z");
+  });
+
+  it("prompts and stops bump lastActiveAt and prompts apply the folder", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().applyAgentEvent(ev(id, "SessionStart", { sessionId: "s", cwd: "/tmp/a", ts: "2026-09-15T10:00:00Z" }));
+    useStore.getState().applyAgentEvent(ev(id, "UserPromptSubmit", { sessionId: "s", cwd: "/tmp/moved", ts: "2026-09-15T10:01:00Z" }));
+    await vi.waitFor(() => expect(useStore.getState().terminals[id].cwd).toBe("/tmp/moved"));
+    useStore.getState().applyAgentEvent(ev(id, "Stop", { sessionId: "s", ts: "2026-09-15T10:02:00Z" }));
+    expect(useStore.getState().settings[id].sessions?.[0].lastActiveAt).toBe("2026-09-15T10:02:00Z");
+  });
+
+  it("an ssh tile's folder follows the hook's cwd into settings.ssh.cwd", async () => {
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p" });
+    __stopAllPolling();
+    useStore.getState().applyAgentEvent({ ...ev(id, "SessionStart", { sessionId: "r1", cwd: "/p/deeper" }), host: "me@box" });
+    await vi.waitFor(() => expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p/deeper"));
+    expect(useStore.getState().settings[id].sessions?.[0].cwd).toBe("/p/deeper");
+  });
+
+  it("a tile with a custom command is never adopted", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(id, { command: "npm run dev" });
+    useStore.getState().applyAgentEvent(ev(id, "SessionStart", { sessionId: "x", cwd: "/tmp/z" }));
+    expect(useStore.getState().settings[id].claude).toBeNull();
+    expect(useStore.getState().settings[id].sessions).toBeUndefined();
+  });
+
+  it("SessionEnd changes nothing in history", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().applyAgentEvent(ev(id, "SessionStart", { sessionId: "s", cwd: "/tmp/a" }));
+    const before = useStore.getState().settings[id].sessions;
+    useStore.getState().applyAgentEvent(ev(id, "SessionEnd", { sessionId: "s" }));
+    expect(useStore.getState().settings[id].sessions).toBe(before);
+  });
 });
 
 describe("setTerminalCwd", () => {
