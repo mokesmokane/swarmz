@@ -1974,6 +1974,37 @@ describe("agent state", () => {
     }
   });
 
+  it("forgets a host whose ssh dropped instead of re-watching it forever", async () => {
+    vi.useFakeTimers();
+    try {
+      const id = await connectedBoxTile();
+      // The watcher died because the ssh under it did.
+      vi.mocked(ipc.sshCheck).mockResolvedValue(false);
+      vi.mocked(ipc.agentsUnwatch).mockClear();
+      await useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
+      expect(useStore.getState().sshConnected[id]).toBeUndefined();
+      expect(ipc.agentsUnwatch).toHaveBeenCalledWith("me@box");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(ipc.agentsWatch).not.toHaveBeenCalledWith("me@box");
+      expect(useStore.getState().startupNotes[id]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps re-watching a host whose ssh is still up", async () => {
+    vi.useFakeTimers();
+    try {
+      const id = await connectedBoxTile();
+      await useStore.getState().agentWatchEnded({ host: "me@box", gen: 1 });
+      expect(useStore.getState().sshConnected[id]).toBe(true);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ipc.agentsWatch).toHaveBeenCalledWith("me@box");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("notes on the tile once re-watching has failed for about 30 seconds", async () => {
     vi.useFakeTimers();
     try {

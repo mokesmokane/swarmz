@@ -144,6 +144,28 @@ function agentWatchSurvived(host: string | null) {
   }
 }
 
+/**
+ * A remote watcher almost always dies because its ssh died, and `sshConnected` is never cleared
+ * while the tile lives — so without this a tile whose connection dropped would keep its host
+ * "wanted" and keep respawning ssh for the rest of the run. Re-checks every connected tile of
+ * `host`, forgets the ones that are gone (which lets the subscription drop the watcher) and
+ * reports whether any is still live.
+ */
+async function agentTilesStillLive(host: string): Promise<boolean> {
+  const s = useStore.getState();
+  const ids = s.order.filter((id) => s.settings[id]?.ssh?.host?.trim() === host && s.sshConnected[id]);
+  const dead: string[] = [];
+  let live = false;
+  for (const id of ids) {
+    if (await tileLive(id, host)) live = true;
+    else dead.push(id);
+  }
+  if (dead.length > 0) {
+    useStore.setState((st) => ({ sshConnected: dead.reduce((acc, id) => omit(acc, id), st.sshConnected) }));
+  }
+  return live;
+}
+
 function scheduleAgentRewatch(host: string | null) {
   const n = agentWatch.attempts.get(host) ?? 0;
   agentWatch.attempts.set(host, n + 1);
@@ -264,7 +286,7 @@ export interface WorkbenchState {
   setWindowFocused(focused: boolean): void;
   installAgentHooks(): Promise<void>;
   ensureAgentWatchers(): Promise<void>;
-  agentWatchEnded(payload: { host: string | null; gen: number }): void;
+  agentWatchEnded(payload: { host: string | null; gen: number }): Promise<void>;
 }
 
 /**
@@ -1347,7 +1369,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     }
   },
 
-  agentWatchEnded(payload) {
+  async agentWatchEnded(payload) {
     const { host } = payload;
     // An end from a watcher we already replaced says nothing about the one running now.
     if (payload.gen !== agentWatch.gen.get(host)) return;
@@ -1356,6 +1378,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     ipc.agentsUnwatch(host).catch(() => {});
     const lived = Date.now() - (agentWatch.startedAt.get(host) ?? 0);
     if (lived > (agentWatch.delay.get(host) ?? 0)) agentWatchSurvived(host);
+    if (host !== null && !(await agentTilesStillLive(host))) return;
     if (wantedAgentHosts(useStore.getState()).has(host)) scheduleAgentRewatch(host);
   },
 }));
