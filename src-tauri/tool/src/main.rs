@@ -39,10 +39,11 @@ impl Args {
             if VALUED.contains(&s.as_str()) {
                 // A missing value, or one that looks like another option (starts with `--`), is
                 // always a usage error rather than being silently swallowed as this option's
-                // value.
+                // value. `--summary` is exempt: it repeats a question, and a command can start
+                // with `--`.
                 let v = raw
                     .get(i + 1)
-                    .filter(|v| !v.starts_with("--"))
+                    .filter(|v| s == "--summary" || !v.starts_with("--"))
                     .ok_or_else(|| CliError::new("usage", format!("{s} needs a value")))?;
                 a.opts.push((s.clone(), v.clone()));
                 i += 2;

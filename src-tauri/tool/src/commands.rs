@@ -1,7 +1,6 @@
 //! One function per subcommand (spec §4.1). `main.rs` parses arguments and prints.
 
 use crate::client::HolderClient;
-use crate::dialog::parse_dialog;
 use crate::hold::{hold, CliError, HoldRequest};
 use crate::newtile::{add_def, claude_line, empty_workspace, list_folders, session_started, startup_line, unique_name, workspace_file};
 use crate::paths::{live_session, pid_alive, read_meta, session_paths, sessions_dir_in, valid_tile_id};
@@ -9,9 +8,9 @@ use crate::proto::{Hello, PROTOCOL_VERSION};
 use crate::screen::line_text;
 use crate::server::TOOL_VIEWER;
 use crate::agent::{fold_log, read_log, Fold, Needs};
-use crate::dialog::{resolve, Answer, Dialog};
+use crate::dialog::{live_dialog, resolve, Answer, Dialog};
 use crate::input::{key_bytes, paste_bytes};
-use crate::screen::diff_lines;
+use crate::screen::{diff_lines, LinesUpdate};
 use crate::transcript::{after, guess_path, image as transcript_image, page, Change, Normaliser};
 use crate::tiles::{homed_defs, prune as prune_sessions, session_rows, tile_rows, try_tile_rows_with_folds, watch_events, TileRow};
 use crate::util::{new_uuid, now_iso_ms, valid_abs_path};
@@ -21,6 +20,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 const WATCH_TICK: Duration = Duration::from_millis(1000);
@@ -30,6 +31,8 @@ const PRUNE_AGE: Duration = Duration::from_secs(7 * 86_400);
 const OUTPUT_TICK: Duration = Duration::from_millis(300);
 const TRANSCRIPT_TICK: Duration = Duration::from_millis(500);
 const RESOLVE_EVERY: Duration = Duration::from_secs(2);
+/// Unanswered screen requests in a row after which `output --follow` gives up on a live session.
+const OUTPUT_MISSES: u32 = 5;
 
 pub struct Env {
     pub home: PathBuf,
@@ -75,21 +78,33 @@ pub fn tile_arg(s: &str) -> Result<String, CliError> {
 
 /// A question-only connection to a running tile.
 pub fn connect_tool(env: &Env, tile: &str) -> Result<HolderClient, CliError> {
+    connect_tool_with_exit(env, tile, |_| {})
+}
+
+/// `connect_tool`, with `on_exit` called when the session ends or the connection drops.
+fn connect_tool_with_exit(env: &Env, tile: &str, on_exit: impl FnOnce(Option<i32>) + Send + 'static) -> Result<HolderClient, CliError> {
     let paths = session_paths(&env.sessions(), tile).map_err(|e| CliError::new("invalid", e))?;
     if live_session(&paths).is_none() {
         return Err(CliError::new("not_running", format!("{tile} is not running")));
     }
     let hello = Hello { v: PROTOCOL_VERSION, cols: 0, rows: 0, viewer: TOOL_VIEWER.into() };
-    HolderClient::connect(&paths.socket, &hello, |_, _| {}, |_| {}).map_err(failed)
+    HolderClient::connect(&paths.socket, &hello, |_, _| {}, on_exit).map_err(failed)
 }
 
 pub fn screen_texts(client: &HolderClient, lines: usize) -> Option<Vec<String>> {
     client.screen(lines, Duration::from_secs(3)).map(|s| s.lines.iter().map(line_text).collect())
 }
 
+/// The permission dialog the session is showing now, if any; None when it did not answer.
+fn screen_dialog(client: &HolderClient) -> Option<Option<Dialog>> {
+    let snap = client.screen(200, Duration::from_secs(3))?;
+    let texts: Vec<String> = snap.lines.iter().map(line_text).collect();
+    Some(live_dialog(&texts, snap.rows as usize))
+}
+
 fn dialog_open(env: &Env, tile: &str) -> Option<bool> {
     let client = connect_tool(env, tile).ok()?;
-    Some(parse_dialog(&screen_texts(&client, 200)?).is_some())
+    Some(screen_dialog(&client)?.is_some())
 }
 
 fn live_cwd(env: &Env, tile: &str) -> Option<String> {
@@ -353,27 +368,38 @@ pub fn key(env: &Env, tile: &str, name: &str) -> Result<Value, CliError> {
     Ok(json!({"v": 1, "sent": true}))
 }
 
-fn fold_for(env: &Env, tile: &str) -> Fold {
-    fold_log(&read_log(&env.home)).remove(tile).unwrap_or_default()
+/// The tile's folded hook state; None when the log has no events for it.
+fn fold_for(env: &Env, tile: &str) -> Option<Fold> {
+    fold_log(&read_log(&env.home)).remove(tile)
+}
+
+struct Question {
+    dialog: Dialog,
+    tool: String,
+    summary: String,
+    /// False when the hook log has events for the tile and none says Claude is waiting.
+    awaited: bool,
 }
 
 /// The dialog on screen with its tool and summary (the hook event's when it describes this
 /// block, else what the screen shows).
-fn current_question(env: &Env, c: &HolderClient, tile: &str) -> Result<Option<(Dialog, String, String)>, CliError> {
-    let texts = screen_texts(c, 200).ok_or_else(|| failed("the session did not answer"))?;
-    let Some(d) = parse_dialog(&texts) else { return Ok(None) };
+fn current_question(env: &Env, c: &HolderClient, tile: &str) -> Result<Option<Question>, CliError> {
+    let d = screen_dialog(c).ok_or_else(|| failed("the session did not answer"))?;
+    let Some(d) = d else { return Ok(None) };
     let fold = fold_for(env, tile);
+    let awaited = fold.as_ref().is_none_or(|f| f.needs.is_some());
+    let fold = fold.unwrap_or_default();
     let from_hook = fold.needs == Some(Needs::Permission);
     let tool = fold.tool.filter(|_| from_hook).unwrap_or_else(|| d.heading.clone());
     let summary = fold.summary.filter(|_| from_hook).unwrap_or_else(|| d.summary());
-    Ok(Some((d, tool, summary)))
+    Ok(Some(Question { dialog: d, tool, summary, awaited }))
 }
 
 pub fn pending(env: &Env, tile: &str) -> Result<Value, CliError> {
     let c = connect_tool(env, tile)?;
     Ok(match current_question(env, &c, tile)? {
         None => json!({"v": 1, "pending": null}),
-        Some((d, tool, summary)) => json!({"v": 1, "pending": {"tool": tool, "summary": summary, "options": d.options}}),
+        Some(q) => json!({"v": 1, "pending": {"tool": q.tool, "summary": q.summary, "options": q.dialog.options}}),
     })
 }
 
@@ -383,13 +409,16 @@ pub fn answer(env: &Env, tile: &str, choice: &str, expect_summary: Option<&str>)
         return Err(CliError::new("usage", format!("unknown answer {choice:?}: use yes, always, no, deny or an option number")));
     }
     let c = connect_tool(env, tile)?;
-    let Some((d, _, summary)) = current_question(env, &c, tile)? else {
+    let Some(q) = current_question(env, &c, tile)? else {
         return Ok(json!({"v": 1, "ignored": true, "reason": "no question is showing"}));
     };
-    if expect_summary.is_some_and(|s| s != summary) {
+    if !q.awaited {
+        return Ok(json!({"v": 1, "ignored": true, "reason": "Claude is not waiting for an answer"}));
+    }
+    if expect_summary.is_some_and(|s| s != q.summary) {
         return Ok(json!({"v": 1, "ignored": true, "reason": "a different question is showing"}));
     }
-    let answer = resolve(choice, &d).map_err(|e| CliError::new("no_option", e))?;
+    let answer = resolve(choice, &q.dialog).map_err(|e| CliError::new("no_option", e))?;
     let (bytes, option) = match answer {
         Answer::Esc => (b"\x1b".to_vec(), Value::Null),
         Answer::Option(o) => (o.n.to_string().into_bytes(), json!(o)),
@@ -399,26 +428,45 @@ pub fn answer(env: &Env, tile: &str, choice: &str, expect_summary: Option<&str>)
 }
 
 pub fn output(env: &Env, tile: &str, lines: usize, follow: bool, out: &mut dyn Write) -> Result<(), CliError> {
-    let c = connect_tool(env, tile)?;
+    let ended = Arc::new(AtomicBool::new(false));
+    let on_exit = {
+        let ended = ended.clone();
+        move |_| ended.store(true, Ordering::SeqCst)
+    };
+    let c = connect_tool_with_exit(env, tile, on_exit)?;
     let snap = c.screen(lines, Duration::from_secs(3)).ok_or_else(|| failed("the session did not answer"))?;
     let first = json!({"v": 1, "cols": snap.cols, "rows": snap.rows, "cursor": snap.cursor, "lines": snap.lines});
     if !emit(out, &first) || !follow {
         return Ok(());
     }
     let mut prev = snap.lines;
+    let mut prev_cursor = snap.cursor;
     let mut last_ping = Instant::now();
+    let mut misses = 0;
     loop {
         std::thread::sleep(OUTPUT_TICK);
-        let Some(s) = c.screen(lines, Duration::from_secs(3)) else {
+        if ended.load(Ordering::SeqCst) {
             emit(out, &json!({"v": 1, "type": "exit"}));
             return Ok(());
+        }
+        let Some(s) = c.screen(lines, Duration::from_secs(3)) else {
+            // A slow answer from a live session skips this tick; `ended` says when it is over.
+            misses += 1;
+            if misses >= OUTPUT_MISSES && !ended.load(Ordering::SeqCst) {
+                return Err(failed("the session stopped answering"));
+            }
+            continue;
         };
-        if let Some(u) = diff_lines(&prev, &s.lines) {
+        misses = 0;
+        // Only the cursor moved: an update that keeps every line and adds none.
+        let update = diff_lines(&prev, &s.lines).or_else(|| (s.cursor != prev_cursor).then(|| LinesUpdate { drop: 0, from: prev.len(), lines: vec![] }));
+        if let Some(u) = update {
             let ev = json!({"v": 1, "type": "update", "drop": u.drop, "from": u.from, "lines": u.lines, "cursor": s.cursor});
             if !emit(out, &ev) {
                 return Ok(());
             }
             prev = s.lines;
+            prev_cursor = s.cursor;
         }
         if last_ping.elapsed() >= PING_EVERY {
             if !emit(out, &json!({"v": 1, "type": "ping"})) {
@@ -430,20 +478,19 @@ pub fn output(env: &Env, tile: &str, lines: usize, follow: bool, out: &mut dyn W
 }
 
 /// The tile's current transcript: the hook's path, else where Claude would keep the session.
+/// Only this Mac's own tiles are guessed: an ssh tile's or another Mac's transcript is not here.
 fn transcript_path(env: &Env, tile: &str) -> Result<(PathBuf, Option<String>), CliError> {
-    let fold = fold_for(env, tile);
+    let fold = fold_for(env, tile).unwrap_or_default();
     if let Some(p) = fold.transcript_path.clone() {
         return Ok((PathBuf::from(p), fold.session_id));
     }
+    let unknown = || CliError::new("unknown", format!("no Claude session is known for {tile}"));
     let ws = env.workspace()?.unwrap_or_else(empty_workspace);
-    let def = ws.terminals.iter().find(|d| d.id == tile);
-    match def.and_then(|d| d.claude.as_ref().map(|c| (d, c))) {
-        Some((d, c)) => {
-            let sid = fold.session_id.clone().unwrap_or_else(|| c.session_id.clone());
-            Ok((guess_path(&env.home, &d.cwd, &sid), Some(sid)))
-        }
-        None => Err(CliError::new("unknown", format!("no Claude session is known for {tile}"))),
-    }
+    let def = homed_defs(&ws, env.machine.as_deref()).into_iter().find(|d| d.id == tile).ok_or_else(unknown)?;
+    let c = def.claude.as_ref().ok_or_else(unknown)?;
+    let sid = fold.session_id.clone().unwrap_or_else(|| c.session_id.clone());
+    let path = guess_path(&env.home, &def.cwd, &sid).ok_or_else(unknown)?;
+    Ok((path, Some(sid)))
 }
 
 /// Reads complete lines from `offset` on and feeds them to the normaliser. Returns the changes,
@@ -485,7 +532,7 @@ pub fn transcript(
     follow: bool,
     out: &mut dyn Write,
 ) -> Result<(), CliError> {
-    let (mut path, _) = transcript_path(env, tile)?;
+    let (mut path, mut session) = transcript_path(env, tile)?;
     let mut n = Normaliser::new();
     let (_, mut offset) = read_new(&path, 0, &mut n);
     let views = n.views();
@@ -508,18 +555,22 @@ pub fn transcript(
             if let Ok((p, s)) = transcript_path(env, tile) {
                 if p != path {
                     path = p;
+                    session = s;
                     n = Normaliser::new();
                     offset = 0;
-                    if !emit(out, &json!({"v": 1, "type": "session", "sessionId": s})) {
+                    if !emit(out, &json!({"v": 1, "type": "session", "sessionId": session})) {
                         return Ok(());
                     }
                 }
             }
         }
         if file_len(&path) < offset {
-            // Rewritten in place: start over.
+            // Rewritten in place: start over, telling the reader to drop what it has.
             n = Normaliser::new();
             offset = 0;
+            if !emit(out, &json!({"v": 1, "type": "session", "sessionId": session})) {
+                return Ok(());
+            }
         }
         let (changes, next) = read_new(&path, offset, &mut n);
         offset = next;

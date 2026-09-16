@@ -863,8 +863,15 @@ fn send_types_a_bracketed_paste_then_enter() {
     assert_eq!(std::fs::read(&cap).unwrap(), expected);
 }
 
-const DIALOG_SH: &str = r#"printf '%s\n' '' '────────────────────────────' ' Bash command' '' '   npm test' '   Run the tests' '' ' Do you want to proceed?' ' ❯ 1. Yes' "   2. Yes, and don't ask again for npm test commands in /p" '   3. No' '' ' Esc to cancel · Tab to amend'
-stty raw -echo
+/// Prints a Claude-style permission dialog.
+const DIALOG_PRINT: &str = r#"printf '%s\n' '' '────────────────────────────' ' Bash command' '' '   npm test' '   Run the tests' '' ' Do you want to proceed?' ' ❯ 1. Yes' "   2. Yes, and don't ask again for npm test commands in /p" '   3. No' '' ' Esc to cancel · Tab to amend'
+"#;
+
+/// Shows the dialog and reports the one key it gets. The terminal is raw (with output processing
+/// kept, so the lines still start at the left) before the dialog appears, so no answer can arrive
+/// while it is still line-buffered.
+const DIALOG_SH: &str = r#"stty raw -echo opost
+printf '%s\n' '' '────────────────────────────' ' Bash command' '' '   npm test' '   Run the tests' '' ' Do you want to proceed?' ' ❯ 1. Yes' "   2. Yes, and don't ask again for npm test commands in /p" '   3. No' '' ' Esc to cancel · Tab to amend'
 c=$(dd bs=1 count=1 2>/dev/null)
 stty sane
 printf '\033[2J\033[H'
@@ -918,6 +925,51 @@ fn pending_answer_key_and_output_against_a_fake_dialog() {
 }
 
 #[test]
+fn a_dialog_that_is_not_live_is_never_answered() {
+    let h = home("stale-dialog");
+    let socket = held(&h, "q1");
+    let print = h.path.join("print.sh");
+    std::fs::write(&print, DIALOG_PRINT).unwrap();
+    let c = tool_client(&socket);
+    let ignored = |why: &str| {
+        let (code, v) = tool_env(&h.path, &["answer", "q1", "yes"], MINI);
+        assert_eq!((code, v["ignored"].as_bool()), (0, Some(true)), "{why}: {v}");
+    };
+
+    // Quoted in output, with the shell's prompt and more output below it.
+    c.write(format!("sh '{}'; echo quoted-done\n", print.display()).as_bytes()).unwrap();
+    assert!(wait_until(|| screen_has(&c, "quoted-done")));
+    let (_, p) = tool_env(&h.path, &["pending", "q1"], MINI);
+    assert!(p["pending"].is_null(), "{p}");
+    ignored("quoted");
+
+    // Scrolled off the screen.
+    c.write(b"clear; i=0; while [ $i -lt 40 ]; do echo; i=$((i+1)); done; echo scrolled-done\n").unwrap();
+    c.write(format!("sh '{}'; i=0; while [ $i -lt 40 ]; do echo; i=$((i+1)); done; echo scrolled-done2\n", print.display()).as_bytes()).unwrap();
+    assert!(wait_until(|| screen_has(&c, "scrolled-done2")));
+    let (_, p) = tool_env(&h.path, &["pending", "q1"], MINI);
+    assert!(p["pending"].is_null(), "{p}");
+    ignored("scrolled");
+
+    // Live on screen, but the hook log says Claude is working, not waiting.
+    std::fs::create_dir_all(h.path.join(".swarmz/agents")).unwrap();
+    std::fs::write(h.path.join(".swarmz/agents/events.log"), "2026-09-16T10:00:00Z\tq1\tUserPromptSubmit\t{}\n").unwrap();
+    let script = h.path.join("dialog.sh");
+    std::fs::write(&script, DIALOG_SH).unwrap();
+    c.write(format!("clear; sh '{}'\n", script.display()).as_bytes()).unwrap();
+    assert!(wait_until(|| !tool_env(&h.path, &["pending", "q1"], MINI).1["pending"].is_null()));
+    let (_, v) = tool_env(&h.path, &["answer", "q1", "yes"], MINI);
+    assert_eq!((v["ignored"].as_bool(), v["reason"].as_str()), (Some(true), Some("Claude is not waiting for an answer")), "{v}");
+    // Once a permission request is logged, the same dialog is answered.
+    let mut f = std::fs::OpenOptions::new().append(true).open(h.path.join(".swarmz/agents/events.log")).unwrap();
+    use std::io::Write as _;
+    writeln!(f, "2026-09-16T10:00:01Z\tq1\tPermissionRequest\t{}", serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "npm test"}})).unwrap();
+    let (code, v) = tool_env(&h.path, &["answer", "q1", "yes"], MINI);
+    assert_eq!((code, v["answered"].as_bool()), (0, Some(true)), "{v}");
+    assert!(wait_until(|| screen_has(&c, "chose:1")));
+}
+
+#[test]
 fn output_follow_streams_updates_and_ends_with_exit() {
     let h = home("follow");
     let socket = held(&h, "f1");
@@ -948,7 +1000,13 @@ fn transcript_pages_follows_and_serves_images() {
     let sid = "5e2b8a52-0000-4000-8000-000000000001";
     write_ws(
         &h.path,
-        serde_json::json!([{"id": "c1", "name": "api", "cwd": "/p", "origin": "mini", "claude": {"enabled": true, "sessionId": sid, "skipPermissions": false, "started": true}}]),
+        serde_json::json!([
+            {"id": "c1", "name": "api", "cwd": "/p", "origin": "mini", "claude": {"enabled": true, "sessionId": sid, "skipPermissions": false, "started": true}},
+            {"id": "r1", "name": "remote", "cwd": "/p", "ssh": {"host": "me@studio"}, "claude": {"enabled": true, "sessionId": sid, "skipPermissions": false, "started": true}},
+            {"id": "o1", "name": "other", "cwd": "/p", "origin": "studio", "claude": {"enabled": true, "sessionId": sid, "skipPermissions": false, "started": true}},
+            {"id": "b1", "name": "bad", "cwd": "/p", "origin": "mini", "claude": {"enabled": true, "sessionId": "../../x", "skipPermissions": false, "started": true}},
+            {"id": "g1", "name": "guessed", "cwd": "/p", "origin": "mini", "claude": {"enabled": true, "sessionId": sid, "skipPermissions": false, "started": true}}
+        ]),
         serde_json::json!({}),
     );
     let tpath = h.path.join("t.jsonl");
@@ -981,6 +1039,13 @@ fn transcript_pages_follows_and_serves_images() {
     assert_eq!((code, missing["code"].as_str()), (1, Some("unknown")));
     let (code, bad) = tool_env(&h.path, &["image", "c1", "../x"], MINI);
     assert_eq!((code, bad["code"].as_str()), (1, Some("invalid")));
+    // Without a hook path, only this Mac's own tiles with a UUID session are guessed.
+    for tile in ["r1", "o1", "b1"] {
+        let (code, v) = tool_env(&h.path, &["transcript", tile], MINI);
+        assert_eq!((code, v["code"].as_str()), (1, Some("unknown")), "{tile} {v}");
+    }
+    let (code, v) = tool_env(&h.path, &["transcript", "g1"], MINI);
+    assert_eq!((code, v["messages"].as_array().map(Vec::len)), (0, Some(0)), "{v}");
 
     let out_path = h.path.join("t.out");
     let _child = KillOnDrop(
@@ -1003,6 +1068,14 @@ fn transcript_pages_follows_and_serves_images() {
     assert!(wait_until(|| read().contains("\"type\":\"message\"") && read().contains("reply two")), "{}", read());
     writeln!(f, "{}", asst("a2", serde_json::json!({"type": "tool_use", "id": "x", "name": "Bash", "input": {"command": "ls"}}))).unwrap();
     assert!(wait_until(|| read().contains("\"type\":\"update\"") && read().contains("Ran ls")), "{}", read());
+
+    // Rewritten in place (shorter): a session event, then everything again.
+    drop(f);
+    std::fs::write(&tpath, user("u9", serde_json::json!("rewritten")) + "\n").unwrap();
+    assert!(wait_until(|| read().contains("rewritten")), "{}", read());
+    let out = read();
+    let session_at = out.find(&format!("{{\"sessionId\":\"{sid}\",\"type\":\"session\",\"v\":1}}")).or_else(|| out.find("\"type\":\"session\"")).expect("a session event");
+    assert!(session_at < out.find("rewritten").unwrap(), "{out}");
 }
 
 #[test]
@@ -1016,6 +1089,11 @@ fn commands_on_a_missing_or_bad_tile_say_so() {
     assert_eq!((code, v["code"].as_str()), (1, Some("invalid")));
     let (code, v) = tool_env(&h.path, &["transcript", "nope"], MINI);
     assert_eq!((code, v["code"].as_str()), (1, Some("unknown")));
+    // `--summary` takes a value that starts with `--`, as a command can.
+    let (code, v) = tool_env(&h.path, &["answer", "nope", "yes", "--summary", "--force"], MINI);
+    assert_eq!((code, v["code"].as_str()), (1, Some("not_running")), "{v}");
+    let (code, v) = tool_env(&h.path, &["answer", "nope", "yes", "--summary"], MINI);
+    assert_eq!((code, v["code"].as_str()), (1, Some("usage")), "{v}");
     let (code, v) = tool_env(&h.path, &["output", "nope", "--lines", "0"], MINI);
     assert_eq!((code, v["code"].as_str()), (1, Some("usage")));
 }

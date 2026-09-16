@@ -108,7 +108,7 @@ pub fn startup_line(def: &TerminalDef) -> Option<String> {
 /// Whether the tile's Claude session has a transcript, so it must be resumed rather than
 /// started with its id again.
 pub fn session_started(home: &Path, def: &TerminalDef) -> bool {
-    def.claude.as_ref().is_some_and(|c| c.started || guess_path(home, &def.cwd, &c.session_id).exists())
+    def.claude.as_ref().is_some_and(|c| c.started || guess_path(home, &def.cwd, &c.session_id).is_some_and(|p| p.exists()))
 }
 
 pub fn empty_workspace() -> Workspace {
@@ -216,7 +216,7 @@ mod tests {
         let h = tmp("started");
         let d = def("a", Some(cc(false, false)), None);
         assert!(!session_started(&h, &d));
-        let path = crate::transcript::guess_path(&h, &d.cwd, &d.claude.as_ref().unwrap().session_id);
+        let path = crate::transcript::guess_path(&h, &d.cwd, &d.claude.as_ref().unwrap().session_id).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{}\n").unwrap();
         assert!(session_started(&h, &d));

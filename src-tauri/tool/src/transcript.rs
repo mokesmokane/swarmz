@@ -332,10 +332,14 @@ pub fn last_assistant_text(path: &Path, max: usize) -> Option<String> {
 }
 
 /// Where Claude keeps a session's transcript when no hook event has said: every character of the
-/// folder that is not a letter, digit or `-` becomes `-`.
-pub fn guess_path(home: &Path, cwd: &str, session_id: &str) -> PathBuf {
+/// folder that is not a letter, digit or `-` becomes `-`. None when the session id is not a UUID,
+/// so an id can never lead the path elsewhere.
+pub fn guess_path(home: &Path, cwd: &str, session_id: &str) -> Option<PathBuf> {
+    if !crate::util::valid_uuid(session_id) {
+        return None;
+    }
     let dir: String = cwd.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' }).collect();
-    home.join(".claude").join("projects").join(dir).join(format!("{session_id}.jsonl"))
+    Some(home.join(".claude").join("projects").join(dir).join(format!("{session_id}.jsonl")))
 }
 
 #[cfg(test)]
@@ -482,7 +486,10 @@ mod tests {
 
     #[test]
     fn guessed_paths_follow_claudes_project_naming() {
-        let p = guess_path(std::path::Path::new("/h"), "/Users/me/my.app/x_y", "abc");
-        assert_eq!(p, std::path::PathBuf::from("/h/.claude/projects/-Users-me-my-app-x-y/abc.jsonl"));
+        let sid = "5e2b8a52-0000-4000-8000-000000000001";
+        let p = guess_path(std::path::Path::new("/h"), "/Users/me/my.app/x_y", sid);
+        assert_eq!(p, Some(std::path::PathBuf::from(format!("/h/.claude/projects/-Users-me-my-app-x-y/{sid}.jsonl"))));
+        assert_eq!(guess_path(std::path::Path::new("/h"), "/p", "abc"), None);
+        assert_eq!(guess_path(std::path::Path::new("/h"), "/p", "../../x"), None);
     }
 }

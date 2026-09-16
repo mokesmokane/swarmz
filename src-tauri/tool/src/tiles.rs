@@ -132,7 +132,7 @@ fn rows_from(
                 fold.tool = None;
             }
             let transcript = fold.transcript_path.clone().map(PathBuf::from).or_else(|| {
-                claude.map(|c| guess_path(home, &def.cwd, fold.session_id.as_deref().unwrap_or(&c.session_id)))
+                claude.and_then(|c| guess_path(home, &def.cwd, fold.session_id.as_deref().unwrap_or(&c.session_id)))
             });
             let last_message = if claude.is_some() { transcript.as_deref().and_then(|p| last_assistant_text(p, 240)) } else { None };
             TileRow {

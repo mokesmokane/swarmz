@@ -93,6 +93,17 @@ pub fn parse_dialog(lines: &[String]) -> Option<Dialog> {
     Some(Dialog { heading, target, description, options })
 }
 
+/// The dialog Claude is showing now: its footer is on the screen (within the last `rows` lines)
+/// with nothing but blank lines below it. A dialog in scrollback, or quoted in output that has
+/// more below it, is not one.
+pub fn live_dialog(lines: &[String], rows: usize) -> Option<Dialog> {
+    let footer = lines.iter().rposition(|l| clean(l).starts_with("Esc to cancel"))?;
+    if footer < lines.len().saturating_sub(rows) || lines[footer + 1..].iter().any(|l| !clean(l).is_empty()) {
+        return None;
+    }
+    parse_dialog(lines)
+}
+
 pub fn resolve(choice: &str, d: &Dialog) -> Result<Answer, String> {
     let lower = |o: &Opt| o.label.to_lowercase();
     let always = |l: &str| l.contains("always") || l.contains("don't ask") || l.contains("allow all");
@@ -183,6 +194,25 @@ mod tests {
         assert_eq!(d.heading, "some output");
         assert_eq!(d.summary(), "Edit file");
         assert_eq!(d.options.len(), 2);
+    }
+
+    #[test]
+    fn only_a_dialog_at_the_bottom_of_the_screen_is_live() {
+        let rows = 24;
+        assert!(live_dialog(&real(), rows).is_some());
+        let mut blank_below = real();
+        blank_below.extend(["".to_string(), "   ".to_string()]);
+        assert!(live_dialog(&blank_below, rows).is_some());
+        // Output below the footer: the dialog was quoted or has been answered.
+        let mut more = real();
+        more.push("$ ls".to_string());
+        assert!(parse_dialog(&more).is_some());
+        assert!(live_dialog(&more, rows).is_none());
+        // Scrolled off the screen, even with only blank lines below.
+        let mut scrolled = real();
+        scrolled.extend(std::iter::repeat_n(String::new(), rows));
+        assert!(live_dialog(&scrolled, rows).is_none());
+        assert!(live_dialog(&[], rows).is_none());
     }
 
     #[test]
