@@ -351,6 +351,8 @@ function createEntry(id: string): Entry {
         // Even when a fallback already ended the replay, what precedes the marker is history.
         entry.replayBoundary = true;
         endRemoteReplay(entry);
+        // The attach may already be gone again (the shell is back in front).
+        resetModesIfShellIdle(id);
       }
       return true;
     }
@@ -375,6 +377,7 @@ function createEntry(id: string): Entry {
         if (size && (size.cols !== term.cols || size.rows !== term.rows)) term.resize(size.cols, size.rows);
         term.write(bytes, () => {
           entry.replaying = false;
+          resetModesIfShellIdle(id);
           if (size && entry.opened) {
             try {
               entry.fit.fit();
@@ -450,6 +453,20 @@ export function resetTerminalModes(id: string): void {
   endRemoteReplay(entry);
   const alternate = entry.term.buffer.active.type === "alternate";
   entry.term.write((alternate ? "\x1b[?1049l" : "") + TERMINAL_MODES_RESET);
+}
+
+/** After a replay: history can leave modes on (Claude's mouse tracking) that nothing running
+ * will turn off. If the tile's own shell is in front, reset them; a running program (Claude,
+ * vim, a live ssh) keeps the modes it set. An unanswered check changes nothing. */
+function resetModesIfShellIdle(id: string): void {
+  void Promise.resolve()
+    .then(() => ipc.terminalForegroundBusy(id))
+    .then(
+      (busy) => {
+        if (busy === false && entries.has(id)) resetTerminalModes(id);
+      },
+      () => {},
+    );
 }
 
 export function prepare(id: string): Promise<void> {

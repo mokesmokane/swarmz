@@ -3470,18 +3470,4 @@ describe("connection watchdog", () => {
     await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS * 2);
     expect(ipc.terminalForegroundBusy).not.toHaveBeenCalled();
   });
-
-  it("a rejoined tile whose ssh died gets its pane reset along with the card", async () => {
-    vi.mocked(ipc.loadWorkspace).mockResolvedValue({
-      version: 1,
-      terminals: [{ id: "r", name: "r", cwd: "/home/me", ssh: { host: "me@box", cwd: "/proj" }, claude: null, command: null }],
-      layout: { kind: "group", id: "g", tabs: ["r"], active: "r" },
-    } as Workspace);
-    vi.mocked(ipc.createTerminal).mockImplementation(async (id: string, cwd: string) => ({ id, name: "r", cwd, exited: null, error: null, existed: true }));
-    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
-    useStore.setState({ persistenceReady: false });
-    await useStore.getState().loadWorkspace();
-    await vi.waitFor(() => expect(useStore.getState().startupPending.r).toBe(true));
-    await vi.waitFor(() => expect(resetModes).toHaveBeenCalledWith("r"));
-  });
 });

@@ -100,6 +100,7 @@ vi.mock("./ipc", () => ({
     }),
     onExit: vi.fn(async () => () => {}),
     terminalCwd: vi.fn(async () => null),
+    terminalForegroundBusy: vi.fn(async () => true),
     setTerminalCwd: vi.fn(async (id: string, cwd: string) => ({ id, name: "x", cwd, exited: null, error: null })),
     pasteImageToRemote: vi.fn(async () => null as string | null),
     remoteTileInfo: vi.fn(async () => ({ running: false }) as { running: boolean; cwd?: string | null }),
@@ -1131,5 +1132,88 @@ describe("resetTerminalModes", () => {
 
   it("does nothing for an unknown tile", () => {
     expect(() => resetTerminalModes("nope")).not.toThrow();
+  });
+});
+
+describe("modes left on by replayed history", () => {
+  interface FakeTerm {
+    writes: Array<{ data: unknown; done?: () => void }>;
+    oscHandlers: Record<number, (data: string) => boolean>;
+  }
+  const enc = (t: string) => new TextEncoder().encode(t);
+  const MOUSE_ON = "\x1b[!p\x1b[?1003h\x1b[?1006hclaude ui";
+  const tile = (id: string, ssh = false) =>
+    useStore.setState({
+      terminals: { [id]: { id, name: id, cwd: "/", exited: null, error: null } },
+      order: [id],
+      settings: { [id]: { ssh: ssh ? { host: "me@box", cwd: "/p" } : null, claude: null, command: null, extra: {} } },
+    });
+  const resets = (t: FakeTerm) => t.writes.filter((w) => typeof w.data === "string" && (w.data as string).endsWith(TERMINAL_MODES_RESET));
+  beforeEach(() => {
+    vi.mocked(ipc.terminalForegroundBusy).mockReset();
+    vi.mocked(ipc.writeTerminal).mockClear();
+  });
+
+  it("resets them once the replay is parsed when the shell itself is in front", async () => {
+    tile("mr1");
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    await prepare("mr1");
+    const term = instances[instances.length - 1] as unknown as FakeTerm;
+    replayCallbacks.mr1(enc(MOUSE_ON), { cols: 80, rows: 24 });
+    expect(ipc.terminalForegroundBusy).not.toHaveBeenCalled(); // not before the replay is parsed
+    term.writes[term.writes.length - 1].done?.();
+    await vi.waitFor(() => expect(resets(term)).toHaveLength(1));
+    expect(ipc.terminalForegroundBusy).toHaveBeenCalledWith("mr1");
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+    dispose("mr1");
+  });
+
+  it("keeps them while a program (Claude, vim, a live ssh) is running", async () => {
+    tile("mr2");
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    await prepare("mr2");
+    const term = instances[instances.length - 1] as unknown as FakeTerm;
+    replayCallbacks.mr2(enc(MOUSE_ON), { cols: 80, rows: 24 });
+    term.writes[term.writes.length - 1].done?.();
+    await vi.waitFor(() => expect(ipc.terminalForegroundBusy).toHaveBeenCalledWith("mr2"));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(resets(term)).toHaveLength(0);
+    dispose("mr2");
+  });
+
+  it("keeps them when the check fails", async () => {
+    tile("mr3");
+    vi.mocked(ipc.terminalForegroundBusy).mockRejectedValue("no holder");
+    await prepare("mr3");
+    const term = instances[instances.length - 1] as unknown as FakeTerm;
+    replayCallbacks.mr3(enc(MOUSE_ON), { cols: 80, rows: 24 });
+    term.writes[term.writes.length - 1].done?.();
+    await vi.waitFor(() => expect(ipc.terminalForegroundBusy).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(resets(term)).toHaveLength(0);
+    dispose("mr3");
+  });
+
+  it("after a remote replay, resets only when the attach is already gone", async () => {
+    const remoteAttached = useStore.getState().remoteAttached;
+    useStore.setState({ remoteAttached: vi.fn(async () => {}) });
+    try {
+      tile("mr4", true);
+      await prepare("mr4");
+      const term = instances[instances.length - 1] as unknown as FakeTerm;
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      term.oscHandlers[1337]("swarmz-attach;new=0;end=1");
+      term.oscHandlers[1337]("swarmz-replay-end");
+      await vi.waitFor(() => expect(ipc.terminalForegroundBusy).toHaveBeenCalledTimes(1));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(resets(term)).toHaveLength(0);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+      term.oscHandlers[1337]("swarmz-attach;new=0;end=1");
+      term.oscHandlers[1337]("swarmz-replay-end");
+      await vi.waitFor(() => expect(resets(term)).toHaveLength(1));
+    } finally {
+      useStore.setState({ remoteAttached });
+      dispose("mr4");
+    }
   });
 });

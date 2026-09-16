@@ -204,8 +204,15 @@ The tool's `output` and `pending` commands (§4) use it; viewers do not.
   paste, focus reports, application cursor and keypad, cursor visibility,
   attributes, and the alternate screen when it is active), so moving the
   mouse no longer types reports into the local shell. The agent watcher's
-  liveness re-check reaches the same verdict. A rejoined tile whose ssh died
-  before this launch gets the same pane reset along with its card. **Closing** a remote tile closes both holders: the
+  liveness re-check reaches the same verdict.
+  **Replayed modes.** Replayed history can switch modes on (Claude's SGR
+  mouse tracking) that nothing will switch off when the program that set
+  them is gone. Once a replay is parsed, and after a remote replay's end
+  marker, the app asks the local holder whether a program has the
+  foreground: if the shell itself is in front (the ssh inside died before a
+  relaunch, or the attach ended right away), the same reset is applied; a
+  running program (Claude, vim, a live ssh) keeps its modes, and a failed
+  check changes nothing. **Closing** a remote tile closes both holders: the
   app ends the local one and, best effort and without waiting, runs
   `swarmz close <tile>` on the host over the shared ssh socket
   (`remote_tile_close`) when the host's tool is ready or the tile attached

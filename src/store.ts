@@ -719,10 +719,6 @@ async function openDefs(
       if (startupInFlight.has(id) || st.sshConnecting[id] || st.sshConnected[id]) return;
       if (startupLine(st.settings[id] ?? EMPTY_SETTINGS) === null) return;
       set((st) => ({ startupPending: { ...st.startupPending, [id]: true } }));
-      // The replay may have left the dead remote program's mouse tracking on in the pane.
-      void foregroundBusyOrNull(id).then((busy) => {
-        if (busy === false && useStore.getState().terminals[id] && !useStore.getState().sshConnected[id]) beforeSpawn.resetModes(id);
-      });
     });
   }
   return { anyFailed: failedCount > 0 };
