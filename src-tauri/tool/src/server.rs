@@ -330,9 +330,11 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
                 }
             }
             Some(Kind::Info) => {
+                // The screen lock alone, released before viewers are locked (lock order).
+                let bracketed_paste = Some(shared.screen.lock().unwrap().screen().bracketed_paste());
                 let info = match shared.session.get() {
-                    Some(s) => Info { cwd: s.cwd(), foreground_busy: s.foreground_busy(), foreground_command: s.foreground_command() },
-                    None => Info { cwd: None, foreground_busy: None, foreground_command: None },
+                    Some(s) => Info { cwd: s.cwd(), foreground_busy: s.foreground_busy(), foreground_command: s.foreground_command(), bracketed_paste },
+                    None => Info { cwd: None, foreground_busy: None, foreground_command: None, bracketed_paste },
                 };
                 let vs = shared.viewers.lock().unwrap();
                 if let Some(v) = vs.iter().find(|v| v.id == id) {
@@ -656,6 +658,11 @@ mod tests {
         let real = std::fs::canonicalize(&d).unwrap();
         assert_eq!(idle.cwd.as_deref(), Some(real.to_str().unwrap()));
         assert_eq!(idle.foreground_busy, Some(false));
+        assert_eq!(idle.bracketed_paste, Some(false));
+        a.send(b"printf '\\033[?2004h'; echo paste-on\n");
+        assert!(a.wait_for("paste-on", 5));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(ask(&mut a).bracketed_paste, Some(true));
         a.send(b"sleep 5\n");
         std::thread::sleep(Duration::from_millis(400));
         let busy = ask(&mut a);

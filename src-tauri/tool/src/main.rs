@@ -178,6 +178,7 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
                 "cwd": info.cwd,
                 "foregroundBusy": info.foreground_busy,
                 "foregroundCommand": info.foreground_command,
+                "bracketedPaste": info.bracketed_paste,
             })))
         }
         Some("close") => {

@@ -844,23 +844,37 @@ fn held(h: &TestHome, tile: &str) -> String {
     v["socket"].as_str().unwrap().to_string()
 }
 
-#[test]
-fn send_types_a_bracketed_paste_then_enter() {
-    let h = home("send");
-    let socket = held(&h, "s1");
-    let cap = h.path.join("cap.bin");
-    let want = swarmz_tool::input::paste_bytes("--hi there").unwrap();
-    let script = h.path.join("cap.sh");
-    std::fs::write(&script, format!("stty raw -echo\nprintf 'ready\\n'\ndd bs=1 count={} of='{}' 2>/dev/null\nstty sane\n", want.len() + 1, cap.display())).unwrap();
+/// Runs a script in the tile that reports exactly the next `len` bytes it is sent, with bracketed
+/// paste turned on first when `paste` is set, and returns what `send` delivered.
+fn capture_send(h: &TestHome, tile: &str, paste: bool, text: &str, len: usize) -> Vec<u8> {
+    let socket = held(h, tile);
+    let cap = h.path.join(format!("{tile}.bin"));
+    let script = h.path.join(format!("{tile}.sh"));
+    let on = if paste { "printf '\\033[?2004h'\n" } else { "" };
+    std::fs::write(&script, format!("stty raw -echo\n{on}printf 'ready\\n'\ndd bs=1 count={len} of='{}' 2>/dev/null\nprintf '\\033[?2004l'\nstty sane\n", cap.display())).unwrap();
     let c = tool_client(&socket);
     c.write(format!("sh '{}'\n", script.display()).as_bytes()).unwrap();
     assert!(wait_until(|| screen_has(&c, "ready")));
-    let (code, v) = tool_env(&h.path, &["send", "s1", "--", "--hi there"], MINI);
+    let (code, v) = tool_env(&h.path, &["send", tile, "--", text], MINI);
     assert_eq!((code, v["sent"].as_bool()), (0, Some(true)), "{v}");
-    assert!(wait_until(|| std::fs::metadata(&cap).map(|m| m.len() as usize == want.len() + 1).unwrap_or(false)));
+    assert!(wait_until(|| std::fs::metadata(&cap).map(|m| m.len() as usize == len).unwrap_or(false)));
+    std::fs::read(&cap).unwrap()
+}
+
+#[test]
+fn send_types_a_bracketed_paste_then_enter_for_a_program_that_asks() {
+    let h = home("send");
+    let want = swarmz_tool::input::paste_bytes("--hi there").unwrap();
     let mut expected = want.clone();
     expected.push(b'\r');
-    assert_eq!(std::fs::read(&cap).unwrap(), expected);
+    assert_eq!(capture_send(&h, "s1", true, "--hi there", want.len() + 1), expected);
+}
+
+#[test]
+fn send_types_plain_text_then_enter_into_a_shell() {
+    let h = home("send-raw");
+    let got = capture_send(&h, "s2", false, "echo\x1b hi", "echo hi".len() + 1);
+    assert_eq!(got, b"echo hi\r".to_vec());
 }
 
 /// Prints a Claude-style permission dialog.

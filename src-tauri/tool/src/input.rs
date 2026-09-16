@@ -16,9 +16,9 @@ pub fn key_bytes(name: &str) -> Option<&'static [u8]> {
     })
 }
 
-/// The text as one bracketed paste. Control characters other than newline and tab are removed,
-/// so the text can never end the paste early or send escape sequences of its own.
-pub fn paste_bytes(text: &str) -> Result<Vec<u8>, String> {
+/// The text with control characters other than newline and tab removed, so it can never end a
+/// paste early or send escape sequences of its own.
+pub fn typed_bytes(text: &str) -> Result<Vec<u8>, String> {
     if text.is_empty() {
         return Err("nothing to send".into());
     }
@@ -30,10 +30,21 @@ pub fn paste_bytes(text: &str) -> Result<Vec<u8>, String> {
         .chars()
         .filter(|&c| c == '\n' || c == '\t' || (c as u32 >= 0x20 && c as u32 != 0x7f))
         .collect();
+    Ok(body.into_bytes())
+}
+
+/// `typed_bytes` as one bracketed paste.
+pub fn paste_bytes(text: &str) -> Result<Vec<u8>, String> {
     let mut out = b"\x1b[200~".to_vec();
-    out.extend_from_slice(body.as_bytes());
+    out.extend(typed_bytes(text)?);
     out.extend_from_slice(b"\x1b[201~");
     Ok(out)
+}
+
+/// What `send` types: a bracketed paste unless the program has said it does not take one
+/// (`Some(false)`); a holder that cannot say (`None`) gets the paste.
+pub fn send_bytes(text: &str, bracketed_paste: Option<bool>) -> Result<Vec<u8>, String> {
+    if bracketed_paste == Some(false) { typed_bytes(text) } else { paste_bytes(text) }
 }
 
 #[cfg(test)]
@@ -59,5 +70,13 @@ mod tests {
         assert_eq!(paste_bytes("x\x1b[201~rm -rf\x07y").unwrap(), b"\x1b[200~x[201~rm -rfy\x1b[201~".to_vec());
         assert!(paste_bytes("").is_err());
         assert!(paste_bytes(&"a".repeat(MAX_SEND + 1)).is_err());
+    }
+
+    #[test]
+    fn text_is_pasted_only_when_the_program_takes_pastes() {
+        assert_eq!(send_bytes("a\x1bb\r\nc", Some(false)).unwrap(), b"ab\nc".to_vec());
+        assert_eq!(send_bytes("hi", Some(true)).unwrap(), b"\x1b[200~hi\x1b[201~".to_vec());
+        assert_eq!(send_bytes("hi", None).unwrap(), b"\x1b[200~hi\x1b[201~".to_vec());
+        assert!(send_bytes("", Some(false)).is_err());
     }
 }

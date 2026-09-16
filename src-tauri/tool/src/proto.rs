@@ -130,6 +130,9 @@ pub struct Info {
     pub cwd: Option<String>,
     pub foreground_busy: Option<bool>,
     pub foreground_command: Option<String>,
+    /// Whether the program on screen has turned bracketed paste on; None from older holders.
+    #[serde(default)]
+    pub bracketed_paste: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -184,9 +187,12 @@ mod tests {
         // A Welcome from a holder without the size fields still parses, with no size.
         let old: Welcome = serde_json::from_str(r#"{"v":1,"shellPid":null,"cwd":"/","startedAt":"t"}"#).unwrap();
         assert_eq!((old.cols, old.rows), (0, 0));
-        let i = Info { cwd: None, foreground_busy: Some(true), foreground_command: Some("sleep".into()) };
+        let i = Info { cwd: None, foreground_busy: Some(true), foreground_command: Some("sleep".into()), bracketed_paste: Some(true) };
         let v: serde_json::Value = serde_json::from_slice(&json(&i)).unwrap();
         assert_eq!(v["foregroundBusy"], true);
+        assert_eq!(v["bracketedPaste"], true);
+        let old: Info = serde_json::from_str(r#"{"cwd":null,"foregroundBusy":null,"foregroundCommand":null}"#).unwrap();
+        assert_eq!(old.bracketed_paste, None);
         assert_eq!(v["foregroundCommand"], "sleep");
         let h: Hello = serde_json::from_str(r#"{"v":1,"cols":80,"rows":24,"viewer":"window"}"#).unwrap();
         assert_eq!(h.viewer, "window");

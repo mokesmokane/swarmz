@@ -10,7 +10,7 @@ use crate::server::TOOL_VIEWER;
 use crate::agent::{fold_log, read_log, Fold};
 use crate::dialog::{live_dialog, resolve, Answer, Dialog};
 use crate::gate::{check, split_words};
-use crate::input::{key_bytes, paste_bytes};
+use crate::input::{key_bytes, send_bytes};
 use crate::phone::{add_key, authorized_keys, list_keys, machine_hosts, revoke, valid_device};
 use crate::proc::run_with_timeout;
 use crate::screen::{diff_lines, LinesUpdate};
@@ -372,8 +372,12 @@ pub fn restart(env: &Env, tile: &str) -> Result<Value, CliError> {
 }
 
 pub fn send(env: &Env, tile: &str, text: &str) -> Result<Value, CliError> {
-    let bytes = paste_bytes(text).map_err(|e| CliError::new("invalid", e))?;
+    send_bytes(text, None).map_err(|e| CliError::new("invalid", e))?;
     let c = connect_tool(env, tile)?;
+    // A paste only for a program that takes one: a shell without bracketed paste would type the
+    // markers as text. A holder that cannot say gets the paste, as before.
+    let mode = c.info(Duration::from_secs(3)).and_then(|i| i.bracketed_paste);
+    let bytes = send_bytes(text, mode).map_err(|e| CliError::new("invalid", e))?;
     c.write(&bytes).map_err(failed)?;
     // Enter separately, so the paste has been taken in before the line is submitted.
     std::thread::sleep(Duration::from_millis(50));
