@@ -1,8 +1,8 @@
 //! One function per subcommand (spec §4.1). `main.rs` parses arguments and prints.
 
 use crate::client::HolderClient;
-use crate::hold::{hold, CliError, HoldRequest};
-use crate::newtile::{add_def, claude_line, empty_workspace, list_folders, session_started, startup_line, unique_name, workspace_file};
+use crate::hold::{detach, hold, CliError, HoldRequest};
+use crate::newtile::{add_def, claude_line, empty_workspace, keep_def, kept_def_file, list_folders, session_started, startup_line, unique_name, workspace_file, KeptDef};
 use crate::paths::{live_session, pid_alive, read_meta, session_paths, sessions_dir_in, valid_tile_id};
 use crate::proto::{Hello, PROTOCOL_VERSION};
 use crate::screen::line_text;
@@ -347,14 +347,84 @@ pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&s
         let mut ws = ws.unwrap_or_else(empty_workspace);
         let name = unique_name(&base, &names(&ws));
         let def = TerminalDef { id: id.clone(), name, cwd: folder.to_string(), ssh: None, claude: Some(claude), command: None, extra: Map::new() };
-        add_def(&mut ws, def, &machine, &now_iso_ms());
-        save_to(&workspace_file(&env.home), &ws).map_err(failed)
+        add_def(&mut ws, def.clone(), &machine, &now_iso_ms());
+        save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
+        Ok(def)
     });
-    if let Err(e) = recorded {
-        end_session(env, &id, pid);
-        return Err(e);
-    }
+    let def = match recorded {
+        Ok(def) => def,
+        Err(e) => {
+            end_session(env, &id, pid);
+            return Err(e);
+        }
+    };
+    // Best effort: the tile is recorded either way.
+    let _ = start_keep_def(env, &KeptDef { machine, def });
     row(env, &id)
+}
+
+/// How long, and how often, a new tile's def is watched after `new` (spec §4.5).
+const KEEP_DEF_FOR: Duration = Duration::from_secs(30);
+const KEEP_DEF_EVERY: Duration = Duration::from_secs(1);
+
+/// Hands the def to a detached `__keep-def` helper: an app that saves an older copy of the
+/// workspace in the next moments would otherwise drop the tile `new` just recorded.
+fn start_keep_def(env: &Env, kept: &KeptDef) -> Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = kept_def_file(&env.sessions(), &kept.def.id);
+    let text = serde_json::to_vec(kept).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&file);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&file)
+        .and_then(|mut f| f.write_all(&text))
+        .map_err(|e| e.to_string())?;
+    let mut cmd = std::process::Command::new(&env.exe);
+    cmd.arg("__keep-def")
+        .arg(&kept.def.id)
+        .current_dir("/")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    detach(&mut cmd);
+    match cmd.spawn() {
+        Ok(mut child) => {
+            // Reaped if it ends while we are still here; otherwise launchd adopts it.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&file);
+            Err(e.to_string())
+        }
+    }
+}
+
+/// The `__keep-def <tile>` helper: reads (and, when done, removes) the def `new` left for it
+/// and keeps it in the workspace while the session runs.
+pub fn keep_def_main(home: &Path, tile: &str) -> Result<(), CliError> {
+    struct Remove(PathBuf);
+    impl Drop for Remove {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let sessions = sessions_dir_in(home);
+    let file = kept_def_file(&sessions, tile);
+    let _remove = Remove(file.clone());
+    let kept: KeptDef = std::fs::read(&file)
+        .map_err(failed)
+        .and_then(|b| serde_json::from_slice(&b).map_err(failed))?;
+    if kept.def.id != tile {
+        return Err(CliError::new("invalid", "the kept def is for another tile"));
+    }
+    let paths = session_paths(&sessions, tile).map_err(|e| CliError::new("invalid", e))?;
+    keep_def(&workspace_file(home), &kept, KEEP_DEF_FOR, KEEP_DEF_EVERY, &|| live_session(&paths).is_some());
+    Ok(())
 }
 
 pub fn restart(env: &Env, tile: &str) -> Result<Value, CliError> {

@@ -1,11 +1,12 @@
 //! Tiles the phone creates or restarts on this Mac (spec §4.5, §4.1 `folders`, `restart`).
 
 use crate::transcript::guess_path;
-use crate::util::valid_abs_path;
-use crate::workspace::{ClaudeConfig, TerminalDef, Workspace};
-use serde::Serialize;
+use crate::util::{now_iso_ms, valid_abs_path};
+use crate::workspace::{load_from, read_from, save_to, ClaudeConfig, TerminalDef, Workspace};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Listing {
@@ -127,6 +128,52 @@ pub fn add_def(ws: &mut Workspace, mut def: TerminalDef, self_machine: &str, now
     ws.extra.insert("sync".into(), json!({"revision": revision, "updatedAt": now, "updatedBy": self_machine}));
 }
 
+/// What `new` hands its keep-def helper (spec §4.5), in `~/.swarmz/sessions/<id>.def.json`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeptDef {
+    pub machine: String,
+    pub def: TerminalDef,
+}
+
+pub fn kept_def_file(sessions: &Path, tile: &str) -> PathBuf {
+    sessions.join(format!("{tile}.def.json"))
+}
+
+/// For `for_how_long`, checks the workspace file every `every`: while `live()` says the tile's
+/// session is running, a def that has gone missing (an app that saved an older copy over the
+/// file) is added back from a fresh read, with a revision bump. Stops early once the session has
+/// ended. Returns how many times the def was added back.
+pub fn keep_def(path: &Path, kept: &KeptDef, for_how_long: Duration, every: Duration, live: &dyn Fn() -> bool) -> usize {
+    let deadline = Instant::now() + for_how_long;
+    let mut added = 0;
+    let has = |ws: &Workspace| ws.terminals.iter().any(|t| t.id == kept.def.id);
+    while Instant::now() < deadline {
+        std::thread::sleep(every);
+        if !live() {
+            break;
+        }
+        match read_from(path) {
+            Ok(Some(ws)) if has(&ws) => continue,
+            Ok(_) => {}
+            // Unreadable right now: never write over it.
+            Err(_) => continue,
+        }
+        let Ok(ws) = load_from(path) else { continue };
+        let mut ws = ws.unwrap_or_else(empty_workspace);
+        if has(&ws) || !live() {
+            continue;
+        }
+        let taken: Vec<String> = ws.terminals.iter().map(|t| t.name.clone()).collect();
+        let mut def = kept.def.clone();
+        def.name = unique_name(&def.name, &taken);
+        add_def(&mut ws, def, &kept.machine, &now_iso_ms());
+        if save_to(path, &ws).is_ok() {
+            added += 1;
+        }
+    }
+    added
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,6 +267,50 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{}\n").unwrap();
         assert!(session_started(&h, &d));
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn a_kept_def_is_added_back_while_the_session_lives() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let h = tmp("keep");
+        let path = workspace_file(&h);
+        let kept = KeptDef { machine: "mini".into(), def: def("k1", Some(cc(false, false)), None) };
+        let mut ws = empty_workspace();
+        add_def(&mut ws, kept.def.clone(), "mini", "t0");
+        crate::workspace::save_to(&path, &ws).unwrap();
+        let live = Arc::new(AtomicBool::new(true));
+        let (p, k, l) = (path.clone(), kept.clone(), live.clone());
+        let started = Instant::now();
+        let helper = std::thread::spawn(move || keep_def(&p, &k, Duration::from_secs(10), Duration::from_millis(30), &|| l.load(Ordering::SeqCst)));
+        std::thread::sleep(Duration::from_millis(150));
+        // An app saves its older copy, without the new tile (and with a name that now clashes).
+        let older = json!({"version": 1, "layout": null, "terminals": [{"id": "x", "name": "k1", "cwd": "/"}], "sync": {"revision": 7, "updatedAt": "t", "updatedBy": "air"}});
+        std::fs::write(&path, older.to_string()).unwrap();
+        let back = || crate::workspace::read_from(&path).ok().flatten().filter(|ws| ws.terminals.iter().any(|t| t.id == "k1"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while back().is_none() {
+            assert!(Instant::now() < deadline, "the def was never added back");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let ws = back().unwrap();
+        let k1 = ws.terminals.iter().find(|t| t.id == "k1").unwrap();
+        assert_eq!((k1.name.as_str(), k1.extra["origin"].as_str()), ("k1-2", Some("mini")));
+        assert_eq!((ws.extra["sync"]["revision"].as_u64(), ws.extra["sync"]["updatedBy"].as_str()), (Some(8), Some("mini")));
+        assert_eq!(ws.terminals.len(), 2);
+        // The session ends: the helper stops long before its time is up.
+        live.store(false, Ordering::SeqCst);
+        assert_eq!(helper.join().unwrap(), 1);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // Once ended, a missing def stays missing.
+        std::fs::write(&path, older.to_string()).unwrap();
+        assert_eq!(keep_def(&path, &kept, Duration::from_millis(200), Duration::from_millis(20), &|| false), 0);
+        assert!(back().is_none());
+        // And a broken file is never written over.
+        std::fs::write(&path, "{ broken").unwrap();
+        assert_eq!(keep_def(&path, &kept, Duration::from_millis(200), Duration::from_millis(20), &|| true), 0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ broken");
         let _ = std::fs::remove_dir_all(&h);
     }
 

@@ -70,6 +70,9 @@ function resumedSessionIn(line: string): string | null {
 export const SSH_POLL_MS = 500;
 export const SSH_POLL_TIMEOUT_MS = 120_000;
 export const SSH_SETTLE_MS = 300;
+/** A session started this recently may still be one `swarmz new` is recording (its keep-def
+ * helper watches for 30 s), so it is never offered as running outside the workspace. */
+export const OUTSIDE_SETTLE_MS = 120_000;
 /** How often a connected ssh tile checks that its ssh still owns the terminal. */
 export const SSH_WATCHDOG_MS = 3_000;
 
@@ -1642,7 +1645,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     } catch {
       return;
     }
-    const settled = Date.now() - 60_000;
+    const settled = Date.now() - OUTSIDE_SETTLE_MS;
     const s = useStore.getState();
     const ids = rows
       .filter((r) => r.running && !r.known && !s.terminals[r.id] && r.startedAt !== null && Date.parse(r.startedAt) < settled)

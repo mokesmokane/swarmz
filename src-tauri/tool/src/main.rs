@@ -249,6 +249,12 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             let code = run_holder(cfg)?;
             std::process::exit(code.unwrap_or(0));
         }
+        Some("__keep-def") => {
+            a.expect_positional(2, "__keep-def <tile>")?;
+            let tile = cmd::tile_arg(&tile_arg(&a)?)?;
+            cmd::keep_def_main(&home_dir(), &tile)?;
+            Ok(None)
+        }
         Some("ls") => {
             a.expect_positional(1, "ls")?;
             Ok(Some(cmd::ls(&cmd::Env::from_process()?)?))

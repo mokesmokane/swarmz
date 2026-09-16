@@ -3479,6 +3479,7 @@ describe("connection watchdog", () => {
 describe("sessions outside the workspace", () => {
   const old = new Date(Date.now() - 5 * 60_000).toISOString();
   const fresh = new Date().toISOString();
+  const ninetySeconds = new Date(Date.now() - 90_000).toISOString();
   const row = (id: string, extra: Partial<import("./lib/ipc").SessionRow> = {}) => ({
     id, name: id, running: true, pid: 1, startedAt: old, exitedAt: null, exitCode: null, known: false, ...extra,
   });
@@ -3491,6 +3492,7 @@ describe("sessions outside the workspace", () => {
       row("open1"),
       row("dead", { running: false }),
       row("new1", { startedAt: fresh }),
+      row("new2", { startedAt: ninetySeconds }),
     ]);
     await useStore.getState().refreshOutsideSessions();
     expect(useStore.getState().outsideSessions).toEqual(["orphan"]);

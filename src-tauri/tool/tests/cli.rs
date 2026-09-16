@@ -767,6 +767,43 @@ fn new_tiles_are_held_typed_and_recorded_and_restart_brings_them_back() {
 }
 
 #[test]
+fn a_new_tile_s_def_is_kept_while_its_session_starts() {
+    let h = home("keepdef");
+    let proj = h.path.join("kproj");
+    std::fs::create_dir_all(&proj).unwrap();
+    write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
+    let (code, v) = tool_env(&h.path, &["new", "--folder", proj.to_str().unwrap()], MINI);
+    let id = v["tile"]["id"].as_str().unwrap_or_default().to_string();
+    let sessions = h.path.join(".swarmz/sessions");
+    let paths = swarmz_tool::paths::session_paths(&sessions, &id).unwrap();
+    h.track(paths.socket.to_str().unwrap());
+    assert_eq!(code, 0, "{v}");
+    let kept = sessions.join(format!("{id}.def.json"));
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&kept).map(|m| m.permissions().mode() & 0o777);
+        assert_eq!(mode.ok(), Some(0o600));
+    }
+    let ws_file = h.path.join(".swarmz/workspace.json");
+    let has_def = || std::fs::read_to_string(&ws_file).unwrap_or_default().contains(&id);
+    assert!(has_def());
+    // An app saves its older copy over the file: the helper puts the tile back.
+    write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
+    assert!(!has_def());
+    assert!(wait_until(has_def), "the def was not added back");
+    // The session ends: the helper stops and removes its copy of the def.
+    let (_, closed) = tool_env(&h.path, &["close", &id], MINI);
+    assert_eq!(closed["closed"], true);
+    assert!(wait_until(|| !kept.exists()), "the helper did not stop");
+    write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!has_def());
+    // The helper's file is never mistaken for a session.
+    let (_, s) = tool_env(&h.path, &["sessions"], MINI);
+    assert!(s["sessions"].as_array().unwrap().iter().all(|r| r["id"] == id.as_str()), "{s}");
+}
+
+#[test]
 fn folders_and_machines() {
     let h = home("folders");
     std::fs::create_dir_all(h.path.join("b")).unwrap();
@@ -1198,6 +1235,7 @@ fn the_gate_runs_only_allowed_commands() {
         "swarmz 'unterminated",
         "",
         "swarmz hold t1",
+        "swarmz __keep-def t1",
         "swarmz ssh-gate",
         "/tmp/swarmz version",
     ] {

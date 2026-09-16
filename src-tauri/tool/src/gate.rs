@@ -141,6 +141,7 @@ mod tests {
             "swarmz sessions",
             "swarmz prune",
             "swarmz __holder t1",
+            "swarmz __keep-def t1",
             "swarmz ssh-gate",
             "swarmz",
             "sh -c id",
