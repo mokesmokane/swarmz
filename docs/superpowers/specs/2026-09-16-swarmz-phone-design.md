@@ -271,19 +271,19 @@ each carrying `"v": 1`. Failures exit non-zero with
 | `version` | `{v, tool, protocol, build}` |
 | `machines` | `[{name, alias, color, online, self}]` from `workspace.json` machines and `tailscale status` (with `TERM` set) |
 | `ls` | tiles homed on this Mac: `[{id, name, cwd, kind: "claude"\|"shell", running, exitCode, status, needs, since, lastEvent, mode, lastMessage, turnEndedAt, sessionId, summary}]` |
-| `watch` | stream: a full `ls` snapshot first, then `{type:"tile", tile:{…}}` on every change, `{type:"gone", id}` when a tile is closed, and `{type:"ping"}` every 25 s |
+| `watch` | stream: a full `ls` snapshot first, then `{type:"tile", tile:{…}}` on every change, `{type:"gone", id}` when a tile is closed, and `{type:"ping"}` every 25 s; re-folds the hook log only when `events.log`'s or `events.log.1`'s size or mtime changes, and keeps the rows it had — rather than reporting every tile gone — when `workspace.json` cannot be read |
 | `sessions` | every session under `~/.swarmz/sessions`, running or not: `[{id, name, running, pid, startedAt, exitedAt, exitCode, known}]`, where `known` means the id is in `workspace.json` |
 | `prune` | removes the files of sessions that are not running and whose files are all older than 7 days; `{removed}` |
 | `transcript <tile> [--before <id>] [--after <id>] [--limit 50] [--follow]` | normalised messages (§4.3) |
 | `image <tile> <imageId>` | `{mime, base64}` |
 | `output <tile> [--lines 200] [--follow]` | styled lines from `Screen` (§3.4); `--follow` emits replaced and appended lines |
-| `send <tile> [--] <text>` | types the text as a bracketed paste, then Enter as a separate write 50 ms later; everything after a lone `--` is text, never an option, so a command that itself starts with `--` can be sent |
+| `send <tile> [--] <text>` | types the text as a bracketed paste, then Enter as a separate write 50 ms later; everything after a lone `--` is text, never an option, so a command that itself starts with `--` can be sent; the pasted text keeps only newline, tab and printable characters, so it can never end the paste early or smuggle escape sequences of its own |
 | `key <tile> <name>` | one of `esc`, `ctrl-c`, `tab`, `shift-tab`, `up`, `down`, `enter` |
 | `pending <tile>` | `{tool, summary, options:[{n, label}]}` or `null` (§4.4) |
 | `answer <tile> <yes\|always\|no\|deny\|n> [--summary <text>]` | selects that option if the same question is still pending (§4.4); otherwise `{ignored:true, reason}`. With `--summary`, the answer applies only if the pending question's summary still equals it (the value may itself start with `--`); notification actions pass it |
-| `folders [<path>]` | `{path, parent, dirs}` (same rules as the desktop folder picker) |
+| `folders [<path>]` | `{path, parent, dirs}` (same rules as the desktop folder picker); a path containing a `.` or `..` segment is refused |
 | `new --folder <dir> [--skip-permissions] [--name <name>]` | the new tile, §4.5 |
-| `restart <tile>` | holds a fresh session for a tile that is not running and types its startup step (Claude tiles resume their session); returns the tile |
+| `restart <tile>` | holds a fresh session for a tile that is not running and types its startup step (Claude tiles resume their session); refuses (`running`) a tile that is already running, including one another `hold`/`restart` started concurrently; returns the tile |
 | `phone add --name <device> --key <pubkey>` / `phone ls` / `phone revoke <device>` | §7.2 |
 
 ### 4.2 Status
@@ -318,7 +318,11 @@ the two implementations cannot drift.
 
 ### 4.3 Transcript normalisation
 
-From the session's `transcript_path` (known from `SessionStart`):
+From the session's `transcript_path` (known from `SessionStart`), or, for a
+tile the hook log has never reported one for, a guessed path — and only
+when the tile is one of this Mac's own homed defs and its Claude session id
+is UUID-shaped (an ssh tile's, or another Mac's, transcript is never
+guessed at):
 
 - Kept: user text (including slash commands), assistant text, user images.
 - Tool use and tool results are grouped into `tools: [{name, summary, ok}]`
@@ -374,28 +378,43 @@ From the session's `transcript_path` (known from `SessionStart`):
   label (`yes`, `always`, `no`) or a number, resolves it against the options
   currently on screen, checks the same dialog is still showing, and sends
   that digit. `answer <tile> deny` sends Esc, which always cancels the
-  request; notification **Deny** actions use it. When the tile has hook
-  events at all, `answer` is ignored (`{ignored:true, reason}`) unless the
-  fold says Claude is waiting (`needs` set) — a dialog that merely looks
-  live cannot be answered on the fold's say-so alone. `--summary <text>`
-  (which may itself start with `--`) makes the answer apply only when the
-  pending question's summary still equals it, so a stale phone screen can
-  never answer the wrong question; notification actions always pass it.
+  request; notification **Deny** actions use it. `answer` returns
+  `{ignored:true, reason}`, never an error, in three cases: `"no question is
+  showing"` (nothing is pending), `"a different question is showing"` (the
+  dialog changed under it, or `--summary` no longer matches), and,
+  whenever the tile has any hook events at all, `"Claude is not waiting for
+  an answer"` unless the fold says otherwise (`needs` set) — a dialog that
+  merely looks live on screen cannot be answered on that alone. `--summary
+  <text>` (which may itself start with `--`) makes the answer apply only
+  when the pending question's summary still equals it, so a stale phone
+  screen can never answer the wrong question; notification actions always
+  pass it.
 
 ### 4.5 New sessions
 
 `new` on the tile's home Mac:
 
-1. creates a tile id and a Claude session id (UUIDs) and a unique name
-   (folder basename, `-2`, `-3` … on collision with names in the workspace);
-2. holds a session in `--folder` and types
-   `claude [--dangerously-skip-permissions] --session-id <id>` into it;
-3. adds the def to `~/.swarmz/workspace.json` with `origin` = this Mac,
-   `claude.started = false`, bumps `sync.revision` (`updatedBy` = this Mac),
-   and writes atomically.
+1. creates a tile id and a Claude session id (UUIDs) and a tentative unique
+   name (folder basename, `-2`, `-3` … on collision with names already in
+   the workspace; names, including any `-N` suffix, stay within 64
+   characters);
+2. holds a session in `--folder` under that tentative name and types
+   `claude [--dangerously-skip-permissions] --session-id <id>` into it —
+   before the workspace names the tile, so an app that adopts the new
+   session while it is still starting finds it already running and never
+   types a second Claude line;
+3. re-reads `~/.swarmz/workspace.json` (so a change made while the session
+   started is kept), and only then records the def there — its final name
+   and the `sync.revision` it bumps both come from that fresh read, not the
+   read `new` started from — with `origin` = this Mac and
+   `claude.started = false`, and writes atomically.
 
-A running swarmz app notices the change through its existing external-change
-check, adopts it and pushes it to peers.
+A failure at step 3 ends the session step 2 started rather than leaving an
+unrecorded holder running. A running swarmz app notices the change through
+its existing external-change check, adopts it and pushes it to peers.
+`restart` (§4.1) refuses a tile whose session is already running, including
+one another `new`/`hold`/`restart` started concurrently, so two starts for
+the same tile never race.
 
 ### 4.6 Desktop changes in this sub-project
 
@@ -590,9 +609,32 @@ off, notification kinds, dictation language, revoke this phone.
    its existing ssh, and prints which Macs accepted it.
 5. The phone learns the other Macs from `machines` and connects with its key.
 
+A device name is letters, digits, single inner spaces (never leading,
+trailing or doubled), `.`, `_` and `-`, up to 40 characters. Adding a key
+that is already present on some other, unrestricted `authorized_keys` line
+is an error ("this key is already present without the swarmz restriction")
+rather than being added a second time — that copy would not actually be
+locked to the gate. A read error on `authorized_keys` other than the file
+being missing (permission denied, say) is never treated as "no keys, start
+fresh": nothing is rewritten. `phone ls` and `phone revoke` only ever act on
+fully gated lines — the exact options prefix above, an `ssh-ed25519` key and
+a `swarmz-phone:<device>` tag — so a look-alike line missing the options
+prefix is listed by neither and removed by neither.
+
 Keys do not expire. `phone revoke <device>` (and a "Phones" list in swarmz
 settings) removes the line on every reachable Mac. Pairing requires swarmz to
 have run once on the first Mac (so the tool is installed).
+
+`phone add`/`phone revoke`'s fan-out to the other Macs in `machines` runs,
+for each, `ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlPath=~/.swarmz/ssh/%C -o ControlMaster=no -- <user>@<machine> …`
+on its own thread, so the whole fan-out takes about as long as one ssh call
+(15 s) rather than their sum; a configured or default username that does
+not match `^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$` is skipped rather than used.
+Each machine's error is cut to 200 characters before it comes back. When
+`workspace.json` itself cannot be read, the whole command fails (`failed`)
+with "added here; could not reach the other Macs: …" (`phone revoke`:
+"revoked here; …") — the local change already applied, so this is never
+reported as a clean, empty fan-out.
 
 ## 8. Background link and alerts
 
