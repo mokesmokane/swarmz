@@ -12,6 +12,7 @@ pub mod ring;
 pub mod screen;
 pub mod server;
 pub mod tailscale;
+pub mod tiles;
 pub mod transcript;
 pub mod util;
 pub mod workspace;
