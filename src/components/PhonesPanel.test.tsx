@@ -32,4 +32,16 @@ describe("PhonesPanel", () => {
     render(<PhonesPanel onClose={() => {}} />);
     expect(await screen.findByText("denied")).toBeTruthy();
   });
+
+  it("reloads the list and keeps the error when the fan-out fails after revoking locally", async () => {
+    render(<PhonesPanel onClose={() => {}} />);
+    expect(await screen.findByText("Galaxy Fold")).toBeTruthy();
+    vi.mocked(ipc.revokePhone).mockRejectedValueOnce("revoked here; could not reach the other Macs: not reachable (failed)");
+    vi.mocked(ipc.phones).mockResolvedValueOnce([]);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    });
+    expect(await screen.findByText("revoked here; could not reach the other Macs: not reachable (failed)")).toBeTruthy();
+    expect(await screen.findByText("No phones paired")).toBeTruthy();
+  });
 });

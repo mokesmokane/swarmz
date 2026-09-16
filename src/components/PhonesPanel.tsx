@@ -28,6 +28,10 @@ export function PhonesPanel({ onClose }: { onClose: () => void }) {
       setFailures(r.machines.filter((m) => !m.ok));
       await load();
     } catch (e) {
+      // The tool revokes locally before it fans out, so the key is gone even when this
+      // rejects (a fan-out failure): reload the list, then restore the error message load()
+      // may have cleared.
+      await load();
       setError(typeof e === "string" ? e : String(e));
     } finally {
       setBusy(null);

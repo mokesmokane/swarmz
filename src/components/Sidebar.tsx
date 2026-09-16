@@ -61,6 +61,9 @@ function OutsideSessionsLine() {
           Close them
         </button>
       )}
+      {error && (
+        <button className="text-neutral-500 hover:text-neutral-200" onClick={() => setError(null)} title="Dismiss">×</button>
+      )}
     </div>
   );
 }

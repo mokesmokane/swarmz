@@ -222,4 +222,16 @@ describe("sessions outside the workspace", () => {
     });
     expect(await screen.findByText("No phones paired")).toBeTruthy();
   });
+
+  it("dismisses a stale close error", async () => {
+    useStore.setState({ outsideSessions: ["o1"] });
+    vi.mocked(ipc.closeSession).mockRejectedValueOnce("nope");
+    render(<Sidebar />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Close them" }));
+    });
+    expect(screen.getByText("could not close o1: nope")).toBeTruthy();
+    fireEvent.click(screen.getByTitle("Dismiss"));
+    expect(screen.queryByText("could not close o1: nope")).toBeNull();
+  });
 });
