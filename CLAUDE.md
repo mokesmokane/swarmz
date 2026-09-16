@@ -17,7 +17,8 @@ npx vitest run src/store.test.ts            # single test file
 npx vitest run -t "adopts the peer file"    # single test by name
 npm run typecheck            # tsc --noEmit
 npm run build                # tsc && vite build (frontend only)
-cd src-tauri && cargo test   # Rust unit tests
+npm run build:tool:debug     # build the session holder / swarmz tool
+cd src-tauri && cargo test --workspace   # Rust unit tests (app + swarmz-tool)
 cd src-tauri && cargo test registry::       # single Rust module
 ```
 
@@ -45,6 +46,12 @@ Terminals always spawn the user's login shell locally. SSH connections, Claude s
 SSH uses OpenSSH multiplexing with a control socket under `~/.swarmz/ssh/%C` (`SSH_OPTS` in TS, `CONTROL_PATH` in `remote.rs`). The interactive terminal session becomes the master; the core's short-lived commands (`ssh_check`, `ssh_list_dir`, `workspace_pull/push`) reuse it with `BatchMode=yes` and never prompt.
 
 Ctrl+V in a connected ssh tile with an image on the local clipboard pushes it as a PNG to `~/.swarmz/paste/` on the remote and types the path (`paste.rs`, `IMAGE_PASTE_KEY` in the registry); text paste is untouched. Panes honour OSC 52 clipboard writes (how Claude Code copies its own selections) via the clipboard plugin, refusing queries; `decodeOsc52` in the registry. Shift+Enter sends LF (`SHIFT_ENTER_SEQUENCE`) because xterm.js sends CR for it and has no kitty keyboard protocol; Claude Code treats LF as a newline, shells as Enter.
+
+### Session holders
+
+Every local tile's shell runs in a detached holder process (`src-tauri/tool`, binary `swarmz-tool`, installed as `~/.swarmz/bin/swarmz`, bundled as `Contents/MacOS/swarmz-tool`). `swarmz hold <tile>` starts or finds it under a per-tile lock (errors: `usage`, `cwd_missing`, `busy`, `failed`); the app connects to `~/.swarmz/sessions/<tile>.sock` as a viewer (`HolderClient`, `session.rs`), so quitting or relaunching swarmz leaves shells and agents running, closing a tile terminates its holder, and reattaching replays recent output on `pty:replay:<id>` (while it parses, OSC 52, OSC 7 and the resume scan are ignored). `create_terminal` returns `existed`; existing tiles skip the connect card and startup lines. The sessions lock is never held across `connect` (writes and resizes take it on the main thread).
+
+A tile whose home is another Mac types `ssh … ~/.swarmz/bin/swarmz attach <tile>` when `tool_remote_ready` says the remote tool is usable (the app installs or updates it over the ssh master when the remote is a Darwin machine of the same architecture, never downgrading a newer tool). `attach` writes `OSC 1337 swarmz-attach;new=<0|1>;end=1`, the replay, then `OSC 1337 swarmz-replay-end`: `new=1` types the startup step once (gated by `attachPending`), `new=0` types nothing except an explicitly picked session when the remote shell is idle, and the frontend ignores clipboard and folder escapes until the end marker. Remote folders come from `remote_tile_info`. A failed tool check is cached per host until a failed attach or the next agent install re-checks it.
 
 ### Workspace persistence and tailnet sync
 

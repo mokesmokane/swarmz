@@ -1,7 +1,7 @@
 # swarmz on the phone: session holder, Mac tool, Android app, alerts
 
 Date: 2026-09-16
-Status: approved design, not yet implemented
+Status: approved design; sub-project 1 (session holder) implemented
 Amends: `2026-09-10-swarmz-design.md` §3.1 (the swarmz window no longer owns
 PTYs); `2026-09-15-agent-state-hooks-design.md` §2.1 (status colours), §3.2
 (hook events gain `PermissionRequest`); `2026-09-15-tile-folder-and-session-history-design.md`
@@ -142,9 +142,12 @@ The tool's `output` and `pending` commands (§4) use it; viewers do not.
   `ssh -t <shared-socket opts> <host> ~/.swarmz/bin/swarmz attach <tile> --cwd <dir> --name <name>`.
   `attach` holds (starting a holder if needed), then bridges the ssh stdin
   and stdout to the socket in raw mode, forwarding window-size changes.
-  Before bridging it writes `ESC ] 1337 ; swarmz-attach ; new=<0|1> BEL`;
-  the xterm registry handles that OSC and, only when `new=1`, types the
-  remote startup step (`export SWARMZ_TERMINAL_ID=… && cd … && claude …`).
+  Before bridging it writes `ESC ] 1337 ; swarmz-attach ; new=<0|1> ; end=1 BEL`,
+  then the replay, then `ESC ] 1337 ; swarmz-replay-end BEL` (`end=1`
+  promises that end marker; the app ignores clipboard and folder escapes
+  until it arrives, and still parses the plain `new=<0|1>` form from older
+  tools). The xterm registry handles the OSC and, only when `new=1` for an
+  attach line it typed, types the remote startup step (`export SWARMZ_TERMINAL_ID=… && cd … && claude …`).
   A dropped ssh connection leaves the remote holder and its Claude running;
   reconnecting reattaches.
 - **Checks move to the holder.** Local `foreground_busy`/`cwd` come from

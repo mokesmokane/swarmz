@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "dev.swarmz.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run build:tool:debug && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build:tool && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -27,6 +27,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "files": {
+        "MacOS/swarmz-tool": "target/release/swarmz-tool"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

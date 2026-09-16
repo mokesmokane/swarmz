@@ -6,9 +6,10 @@ swarmz is a Tauri 2 desktop app for hosting many terminal sessions at once, orga
 
 ```bash
 npm install         # on npm 10.9.x an Arborist bug may require `npx npm@11 install` instead
+npm run build:tool:debug   # build the swarmz session holder (tauri dev also does this)
 npm run tauri dev    # launch the app in dev mode
 npm test             # frontend unit tests (vitest)
-cd src-tauri && cargo test   # Rust unit tests
+cd src-tauri && cargo test --workspace   # Rust unit tests (app + swarmz tool)
 ```
 
 ## Docs
