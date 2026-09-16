@@ -5,7 +5,7 @@ use crate::util::valid_abs_path;
 use crate::workspace::{ClaudeConfig, TerminalDef, Workspace};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Listing {
@@ -28,6 +28,9 @@ pub fn list_folders(path: Option<&str>, home: &Path) -> Result<Listing, String> 
     let shown = dir.to_string_lossy().into_owned();
     if !valid_abs_path(&shown) {
         return Err(format!("{shown:?} is not an absolute folder path"));
+    }
+    if dir.components().any(|c| matches!(c, Component::CurDir | Component::ParentDir)) {
+        return Err(format!("{shown:?} must not contain . or .. segments"));
     }
     let entries = std::fs::read_dir(&dir).map_err(|e| format!("could not open {shown}: {e}"))?;
     let (mut visible, mut hidden): (Vec<String>, Vec<String>) = (vec![], vec![]);
@@ -52,16 +55,33 @@ pub fn list_folders(path: Option<&str>, home: &Path) -> Result<Listing, String> 
     Ok(Listing { path: shown, parent, dirs: visible })
 }
 
+/// Cuts `s` to at most `max` characters, trims the whitespace the cut may leave at the end, and
+/// falls back to `"shell"` if that leaves nothing.
+fn clip(s: &str, max: usize) -> String {
+    let cut: String = s.chars().take(max).collect();
+    let cut = cut.trim_end();
+    if cut.is_empty() { "shell".to_string() } else { cut.to_string() }
+}
+
 /// The registry's name rules (no quotes, backquotes, backslashes, `$` or control characters; at
-/// most 64 characters), then `-2`, `-3` … until the name is free.
+/// most 64 characters), then `-2`, `-3` … until the name is free. Every candidate returned,
+/// including a suffixed one, is itself at most 64 characters.
 pub fn unique_name(base: &str, taken: &[String]) -> String {
-    let cleaned: String = base.chars().filter(|c| !matches!(c, '"' | '\'' | '`' | '\\' | '$') && !c.is_control()).take(64).collect();
-    let cleaned = cleaned.trim().to_string();
-    let base = if cleaned.is_empty() { "shell".to_string() } else { cleaned };
-    if !taken.iter().any(|t| *t == base) {
-        return base;
+    let cleaned: String = base.chars().filter(|c| !matches!(c, '"' | '\'' | '`' | '\\' | '$') && !c.is_control()).collect();
+    let cleaned = cleaned.trim();
+    let cleaned = if cleaned.is_empty() { "shell" } else { cleaned };
+    let name = clip(cleaned, 64);
+    if !taken.iter().any(|t| *t == name) {
+        return name;
     }
-    (2..).map(|i| format!("{base}-{i}")).find(|c| !taken.iter().any(|t| t == c)).expect("an unused name")
+    (2..)
+        .map(|i| {
+            let suffix = format!("-{i}");
+            let room = 64usize.saturating_sub(suffix.chars().count());
+            format!("{}{suffix}", clip(cleaned, room))
+        })
+        .find(|c| !taken.iter().any(|t| t == c))
+        .expect("an unused name")
 }
 
 pub fn claude_line(c: &ClaudeConfig) -> String {
@@ -147,6 +167,12 @@ mod tests {
     }
 
     #[test]
+    fn folders_reject_dot_and_dot_dot_segments() {
+        assert!(list_folders(Some("/tmp/.."), Path::new("/")).is_err());
+        assert!(list_folders(Some("/tmp/./x"), Path::new("/")).is_err());
+    }
+
+    #[test]
     fn names_are_unique_and_safe() {
         let taken = vec!["app".to_string(), "app-2".to_string()];
         assert_eq!(unique_name("app", &taken), "app-3");
@@ -154,6 +180,9 @@ mod tests {
         assert_eq!(unique_name("it's $cool", &[]), "its cool");
         assert_eq!(unique_name("$$$", &[]), "shell");
         assert_eq!(unique_name(&"n".repeat(80), &[]).chars().count(), 64);
+        let clashing = unique_name(&"n".repeat(80), &["n".repeat(64)]);
+        assert!(clashing.chars().count() <= 64, "{clashing}");
+        assert_ne!(clashing, "n".repeat(64));
     }
 
     #[test]
