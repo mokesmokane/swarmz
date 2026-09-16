@@ -94,7 +94,7 @@ import {
   CWD_POLL_INTERVAL_MS,
   IMAGE_PASTE_KEY,
   REMOTE_REPLAY_MAX_MS,
-  REMOTE_REPLAY_QUIET_MS,
+  REPLAY_END_MARKER,
   SHIFT_ENTER_SEQUENCE,
   attach,
   decodeOsc52,
@@ -431,9 +431,13 @@ describe("resume failure scanning", () => {
     const note = vi.fn();
     useStore.setState({ noteResumeFailure: note, resumeWatch: { r: { sessionId: "abc", until: Date.now() + 10_000 } }, terminals: { r: { id: "r", name: "r", cwd: "/", exited: null, error: null } }, settings: { r: { ssh: null, claude: null, command: null, extra: {} } } });
     await prepare("r");
+    const writes = (instances[instances.length - 1] as unknown as { writes: Array<{ done?: () => void }> }).writes;
     const enc = new TextEncoder();
     dataCallbacks.r(enc.encode("No conversation found with sess"));
     dataCallbacks.r(enc.encode("ion ID abc\r\n"));
+    // The scan runs once xterm has parsed each chunk.
+    expect(note).not.toHaveBeenCalled();
+    writes.forEach((w) => w.done?.());
     expect(note).toHaveBeenCalledWith("r", "abc");
   });
   it("ignores output when no watch is active or the id differs", async () => {
@@ -441,6 +445,7 @@ describe("resume failure scanning", () => {
     useStore.setState({ noteResumeFailure: note, resumeWatch: {}, terminals: { q: { id: "q", name: "q", cwd: "/", exited: null, error: null } }, settings: { q: { ssh: null, claude: null, command: null, extra: {} } } });
     await prepare("q");
     dataCallbacks.q(new TextEncoder().encode("No conversation found with session ID zzz\r\n"));
+    (instances[instances.length - 1] as unknown as { writes: Array<{ done?: () => void }> }).writes.forEach((w) => w.done?.());
     expect(note).not.toHaveBeenCalled();
   });
 });
@@ -732,66 +737,72 @@ describe("a rejoined remote session's replay", () => {
     return term as unknown as Fake;
   };
 
-  it("ignores OSC 52 and OSC 7 after a new=0 marker until the user types", async () => {
+  /** Delivers `text` as one pty chunk and plays xterm's part: runs the OSC handlers in order
+   * while "parsing" it, then the chunk's write callback. */
+  const feed = (t: Fake, text: string) => {
+    dataCallbacks.rr(enc(text));
+    const re = /\x1b\](\d+);([^\x07]*)\x07/g;
+    for (let m = re.exec(text); m; m = re.exec(text)) t.oscHandlers[Number(m[1])]?.(m[2]);
+    last(t.writes)?.done?.();
+  };
+  const ATTACH0 = "\x1b]1337;swarmz-attach;new=0\x07";
+  const osc52 = (s: string) => `\x1b]52;c;${btoa(s)}\x07`;
+
+  it("suppresses OSC 52 and OSC 7 exactly until the replay-end marker, however long the gap", async () => {
     vi.useFakeTimers();
     const t = await setup();
-    t.oscHandlers[1337]("swarmz-attach;new=0");
+    feed(t, ATTACH0 + "\x1b[!pold output");
     expect(remoteAttached).toHaveBeenCalledWith("rr", false);
-    t.oscHandlers[52](`c;${btoa("old copy")}`);
-    t.oscHandlers[7]("file:///old");
+    await vi.advanceTimersByTimeAsync(3000);
+    feed(t, osc52("old copy") + "\x1b]7;file:///old\x07");
     await vi.advanceTimersByTimeAsync(0);
     expect(writeText).not.toHaveBeenCalled();
     expect(setTerminalCwd).not.toHaveBeenCalled();
-    t.dataHandler("x");
-    t.oscHandlers[52](`c;${btoa("live copy")}`);
-    t.oscHandlers[7]("file:///live");
+    feed(t, "tail of the replay" + osc52("older copy") + REPLAY_END_MARKER + osc52("live copy") + "\x1b]7;file:///live\x07");
     await vi.advanceTimersByTimeAsync(0);
+    expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith("live copy");
+    expect(setTerminalCwd).toHaveBeenCalledTimes(1);
     expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
   });
 
-  it("Shift+Enter also ends the replay", async () => {
+  it("the end marker has no effect inside a local replay", async () => {
     const t = await setup();
-    t.oscHandlers[1337]("swarmz-attach;new=0");
+    feed(t, ATTACH0);
+    replayCallbacks.rr(enc("x"));
+    t.oscHandlers[1337]("swarmz-replay-end");
+    last(t.writes)?.done?.();
+    t.oscHandlers[7]("file:///still-replay");
+    expect(setTerminalCwd).not.toHaveBeenCalled();
+    feed(t, REPLAY_END_MARKER);
+    t.oscHandlers[7]("file:///live");
+    expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
+  });
+
+  it("falls back to ending at user input for a tool without the end marker", async () => {
+    const t = await setup();
+    feed(t, ATTACH0);
+    t.oscHandlers[52](`c;${btoa("old copy")}`);
+    t.dataHandler("x");
+    t.oscHandlers[52](`c;${btoa("live copy")}`);
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("live copy"));
+    expect(writeText).toHaveBeenCalledTimes(1);
+  });
+
+  it("Shift+Enter also ends the replay (fallback)", async () => {
+    const t = await setup();
+    feed(t, ATTACH0);
     t.keyHandler({ key: "Enter", shiftKey: true, ctrlKey: false, altKey: false, metaKey: false, type: "keydown" } as KeyboardEvent);
     t.oscHandlers[7]("file:///live");
     expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
   });
 
-  it("ends once xterm has parsed everything and the output stayed quiet", async () => {
+  it("falls back to the cap however busy the output stays", async () => {
     vi.useFakeTimers();
     const t = await setup();
-    dataCallbacks.rr(enc("\x1b]1337;swarmz-attach;new=0\x07"));
-    t.oscHandlers[1337]("swarmz-attach;new=0");
-    dataCallbacks.rr(enc("more replay"));
-    // Chunks still waiting in xterm keep the replay going however long they take.
-    await vi.advanceTimersByTimeAsync(REMOTE_REPLAY_QUIET_MS * 3);
-    t.writes[t.writes.length - 2]?.done?.();
-    await vi.advanceTimersByTimeAsync(REMOTE_REPLAY_QUIET_MS * 3);
-    t.oscHandlers[7]("file:///old");
-    expect(setTerminalCwd).not.toHaveBeenCalled();
-    last(t.writes)?.done?.();
-    await vi.advanceTimersByTimeAsync(REMOTE_REPLAY_QUIET_MS - 50);
-    // New output restarts the quiet period.
-    dataCallbacks.rr(enc("still replay"));
-    last(t.writes)?.done?.();
-    await vi.advanceTimersByTimeAsync(REMOTE_REPLAY_QUIET_MS - 50);
-    t.oscHandlers[7]("file:///old");
-    expect(setTerminalCwd).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(50);
-    t.oscHandlers[7]("file:///live");
-    expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
-    expect(setTerminalCwd).toHaveBeenCalledTimes(1);
-  });
-
-  it("ends after the cap however busy the output stays", async () => {
-    vi.useFakeTimers();
-    const t = await setup();
-    t.oscHandlers[1337]("swarmz-attach;new=0");
+    feed(t, ATTACH0);
     for (let elapsed = 0; elapsed < REMOTE_REPLAY_MAX_MS; elapsed += 200) {
-      dataCallbacks.rr(enc("busy"));
-      last(t.writes)?.done?.();
-      t.oscHandlers[7]("file:///old");
+      feed(t, "busy\x1b]7;file:///old\x07");
       await vi.advanceTimersByTimeAsync(200);
     }
     expect(setTerminalCwd).not.toHaveBeenCalled();
@@ -804,15 +815,50 @@ describe("a rejoined remote session's replay", () => {
     t.oscHandlers[1337]("swarmz-attach;new=1");
     t.oscHandlers[7]("file:///live");
     expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
+    expect(t.oscHandlers[1337]("swarmz-attach;new=2")).toBe(false);
   });
 
-  it("a replayed resume failure after the marker, even in the same chunk, is not reported", async () => {
+  it("the resume scan follows the replay state: replayed failures are ignored, live ones reported", async () => {
     const noteResumeFailure = vi.fn();
     useStore.setState({ noteResumeFailure, resumeWatch: { rr: { sessionId: "abc", until: Date.now() + 10_000 } } });
-    await setup();
-    dataCallbacks.rr(enc("\x1b]1337;swarmz-attach;new=0\x07\x1b[!pNo conversation found with session ID abc"));
-    dataCallbacks.rr(enc("No conversation found with session ID abc"));
+    const t = await setup();
+    const gone = "No conversation found with session ID abc";
+    feed(t, ATTACH0 + "\x1b[!p" + gone);
+    feed(t, gone);
+    // Split so that the end-marker chunk carries the tail of a replayed failure.
+    feed(t, "No conversation found with sess");
+    feed(t, "ion ID abc" + REPLAY_END_MARKER + "prompt$ ");
     expect(noteResumeFailure).not.toHaveBeenCalled();
+    feed(t, gone);
+    expect(noteResumeFailure).toHaveBeenCalledWith("rr", "abc");
+  });
+
+  it("a whole reattach in one chunk still reports a live failure after the end marker", async () => {
+    const noteResumeFailure = vi.fn();
+    useStore.setState({ noteResumeFailure, resumeWatch: { rr: { sessionId: "abc", until: Date.now() + 10_000 } } });
+    const t = await setup();
+    const gone = "No conversation found with session ID abc";
+    feed(t, ATTACH0 + "\x1b[!p" + gone + REPLAY_END_MARKER);
+    expect(noteResumeFailure).not.toHaveBeenCalled();
+    feed(t, ATTACH0 + "\x1b[!pold" + REPLAY_END_MARKER + gone);
+    expect(noteResumeFailure).toHaveBeenCalledWith("rr", "abc");
+  });
+
+  it("remote folder polls never overlap", async () => {
+    let resolve: (v: { running: boolean; cwd?: string | null }) => void = () => {};
+    vi.mocked(ipc.remoteTileInfo).mockReset().mockImplementation(() => new Promise((r) => (resolve = r)));
+    useStore.setState({ toolReady: { "me@box": true } });
+    vi.useFakeTimers();
+    const t = await setup();
+    t.dataHandler("\r");
+    await vi.advanceTimersByTimeAsync(CWD_POLL_AFTER_ENTER_MS);
+    await vi.advanceTimersByTimeAsync(CWD_POLL_INTERVAL_MS * 3);
+    expect(ipc.remoteTileInfo).toHaveBeenCalledTimes(1);
+    resolve({ running: true, cwd: "/p/x" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/p/x", "remote");
+    await vi.advanceTimersByTimeAsync(CWD_POLL_INTERVAL_MS);
+    expect(ipc.remoteTileInfo).toHaveBeenCalledTimes(2);
   });
 
   it("a marker in a local tile suppresses nothing", async () => {

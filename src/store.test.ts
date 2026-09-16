@@ -56,6 +56,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { ipc } from "./lib/ipc";
 import {
   __resetAgentWatchers,
+  __resetAttachState,
   __resetLoadGuard,
   __resetSyncState,
   __setLaunchedAt,
@@ -86,6 +87,7 @@ beforeEach(async () => {
   __resetSyncState();
   __resetAgentWatchers();
   __stopAllPolling();
+  __resetAttachState();
   useStore.setState({
     terminals: {},
     order: [],
@@ -2535,16 +2537,17 @@ describe("remote attach", () => {
 
   it("a new remote session gets the startup step; an existing one is only marked connected", async () => {
     vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    // Both tiles type their attach line (ssh not live yet), which is what lets a new=1 marker type.
+    const id = await sshTile();
+    const other = await sshTile();
     vi.mocked(ipc.sshCheck).mockResolvedValue(true);
     vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
-    const id = await sshTile();
     useStore.setState((s) => ({ sshConnecting: { ...s.sshConnecting, [id]: true } }));
     vi.mocked(ipc.writeTerminal).mockClear();
     await useStore.getState().remoteAttached(id, true);
     expect(useStore.getState().sshConnected[id]).toBe(true);
     expect(vi.mocked(ipc.writeTerminal).mock.calls.some((c) => String(c[1]).includes("claude --session-id"))).toBe(true);
 
-    const other = await sshTile();
     useStore.setState((s) => ({ sshConnecting: { ...s.sshConnecting, [other]: true } }));
     vi.mocked(ipc.writeTerminal).mockClear();
     await useStore.getState().remoteAttached(other, false);
@@ -2640,7 +2643,15 @@ describe("remote attach", () => {
       await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 3);
       expect(useStore.getState().sshConnecting[id]).toBeUndefined();
       expect(useStore.getState().startupPending[id]).toBe(true);
-      expect(useStore.getState().startupNotes[id]).toMatch(/ssh exited/);
+      expect(useStore.getState().startupNotes[id]).toBe("the swarmz session on box could not start; see the terminal and click Run");
+      // The next Run asks the tool again instead of retrying attach mode blindly.
+      expect(useStore.getState().toolReady["me@box"]).toBeUndefined();
+      vi.mocked(ipc.toolRemoteReady).mockClear().mockResolvedValue(false);
+      vi.mocked(ipc.sshCheck).mockResolvedValue(false);
+      vi.mocked(ipc.writeTerminal).mockClear();
+      await useStore.getState().runStartup(id);
+      expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toMatch(/^ssh -t .*me@box\r$/);
     } finally {
       __stopAllPolling();
       vi.useRealTimers();
@@ -2674,5 +2685,174 @@ describe("remote attach", () => {
     useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
     await useStore.getState().setTerminalCwd(id, "/p/deeper", "remote");
     expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p/deeper");
+  });
+
+  it("a second Run while the tool check is in flight types nothing, and one host is checked once", async () => {
+    let resolve: (v: boolean) => void = () => {};
+    vi.mocked(ipc.toolRemoteReady).mockImplementation(() => new Promise<boolean>((r) => (resolve = r)));
+    vi.mocked(ipc.writeTerminal).mockClear();
+    const first = useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: { skipPermissions: false } });
+    await vi.waitFor(() => expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(1));
+    const id = useStore.getState().order[0];
+    const again = useStore.getState().runStartup(id);
+    const second = useStore.getState().createSshTerminal({ host: "me@box", cwd: "/q", claude: null });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(1);
+    resolve(true);
+    await Promise.all([first, again, second]);
+    __stopAllPolling();
+    const lines = vi.mocked(ipc.writeTerminal).mock.calls.map((c) => String(c[1]));
+    expect(lines.filter((l) => l.includes(`swarmz attach ${id}`))).toHaveLength(1);
+    expect(lines.filter((l) => l.includes("~/.swarmz/bin/swarmz attach"))).toHaveLength(2);
+    expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(1);
+    // Once the first Run is done, a later one may run again.
+    useStore.setState((s) => ({ sshConnecting: omitKey(s.sshConnecting, id) }));
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().runStartup(id);
+    __stopAllPolling();
+    expect(ipc.writeTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("a new=1 marker after the connect timeout still types the startup line; cancel or a new Run forgets it", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+      const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: { skipPermissions: false } });
+      await vi.advanceTimersByTimeAsync(SSH_POLL_TIMEOUT_MS + SSH_POLL_MS * 2);
+      expect(useStore.getState().sshConnecting[id]).toBeUndefined();
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      vi.mocked(ipc.writeTerminal).mockClear();
+      const p = useStore.getState().remoteAttached(id, true);
+      await vi.advanceTimersByTimeAsync(SSH_SETTLE_MS);
+      await p;
+      expect(vi.mocked(ipc.writeTerminal).mock.calls.some((c) => String(c[1]).includes("claude --session-id"))).toBe(true);
+      // Used up: a second marker types nothing.
+      vi.mocked(ipc.writeTerminal).mockClear();
+      const p2 = useStore.getState().remoteAttached(id, true);
+      await vi.advanceTimersByTimeAsync(SSH_SETTLE_MS);
+      await p2;
+      expect(ipc.writeTerminal).not.toHaveBeenCalled();
+
+      const other = await (async () => {
+        vi.mocked(ipc.sshCheck).mockResolvedValue(false);
+        return useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: { skipPermissions: false } });
+      })();
+      useStore.getState().cancelConnecting(other);
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.writeTerminal).mockClear();
+      const p3 = useStore.getState().remoteAttached(other, true);
+      await vi.advanceTimersByTimeAsync(SSH_SETTLE_MS);
+      await p3;
+      expect(ipc.writeTerminal).not.toHaveBeenCalled();
+    } finally {
+      __stopAllPolling();
+      vi.useRealTimers();
+    }
+  });
+
+  describe("switching sessions in an attached tile", () => {
+    const rec = (sid: string, cwd: string, t: string) => ({ sessionId: sid, cwd, skipPermissions: false, startedAt: t, lastActiveAt: t });
+    const attachedTile = async () => {
+      vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+      const id = await sshTile();
+      useStore.setState((s) => ({
+        sshConnecting: omitKey(s.sshConnecting, id),
+        settings: {
+          ...s.settings,
+          [id]: { ...s.settings[id], claude: { enabled: true, sessionId: "cur", skipPermissions: false, started: true }, sessions: [rec("cur", "/p", "t2"), rec("old", "/p/old", "t1")] },
+        },
+      }));
+      return id;
+    };
+    const resumeOld = () => vi.mocked(ipc.writeTerminal).mock.calls.filter((c) => /cd '\/p\/old' && claude --resume old\r$/.test(String(c[1])));
+
+    it("on a live tile, types the picked session when the remote shell is idle", async () => {
+      const id = await attachedTile();
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      vi.mocked(ipc.remoteTileInfo).mockResolvedValue({ running: true, cwd: "/p", foregroundBusy: false });
+      vi.mocked(ipc.writeTerminal).mockClear();
+      await useStore.getState().selectSession(id, "old", { connect: true });
+      expect(ipc.remoteTileInfo).toHaveBeenCalledWith("me@box", id);
+      expect(resumeOld()).toHaveLength(1);
+      expect(ipc.writeTerminal).toHaveBeenCalledTimes(1);
+      expect(useStore.getState().startupNotes[id]).toBeUndefined();
+    });
+
+    it("on a live tile, only notes the switch while Claude is still running there", async () => {
+      const id = await attachedTile();
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      vi.mocked(ipc.remoteTileInfo).mockResolvedValue({ running: true, cwd: "/p", foregroundBusy: true, foregroundCommand: "claude" });
+      vi.mocked(ipc.writeTerminal).mockClear();
+      await useStore.getState().selectSession(id, "old", { connect: false });
+      expect(ipc.writeTerminal).not.toHaveBeenCalled();
+      expect(useStore.getState().settings[id].claude?.sessionId).toBe("old");
+      expect(useStore.getState().startupNotes[id]).toBe("Claude is still running in the session on box; exit it to switch");
+      // The note used the pending switch up: a later reattach does not type it.
+      vi.mocked(ipc.remoteTileInfo).mockResolvedValue({ running: true, cwd: "/p", foregroundBusy: false });
+      await useStore.getState().remoteAttached(id, false);
+      expect(ipc.writeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("on a disconnected tile, connects and switches on the reattach if the shell is idle", async () => {
+      const id = await attachedTile();
+      vi.mocked(ipc.writeTerminal).mockClear();
+      await useStore.getState().selectSession(id, "old", { connect: true });
+      __stopAllPolling();
+      expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toContain(`swarmz attach ${id} --cwd '\\''/p/old'\\''`);
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      vi.mocked(ipc.remoteTileInfo).mockResolvedValue({ running: true, cwd: "/p", foregroundBusy: false });
+      await useStore.getState().remoteAttached(id, false);
+      expect(resumeOld()).toHaveLength(1);
+      // Applied once only.
+      await useStore.getState().remoteAttached(id, false);
+      expect(resumeOld()).toHaveLength(1);
+    });
+
+    it("on a disconnected tile, a reattach to a busy session only notes it", async () => {
+      const id = await attachedTile();
+      await useStore.getState().selectSession(id, "old", { connect: true });
+      __stopAllPolling();
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      vi.mocked(ipc.remoteTileInfo).mockResolvedValue({ running: true, cwd: "/p", foregroundBusy: true });
+      vi.mocked(ipc.writeTerminal).mockClear();
+      await useStore.getState().remoteAttached(id, false);
+      expect(ipc.writeTerminal).not.toHaveBeenCalled();
+      expect(useStore.getState().startupNotes[id]).toMatch(/^Claude is still running in the session on box/);
+    });
+
+    it("a failed check is reported, and a closed tile's pending switch is dropped", async () => {
+      const id = await attachedTile();
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      vi.mocked(ipc.remoteTileInfo).mockRejectedValueOnce("tool error: boom");
+      await useStore.getState().selectSession(id, "old", { connect: false });
+      expect(useStore.getState().startupNotes[id]).toBe("could not check the session on box: tool error: boom");
+
+      const other = await attachedTile();
+      vi.mocked(ipc.sshCheck).mockResolvedValue(false);
+      await useStore.getState().selectSession(other, "old", { connect: true });
+      __stopAllPolling();
+      await useStore.getState().closeTerminal(other);
+      vi.mocked(ipc.remoteTileInfo).mockClear();
+      await useStore.getState().remoteAttached(other, false);
+      expect(ipc.remoteTileInfo).not.toHaveBeenCalled();
+    });
+
+    it("a new session started for the attach line resumes the picked session directly", async () => {
+      const id = await attachedTile();
+      await useStore.getState().selectSession(id, "old", { connect: true });
+      __stopAllPolling();
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      vi.mocked(ipc.writeTerminal).mockClear();
+      await useStore.getState().remoteAttached(id, true);
+      expect(resumeOld()).toHaveLength(1);
+      expect(ipc.remoteTileInfo).not.toHaveBeenCalled();
+    });
   });
 });

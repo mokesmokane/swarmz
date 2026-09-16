@@ -18,13 +18,13 @@ export const SHIFT_ENTER_SEQUENCE = "\n";
 
 export const IMAGE_PASTE_KEY = "\x16";
 
-/** How long a rejoined remote session's output must stay quiet before its replay counts as done. */
-export const REMOTE_REPLAY_QUIET_MS = 400;
-/** The longest a rejoined remote session's output is treated as replay, however busy it stays. */
+/** Fallback for a remote tool that never writes the replay-end marker: the longest a rejoined
+ * session's output is treated as replay. */
 export const REMOTE_REPLAY_MAX_MS = 10_000;
 
-/** The marker the remote `swarmz attach` writes before its replay, for a rejoined session. */
-const REATTACH_MARKER = "\x1b]1337;swarmz-attach;new=0";
+/** What the remote `swarmz attach` writes right after the replay (`REPLAY_END_MARKER` in the
+ * tool's attach.rs), before any live byte. */
+export const REPLAY_END_MARKER = "\x1b]1337;swarmz-replay-end\x07";
 
 /** Largest OSC 52 payload honoured (base64 chars); anything bigger is dropped, not truncated. */
 export const OSC52_MAX_CHARS = 1_000_000;
@@ -82,16 +82,17 @@ interface Entry {
    * come from live output (OSC 52 clipboard writes, OSC 7 cwd updates, the resume-failure scan)
    * are suppressed. */
   replaying: boolean;
-  /** Set from a remote `swarmz attach` marker for a rejoined session until its replay is judged
-   * done: the replay arrives as ordinary `pty:data` with no end marker, so it ends at the first
-   * user input, once xterm has parsed everything it was given and no more output came for
-   * `REMOTE_REPLAY_QUIET_MS`, or after `REMOTE_REPLAY_MAX_MS`. Suppresses the same side effects as
-   * `replaying`. */
+  /** Set from a remote `swarmz attach` marker for a rejoined session until xterm parses the
+   * tool's replay-end marker (the replay arrives as ordinary `pty:data`). Suppresses the same side
+   * effects as `replaying`. Fallbacks, for a tool without the end marker only: the first user
+   * input, or `REMOTE_REPLAY_MAX_MS`. */
   remoteReplay: boolean;
-  /** Live output chunks handed to xterm and not parsed yet. */
-  pendingWrites: number;
-  remoteQuietTimer: ReturnType<typeof setTimeout> | null;
   remoteMaxTimer: ReturnType<typeof setTimeout> | null;
+  /** Set by the OSC 1337 handlers while xterm parses a chunk that starts or ends a remote replay,
+   * and read (then cleared) by that chunk's write callback. */
+  replayBoundary: boolean;
+  /** A remote folder poll is in flight (each is an ssh round trip). */
+  remotePolling: boolean;
 }
 
 const entries = new Map<string, Entry>();
@@ -109,19 +110,23 @@ function remoteInfoHost(id: string): string | null {
   return s.terminals[id] && s.terminals[id].exited === null ? host : null;
 }
 
-async function pollRemoteCwd(id: string, host: string): Promise<void> {
+async function pollRemoteCwd(id: string, host: string, entry: Entry): Promise<void> {
+  if (entry.remotePolling) return;
+  entry.remotePolling = true;
   try {
     const info = await ipc.remoteTileInfo(host, id);
     // setTerminalCwd re-checks that the tile is still a connected ssh tile.
     if (info.running && info.cwd) await useStore.getState().setTerminalCwd(id, info.cwd, "remote");
   } catch {
     // ssh down or the tool failed; the next poll will try again
+  } finally {
+    entry.remotePolling = false;
   }
 }
 
-async function pollCwd(id: string): Promise<void> {
+async function pollCwd(id: string, entry: Entry): Promise<void> {
   const remoteHost = remoteInfoHost(id);
-  if (remoteHost) return pollRemoteCwd(id, remoteHost);
+  if (remoteHost) return pollRemoteCwd(id, remoteHost, entry);
   if (!localTileAlive(id)) return;
   try {
     const cwd = await ipc.terminalCwd(id);
@@ -137,7 +142,7 @@ function scheduleEnterPoll(id: string, entry: Entry): void {
   if (entry.enterTimer) clearTimeout(entry.enterTimer);
   entry.enterTimer = setTimeout(() => {
     entry.enterTimer = null;
-    void pollCwd(id);
+    void pollCwd(id, entry);
   }, CWD_POLL_AFTER_ENTER_MS);
 }
 
@@ -177,28 +182,47 @@ async function sendImageOrForward(id: string, host: string): Promise<void> {
 
 function endRemoteReplay(entry: Entry): void {
   entry.remoteReplay = false;
-  if (entry.remoteQuietTimer) clearTimeout(entry.remoteQuietTimer);
   if (entry.remoteMaxTimer) clearTimeout(entry.remoteMaxTimer);
-  entry.remoteQuietTimer = null;
   entry.remoteMaxTimer = null;
-}
-
-/** (Re)starts the quiet period, which only runs while xterm has nothing left to parse. */
-function armRemoteQuiet(entry: Entry): void {
-  if (entry.remoteQuietTimer) clearTimeout(entry.remoteQuietTimer);
-  entry.remoteQuietTimer = null;
-  if (!entry.remoteReplay || entry.pendingWrites > 0) return;
-  entry.remoteQuietTimer = setTimeout(() => endRemoteReplay(entry), REMOTE_REPLAY_QUIET_MS);
 }
 
 function startRemoteReplay(id: string, entry: Entry): void {
   if (!useStore.getState().settings[id]?.ssh?.host) return;
-  if (!entry.remoteReplay) {
-    entry.remoteReplay = true;
-    entry.remoteMaxTimer = setTimeout(() => endRemoteReplay(entry), REMOTE_REPLAY_MAX_MS);
-  }
+  entry.replayBoundary = true;
   entry.tail = "";
-  armRemoteQuiet(entry);
+  if (entry.remoteMaxTimer) clearTimeout(entry.remoteMaxTimer);
+  entry.remoteReplay = true;
+  entry.remoteMaxTimer = setTimeout(() => endRemoteReplay(entry), REMOTE_REPLAY_MAX_MS);
+}
+
+/** The resume-failure scan, run once xterm has parsed `bytes` so the replay state is exact. */
+function scanLiveOutput(id: string, entry: Entry, bytes: Uint8Array): void {
+  const boundary = entry.replayBoundary;
+  entry.replayBoundary = false;
+  if (entry.replaying || entry.remoteReplay) {
+    entry.tail = "";
+    return;
+  }
+  const watch = useStore.getState().resumeWatch[id];
+  if (!watch) {
+    entry.tail = "";
+    return;
+  }
+  let text = new TextDecoder().decode(bytes);
+  if (boundary) {
+    // This chunk ended a remote replay: only what follows the end marker is live. The tool
+    // writes the marker in one piece, but the byte stream may still split it; a split chunk is
+    // then skipped whole, which can only miss a failure message, never invent one.
+    const end = text.lastIndexOf(REPLAY_END_MARKER);
+    entry.tail = "";
+    if (end < 0) return;
+    text = text.slice(end + REPLAY_END_MARKER.length);
+  }
+  entry.tail = (entry.tail + text).slice(-400);
+  if (entry.tail.includes(`No conversation found with session ID ${watch.sessionId}`)) {
+    entry.tail = "";
+    useStore.getState().noteResumeFailure(id, watch.sessionId);
+  }
 }
 
 function createEntry(id: string): Entry {
@@ -231,13 +255,14 @@ function createEntry(id: string): Entry {
     tail: "",
     replaying: false,
     remoteReplay: false,
-    pendingWrites: 0,
-    remoteQuietTimer: null,
     remoteMaxTimer: null,
+    replayBoundary: false,
+    remotePolling: false,
   };
 
   term.onData((data) => {
-    // Input from the user (keys, pastes, mouse reports) means the replay is on screen.
+    // Fallback for a tool without the end marker: input from the user (keys, pastes, mouse
+    // reports) means the replay is on screen.
     if (entry.remoteReplay) endRemoteReplay(entry);
     const host = data === IMAGE_PASTE_KEY ? connectedSshHost(id) : null;
     // Writes to an already-exited pane are expected to fail; ignore.
@@ -278,9 +303,17 @@ function createEntry(id: string): Entry {
     if (path) void useStore.getState().setTerminalCwd(id, path, "osc7");
     return true;
   });
-  // The remote `swarmz attach` announces itself before its replay. Markers inside a local replay
-  // are history, not a connection happening now.
+  // The remote `swarmz attach` announces itself before its replay and marks the replay's end.
+  // Markers inside a local replay are history, not a connection happening now.
   term.parser.registerOscHandler(1337, (data) => {
+    if (data === "swarmz-replay-end") {
+      if (!entry.replaying) {
+        // Even when a fallback already ended the replay, what precedes the marker is history.
+        entry.replayBoundary = true;
+        endRemoteReplay(entry);
+      }
+      return true;
+    }
     const m = /^swarmz-attach;new=([01])$/.exec(data);
     if (!m) return false;
     if (entry.replaying) return true;
@@ -303,34 +336,9 @@ function createEntry(id: string): Entry {
       }
     }),
     ipc.onData(id, (bytes) => {
-      entry.pendingWrites += 1;
-      if (entry.remoteReplay) armRemoteQuiet(entry);
-      try {
-        term.write(bytes, () => {
-          entry.pendingWrites -= 1;
-          armRemoteQuiet(entry);
-        });
-      } catch {
-        entry.pendingWrites -= 1;
-      }
-      if (entry.replaying || entry.remoteReplay) return;
-      const watch = useStore.getState().resumeWatch[id];
-      if (!watch) {
-        entry.tail = "";
-        return;
-      }
-      const text = new TextDecoder().decode(bytes);
-      // xterm parses (and so runs the OSC 1337 handler) after this scan, so a marker in this very
-      // chunk has to be caught here or its replay would be scanned as live output.
-      if (text.includes(REATTACH_MARKER)) {
-        startRemoteReplay(id, entry);
-        if (entry.remoteReplay) return;
-      }
-      entry.tail = (entry.tail + text).slice(-400);
-      if (entry.tail.includes(`No conversation found with session ID ${watch.sessionId}`)) {
-        entry.tail = "";
-        useStore.getState().noteResumeFailure(id, watch.sessionId);
-      }
+      // xterm parses asynchronously and runs the OSC handlers during the parse, so the scan waits
+      // for this chunk's write callback, when the replay state matches the chunk's end.
+      term.write(bytes, () => scanLiveOutput(id, entry, bytes));
     }),
     ipc.onExit(id, (code) => {
       term.write(`\r\n\x1b[90m[process exited with code ${code ?? "unknown"}]\x1b[0m\r\n`);
@@ -365,7 +373,7 @@ export function attach(id: string, container: HTMLElement): { term: Terminal; fi
     // tile always polls (scheduleEnterPoll), focused or not.
     entry.pollTimer = setInterval(() => {
       if (useStore.getState().windowFocused === false) return;
-      void pollCwd(id);
+      void pollCwd(id, entry);
     }, CWD_POLL_INTERVAL_MS);
   } else if (entry.term.element && entry.term.element.parentElement !== container) {
     container.appendChild(entry.term.element);
