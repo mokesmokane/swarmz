@@ -8,6 +8,9 @@ pub struct TerminalInfo {
     pub cwd: String,
     pub exited: Option<i32>,
     pub error: Option<String>,
+    /// Whether the tile's session was already running when the app connected to it.
+    #[serde(default)]
+    pub existed: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -78,7 +81,7 @@ impl TerminalRegistry {
             .and_then(|n| validate_name(&n).ok())
             .unwrap_or_else(|| basename(&cwd));
         let name = self.unique_name(&base);
-        let info = TerminalInfo { id, name, cwd, exited: None, error: None };
+        let info = TerminalInfo { id, name, cwd, exited: None, error: None, existed: false };
         self.entries.push(info.clone());
         Ok(info)
     }

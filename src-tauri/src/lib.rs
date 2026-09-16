@@ -4,8 +4,10 @@ pub mod paste;
 pub use swarmz_tool::pty;
 pub mod registry;
 pub mod remote;
+pub mod session;
 pub mod sync;
 pub mod tailscale;
+pub mod toolbin;
 pub mod workspace;
 
 use commands::AppState;
@@ -46,6 +48,12 @@ pub fn run() {
         ])
         .setup(|_app| {
             let _ = remote::ensure_ssh_dir();
+            // Install the tool in the background so a slow disk never delays the window.
+            std::thread::spawn(|| {
+                if let Err(e) = toolbin::ensure_installed() {
+                    eprintln!("swarmz: {e}");
+                }
+            });
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -56,6 +64,8 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app.try_state::<AppState>() {
                     state.watchers.lock().unwrap().clear();
+                    // Tiles live in their holders: quitting only detaches from them.
+                    state.sessions.lock().unwrap().clear();
                 }
             }
         });

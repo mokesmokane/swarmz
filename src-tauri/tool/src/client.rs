@@ -17,6 +17,8 @@ pub struct HolderClient {
     stream: UnixStream,
     writer: Mutex<UnixStream>,
     info_tx: Arc<Mutex<Option<mpsc::Sender<Info>>>>,
+    /// Held for a whole `info()` round trip so concurrent callers take turns.
+    info_call: Mutex<()>,
     closing: Arc<AtomicBool>,
     welcome: Welcome,
 }
@@ -103,7 +105,7 @@ impl HolderClient {
             }
         });
 
-        Ok(HolderClient { stream, writer: Mutex::new(w), info_tx, closing, welcome })
+        Ok(HolderClient { stream, writer: Mutex::new(w), info_tx, info_call: Mutex::new(()), closing, welcome })
     }
 
     pub fn welcome(&self) -> &Welcome {
@@ -127,9 +129,10 @@ impl HolderClient {
         self.send(Kind::Terminate, b"")
     }
 
-    /// Expects one call in flight at a time: an `InfoReply` carries no correlation id, so a
-    /// second `info()` call before the first resolves could deliver its reply to the wrong caller.
+    /// Safe to call from several threads: an `InfoReply` carries no correlation id, so calls
+    /// take turns (a waiting call's own `timeout` starts once its turn comes).
     pub fn info(&self, timeout: Duration) -> Option<Info> {
+        let _turn = self.info_call.lock().unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = mpsc::channel();
         *self.info_tx.lock().ok()? = Some(tx);
         self.send(Kind::Info, b"").ok()?;

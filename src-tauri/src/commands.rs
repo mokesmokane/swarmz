@@ -1,5 +1,5 @@
-use crate::pty::{PtySession, SpawnSpec};
 use crate::registry::{TerminalInfo, TerminalRegistry};
+use crate::session::TerminalSession;
 use crate::workspace::Workspace;
 use crate::workspace as ws_file;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -7,19 +7,23 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use swarmz_tool::client::HolderClient;
+use swarmz_tool::proto::{Hello, PROTOCOL_VERSION};
 use tauri::{AppHandle, Emitter, Manager, State};
+
+type Sessions = HashMap<String, (u64, Arc<dyn TerminalSession>)>;
 
 #[derive(Default)]
 pub struct AppState {
     pub registry: Mutex<TerminalRegistry>,
-    pub sessions: Mutex<HashMap<String, (u64, Arc<PtySession>)>>,
+    pub sessions: Mutex<Sessions>,
     pub next_gen: AtomicU64,
     pub watchers: Mutex<HashMap<Option<String>, (u64, crate::agents::Watcher)>>,
 }
 
 /// Removes the session for `id` only if its recorded generation matches `gen`.
 /// Returns true if it removed the entry (i.e. this caller's session was the live one).
-fn take_if_current(sessions: &mut HashMap<String, (u64, Arc<PtySession>)>, id: &str, gen: u64) -> bool {
+fn take_if_current(sessions: &mut Sessions, id: &str, gen: u64) -> bool {
     if let Some((g, _)) = sessions.get(id) {
         if *g == gen {
             sessions.remove(id);
@@ -34,45 +38,53 @@ struct ExitPayload {
     code: Option<i32>,
 }
 
-fn spawn_for(app: &AppHandle, state: &AppState, info: &TerminalInfo, cols: u16, rows: u16) -> Result<(), String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let spec = SpawnSpec {
-        program: shell,
-        args: vec!["-l".to_string()],
-        cwd: info.cwd.clone(),
-        env: vec![
-            ("TERM".into(), "xterm-256color".into()),
-            ("COLORTERM".into(), "truecolor".into()),
-            ("SWARMZ_TERMINAL_ID".into(), info.id.clone()),
-            ("SWARMZ_TERMINAL_NAME".into(), info.name.clone()),
-        ],
-        cols,
-        rows,
-    };
+/// Records a freshly connected session for `id`, unless the tile was closed while it was
+/// starting (starts run off the main thread, so a close can land in between). The caller holds
+/// the sessions lock; `close_terminal` removes the registry entry before it looks at the
+/// sessions, so a close either happens before this check (and the session is refused) or finds
+/// the session this inserts.
+fn insert_if_registered(
+    sessions: &mut Sessions,
+    registry: &Mutex<TerminalRegistry>,
+    id: &str,
+    gen: u64,
+    session: Arc<dyn TerminalSession>,
+) -> bool {
+    if registry.lock().unwrap().get(id).is_none() {
+        return false;
+    }
+    sessions.insert(id.to_string(), (gen, session));
+    true
+}
+
+/// Connects the tile to its session holder, starting one if needed. Returns whether the session
+/// was already running.
+fn spawn_for(app: &AppHandle, info: &TerminalInfo, cols: u16, rows: u16) -> Result<bool, String> {
+    let state = app.state::<AppState>();
+    let tool = crate::toolbin::ensure_installed()?;
+    let held = crate::toolbin::hold(&tool, None, &info.id, &info.name, &info.cwd, cols, rows)?;
 
     let gen = state.next_gen.fetch_add(1, Ordering::SeqCst);
-
     let data_app = app.clone();
     let data_topic = format!("pty:data:{}", info.id);
+    let replay_topic = format!("pty:replay:{}", info.id);
     let exit_app = app.clone();
     let exit_id = info.id.clone();
 
-    // Hold the sessions lock across the spawn call (and the subsequent
-    // insert) so the child's exit callback - which runs on another thread
-    // and can fire before this function returns for very short-lived
-    // processes - can never observe the (gen, session) tuple missing from
-    // the map. The callback blocks on the same mutex until the insert
-    // below lands, then finds and removes its own entry via
-    // `take_if_current`. Without this, a child that exits before the
-    // insert would cause the exit callback to no-op (its generation isn't
-    // in the map yet) and the insert that follows would then add a
-    // dead/zombie session that never gets cleaned up.
+    // Hold the sessions lock across the connect call (and the insert that follows) so the
+    // exit callback - which runs on the client's reader thread and can fire before this
+    // function returns if the shell exits at once - can never observe the map without our
+    // entry. It blocks on the same mutex until the insert lands, then finds and removes its
+    // own entry via `take_if_current`. The replay is delivered inside `connect`, on this
+    // thread, before it returns.
     let mut sessions = state.sessions.lock().unwrap();
-
-    let session = PtySession::spawn(
-        spec,
-        move |bytes| {
-            let _ = data_app.emit(&data_topic, BASE64.encode(&bytes));
+    let hello = Hello { v: PROTOCOL_VERSION, cols, rows, viewer: "window".into() };
+    let client = HolderClient::connect(
+        std::path::Path::new(&held.socket),
+        &hello,
+        move |bytes, replay| {
+            let topic = if replay { &replay_topic } else { &data_topic };
+            let _ = data_app.emit(topic, BASE64.encode(&bytes));
         },
         move |code| {
             if let Some(st) = exit_app.try_state::<AppState>() {
@@ -85,34 +97,53 @@ fn spawn_for(app: &AppHandle, state: &AppState, info: &TerminalInfo, cols: u16, 
             let _ = exit_app.emit(&format!("pty:exit:{exit_id}"), ExitPayload { code });
         },
     )?;
-
-    sessions.insert(info.id.clone(), (gen, Arc::new(session)));
+    let client: Arc<dyn TerminalSession> = Arc::new(client);
+    if !insert_if_registered(&mut sessions, &state.registry, &info.id, gen, client.clone()) {
+        drop(sessions);
+        // The tile is gone: end its session rather than leave a holder nobody shows.
+        client.terminate();
+        return Err(format!("terminal {} was closed while it was starting", info.id));
+    }
     drop(sessions);
-    Ok(())
+    Ok(held.existed)
 }
 
+/// Starting a tile runs `swarmz hold` (a process, and up to a few seconds when a new holder has
+/// to come up), so it runs off the main thread.
 #[tauri::command]
-pub fn create_terminal(
+pub async fn create_terminal(
     app: AppHandle,
-    state: State<'_, AppState>,
     id: String,
     cwd: String,
     cols: u16,
     rows: u16,
     name: Option<String>,
 ) -> Result<TerminalInfo, String> {
-    if !std::path::Path::new(&cwd).is_dir() {
-        return Err(format!("{cwd} is not a directory"));
-    }
-    let info = state.registry.lock().unwrap().add(id, name, cwd).map_err(|e| e.to_string())?;
-    match spawn_for(&app, &state, &info, cols, rows) {
-        Ok(()) => Ok(info),
-        Err(e) => {
-            let mut reg = state.registry.lock().unwrap();
-            reg.set_exited(&info.id, Some(-1), Some(e));
-            Ok(reg.get(&info.id).cloned().unwrap_or(info))
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let info = state.registry.lock().unwrap().add(id, name, cwd).map_err(|e| e.to_string())?;
+        match spawn_for(&app, &info, cols, rows) {
+            Ok(existed) => Ok(TerminalInfo { existed, ..info }),
+            Err(e) => {
+                let mut reg = state.registry.lock().unwrap();
+                // The frontend retries a missing folder in the home folder, keyed on this message.
+                if e.contains("is not a directory") {
+                    reg.remove(&info.id);
+                    return Err(e);
+                }
+                match reg.get(&info.id) {
+                    Some(_) => {
+                        reg.set_exited(&info.id, Some(-1), Some(e));
+                        Ok(reg.get(&info.id).cloned().unwrap_or(info))
+                    }
+                    // Closed while starting.
+                    None => Err(e),
+                }
+            }
         }
-    }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -146,10 +177,15 @@ pub fn resize_terminal(state: State<'_, AppState>, id: String, cols: u16, rows: 
 /// host-wide multiplexed master that has outlived the shell that opened it. An unknown id, or
 /// a session for which liveness cannot be determined, is reported as not busy so callers don't
 /// mistake "unknown" for "safe to type into".
+///
+/// Asking a holder is a socket round trip, so it runs off the main thread.
 #[tauri::command]
-pub fn terminal_foreground_busy(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+pub async fn terminal_foreground_busy(state: State<'_, AppState>, id: String) -> Result<bool, String> {
     let session = state.sessions.lock().unwrap().get(&id).map(|(_, s)| s.clone());
-    Ok(session.and_then(|s| s.foreground_busy()).unwrap_or(false))
+    let Some(session) = session else { return Ok(false) };
+    tauri::async_runtime::spawn_blocking(move || session.foreground_busy().unwrap_or(false))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -176,38 +212,41 @@ pub fn rename_terminal(state: State<'_, AppState>, id: String, name: String) -> 
 
 #[tauri::command]
 pub fn close_terminal(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    if let Some((_, session)) = state.sessions.lock().unwrap().remove(&id) {
-        session.kill();
-    }
+    // Registry first: a start still in flight checks the registry before recording its session
+    // (see `insert_if_registered`), so it either sees the tile gone or its session is found here.
     state.registry.lock().unwrap().remove(&id);
+    let session = state.sessions.lock().unwrap().remove(&id);
+    if let Some((_, session)) = session {
+        // Closing a tile ends its shell; dropping the client afterwards only detaches.
+        session.terminate();
+    }
     Ok(())
 }
 
 #[tauri::command]
-pub fn restart_terminal(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: String,
-    cols: u16,
-    rows: u16,
-) -> Result<TerminalInfo, String> {
-    let info = {
-        let mut reg = state.registry.lock().unwrap();
-        let current = reg.get(&id).cloned().ok_or_else(|| format!("no terminal with id {id}"))?;
-        if current.exited.is_none() {
-            return Err("terminal is still running".to_string());
-        }
-        reg.clear_exited(&id);
-        TerminalInfo { exited: None, error: None, ..current }
-    };
-    match spawn_for(&app, &state, &info, cols, rows) {
-        Ok(()) => Ok(info),
-        Err(e) => {
+pub async fn restart_terminal(app: AppHandle, id: String, cols: u16, rows: u16) -> Result<TerminalInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let info = {
             let mut reg = state.registry.lock().unwrap();
-            reg.set_exited(&id, Some(-1), Some(e));
-            Ok(reg.get(&id).cloned().unwrap_or(info))
+            let current = reg.get(&id).cloned().ok_or_else(|| format!("no terminal with id {id}"))?;
+            if current.exited.is_none() {
+                return Err("terminal is still running".to_string());
+            }
+            reg.clear_exited(&id);
+            TerminalInfo { exited: None, error: None, ..current }
+        };
+        match spawn_for(&app, &info, cols, rows) {
+            Ok(existed) => Ok(TerminalInfo { existed, ..info }),
+            Err(e) => {
+                let mut reg = state.registry.lock().unwrap();
+                reg.set_exited(&id, Some(-1), Some(e.clone()));
+                reg.get(&id).cloned().ok_or(e)
+            }
         }
-    }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -237,9 +276,9 @@ pub async fn ssh_list_dir(host: String, path: Option<String>) -> Result<crate::r
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pty::SpawnSpec;
+    use crate::pty::{PtySession, SpawnSpec};
 
-    fn dummy_session() -> Arc<PtySession> {
+    fn dummy_session() -> Arc<dyn TerminalSession> {
         let spec = SpawnSpec {
             program: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), "sleep 5".to_string()],
@@ -253,7 +292,7 @@ mod tests {
 
     #[test]
     fn take_if_current_only_removes_matching_generation() {
-        let mut sessions: HashMap<String, (u64, Arc<PtySession>)> = HashMap::new();
+        let mut sessions: Sessions = HashMap::new();
         let session = dummy_session();
         sessions.insert("a".to_string(), (1, session.clone()));
 
@@ -269,7 +308,22 @@ mod tests {
         // A missing id never reports itself as "mine".
         assert!(!take_if_current(&mut sessions, "missing", 1));
 
-        session.kill();
+        session.terminate();
+    }
+
+    #[test]
+    fn a_session_for_a_tile_closed_while_starting_is_refused() {
+        let registry = Mutex::new(TerminalRegistry::new());
+        let mut sessions: Sessions = HashMap::new();
+        let session = dummy_session();
+        assert!(!insert_if_registered(&mut sessions, &registry, "a", 1, session.clone()));
+        assert!(sessions.is_empty());
+
+        registry.lock().unwrap().add("a".into(), None, "/".into()).unwrap();
+        assert!(insert_if_registered(&mut sessions, &registry, "a", 1, session.clone()));
+        assert!(sessions.contains_key("a"));
+
+        session.terminate();
     }
 }
 
