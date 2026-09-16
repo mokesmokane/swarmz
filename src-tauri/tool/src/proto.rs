@@ -93,6 +93,8 @@ pub fn json<T: Serialize>(v: &T) -> Vec<u8> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hello {
     pub v: u32,
+    /// The viewer's size. `0` in either means "no size yet": the holder applies nothing for this
+    /// viewer until it sends a real `Resize` (or types, which adopts the size already applied).
     pub cols: u16,
     pub rows: u16,
     pub viewer: String,
@@ -105,6 +107,12 @@ pub struct Welcome {
     pub shell_pid: Option<u32>,
     pub cwd: String,
     pub started_at: String,
+    /// The PTY size applied when this viewer connected, which is the size its replay was written
+    /// at. `0` from a holder that predates the field.
+    #[serde(default)]
+    pub cols: u16,
+    #[serde(default)]
+    pub rows: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -158,10 +166,14 @@ mod tests {
 
     #[test]
     fn messages_use_camel_case() {
-        let w = Welcome { v: 1, shell_pid: Some(7), cwd: "/p".into(), started_at: "t".into() };
+        let w = Welcome { v: 1, shell_pid: Some(7), cwd: "/p".into(), started_at: "t".into(), cols: 120, rows: 40 };
         let v: serde_json::Value = serde_json::from_slice(&json(&w)).unwrap();
         assert_eq!(v["shellPid"], 7);
         assert_eq!(v["startedAt"], "t");
+        assert_eq!((v["cols"].as_u64(), v["rows"].as_u64()), (Some(120), Some(40)));
+        // A Welcome from a holder without the size fields still parses, with no size.
+        let old: Welcome = serde_json::from_str(r#"{"v":1,"shellPid":null,"cwd":"/","startedAt":"t"}"#).unwrap();
+        assert_eq!((old.cols, old.rows), (0, 0));
         let i = Info { cwd: None, foreground_busy: Some(true), foreground_command: Some("sleep".into()) };
         let v: serde_json::Value = serde_json::from_slice(&json(&i)).unwrap();
         assert_eq!(v["foregroundBusy"], true);

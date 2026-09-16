@@ -291,7 +291,7 @@ mod tests {
         std::thread::spawn(move || {
             if let Ok((mut s, _)) = listener.accept() {
                 let _ = crate::proto::read_frame(&mut s);
-                let w = crate::proto::Welcome { v: 99, shell_pid: None, cwd: "/".into(), started_at: "t".into() };
+                let w = crate::proto::Welcome { v: 99, shell_pid: None, cwd: "/".into(), started_at: "t".into(), cols: 0, rows: 0 };
                 let _ = crate::proto::write_frame(&mut s, crate::proto::Kind::Welcome, &crate::proto::json(&w));
             }
         });
@@ -309,7 +309,7 @@ mod tests {
         std::thread::spawn(move || {
             if let Ok((mut s, _)) = listener.accept() {
                 let _ = crate::proto::read_frame(&mut s);
-                let w = crate::proto::Welcome { v: PROTOCOL_VERSION, shell_pid: None, cwd: "/".into(), started_at: "t".into() };
+                let w = crate::proto::Welcome { v: PROTOCOL_VERSION, shell_pid: None, cwd: "/".into(), started_at: "t".into(), cols: 0, rows: 0 };
                 let _ = crate::proto::write_frame(&mut s, crate::proto::Kind::Welcome, &crate::proto::json(&w));
                 // A well-behaved holder always follows Welcome with Replay; this one sends Data
                 // instead, so `connect()` must fail loudly rather than silently drop the frame.

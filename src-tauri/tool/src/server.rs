@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 
 pub const VIEWER_QUEUE_CAP: usize = 8 * 1024 * 1024;
 
+/// The label of viewers that never type and never set the size (the tool's own queries).
+pub const TOOL_VIEWER: &str = "tool";
+
 pub struct HolderConfig {
     pub tile: String,
     pub name: String,
@@ -31,7 +34,10 @@ pub struct HolderConfig {
 struct Viewer {
     id: u64,
     label: String,
-    size: (u16, u16),
+    /// `None` until the viewer reports a real size (a `Hello` or `Resize` without zeros) or types.
+    size: Option<(u16, u16)>,
+    /// When the viewer last sent a sized `Hello` or `Data` (or the first real `Resize` after a
+    /// sizeless `Hello`); 0 means never, and such a viewer never sets the size.
     last_active: u64,
     tx: mpsc::Sender<Vec<u8>>,
     queued: Arc<AtomicUsize>,
@@ -66,15 +72,23 @@ impl Shared {
         viewers.retain(|v| Shared::enqueue(v, frame.to_vec(), cap));
     }
 
+    /// Applies the size of the most recently active viewer (§3.5). Lock order: viewers, then
+    /// applied.
     fn apply_active_size(&self, viewers: &[Viewer]) {
-        let Some(active) = viewers.iter().filter(|v| v.label != "tool").max_by_key(|v| v.last_active) else {
+        let Some(size) = viewers
+            .iter()
+            .filter(|v| v.label != TOOL_VIEWER && v.last_active > 0)
+            .filter_map(|v| v.size.map(|s| (v.last_active, s)))
+            .max_by_key(|(at, _)| *at)
+            .map(|(_, s)| s)
+        else {
             return;
         };
         let mut applied = self.applied.lock().unwrap();
-        if *applied != active.size {
-            *applied = active.size;
+        if *applied != size {
+            *applied = size;
             if let Some(s) = self.session.get() {
-                let _ = s.resize(active.size.0, active.size.1);
+                let _ = s.resize(size.0, size.1);
             }
         }
     }
@@ -82,8 +96,27 @@ impl Shared {
     fn touch(&self, id: u64) {
         let mut vs = self.viewers.lock().unwrap();
         let now = self.clock.fetch_add(1, Ordering::SeqCst);
-        if let Some(v) = vs.iter_mut().find(|v| v.id == id && v.label != "tool") {
+        let applied = *self.applied.lock().unwrap();
+        if let Some(v) = vs.iter_mut().find(|v| v.id == id && v.label != TOOL_VIEWER) {
             v.last_active = now;
+            // A viewer that never said its size types at the size already applied.
+            v.size.get_or_insert(applied);
+        }
+        self.apply_active_size(&vs);
+    }
+
+    /// A viewer's new size. The first real size from a viewer whose `Hello` had none counts as
+    /// that `Hello`, making it the most recently active viewer; zeros are ignored.
+    fn resize_viewer(&self, id: u64, size: (u16, u16)) {
+        if size.0 == 0 || size.1 == 0 {
+            return;
+        }
+        let mut vs = self.viewers.lock().unwrap();
+        if let Some(v) = vs.iter_mut().find(|v| v.id == id) {
+            v.size = Some(size);
+            if v.last_active == 0 && v.label != TOOL_VIEWER {
+                v.last_active = self.clock.fetch_add(1, Ordering::SeqCst);
+            }
         }
         self.apply_active_size(&vs);
     }
@@ -149,7 +182,14 @@ pub fn run_holder(cfg: HolderConfig) -> Result<Option<i32>, String> {
     let shell_pid = session.shell_pid();
     let _ = shared.session.set(Arc::new(session));
     let started_at = now_iso();
-    let _ = shared.welcome.set(Welcome { v: PROTOCOL_VERSION, shell_pid, cwd: cfg.cwd.clone(), started_at: started_at.clone() });
+    let _ = shared.welcome.set(Welcome {
+        v: PROTOCOL_VERSION,
+        shell_pid,
+        cwd: cfg.cwd.clone(),
+        started_at: started_at.clone(),
+        cols: cfg.cols,
+        rows: cfg.rows,
+    });
     let meta = Meta {
         v: PROTOCOL_VERSION,
         pid: std::process::id(),
@@ -198,7 +238,7 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
     };
     let Some(hello) = hello else { return };
     let _ = stream.set_read_timeout(None);
-    let Some(welcome) = shared.welcome.get().cloned() else { return };
+    let Some(mut welcome) = shared.welcome.get().cloned() else { return };
     if hello.v != PROTOCOL_VERSION {
         let mut s = &stream;
         let _ = s.write_all(&encode(Kind::Welcome, &json(&welcome)));
@@ -222,6 +262,11 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
     });
 
     let id = shared.next_id.fetch_add(1, Ordering::SeqCst);
+    // Tool viewers only ask questions: no history, and no redraw of the programs on screen.
+    let is_tool = hello.viewer == TOOL_VIEWER;
+    // A zero in the Hello means the viewer does not know its size yet (a window reattaching
+    // before it has laid out): it must not resize the session to a guess.
+    let size = (hello.cols > 0 && hello.rows > 0).then_some((hello.cols, hello.rows));
     {
         let ring = shared.ring.lock().unwrap();
         let mut vs = shared.viewers.lock().unwrap();
@@ -229,21 +274,31 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
         let viewer = Viewer {
             id,
             label: hello.viewer.clone(),
-            size: (hello.cols, hello.rows),
-            last_active: shared.clock.fetch_add(1, Ordering::SeqCst),
+            size,
+            last_active: if size.is_some() && !is_tool { shared.clock.fetch_add(1, Ordering::SeqCst) } else { 0 },
             tx,
             queued,
             stream: vstream,
         };
-        let mut replay = REPLAY_PREFIX.to_vec();
-        replay.extend(ring.replay());
+        // The size the replay below was written at, before this viewer's own size applies.
+        let applied = *shared.applied.lock().unwrap();
+        (welcome.cols, welcome.rows) = applied;
+        let replay = if is_tool {
+            Vec::new()
+        } else {
+            let mut r = REPLAY_PREFIX.to_vec();
+            r.extend(ring.replay());
+            r
+        };
         Shared::enqueue(&viewer, encode(Kind::Welcome, &json(&welcome)), usize::MAX);
         Shared::enqueue(&viewer, encode(Kind::Replay, &replay), usize::MAX);
         vs.push(viewer);
         shared.apply_active_size(&vs);
     }
-    if let Some(s) = shared.session.get() {
-        s.signal_foreground(libc::SIGWINCH);
+    if !is_tool {
+        if let Some(s) = shared.session.get() {
+            s.signal_foreground(libc::SIGWINCH);
+        }
     }
 
     loop {
@@ -260,11 +315,7 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
             }
             Some(Kind::Resize) => {
                 if let Some(size) = parse_resize(&frame.payload) {
-                    let mut vs = shared.viewers.lock().unwrap();
-                    if let Some(v) = vs.iter_mut().find(|v| v.id == id) {
-                        v.size = size;
-                    }
-                    shared.apply_active_size(&vs);
+                    shared.resize_viewer(id, size);
                 }
             }
             Some(Kind::Terminate) => {
@@ -333,6 +384,7 @@ mod tests {
         out: Vec<u8>,
         exit: Option<Option<i32>>,
         replay: Vec<u8>,
+        welcome: crate::proto::Welcome,
         // How much of `out` has already been searched for a needle in `wait_for`, less a
         // needle's worth of overlap so a match straddling two reads is still found. Without
         // this, `wait_for` would re-scan the whole (unboundedly growing) buffer on every frame,
@@ -348,9 +400,10 @@ mod tests {
             s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let w = read_frame(&mut s).unwrap().unwrap();
             assert_eq!(w.kind, Kind::Welcome as u8);
+            let welcome = serde_json::from_slice(&w.payload).unwrap();
             let r = read_frame(&mut s).unwrap().unwrap();
             assert_eq!(r.kind, Kind::Replay as u8);
-            Viewer { s, out: Vec::new(), exit: None, replay: r.payload, scanned: 0 }
+            Viewer { s, out: Vec::new(), exit: None, replay: r.payload, welcome, scanned: 0 }
         }
 
         fn send(&mut self, bytes: &[u8]) {
@@ -492,6 +545,67 @@ mod tests {
         assert!(b.wait_for("sz-30x100", 5));
         b.send(b"exit 0\n");
         assert!(b.wait_for("", 5));
+        h.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_sizeless_hello_keeps_the_applied_size_until_the_viewer_resizes_or_types() {
+        let (_d, p, h) = start("nosize", VIEWER_QUEUE_CAP);
+        let mut a = Viewer::connect(&p, "window", 90, 20);
+        assert_eq!((a.welcome.cols, a.welcome.rows), (80, 24), "the welcome carries the size before this viewer's");
+        a.send(b"stty size\n");
+        assert!(a.wait_for("20 90", 5));
+        // A reattaching window that has not laid out yet: no resize, and it reads the size the
+        // replay was written at.
+        let mut b = Viewer::connect(&p, "window", 0, 0);
+        assert_eq!((b.welcome.cols, b.welcome.rows), (90, 20));
+        std::thread::sleep(Duration::from_millis(200));
+        a.out.clear();
+        a.send(b"echo sz-$(stty size | tr ' ' x)\n");
+        assert!(a.wait_for("sz-20x90", 5));
+        // Zeros in a Resize are ignored too.
+        b.frame(Kind::Resize, &crate::proto::resize_payload(0, 0));
+        a.out.clear();
+        a.send(b"echo sz-$(stty size | tr ' ' x)\n");
+        assert!(a.wait_for("sz-20x90", 5));
+        // Typing adopts the applied size rather than inventing one.
+        b.out.clear();
+        b.send(b"echo sz-$(stty size | tr ' ' x)\n");
+        assert!(b.wait_for("sz-20x90", 5));
+        // When it leaves, nothing it never reported is applied; a still applies.
+        let mut c = Viewer::connect(&p, "window", 0, 0);
+        c.frame(Kind::Resize, &crate::proto::resize_payload(70, 15));
+        c.out.clear();
+        c.send(b"echo sz-$(stty size | tr ' ' x)\n");
+        assert!(c.wait_for("sz-15x70", 5), "the first real resize counts as the viewer's hello");
+        drop(c);
+        std::thread::sleep(Duration::from_millis(300));
+        a.out.clear();
+        a.send(b"echo sz-$(stty size | tr ' ' x)\n");
+        assert!(a.wait_for("sz-20x90", 5));
+        let d = Viewer::connect(&p, "window", 0, 0);
+        assert_eq!((d.welcome.cols, d.welcome.rows), (90, 20));
+        a.send(b"exit 0\n");
+        assert!(a.wait_for("", 5));
+        h.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn tool_viewers_get_no_replay_and_no_redraw() {
+        let (_d, p, h) = start("toolview", VIEWER_QUEUE_CAP);
+        let mut a = Viewer::connect(&p, "window", 80, 24);
+        a.send(b"echo hist-$((2*21)); sh -c 'trap \"printf %s-%s\\\\n got winch\" WINCH; while :; do sleep 0.1; done'\n");
+        assert!(a.wait_for("hist-42", 5));
+        std::thread::sleep(Duration::from_millis(400));
+        let t = Viewer::connect(&p, "tool", 0, 0);
+        assert!(t.replay.is_empty(), "a tool viewer gets an empty replay: {:?}", String::from_utf8_lossy(&t.replay));
+        assert!(!a.wait_for("got-winch", 1), "a tool viewer must not make programs redraw");
+        // A window viewer (sizeless, so no resize of its own) does.
+        let w = Viewer::connect(&p, "window", 0, 0);
+        assert!(String::from_utf8_lossy(&w.replay).contains("hist-42"));
+        assert!(a.wait_for("got-winch", 5));
+        a.frame(Kind::Terminate, b"");
+        assert!(a.wait_for("", 8));
         h.join().unwrap().unwrap();
     }
 
