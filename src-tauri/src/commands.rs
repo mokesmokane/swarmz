@@ -88,6 +88,33 @@ struct ExitPayload {
     code: Option<i32>,
 }
 
+/// A `pty:replay:<id>` event: the replayed bytes (base64) and the size they were written at
+/// (0 when the holder did not say), so the pane parses them at that size before fitting. The size
+/// travels inside the replay event rather than in an event of its own because the replay is
+/// emitted from inside `connect`, before `create_terminal` returns, and the frontend must never
+/// see the two out of order.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ReplayPayload {
+    pub data: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+pub fn replay_payload(bytes: &[u8], (cols, rows): (u16, u16)) -> ReplayPayload {
+    ReplayPayload { data: BASE64.encode(bytes), cols, rows }
+}
+
+/// The size a window asks for when it connects. A session that was already running keeps its
+/// size until the pane has laid out and sends a real resize (the pane may not be fitted yet, and
+/// its placeholder size would squash whatever is on screen); a new one starts at the pane's size.
+fn hello_size(existed: bool, cols: u16, rows: u16) -> (u16, u16) {
+    if existed {
+        (0, 0)
+    } else {
+        (cols, rows)
+    }
+}
+
 /// Records a freshly connected session for `id`, unless the tile was closed while it was
 /// starting (starts run off the main thread, so a close can land in between). The caller holds
 /// the sessions lock; `close_terminal` removes the registry entry before it looks at the
@@ -129,13 +156,21 @@ fn spawn_for(app: &AppHandle, info: &TerminalInfo, cols: u16, rows: u16) -> Resu
     // for every other tile take that lock on the main thread.
     let gate = Arc::new(Gate::default());
     let exit_gate = gate.clone();
-    let hello = Hello { v: PROTOCOL_VERSION, cols, rows, viewer: "window".into() };
-    let client = HolderClient::connect(
+    let (hello_cols, hello_rows) = hello_size(held.existed, cols, rows);
+    let hello = Hello { v: PROTOCOL_VERSION, cols: hello_cols, rows: hello_rows, viewer: "window".into() };
+    let replay_size = Arc::new(Mutex::new((0u16, 0u16)));
+    let welcome_size = replay_size.clone();
+    let client = HolderClient::connect_with(
         std::path::Path::new(&held.socket),
         &hello,
+        move |welcome| *welcome_size.lock().unwrap() = (welcome.cols, welcome.rows),
         move |bytes, replay| {
-            let topic = if replay { &replay_topic } else { &data_topic };
-            let _ = data_app.emit(topic, BASE64.encode(&bytes));
+            if replay {
+                let size = *replay_size.lock().unwrap();
+                let _ = data_app.emit(&replay_topic, replay_payload(&bytes, size));
+            } else {
+                let _ = data_app.emit(&data_topic, BASE64.encode(&bytes));
+            }
         },
         move |code| {
             if let Some(st) = exit_app.try_state::<AppState>() {
@@ -353,6 +388,20 @@ mod tests {
     use super::*;
     use crate::pty::{PtySession, SpawnSpec};
 
+    #[test]
+    fn a_running_session_is_joined_without_a_size() {
+        assert_eq!(hello_size(true, 80, 24), (0, 0));
+        assert_eq!(hello_size(false, 132, 40), (132, 40));
+    }
+
+    #[test]
+    fn replay_events_carry_their_size() {
+        let p = replay_payload(b"hi", (120, 40));
+        assert_eq!(p, ReplayPayload { data: "aGk=".into(), cols: 120, rows: 40 });
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v, serde_json::json!({ "data": "aGk=", "cols": 120, "rows": 40 }));
+    }
+
     fn dummy_session() -> Arc<dyn TerminalSession> {
         let spec = SpawnSpec {
             program: "/bin/sh".to_string(),
@@ -510,6 +559,13 @@ pub async fn tool_remote_ready(host: String) -> Result<bool, String> {
 #[tauri::command]
 pub async fn remote_tile_info(host: String, id: String) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || crate::toolbin::remote_info(&host, &id)).await.map_err(|e| e.to_string())?
+}
+
+/// Ends the tile's session holder on `host` (best effort; a tile that was never started there is
+/// not an error). True when a session was running and has ended.
+#[tauri::command]
+pub async fn remote_tile_close(host: String, id: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::toolbin::remote_close(&host, &id)).await.map_err(|e| e.to_string())?
 }
 
 /// Starts tailing the agent log for `host` (None = this machine) and returns the generation of

@@ -44,6 +44,7 @@ pub fn run() {
             commands::agents_install_remote,
             commands::tool_remote_ready,
             commands::remote_tile_info,
+            commands::remote_tile_close,
             commands::agents_watch,
             commands::agents_unwatch,
             commands::paste_image_to_remote,

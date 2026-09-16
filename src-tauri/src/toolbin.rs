@@ -50,16 +50,37 @@ pub fn install_from(src: &Path, dest: &Path) -> Result<bool, String> {
     written.map(|_| true)
 }
 
-/// The installed tool, refreshed from the bundled copy when that differs. The comparison runs
-/// once per app run (and again only if the installed copy disappears), under a lock, because
-/// every tile start calls this and many tiles start at once.
+/// A tool's `version` reply, or None when it could not be run or read.
+fn tool_version(tool: &Path) -> Option<ToolVersion> {
+    let mut c = Command::new(tool);
+    c.arg("version");
+    let out = crate::remote::run_with_timeout(c, Duration::from_secs(5), "swarmz").ok()?;
+    parse_version(&out.stdout)
+}
+
+/// Whether the bundled tool should replace the installed one (whose bytes differ). A copy with
+/// the same version and protocol but a newer build (installed by a newer build of this app) is
+/// kept; anything else is replaced, as is a copy whose version cannot be read.
+pub fn replace_installed(bundled: Option<&ToolVersion>, installed: Option<&ToolVersion>) -> bool {
+    match (bundled, installed) {
+        (Some(b), Some(i)) => !(b.protocol == i.protocol && version_cmp(&b.tool, &i.tool).is_eq() && i.build > b.build),
+        _ => true,
+    }
+}
+
+/// The installed tool, refreshed from the bundled copy when that differs (see
+/// `replace_installed`). The comparison runs once per app run (and again only if the installed
+/// copy disappears), under a lock, because every tile start calls this and many tiles start at
+/// once.
 pub fn ensure_installed() -> Result<PathBuf, String> {
     static CHECKED: Mutex<bool> = Mutex::new(false);
     let mut checked = CHECKED.lock().unwrap_or_else(|e| e.into_inner());
     let dest = installed_path();
     if !*checked || !dest.is_file() {
         if let Some(src) = bundled_path() {
-            match install_from(&src, &dest) {
+            let differs = dest.is_file() && std::fs::read(&src).ok() != std::fs::read(&dest).ok();
+            let keep = differs && !replace_installed(tool_version(&src).as_ref(), tool_version(&dest).as_ref());
+            match if keep { Ok(false) } else { install_from(&src, &dest) } {
                 Ok(_) => {}
                 // An older installed copy still runs sessions; better than none.
                 Err(e) if dest.is_file() => eprintln!("swarmz: keeping the installed tool: {e}"),
@@ -170,13 +191,22 @@ fn parse_probe(stdout: &str) -> (String, Option<String>, Option<String>) {
     (uname, version, sum)
 }
 
-/// Parses a `swarmz version` reply (`{"v":1,"tool":"<version>","protocol":N}`) into
-/// `(protocol, tool)`. `None` when it isn't that shape.
-fn parse_version(text: &str) -> Option<(u64, String)> {
+/// A `swarmz version` reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolVersion {
+    pub protocol: u64,
+    pub tool: String,
+    /// The build id (seconds since the epoch at build time); None from a tool that predates it.
+    pub build: Option<u64>,
+}
+
+/// Parses a `swarmz version` reply (`{"v":1,"tool":"<version>","protocol":N,"build":B}`).
+/// `None` when it isn't that shape.
+fn parse_version(text: &str) -> Option<ToolVersion> {
     let v: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
     let protocol = v["protocol"].as_u64()?;
     let tool = v["tool"].as_str()?.to_string();
-    Some((protocol, tool))
+    Some(ToolVersion { protocol, tool, build: v["build"].as_u64() })
 }
 
 /// Compares dot-separated numeric version strings component-wise (`"1.2" == "1.2.0"`); a
@@ -201,25 +231,31 @@ pub enum InstallDecision {
     Skip,
 }
 
-/// Decides `Install` vs `Skip` from our own `(protocol, tool version)`, the remote probe's
-/// parsed `(protocol, tool version)` (`None` when the remote tool is missing or its `version`
-/// output was unreadable), and whether the two binaries' checksums matched.
+/// Decides `Install` vs `Skip` from our own version, the remote probe's (`None` when the remote
+/// tool is missing or its `version` output was unreadable), and whether the two binaries'
+/// checksums matched.
 ///
 /// Installs when the remote is missing/unreadable, on a different protocol, or running an
-/// older tool version; also when the tool versions are equal but the checksums differ (dev
-/// builds, which share a version string across rebuilds). Skips only when the protocol already
-/// matches and the remote's tool version is newer, or equal with a matching checksum.
-pub fn decide_install(local_protocol: u64, local_tool: &str, remote: Option<(u64, &str)>, sums_match: bool) -> InstallDecision {
-    let Some((remote_protocol, remote_tool)) = remote else {
+/// older tool version. With equal versions and different checksums (dev builds share a version
+/// string across rebuilds), the build id breaks the tie: install when the remote's is missing or
+/// older than ours, skip when it is the same or newer, so two Macs never keep replacing each
+/// other's copy. Also skips when the remote's tool version is newer on our protocol, or equal
+/// with a matching checksum.
+pub fn decide_install(local: &ToolVersion, remote: Option<&ToolVersion>, sums_match: bool) -> InstallDecision {
+    let Some(remote) = remote else {
         return InstallDecision::Install;
     };
-    if remote_protocol != local_protocol {
+    if remote.protocol != local.protocol {
         return InstallDecision::Install;
     }
     use std::cmp::Ordering::{Equal, Less};
-    match version_cmp(remote_tool, local_tool) {
+    match version_cmp(&remote.tool, &local.tool) {
         Less => InstallDecision::Install,
-        Equal if !sums_match => InstallDecision::Install,
+        Equal if !sums_match => match (remote.build, local.build) {
+            (None, _) => InstallDecision::Install,
+            (Some(r), Some(l)) if r < l => InstallDecision::Install,
+            _ => InstallDecision::Skip,
+        },
         _ => InstallDecision::Skip,
     }
 }
@@ -257,7 +293,7 @@ pub fn remote_ready(host: &str) -> Result<bool, String> {
         c.arg("version");
         crate::remote::run_with_timeout(c, Duration::from_secs(5), "swarmz")?
     };
-    let (local_protocol, local_tool) = parse_version(&local_version_out.stdout)
+    let local_version = parse_version(&local_version_out.stdout)
         .ok_or_else(|| format!("the local swarmz tool at {} returned an unreadable version", local.display()))?;
     let local_sum = {
         let mut c = Command::new("cksum");
@@ -267,9 +303,8 @@ pub fn remote_ready(host: &str) -> Result<bool, String> {
     };
     let sums_match = sum.as_deref() == Some(local_sum.as_str());
     let remote_version = version.as_deref().and_then(parse_version);
-    let remote_for_decision = remote_version.as_ref().map(|(p, t)| (*p, t.as_str()));
 
-    if decide_install(local_protocol, &local_tool, remote_for_decision, sums_match) == InstallDecision::Skip {
+    if decide_install(&local_version, remote_version.as_ref(), sums_match) == InstallDecision::Skip {
         return Ok(true);
     }
 
@@ -282,7 +317,7 @@ pub fn remote_ready(host: &str) -> Result<bool, String> {
         return Err(if done.stderr.trim().is_empty() { "could not install the swarmz tool".into() } else { done.stderr.trim().to_string() });
     }
     let check = ssh_run(host, "~/.swarmz/bin/swarmz version", None, 10)?;
-    Ok(parse_version(&check.stdout).map(|(p, _)| p) == Some(local_protocol))
+    Ok(parse_version(&check.stdout).map(|v| v.protocol) == Some(local_version.protocol))
 }
 
 /// Turns the tool's own JSON reply into `Err` when it carries an `error` field, or when the
@@ -304,6 +339,18 @@ pub fn remote_info(host: &str, id: &str) -> Result<serde_json::Value, String> {
     }
     let done = ssh_run(host, &format!("~/.swarmz/bin/swarmz info {id}"), None, 10)?;
     parse_tool_reply(&done.stdout, &done.stderr)
+}
+
+/// Ends the tile's session holder on `host` with the remote tool's `close`. True when a session
+/// was running there and has ended.
+pub fn remote_close(host: &str, id: &str) -> Result<bool, String> {
+    if !swarmz_tool::paths::valid_tile_id(id) {
+        return Err(format!("invalid tile id {id:?}"));
+    }
+    // The tool waits up to 5 s for the session to end.
+    let done = ssh_run(host, &format!("~/.swarmz/bin/swarmz close {id}"), None, 12)?;
+    let v = parse_tool_reply(&done.stdout, &done.stderr)?;
+    Ok(v["closed"].as_bool() == Some(true))
 }
 
 #[cfg(test)]
@@ -496,34 +543,81 @@ mod tests {
         assert_eq!(version_cmp("abc", "1.0.0"), std::cmp::Ordering::Less);
     }
 
+    fn ver(protocol: u64, tool: &str, build: Option<u64>) -> ToolVersion {
+        ToolVersion { protocol, tool: tool.into(), build }
+    }
+
     #[test]
     fn decide_install_when_remote_version_is_missing_or_unreadable() {
-        assert_eq!(decide_install(2, "1.2.0", None, false), InstallDecision::Install);
+        assert_eq!(decide_install(&ver(2, "1.2.0", Some(5)), None, false), InstallDecision::Install);
     }
 
     #[test]
     fn decide_install_when_protocol_differs() {
-        assert_eq!(decide_install(2, "1.2.0", Some((1, "9.9.9")), true), InstallDecision::Install);
+        assert_eq!(decide_install(&ver(2, "1.2.0", Some(5)), Some(&ver(1, "9.9.9", Some(9))), true), InstallDecision::Install);
     }
 
     #[test]
     fn decide_install_when_remote_tool_is_older() {
-        assert_eq!(decide_install(2, "1.3.0", Some((2, "1.2.9")), true), InstallDecision::Install);
+        assert_eq!(decide_install(&ver(2, "1.3.0", Some(5)), Some(&ver(2, "1.2.9", Some(9))), true), InstallDecision::Install);
     }
 
     #[test]
-    fn decide_install_when_versions_match_but_checksums_differ() {
-        assert_eq!(decide_install(2, "1.2.0", Some((2, "1.2.0")), false), InstallDecision::Install);
+    fn decide_install_breaks_a_same_version_tie_on_the_build_id() {
+        let local = ver(2, "1.2.0", Some(100));
+        // Older or unknown remote build: ours replaces it.
+        assert_eq!(decide_install(&local, Some(&ver(2, "1.2.0", None)), false), InstallDecision::Install);
+        assert_eq!(decide_install(&local, Some(&ver(2, "1.2.0", Some(99))), false), InstallDecision::Install);
+        // A newer (or the same) remote build is left alone.
+        assert_eq!(decide_install(&local, Some(&ver(2, "1.2.0", Some(101))), false), InstallDecision::Skip);
+        assert_eq!(decide_install(&local, Some(&ver(2, "1.2.0", Some(100))), false), InstallDecision::Skip);
+        // Our own build id unknown: never replace a remote that has one.
+        assert_eq!(decide_install(&ver(2, "1.2.0", None), Some(&ver(2, "1.2.0", Some(1))), false), InstallDecision::Skip);
     }
 
     #[test]
     fn decide_install_skips_when_versions_and_checksums_match() {
-        assert_eq!(decide_install(2, "1.2.0", Some((2, "1.2.0")), true), InstallDecision::Skip);
+        assert_eq!(decide_install(&ver(2, "1.2.0", Some(1)), Some(&ver(2, "1.2.0", Some(1))), true), InstallDecision::Skip);
     }
 
     #[test]
     fn decide_install_skips_a_newer_remote_on_the_same_protocol() {
-        assert_eq!(decide_install(2, "1.2.0", Some((2, "1.3.0")), false), InstallDecision::Skip);
+        assert_eq!(decide_install(&ver(2, "1.2.0", Some(9)), Some(&ver(2, "1.3.0", Some(1))), false), InstallDecision::Skip);
+    }
+
+    #[test]
+    fn a_newer_build_of_the_same_installed_version_is_kept() {
+        let bundled = ver(1, "0.1.0", Some(100));
+        assert!(!replace_installed(Some(&bundled), Some(&ver(1, "0.1.0", Some(101)))));
+        assert!(replace_installed(Some(&bundled), Some(&ver(1, "0.1.0", Some(99)))));
+        assert!(replace_installed(Some(&bundled), Some(&ver(1, "0.1.0", None))));
+        assert!(replace_installed(Some(&bundled), Some(&ver(1, "0.1.0", Some(100)))));
+        // Another version or protocol is always replaced by the bundled copy.
+        assert!(replace_installed(Some(&bundled), Some(&ver(1, "0.2.0", Some(101)))));
+        assert!(replace_installed(Some(&bundled), Some(&ver(2, "0.1.0", Some(101)))));
+        // Unreadable versions: replace, as before.
+        assert!(replace_installed(Some(&bundled), None));
+        assert!(replace_installed(None, Some(&ver(1, "0.1.0", Some(101)))));
+    }
+
+    #[test]
+    fn parse_version_reads_the_build_id_when_present() {
+        assert_eq!(parse_version(r#"{"v":1,"tool":"0.1.0","protocol":1,"build":42}"#), Some(ver(1, "0.1.0", Some(42))));
+        assert_eq!(parse_version(r#"{"v":1,"tool":"0.1.0","protocol":1}"#), Some(ver(1, "0.1.0", None)));
+        assert_eq!(parse_version("nope"), None);
+    }
+
+    #[test]
+    fn the_built_tool_reports_a_build_id() {
+        let v = tool_version(&built_tool()).expect("the tool answers version");
+        assert!(v.build.is_some_and(|b| b > 0), "{v:?}");
+    }
+
+    #[test]
+    fn remote_close_validates_before_connecting() {
+        let err = remote_close("box", "../x").unwrap_err();
+        assert!(err.contains("invalid tile id"), "{err}");
+        assert!(remote_close("-oProxyCommand=evil", "t1").is_err());
     }
 
     #[test]
