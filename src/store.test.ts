@@ -41,6 +41,10 @@ vi.mock("./lib/ipc", () => {
       toolRemoteReady: vi.fn(async () => false),
       remoteTileInfo: vi.fn(async () => ({ running: false })),
       remoteTileClose: vi.fn(async () => false),
+      localSessions: vi.fn(async () => []),
+      closeSession: vi.fn(async () => true),
+      phones: vi.fn(async () => []),
+      revokePhone: vi.fn(async () => ({ removed: 1, machines: [] })),
       pasteImageToRemote: vi.fn(async () => null),
       agentsWatch: vi.fn(async () => 1),
       agentsUnwatch: vi.fn(async () => {}),
@@ -3469,5 +3473,44 @@ describe("connection watchdog", () => {
     vi.mocked(ipc.terminalForegroundBusy).mockClear().mockResolvedValue(false);
     await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS * 2);
     expect(ipc.terminalForegroundBusy).not.toHaveBeenCalled();
+  });
+});
+
+describe("sessions outside the workspace", () => {
+  const old = new Date(Date.now() - 5 * 60_000).toISOString();
+  const fresh = new Date().toISOString();
+  const row = (id: string, extra: Partial<import("./lib/ipc").SessionRow> = {}) => ({
+    id, name: id, running: true, pid: 1, startedAt: old, exitedAt: null, exitCode: null, known: false, ...extra,
+  });
+
+  it("lists running, unknown, settled sessions that no tile shows", async () => {
+    useStore.setState({ terminals: { open1: { id: "open1", name: "o", cwd: "/", exited: null, error: null } } });
+    vi.mocked(ipc.localSessions).mockResolvedValueOnce([
+      row("orphan"),
+      row("known1", { known: true }),
+      row("open1"),
+      row("dead", { running: false }),
+      row("new1", { startedAt: fresh }),
+    ]);
+    await useStore.getState().refreshOutsideSessions();
+    expect(useStore.getState().outsideSessions).toEqual(["orphan"]);
+  });
+
+  it("closes them and reports the first failure", async () => {
+    useStore.setState({ outsideSessions: ["a", "b"] });
+    vi.mocked(ipc.closeSession).mockRejectedValueOnce("nope").mockResolvedValueOnce(true);
+    vi.mocked(ipc.localSessions).mockResolvedValueOnce([]);
+    const err = await useStore.getState().closeOutsideSessions();
+    expect(ipc.closeSession).toHaveBeenCalledWith("a");
+    expect(ipc.closeSession).toHaveBeenCalledWith("b");
+    expect(err).toBe("could not close a: nope");
+    expect(useStore.getState().outsideSessions).toEqual([]);
+  });
+
+  it("keeps the list when the sessions cannot be read", async () => {
+    useStore.setState({ outsideSessions: ["x"] });
+    vi.mocked(ipc.localSessions).mockRejectedValueOnce("broken");
+    await useStore.getState().refreshOutsideSessions();
+    expect(useStore.getState().outsideSessions).toEqual(["x"]);
   });
 });

@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { useStore, terminalColor } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
 import { dotPresentation } from "../lib/agentState";
 import { SessionHistory } from "./SessionHistory";
+import { PhonesPanel } from "./PhonesPanel";
 
 function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? p;
@@ -38,6 +39,29 @@ function SyncLine() {
     >
       {text}
     </button>
+  );
+}
+
+function OutsideSessionsLine() {
+  const ids = useStore((s) => s.outsideSessions);
+  const closeAll = useStore((s) => s.closeOutsideSessions);
+  const [error, setError] = useState<string | null>(null);
+  if (ids.length === 0 && !error) return null;
+  const onClose = async () => {
+    const ok = await confirm(`End ${ids.length} shell${ids.length === 1 ? "" : "s"} that no tile shows? Anything running in them stops.`, {
+      title: "Sessions outside this workspace",
+    });
+    if (ok) setError(await closeAll());
+  };
+  return (
+    <div className="flex items-start gap-2 px-3 py-1 text-xs text-amber-300">
+      <span className="flex-1">{error ?? `${ids.length} session${ids.length === 1 ? "" : "s"} running outside this workspace`}</span>
+      {ids.length > 0 && (
+        <button className="text-neutral-400 hover:text-neutral-100" onClick={() => void onClose()}>
+          Close them
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -219,6 +243,7 @@ export function Sidebar() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<"closed" | "open" | "ssh">("closed");
+  const [phonesOpen, setPhonesOpen] = useState(false);
 
   const addTerminal = async () => {
     setMenu("closed");
@@ -241,6 +266,13 @@ export function Sidebar() {
         <div className="flex items-center gap-1">
           <button
             className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
+            onClick={() => setPhonesOpen((o) => !o)}
+            title="Phones"
+          >
+            📱
+          </button>
+          <button
+            className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
             onClick={() => void reloadWorkspace()}
             title="Reload ~/.swarmz/workspace.json"
           >
@@ -257,6 +289,7 @@ export function Sidebar() {
         </div>
       </div>
       <SyncLine />
+      {phonesOpen && <PhonesPanel onClose={() => setPhonesOpen(false)} />}
       {menu === "open" && (
         <div className="flex gap-1 border-b border-neutral-800 p-2 text-xs">
           <button
@@ -287,6 +320,7 @@ export function Sidebar() {
           <button className="text-neutral-400 hover:text-neutral-100" onClick={() => void installAgentHooks().then(ensureAgentWatchers)}>Retry</button>
         </div>
       )}
+      <OutsideSessionsLine />
       <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
         {order.map((id) => (
           <Row key={id} id={id} />

@@ -35,6 +35,10 @@ vi.mock("../lib/ipc", () => ({
     toolRemoteReady: vi.fn(async () => false),
     remoteTileInfo: vi.fn(async () => ({ running: false })),
     remoteTileClose: vi.fn(async () => false),
+    localSessions: vi.fn(async () => []),
+    closeSession: vi.fn(async () => true),
+    phones: vi.fn(async () => []),
+    revokePhone: vi.fn(async () => ({ removed: 1, machines: [] })),
     pasteImageToRemote: vi.fn(async () => null),
     agentsWatch: vi.fn(async () => 1),
     agentsUnwatch: vi.fn(async () => {}),
@@ -46,6 +50,7 @@ vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn(async () => "/home/me") 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true), open: vi.fn(async () => null) }));
 
 import { __stopAllPolling, useStore } from "../store";
+import { ipc } from "../lib/ipc";
 import { Sidebar } from "./Sidebar";
 
 const ID = "t1";
@@ -73,6 +78,7 @@ beforeEach(() => {
       peers: [{ name: "box", hostName: "box", ip: "100.1.1.2", os: "macOS", online: true }],
     },
     tailscaleError: null,
+    outsideSessions: [],
   });
 });
 
@@ -195,5 +201,25 @@ describe("session history popover", () => {
     }));
     render(<Sidebar />);
     expect(screen.queryByRole("button", { name: "Previous sessions" })).toBeNull();
+  });
+});
+
+describe("sessions outside the workspace", () => {
+  it("offers to close them after confirming", async () => {
+    useStore.setState({ outsideSessions: ["o1", "o2"] });
+    render(<Sidebar />);
+    expect(screen.getByText("2 sessions running outside this workspace")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Close them" }));
+    });
+    expect(ipc.closeSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens the phones list", async () => {
+    render(<Sidebar />);
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Phones"));
+    });
+    expect(await screen.findByText("No phones paired")).toBeTruthy();
   });
 });

@@ -15,6 +15,7 @@ export default function App() {
       .then(async () => {
         await useStore.getState().refreshTailscale();
         await useStore.getState().pullWorkspace();
+        await useStore.getState().refreshOutsideSessions();
       });
   }, []);
 
@@ -30,6 +31,7 @@ export default function App() {
     }, SYNC_STAT_MS);
     const onFocus = () => {
       void useStore.getState().pullWorkspace();
+      void useStore.getState().refreshOutsideSessions();
     };
     window.addEventListener("focus", onFocus);
     return () => {

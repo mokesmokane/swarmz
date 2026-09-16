@@ -581,6 +581,59 @@ pub async fn remote_tile_close(host: String, id: String) -> Result<bool, String>
     tauri::async_runtime::spawn_blocking(move || crate::toolbin::remote_close(&host, &id)).await.map_err(|e| e.to_string())?
 }
 
+const SESSION_PRUNE_AGE: Duration = Duration::from_secs(7 * 86_400);
+
+/// Every session on this Mac; dead ones older than a week are removed first.
+#[tauri::command]
+pub async fn local_sessions() -> Result<Vec<swarmz_tool::tiles::SessionRow>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let home = swarmz_tool::paths::home_dir();
+        swarmz_tool::tiles::prune(&home, SESSION_PRUNE_AGE);
+        swarmz_tool::tiles::session_rows(&home)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Ends a session that no tile in this window shows.
+#[tauri::command]
+pub async fn close_session(app: AppHandle, id: String) -> Result<bool, String> {
+    if !swarmz_tool::paths::valid_tile_id(&id) {
+        return Err(format!("invalid session id {id:?}"));
+    }
+    if app.state::<AppState>().registry.lock().unwrap().get(&id).is_some() {
+        return Err(format!("{id} is open in swarmz; close its tile instead"));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let tool = crate::toolbin::ensure_installed()?;
+        let v = crate::toolbin::run_tool_json(&tool, &["close", &id], Duration::from_secs(10))?;
+        Ok(v["closed"].as_bool().unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn phones() -> Result<Vec<swarmz_tool::phone::PhoneKey>, String> {
+    tauri::async_runtime::spawn_blocking(|| swarmz_tool::phone::list_keys(&swarmz_tool::phone::authorized_keys(&swarmz_tool::paths::home_dir())))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Removes a phone's key here and on every other Mac the tool can reach.
+#[tauri::command]
+pub async fn revoke_phone(device: String) -> Result<serde_json::Value, String> {
+    if !swarmz_tool::phone::valid_device(&device) {
+        return Err(format!("invalid device name {device:?}"));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let tool = crate::toolbin::ensure_installed()?;
+        crate::toolbin::run_tool_json(&tool, &["phone", "revoke", &device], Duration::from_secs(120))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Starts tailing the agent log for `host` (None = this machine) and returns the generation of
 /// the watcher now running for it, so the caller can tell a `agent:watch-ended` from that
 /// watcher apart from one from a watcher it has already replaced. Already watching is a no-op

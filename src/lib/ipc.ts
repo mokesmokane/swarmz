@@ -53,6 +53,29 @@ export interface TermSize {
   rows: number;
 }
 
+export interface SessionRow {
+  id: string;
+  name: string | null;
+  running: boolean;
+  pid: number | null;
+  startedAt: string | null;
+  exitedAt: string | null;
+  exitCode: number | null;
+  known: boolean;
+}
+
+export interface PhoneKey {
+  device: string;
+  keyType: string;
+  keyEnd: string;
+}
+
+export interface MachineResult {
+  machine: string;
+  ok: boolean;
+  error?: string;
+}
+
 interface ReplayPayload {
   data: string;
   cols: number;
@@ -108,6 +131,14 @@ export const ipc = {
   remoteTileInfo: (host: string, id: string) => invoke<RemoteTileInfo>("remote_tile_info", { host, id }),
   /** Ends the tile's session holder on `host`; true when one was running. */
   remoteTileClose: (host: string, id: string) => invoke<boolean>("remote_tile_close", { host, id }),
+  /** Every session on this Mac; dead ones older than a week are pruned first. */
+  localSessions: () => invoke<SessionRow[]>("local_sessions"),
+  /** Ends a session that no tile in this window shows. */
+  closeSession: (id: string) => invoke<boolean>("close_session", { id }),
+  /** The phones paired with this Mac. */
+  phones: () => invoke<PhoneKey[]>("phones"),
+  /** Removes a phone's key here and on every other Mac the tool can reach. */
+  revokePhone: (device: string) => invoke<{ removed: number; machines: MachineResult[] }>("revoke_phone", { device }),
   /** Resolves with the generation of the watcher now running for `host` (see `agents_watch`). */
   agentsWatch: (host: string | null) => invoke<number>("agents_watch", { host }),
   agentsUnwatch: (host: string | null) => invoke<void>("agents_unwatch", { host }),

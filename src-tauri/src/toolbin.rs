@@ -341,6 +341,19 @@ pub fn remote_info(host: &str, id: &str) -> Result<serde_json::Value, String> {
     parse_tool_reply(&done.stdout, &done.stderr)
 }
 
+/// Runs the tool and returns its JSON reply; a reply carrying `error` becomes `Err`.
+pub fn run_tool_json(tool: &Path, args: &[&str], timeout: Duration) -> Result<serde_json::Value, String> {
+    let mut c = Command::new(tool);
+    c.args(args);
+    let done = crate::remote::run_with_timeout(c, timeout, "swarmz")?;
+    let v: serde_json::Value = serde_json::from_str(done.stdout.trim())
+        .map_err(|e| format!("swarmz returned something unreadable ({e}): {}", done.stderr.trim()))?;
+    if let Some(err) = v["error"].as_str() {
+        return Err(format!("{err} ({})", v["code"].as_str().unwrap_or("failed")));
+    }
+    Ok(v)
+}
+
 /// Ends the tile's session holder on `host` with the remote tool's `close`. True when a session
 /// was running there and has ended.
 pub fn remote_close(host: &str, id: &str) -> Result<bool, String> {
@@ -655,5 +668,14 @@ pub(crate) mod tests {
     fn parse_tool_reply_rejects_empty_output() {
         let err = parse_tool_reply("", "").unwrap_err();
         assert!(err.contains("unreadable"), "{err}");
+    }
+
+    #[test]
+    fn run_tool_json_returns_the_reply_or_its_error() {
+        let tool = built_tool();
+        let v = run_tool_json(&tool, &["version"], Duration::from_secs(10)).unwrap();
+        assert_eq!(v["v"], 1);
+        let err = run_tool_json(&tool, &["no-such-command"], Duration::from_secs(10)).unwrap_err();
+        assert!(err.contains("usage"), "{err}");
     }
 }

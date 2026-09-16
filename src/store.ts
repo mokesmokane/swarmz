@@ -344,6 +344,8 @@ export interface WorkbenchState {
   pastedAt: Record<string, number>;
   /** Armed for 10 s after typing a `--resume <sessionId>` line, while xtermRegistry scans for Claude reporting it gone. */
   resumeWatch: Record<string, { sessionId: string; until: number }>;
+  /** Ids of running sessions on this Mac that are not in the workspace and have no open tile. */
+  outsideSessions: string[];
 
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
   createSshTerminal(opts: SshTerminalOptions, placement?: Placement): Promise<string>;
@@ -365,6 +367,8 @@ export interface WorkbenchState {
   reloadWorkspace(): Promise<void>;
   pullWorkspace(): Promise<void>;
   checkExternalChange(): Promise<void>;
+  refreshOutsideSessions(): Promise<void>;
+  closeOutsideSessions(): Promise<string | null>;
   updateSettings(id: string, patch: Partial<TerminalSettings>): void;
   runStartup(id: string): Promise<void>;
   runRemoteStep(id: string): Promise<void>;
@@ -1250,6 +1254,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   copiedAt: {},
   pastedAt: {},
   resumeWatch: {},
+  outsideSessions: [],
 
   async createTerminal(cwd, placement) {
     const id = crypto.randomUUID();
@@ -1628,6 +1633,35 @@ export const useStore = create<WorkbenchState>((set) => ({
     if (!useStore.getState().persistenceReady) return;
     lastSeenMtime = mtime;
     scheduleSave();
+  },
+
+  async refreshOutsideSessions() {
+    let rows: Awaited<ReturnType<typeof ipc.localSessions>>;
+    try {
+      rows = await ipc.localSessions();
+    } catch {
+      return;
+    }
+    const settled = Date.now() - 60_000;
+    const s = useStore.getState();
+    const ids = rows
+      .filter((r) => r.running && !r.known && !s.terminals[r.id] && r.startedAt !== null && Date.parse(r.startedAt) < settled)
+      .map((r) => r.id);
+    set({ outsideSessions: ids });
+  },
+
+  async closeOutsideSessions(): Promise<string | null> {
+    let firstError: string | null = null;
+    for (const id of useStore.getState().outsideSessions) {
+      try {
+        await ipc.closeSession(id);
+      } catch (e) {
+        firstError ??= `could not close ${id}: ${typeof e === "string" ? e : String(e)}`;
+      }
+    }
+    set({ outsideSessions: [] });
+    await useStore.getState().refreshOutsideSessions();
+    return firstError;
   },
 
   updateSettings(id, patch) {

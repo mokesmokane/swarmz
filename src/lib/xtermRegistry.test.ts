@@ -105,6 +105,10 @@ vi.mock("./ipc", () => ({
     pasteImageToRemote: vi.fn(async () => null as string | null),
     remoteTileInfo: vi.fn(async () => ({ running: false }) as { running: boolean; cwd?: string | null }),
     remoteTileClose: vi.fn(async () => false),
+    localSessions: vi.fn(async () => []),
+    closeSession: vi.fn(async () => true),
+    phones: vi.fn(async () => []),
+    revokePhone: vi.fn(async () => ({ removed: 1, machines: [] })),
   },
 }));
 
