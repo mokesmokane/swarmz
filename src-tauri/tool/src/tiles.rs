@@ -8,6 +8,7 @@ use crate::transcript::{guess_path, last_assistant_text};
 use crate::workspace::{read_from, TerminalDef, Workspace};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -71,7 +72,46 @@ pub fn tile_rows_with_folds(
     live_cwd: &dyn Fn(&str) -> Option<String>,
     dialog: &dyn Fn(&str) -> Option<Option<Dialog>>,
 ) -> Vec<TileRow> {
-    try_tile_rows_with_folds(home, self_machine, folds, live_cwd, dialog).unwrap_or_default()
+    try_tile_rows_with_folds(home, self_machine, folds, live_cwd, dialog, &read_last_text).unwrap_or_default()
+}
+
+fn read_last_text(path: &Path) -> Option<String> {
+    last_assistant_text(path, LAST_MESSAGE_CHARS)
+}
+
+const LAST_MESSAGE_CHARS: usize = 240;
+
+/// A file's `(length, modified time)`, or None when it cannot be read.
+pub type Stamp = Option<(u64, SystemTime)>;
+
+pub fn stamp(path: &Path) -> Stamp {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
+/// Each transcript's last assistant text, read again only when the file's length or modified
+/// time changes (`watch` asks every second, and transcripts grow large).
+#[derive(Default)]
+pub struct LastTextCache {
+    seen: RefCell<HashMap<PathBuf, (Stamp, Option<String>)>>,
+}
+
+impl LastTextCache {
+    pub fn get(&self, path: &Path) -> Option<String> {
+        self.get_with(path, read_last_text)
+    }
+
+    pub fn get_with(&self, path: &Path, read: impl Fn(&Path) -> Option<String>) -> Option<String> {
+        let now = stamp(path);
+        if let Some((at, text)) = self.seen.borrow().get(path) {
+            if *at == now && now.is_some() {
+                return text.clone();
+            }
+        }
+        let text = read(path);
+        self.seen.borrow_mut().insert(path.to_path_buf(), (now, text.clone()));
+        text
+    }
 }
 
 /// `tile_rows_with_folds`, but None when the workspace file exists and cannot be read (a poller
@@ -82,10 +122,11 @@ pub fn try_tile_rows_with_folds(
     folds: &HashMap<String, Fold>,
     live_cwd: &dyn Fn(&str) -> Option<String>,
     dialog: &dyn Fn(&str) -> Option<Option<Dialog>>,
+    last_text: &dyn Fn(&Path) -> Option<String>,
 ) -> Option<Vec<TileRow>> {
     let dir = sessions_dir_in(home);
     let running = |id: &str| session_paths(&dir, id).ok().and_then(|p| live_session(&p)).is_some();
-    rows_from(home, self_machine, folds, live_cwd, dialog, &running)
+    rows_from(home, self_machine, folds, live_cwd, dialog, &running, last_text)
 }
 
 /// `tile_rows` with the liveness check supplied (tests use it without real holders).
@@ -96,7 +137,7 @@ pub fn tile_rows_with(
     dialog: &dyn Fn(&str) -> Option<Option<Dialog>>,
     running: &dyn Fn(&str) -> bool,
 ) -> Vec<TileRow> {
-    rows_from(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog, running).unwrap_or_default()
+    rows_from(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog, running, &read_last_text).unwrap_or_default()
 }
 
 fn rows_from(
@@ -106,6 +147,7 @@ fn rows_from(
     live_cwd: &dyn Fn(&str) -> Option<String>,
     dialog: &dyn Fn(&str) -> Option<Option<Dialog>>,
     running: &dyn Fn(&str) -> bool,
+    last_text: &dyn Fn(&Path) -> Option<String>,
 ) -> Option<Vec<TileRow>> {
     let ws = match read_from(&workspace_path(home)) {
         Ok(Some(ws)) => ws,
@@ -134,7 +176,7 @@ fn rows_from(
             let transcript = fold.transcript_path.clone().map(PathBuf::from).or_else(|| {
                 claude.and_then(|c| guess_path(home, &def.cwd, fold.session_id.as_deref().unwrap_or(&c.session_id)))
             });
-            let last_message = if claude.is_some() { transcript.as_deref().and_then(|p| last_assistant_text(p, 240)) } else { None };
+            let last_message = if claude.is_some() { transcript.as_deref().and_then(last_text) } else { None };
             TileRow {
                 cwd: if is_running { live_cwd(&def.id).unwrap_or_else(|| def.cwd.clone()) } else { def.cwd.clone() },
                 kind: if claude.is_some() { "claude" } else { "shell" }.to_string(),
@@ -502,11 +544,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let h = home("unreadable");
         let none = HashMap::new();
-        assert_eq!(try_tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None), Some(vec![]));
+        assert_eq!(try_tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None, &read_last_text), Some(vec![]));
         write_workspace(&h);
         let file = h.join(".swarmz/workspace.json");
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let unreadable = try_tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None);
+        let unreadable = try_tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None, &read_last_text);
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(unreadable, None);
         assert_eq!(tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None).len(), 2);
@@ -519,6 +561,31 @@ mod tests {
         write_workspace(&h);
         let rows = tile_rows(&h, None, &|_| None, &|_| None);
         assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["s1"]);
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn last_texts_are_read_again_only_when_the_transcript_changes() {
+        let h = home("lasttext");
+        let path = h.join("t.jsonl");
+        std::fs::write(&path, "one\n").unwrap();
+        let reads = std::cell::Cell::new(0);
+        let read = |p: &Path| {
+            reads.set(reads.get() + 1);
+            std::fs::read_to_string(p).ok()
+        };
+        let cache = LastTextCache::default();
+        assert_eq!(cache.get_with(&path, read).as_deref(), Some("one\n"));
+        assert_eq!(cache.get_with(&path, read).as_deref(), Some("one\n"));
+        assert_eq!(reads.get(), 1);
+        std::fs::write(&path, "one\ntwo\n").unwrap();
+        assert_eq!(cache.get_with(&path, read).as_deref(), Some("one\ntwo\n"));
+        assert_eq!(reads.get(), 2);
+        // A missing file is asked again every time.
+        let gone = h.join("gone.jsonl");
+        assert_eq!(cache.get_with(&gone, read), None);
+        assert_eq!(cache.get_with(&gone, read), None);
+        assert_eq!(reads.get(), 4);
         let _ = std::fs::remove_dir_all(&h);
     }
 

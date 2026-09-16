@@ -15,7 +15,7 @@ use crate::phone::{add_key, authorized_keys, list_keys, machine_hosts, revoke, v
 use crate::proc::run_with_timeout;
 use crate::screen::{diff_lines, LinesUpdate};
 use crate::transcript::{after, guess_path, image as transcript_image, page, Change, Normaliser};
-use crate::tiles::{apply_screen, homed_defs, prune as prune_sessions, session_rows, tile_rows, try_tile_rows_with_folds, watch_events, TileRow};
+use crate::tiles::{apply_screen, homed_defs, prune as prune_sessions, session_rows, stamp, tile_rows, try_tile_rows_with_folds, watch_events, LastTextCache, Stamp, TileRow};
 use crate::util::{new_uuid, now_iso_ms, sh_quote, valid_abs_path};
 use crate::workspace::{load_from, read_from, save_to, ClaudeConfig, TerminalDef, Workspace};
 use serde_json::{json, Map, Value};
@@ -26,7 +26,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 const WATCH_TICK: Duration = Duration::from_millis(1000);
 const CWD_EVERY: Duration = Duration::from_secs(5);
@@ -149,20 +149,13 @@ pub fn ls(env: &Env) -> Result<Value, CliError> {
     Ok(json!({"v": 1, "tiles": rows(env)}))
 }
 
-/// A file's `(length, modified time)`, or None when it cannot be read.
-type Stamp = Option<(u64, SystemTime)>;
-
-fn stamp(path: &Path) -> Stamp {
-    let m = std::fs::metadata(path).ok()?;
-    Some((m.len(), m.modified().ok()?))
-}
-
 /// The folded hook log, re-read only when `events.log.1` or `events.log` changes: the log can
 /// reach a few MiB and `watch` looks every second.
 #[derive(Default)]
 struct LogCache {
     stamps: Option<(Stamp, Stamp)>,
     folds: HashMap<String, Fold>,
+    refolds: usize,
 }
 
 impl LogCache {
@@ -172,6 +165,7 @@ impl LogCache {
         if self.stamps != Some(now) {
             self.folds = fold_log(&read_log(home));
             self.stamps = Some(now);
+            self.refolds += 1;
         }
         &self.folds
     }
@@ -197,10 +191,11 @@ pub fn watch(env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
     let mut first = true;
     let mut last_ping = Instant::now();
     let mut log = LogCache::default();
+    let texts = LastTextCache::default();
     loop {
         let folds = log.folds(&env.home);
         // An unreadable workspace keeps the rows we had rather than reporting every tile gone.
-        let now = try_tile_rows_with_folds(&env.home, env.machine.as_deref(), folds, &cwd, &|id| dialog_for(env, id))
+        let now = try_tile_rows_with_folds(&env.home, env.machine.as_deref(), folds, &cwd, &|id| dialog_for(env, id), &|p| texts.get(p))
             .unwrap_or_else(|| prev.values().cloned().collect());
         let events = if first { vec![json!({"v": 1, "type": "snapshot", "tiles": now})] } else { watch_events(&prev, &now) };
         for e in &events {
@@ -578,7 +573,11 @@ pub fn output(env: &Env, tile: &str, lines: usize, follow: bool, out: &mut dyn W
 /// The tile's current transcript: the hook's path, else where Claude would keep the session.
 /// Only this Mac's own tiles are guessed: an ssh tile's or another Mac's transcript is not here.
 fn transcript_path(env: &Env, tile: &str) -> Result<(PathBuf, Option<String>), CliError> {
-    let fold = fold_for(env, tile).unwrap_or_default();
+    transcript_path_from(env, tile, fold_for(env, tile).unwrap_or_default())
+}
+
+/// `transcript_path` with the tile's fold supplied (a follower keeps the log folded).
+fn transcript_path_from(env: &Env, tile: &str, fold: Fold) -> Result<(PathBuf, Option<String>), CliError> {
     if let Some(p) = fold.transcript_path.clone() {
         return Ok((PathBuf::from(p), fold.session_id));
     }
@@ -646,11 +645,13 @@ pub fn transcript(
     }
     let mut last_resolve = Instant::now();
     let mut last_ping = Instant::now();
+    let mut log = LogCache::default();
     loop {
         std::thread::sleep(TRANSCRIPT_TICK);
         if last_resolve.elapsed() >= RESOLVE_EVERY {
             last_resolve = Instant::now();
-            if let Ok((p, s)) = transcript_path(env, tile) {
+            let fold = log.folds(&env.home).get(tile).cloned().unwrap_or_default();
+            if let Ok((p, s)) = transcript_path_from(env, tile, fold) {
                 if p != path {
                     path = p;
                     session = s;
@@ -820,6 +821,25 @@ mod tests {
         let meta = Meta { v: 1, pid, shell_pid: None, cwd: "/".into(), name: "t".into(), started_at: "s".into(), exited_at: None, exit_code: None, cwd_fallback: false, build: None };
         write_meta(&path, &meta).unwrap();
         path
+    }
+
+    #[test]
+    fn the_log_is_folded_again_only_when_it_changes() {
+        let home = PathBuf::from(format!("/tmp/szc-{}-commands-logcache", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let dir = home.join(".swarmz/agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("events.log"), "1\tt1\tSessionStart\t{\"session_id\":\"a\"}\n").unwrap();
+        let mut log = LogCache::default();
+        assert_eq!(log.folds(&home)["t1"].session_id.as_deref(), Some("a"));
+        log.folds(&home);
+        log.folds(&home);
+        assert_eq!(log.refolds, 1);
+        let mut f = std::fs::OpenOptions::new().append(true).open(dir.join("events.log")).unwrap();
+        writeln!(f, "2\tt1\tSessionStart\t{{\"session_id\":\"b\"}}").unwrap();
+        assert_eq!(log.folds(&home)["t1"].session_id.as_deref(), Some("b"));
+        assert_eq!(log.refolds, 2);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

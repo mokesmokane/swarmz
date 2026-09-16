@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Lines of scrollback the holder keeps.
-pub const SCROLLBACK: usize = 5000;
+pub const SCROLLBACK: usize = 2000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]

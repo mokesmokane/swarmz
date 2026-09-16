@@ -16,6 +16,9 @@ const CLOSE_WAIT: Duration = Duration::from_secs(5);
 /// gone by the time the shell uses them), never the shell's own.
 const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT"];
 
+/// The most lines `output --follow` watches.
+const MAX_FOLLOW_LINES: usize = 1000;
+
 const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary"];
 const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local"];
 
@@ -315,7 +318,8 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         Some("output") => {
             a.expect_positional(2, "output <tile> [--lines N] [--follow]")?;
             let tile = cmd::tile_arg(&a.positional[1])?;
-            let lines = count(&a, "--lines", 200, 5000)?;
+            // A follower re-reads its lines every 300 ms: keep that cheap.
+            let lines = count(&a, "--lines", 200, if a.flag("--follow") { MAX_FOLLOW_LINES } else { 5000 })?;
             cmd::output(&cmd::Env::from_process()?, &tile, lines, a.flag("--follow"), &mut std::io::stdout())?;
             Ok(None)
         }
