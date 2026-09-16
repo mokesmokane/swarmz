@@ -17,7 +17,7 @@ use crate::screen::{diff_lines, LinesUpdate};
 use crate::transcript::{after, guess_path, image as transcript_image, page, Change, Normaliser};
 use crate::tiles::{apply_screen, homed_defs, prune as prune_sessions, session_rows, tile_rows, try_tile_rows_with_folds, watch_events, TileRow};
 use crate::util::{new_uuid, now_iso_ms, sh_quote, valid_abs_path};
-use crate::workspace::{load_from, save_to, ClaudeConfig, TerminalDef, Workspace};
+use crate::workspace::{load_from, read_from, save_to, ClaudeConfig, TerminalDef, Workspace};
 use serde_json::{json, Map, Value};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -62,7 +62,13 @@ impl Env {
         sessions_dir_in(&self.home)
     }
 
+    /// The workspace for reading: an invalid file is reported and left where it is.
     fn workspace(&self) -> Result<Option<Workspace>, CliError> {
+        read_from(&workspace_file(&self.home)).map_err(failed)
+    }
+
+    /// The workspace for a command about to write it (an invalid file is moved aside first).
+    fn workspace_to_write(&self) -> Result<Option<Workspace>, CliError> {
         load_from(&workspace_file(&self.home)).map_err(failed)
     }
 
@@ -337,7 +343,7 @@ pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&s
         return Err(failed(format!("a session for the new tile {id} was already running")));
     };
     // Reloaded just before saving, so changes made while the session started are kept.
-    let recorded = env.workspace().and_then(|ws| {
+    let recorded = env.workspace_to_write().and_then(|ws| {
         let mut ws = ws.unwrap_or_else(empty_workspace);
         let name = unique_name(&base, &names(&ws));
         let def = TerminalDef { id: id.clone(), name, cwd: folder.to_string(), ssh: None, claude: Some(claude), command: None, extra: Map::new() };

@@ -54,11 +54,27 @@ pub fn default_path() -> PathBuf {
     PathBuf::from(home).join(".swarmz").join("workspace.json")
 }
 
-pub fn load_from(path: &Path) -> Result<Option<Workspace>, String> {
+/// The workspace file, or None when there is none. Never moves anything: a reader that finds the
+/// file invalid (perhaps half-written by a tool that does not write atomically) reports it and
+/// leaves the file for its owner.
+pub fn read_from(path: &Path) -> Result<Option<Workspace>, String> {
+    match read_text(path)? {
+        None => Ok(None),
+        Some(text) => serde_json::from_str::<Workspace>(&text).map(Some).map_err(|e| format!("workspace file {} is invalid: {e}", path.display())),
+    }
+}
+
+fn read_text(path: &Path) -> Result<Option<String>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let text = fs::read_to_string(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    fs::read_to_string(path).map(Some).map_err(|e| format!("could not read {}: {e}", path.display()))
+}
+
+/// `read_from` for a caller about to write the file: an invalid file is moved aside as
+/// `workspace.json.broken-<secs>` so the write does not destroy it.
+pub fn load_from(path: &Path) -> Result<Option<Workspace>, String> {
+    let Some(text) = read_text(path)? else { return Ok(None) };
     match serde_json::from_str::<Workspace>(&text) {
         Ok(ws) => Ok(Some(ws)),
         Err(parse_err) => {
@@ -198,6 +214,20 @@ mod tests {
         let loaded = load_from(&path).unwrap().unwrap();
         assert_eq!(loaded, ws);
         assert_eq!(loaded.terminals[0].ssh.as_ref().unwrap().machine.as_deref(), Some("martins-mac-mini"));
+    }
+
+    #[test]
+    fn reading_a_malformed_file_leaves_it_in_place() {
+        let path = temp_path("broken-read");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{ not json").unwrap();
+        let err = read_from(&path).unwrap_err();
+        assert!(err.contains("invalid"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{ not json");
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+        assert_eq!(read_from(&temp_path("missing-read")).unwrap(), None);
+        save_to(&path, &sample()).unwrap();
+        assert_eq!(read_from(&path).unwrap(), Some(sample()));
     }
 
     #[test]

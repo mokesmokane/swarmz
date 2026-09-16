@@ -1214,8 +1214,8 @@ fn phone_revoke_surfaces_a_broken_workspace_instead_of_reporting_success() {
     write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
     let (code, v) = tool_env(&h.path, &["phone", "add", "--name", "Fold", "--key", TEST_KEY, "--local"], MINI);
     assert_eq!(code, 0, "{v}");
-    // Corrupt the workspace after the local add: `load_from` moves it aside and returns an
-    // error, so fan-out must surface that rather than treat it as "no other Macs".
+    // Corrupt the workspace after the local add: reading it fails, so fan-out must surface that
+    // rather than treat it as "no other Macs".
     std::fs::write(h.path.join(".swarmz/workspace.json"), "not json").unwrap();
     let (code, v) = tool_env(&h.path, &["phone", "revoke", "Fold"], MINI);
     assert_eq!(code, 1, "{v}");
@@ -1224,4 +1224,20 @@ fn phone_revoke_surfaces_a_broken_workspace_instead_of_reporting_success() {
     // The local revoke went ahead despite the workspace being unreadable for fan-out.
     let (_, ls) = tool_env(&h.path, &["phone", "ls"], MINI);
     assert!(ls["phones"].as_array().unwrap().is_empty(), "{ls}");
+    // Reading never moved the broken file aside.
+    assert_eq!(std::fs::read_to_string(h.path.join(".swarmz/workspace.json")).unwrap(), "not json");
+}
+
+#[test]
+fn reading_commands_leave_a_broken_workspace_in_place() {
+    let h = home("broken-read");
+    std::fs::create_dir_all(h.path.join(".swarmz")).unwrap();
+    let file = h.path.join(".swarmz/workspace.json");
+    std::fs::write(&file, "{\"version\": 1, \"terminals\": [").unwrap();
+    for args in [["ls"].as_slice(), &["machines"], &["sessions"], &["restart", "t1"], &["transcript", "t1"], &["phone", "revoke", "Fold"]] {
+        tool_env(&h.path, args, MINI);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"version\": 1, \"terminals\": [", "{args:?}");
+    }
+    let entries: Vec<String> = std::fs::read_dir(h.path.join(".swarmz")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert!(!entries.iter().any(|n| n.contains("broken")), "{entries:?}");
 }

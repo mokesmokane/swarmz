@@ -5,7 +5,7 @@ use crate::agent::{fold_log, read_log, Fold, Needs, Status};
 use crate::dialog::Dialog;
 use crate::paths::{live_session, read_meta, session_paths, sessions_dir_in, socket_live};
 use crate::transcript::{guess_path, last_assistant_text};
-use crate::workspace::{load_from, TerminalDef, Workspace};
+use crate::workspace::{read_from, TerminalDef, Workspace};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -107,7 +107,7 @@ fn rows_from(
     dialog: &dyn Fn(&str) -> Option<Option<Dialog>>,
     running: &dyn Fn(&str) -> bool,
 ) -> Option<Vec<TileRow>> {
-    let ws = match load_from(&workspace_path(home)) {
+    let ws = match read_from(&workspace_path(home)) {
         Ok(Some(ws)) => ws,
         Ok(None) => return Some(vec![]),
         Err(_) => return None,
@@ -231,7 +231,7 @@ fn session_ids(dir: &Path) -> BTreeSet<String> {
 
 pub fn session_rows(home: &Path) -> Vec<SessionRow> {
     let dir = sessions_dir_in(home);
-    let known: BTreeSet<String> = load_from(&workspace_path(home))
+    let known: BTreeSet<String> = read_from(&workspace_path(home))
         .ok()
         .flatten()
         .map(|ws| ws.terminals.into_iter().map(|t| t.id).collect())
