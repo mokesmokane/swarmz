@@ -3500,12 +3500,32 @@ describe("sessions outside the workspace", () => {
 
   it("closes them and reports the first failure", async () => {
     useStore.setState({ outsideSessions: ["a", "b"] });
-    vi.mocked(ipc.closeSession).mockRejectedValueOnce("nope").mockResolvedValueOnce(true);
-    vi.mocked(ipc.localSessions).mockResolvedValueOnce([]);
+    vi.mocked(ipc.closeSession).mockClear().mockRejectedValueOnce("nope").mockResolvedValueOnce(true);
+    vi.mocked(ipc.localSessions).mockResolvedValueOnce([row("a"), row("b")]).mockResolvedValueOnce([]);
     const err = await useStore.getState().closeOutsideSessions();
     expect(ipc.closeSession).toHaveBeenCalledWith("a");
     expect(ipc.closeSession).toHaveBeenCalledWith("b");
     expect(err).toBe("could not close a: nope");
+    expect(useStore.getState().outsideSessions).toEqual([]);
+  });
+
+  it("closes only sessions that are still outside when asked", async () => {
+    useStore.setState({ outsideSessions: ["a", "b"] });
+    vi.mocked(ipc.closeSession).mockClear().mockResolvedValue(true);
+    // "a" became known meanwhile; "c" is new and was never shown.
+    vi.mocked(ipc.localSessions).mockResolvedValueOnce([row("a", { known: true }), row("b"), row("c")]).mockResolvedValueOnce([row("c")]);
+    const err = await useStore.getState().closeOutsideSessions();
+    expect(err).toBeNull();
+    expect(vi.mocked(ipc.closeSession).mock.calls).toEqual([["b"]]);
+    expect(useStore.getState().outsideSessions).toEqual(["c"]);
+  });
+
+  it("closes nothing when the sessions cannot be read", async () => {
+    useStore.setState({ outsideSessions: ["a"] });
+    vi.mocked(ipc.closeSession).mockClear();
+    vi.mocked(ipc.localSessions).mockRejectedValueOnce("broken").mockRejectedValueOnce("broken");
+    expect(await useStore.getState().closeOutsideSessions()).toBeNull();
+    expect(ipc.closeSession).not.toHaveBeenCalled();
     expect(useStore.getState().outsideSessions).toEqual([]);
   });
 

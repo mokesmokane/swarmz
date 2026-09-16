@@ -205,8 +205,12 @@ describe("session history popover", () => {
 });
 
 describe("sessions outside the workspace", () => {
+  const outside = (...ids: string[]) =>
+    ids.map((id) => ({ id, name: id, running: true, pid: 1, startedAt: "2020-01-01T00:00:00Z", exitedAt: null, exitCode: null, known: false }));
+
   it("offers to close them after confirming", async () => {
     useStore.setState({ outsideSessions: ["o1", "o2"] });
+    vi.mocked(ipc.localSessions).mockImplementation(async () => outside("o1", "o2"));
     render(<Sidebar />);
     expect(screen.getByText("2 sessions running outside this workspace")).toBeTruthy();
     await act(async () => {
@@ -225,6 +229,7 @@ describe("sessions outside the workspace", () => {
 
   it("dismisses a stale close error", async () => {
     useStore.setState({ outsideSessions: ["o1"] });
+    vi.mocked(ipc.localSessions).mockResolvedValueOnce(outside("o1"));
     vi.mocked(ipc.closeSession).mockRejectedValueOnce("nope");
     render(<Sidebar />);
     await act(async () => {

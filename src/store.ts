@@ -1654,8 +1654,14 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   async closeOutsideSessions(): Promise<string | null> {
+    // Only sessions that are still outside now: one may have been adopted as a tile (or its
+    // workspace become unreadable) since the list was shown.
+    const shown = new Set(useStore.getState().outsideSessions);
+    set({ outsideSessions: [] });
+    await useStore.getState().refreshOutsideSessions();
+    const targets = useStore.getState().outsideSessions.filter((id) => shown.has(id));
     let firstError: string | null = null;
-    for (const id of useStore.getState().outsideSessions) {
+    for (const id of targets) {
       try {
         await ipc.closeSession(id);
       } catch (e) {
