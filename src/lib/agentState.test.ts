@@ -1,3 +1,5 @@
+// @ts-expect-error type error without @types/node package
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { applyAgentEvent, BLOCKING_NOTIFICATIONS, dotPresentation, OFFLINE, statusClasses, type AgentEvent, type AgentState } from "./agentState";
 
@@ -118,5 +120,47 @@ describe("dotPresentation", () => {
       backgroundColor: undefined,
       title: undefined,
     });
+  });
+});
+
+describe("shared status fixture", () => {
+  type FixtureEvent = { ts: string; event: string; input: Record<string, unknown> };
+  type Case = { name: string; events: FixtureEvent[]; expect: { status: string; sessionId: string | null } };
+  const cases: Case[] = JSON.parse(readFileSync(new URL("../../tests/fixtures/agent-status.json", import.meta.url), "utf8"));
+  const str = (v: unknown) => (typeof v === "string" ? v : null);
+  for (const c of cases) {
+    it(c.name, () => {
+      let state: AgentState | undefined;
+      for (const e of c.events) {
+        const next = applyAgentEvent(
+          state,
+          {
+            ts: e.ts, terminal: "t1", event: e.event,
+            sessionId: str(e.input.session_id), notificationType: str(e.input.notification_type),
+            source: str(e.input.source), cwd: str(e.input.cwd), permissionMode: str(e.input.permission_mode),
+          },
+          true,
+        );
+        if (next) state = next;
+      }
+      expect(state?.status ?? "offline").toBe(c.expect.status);
+      expect(state?.sessionId ?? null).toBe(c.expect.sessionId);
+    });
+  }
+});
+
+describe("permission events", () => {
+  it("PermissionRequest blocks and is unseen when not focused", () => {
+    const working: AgentState = { ...OFFLINE, status: "working", sessionId: "s1" };
+    const s = applyAgentEvent(working, ev("PermissionRequest"), false)!;
+    expect(s.status).toBe("blocked");
+    expect(s.unseen).toBe(true);
+  });
+  it("PostToolUse unblocks, and is ignored otherwise", () => {
+    const blocked: AgentState = { ...OFFLINE, status: "blocked", unseen: true, sessionId: "s1" };
+    const s = applyAgentEvent(blocked, ev("PostToolUse"), false)!;
+    expect(s.status).toBe("working");
+    expect(s.unseen).toBe(false);
+    expect(applyAgentEvent({ ...OFFLINE, status: "working", sessionId: "s1" }, ev("PostToolUse"), false)).toBeNull();
   });
 });

@@ -1,0 +1,60 @@
+[
+  { "name": "session start is idle",
+    "events": [{ "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1", "source": "startup", "transcript_path": "/t/s1.jsonl" } }],
+    "expect": { "status": "idle", "sessionId": "s1", "needs": null, "mode": null, "turnEndedAt": null } },
+  { "name": "a prompt makes it work",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1" } }],
+    "expect": { "status": "working", "sessionId": "s1", "needs": null, "mode": null, "turnEndedAt": null } },
+  { "name": "stop ends the turn",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:01:00Z", "event": "Stop", "input": { "session_id": "s1" } }],
+    "expect": { "status": "idle", "sessionId": "s1", "needs": null, "mode": null, "turnEndedAt": "2026-09-16T10:01:00Z" } },
+  { "name": "a permission request blocks",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:09Z", "event": "PermissionRequest", "input": { "session_id": "s1", "tool_name": "Bash", "tool_input": { "command": "npm test" } } }],
+    "expect": { "status": "blocked", "sessionId": "s1", "needs": "permission", "mode": null, "turnEndedAt": null } },
+  { "name": "a tool running after the request unblocks",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:09Z", "event": "PermissionRequest", "input": { "session_id": "s1", "tool_name": "Bash", "tool_input": { "command": "npm test" } } },
+      { "ts": "2026-09-16T10:00:20Z", "event": "PostToolUse", "input": { "session_id": "s1" } }],
+    "expect": { "status": "working", "sessionId": "s1", "needs": null, "mode": null, "turnEndedAt": null } },
+  { "name": "an idle prompt is a question",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:30Z", "event": "Notification", "input": { "session_id": "s1", "notification_type": "idle_prompt" } }],
+    "expect": { "status": "blocked", "sessionId": "s1", "needs": "question", "mode": null, "turnEndedAt": null } },
+  { "name": "a permission prompt notification needs permission",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:30Z", "event": "Notification", "input": { "session_id": "s1", "notification_type": "permission_prompt" } }],
+    "expect": { "status": "blocked", "sessionId": "s1", "needs": "permission", "mode": null, "turnEndedAt": null } },
+  { "name": "other notifications change nothing",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:30Z", "event": "Notification", "input": { "session_id": "s1", "notification_type": "auth_success" } }],
+    "expect": { "status": "idle", "sessionId": "s1", "needs": null, "mode": null, "turnEndedAt": null } },
+  { "name": "session end is offline",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:02:00Z", "event": "SessionEnd", "input": { "session_id": "s1" } }],
+    "expect": { "status": "offline", "sessionId": null, "needs": null, "mode": null, "turnEndedAt": null } },
+  { "name": "the permission mode is labelled",
+    "events": [{ "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1", "permission_mode": "acceptEdits" } }],
+    "expect": { "status": "idle", "sessionId": "s1", "needs": null, "mode": "accept edits", "turnEndedAt": null } },
+  { "name": "a tool finishing while idle changes nothing",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:05Z", "event": "PostToolUse", "input": { "session_id": "s1" } }],
+    "expect": { "status": "idle", "sessionId": "s1", "needs": null, "mode": null, "turnEndedAt": null } }
+]

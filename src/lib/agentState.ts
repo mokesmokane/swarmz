@@ -55,6 +55,11 @@ export function applyAgentEvent(prev: AgentState | undefined, ev: AgentEvent, fo
     case "Notification":
       if (!ev.notificationType || !BLOCKING_NOTIFICATIONS.has(ev.notificationType)) return null;
       return next("blocked", !focused);
+    case "PermissionRequest":
+      return next("blocked", !focused);
+    case "PostToolUse":
+      // Fires after a tool ran: the permission the tile was blocked on has been answered.
+      return cur.status === "blocked" ? next("working", false) : null;
     case "SessionEnd":
       return next("offline", false, null);
     default:
