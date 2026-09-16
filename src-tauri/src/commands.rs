@@ -174,7 +174,15 @@ pub async fn create_terminal(
             let mut reg = state.registry.lock().unwrap();
             let info = reg.add(id, name, cwd).map_err(|e| e.to_string())?;
             // Checked under the registry lock that `close_terminal` records early closes under.
-            if state.closed_early.lock().unwrap().remove(&info.id).is_some() {
+            // A tombstone only counts while fresh: a stale one (a double close long ago) must not
+            // fail a later legitimate create of the same persisted id.
+            let tombstoned = state
+                .closed_early
+                .lock()
+                .unwrap()
+                .remove(&info.id)
+                .is_some_and(|at| at.elapsed() < CLOSED_EARLY_TTL);
+            if tombstoned {
                 reg.remove(&info.id);
                 return Err(format!("terminal {} was closed before it started", info.id));
             }
