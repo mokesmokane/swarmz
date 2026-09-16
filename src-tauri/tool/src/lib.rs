@@ -1,3 +1,4 @@
+pub mod client;
 pub mod paths;
 pub mod proto;
 pub mod pty;
