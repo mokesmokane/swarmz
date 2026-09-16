@@ -769,7 +769,7 @@ fn new_tiles_are_held_typed_and_recorded_and_restart_brings_them_back() {
 }
 
 #[test]
-fn a_new_tile_s_def_is_kept_while_its_session_starts() {
+fn a_new_tile_s_def_is_kept_while_its_session_starts_and_dropped_once_it_is_closed() {
     let h = home("keepdef");
     let proj = h.path.join("kproj");
     std::fs::create_dir_all(&proj).unwrap();
@@ -793,10 +793,21 @@ fn a_new_tile_s_def_is_kept_while_its_session_starts() {
     write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
     assert!(!has_def());
     assert!(wait_until(has_def), "the def was not added back");
-    // The session ends: the helper stops and removes its copy of the def.
-    let (_, closed) = tool_env(&h.path, &["close", &id], MINI);
-    assert_eq!(closed["closed"], true);
+    // The app closes the tile: it ends the session, whose shell takes a while to exit, then
+    // saves without the tile. The helper stops as soon as the end is asked for.
+    let meta = || -> serde_json::Value { serde_json::from_slice(&std::fs::read(&paths.meta).unwrap()).unwrap() };
+    assert_eq!(meta()["screen"], true);
+    assert!(meta().get("terminatingAt").is_none());
+    let c = HolderClient::connect(&paths.socket, &Hello { v: PROTOCOL_VERSION, cols: 0, rows: 0, viewer: "tool".into() }, |_, _| {}, |_| {}).unwrap();
+    c.write(b"trap '' HUP; echo hup-ignored\r").unwrap();
+    assert!(wait_until(|| c.screen(50, Duration::from_secs(2)).is_some_and(|s| s.lines.iter().any(|l| swarmz_tool::screen::line_text(l) == "hup-ignored"))));
+    c.terminate().unwrap();
+    assert!(wait_until(|| meta()["terminatingAt"].is_string()), "{}", meta());
+    assert!(swarmz_tool::paths::live_session(&paths).is_some(), "the shell should still be ending");
+    write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
     assert!(wait_until(|| !kept.exists()), "the helper did not stop");
+    assert!(!has_def());
+    assert!(wait_until(|| swarmz_tool::paths::live_session(&paths).is_none()));
     write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
     std::thread::sleep(Duration::from_millis(1500));
     assert!(!has_def());

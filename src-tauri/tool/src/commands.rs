@@ -358,17 +358,18 @@ pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&s
         let def = TerminalDef { id: id.clone(), name, cwd: folder.to_string(), ssh: None, claude: Some(claude), command: None, extra: Map::new() };
         add_def(&mut ws, def.clone(), &machine, &now_iso_ms());
         save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
-        Ok(def)
+        let revision = ws.extra.get("sync").and_then(|s| s.get("revision")).and_then(|r| r.as_u64()).unwrap_or(0);
+        Ok((def, revision))
     });
-    let def = match recorded {
-        Ok(def) => def,
+    let (def, revision) = match recorded {
+        Ok(recorded) => recorded,
         Err(e) => {
             end_session(env, &id, pid);
             return Err(e);
         }
     };
     // Best effort: the tile is recorded either way.
-    let _ = start_keep_def(env, &KeptDef { machine, def });
+    let _ = start_keep_def(env, &KeptDef { machine, def, revision });
     row(env, &id)
 }
 
@@ -432,7 +433,9 @@ pub fn keep_def_main(home: &Path, tile: &str) -> Result<(), CliError> {
         return Err(CliError::new("invalid", "the kept def is for another tile"));
     }
     let paths = session_paths(&sessions, tile).map_err(|e| CliError::new("invalid", e))?;
-    keep_def(&workspace_file(home), &kept, KEEP_DEF_FOR, KEEP_DEF_EVERY, &|| live_session(&paths).is_some());
+    // A session being ended (the app closing its tile) counts as over.
+    let live = || live_session(&paths).is_some_and(|m| m.terminating_at.is_none());
+    keep_def(&workspace_file(home), &kept, KEEP_DEF_FOR, KEEP_DEF_EVERY, &live);
     Ok(())
 }
 

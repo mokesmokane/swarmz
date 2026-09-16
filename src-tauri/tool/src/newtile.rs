@@ -133,6 +133,21 @@ pub fn add_def(ws: &mut Workspace, mut def: TerminalDef, self_machine: &str, now
 pub struct KeptDef {
     pub machine: String,
     pub def: TerminalDef,
+    /// The `sync.revision` `new` wrote with the def.
+    pub revision: u64,
+}
+
+fn sync_revision(ws: &Workspace) -> u64 {
+    ws.extra.get("sync").and_then(|s| s.get("revision")).and_then(|r| r.as_u64()).unwrap_or(0)
+}
+
+/// Whether a file without the def looks like an older copy saved over it rather than a decision
+/// to remove the tile: its revision is no newer than the one `new` wrote, or this Mac wrote it
+/// (this Mac's app always ends a tile's session, which stops the helper, before saving it
+/// without the tile).
+fn stale_copy(ws: &Workspace, kept: &KeptDef) -> bool {
+    let by = ws.extra.get("sync").and_then(|s| s.get("updatedBy")).and_then(|b| b.as_str());
+    sync_revision(ws) <= kept.revision || by == Some(kept.machine.as_str())
 }
 
 pub fn kept_def_file(sessions: &Path, tile: &str) -> PathBuf {
@@ -140,9 +155,9 @@ pub fn kept_def_file(sessions: &Path, tile: &str) -> PathBuf {
 }
 
 /// For `for_how_long`, checks the workspace file every `every`: while `live()` says the tile's
-/// session is running, a def that has gone missing (an app that saved an older copy over the
-/// file) is added back from a fresh read, with a revision bump. Stops early once the session has
-/// ended. Returns how many times the def was added back.
+/// session is running (and not being ended), a def that has gone missing because an older copy
+/// was saved over the file (`stale_copy`) is added back from a fresh read, with a revision bump.
+/// Stops early once `live()` is false. Returns how many times the def was added back.
 pub fn keep_def(path: &Path, kept: &KeptDef, for_how_long: Duration, every: Duration, live: &dyn Fn() -> bool) -> usize {
     let deadline = Instant::now() + for_how_long;
     let mut added = 0;
@@ -160,8 +175,11 @@ pub fn keep_def(path: &Path, kept: &KeptDef, for_how_long: Duration, every: Dura
         }
         let Ok(ws) = load_from(path) else { continue };
         let mut ws = ws.unwrap_or_else(empty_workspace);
-        if has(&ws) || !live() {
+        if has(&ws) || !stale_copy(&ws, kept) {
             continue;
+        }
+        if !live() {
+            break;
         }
         let taken: Vec<String> = ws.terminals.iter().map(|t| t.name.clone()).collect();
         let mut def = kept.def.clone();
@@ -276,8 +294,9 @@ mod tests {
         use std::sync::Arc;
         let h = tmp("keep");
         let path = workspace_file(&h);
-        let kept = KeptDef { machine: "mini".into(), def: def("k1", Some(cc(false, false)), None) };
+        let kept = KeptDef { machine: "mini".into(), def: def("k1", Some(cc(false, false)), None), revision: 7 };
         let mut ws = empty_workspace();
+        ws.extra.insert("sync".into(), json!({"revision": 6}));
         add_def(&mut ws, kept.def.clone(), "mini", "t0");
         crate::workspace::save_to(&path, &ws).unwrap();
         let live = Arc::new(AtomicBool::new(true));
@@ -287,6 +306,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(150));
         // An app saves its older copy, without the new tile (and with a name that now clashes).
         let older = json!({"version": 1, "layout": null, "terminals": [{"id": "x", "name": "k1", "cwd": "/"}], "sync": {"revision": 7, "updatedAt": "t", "updatedBy": "air"}});
+        let copy = |rev: u64, by: &str| {
+            let mut c = older.clone();
+            c["sync"] = json!({"revision": rev, "updatedAt": "t", "updatedBy": by});
+            c
+        };
         std::fs::write(&path, older.to_string()).unwrap();
         let back = || crate::workspace::read_from(&path).ok().flatten().filter(|ws| ws.terminals.iter().any(|t| t.id == "k1"));
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -303,6 +327,14 @@ mod tests {
         live.store(false, Ordering::SeqCst);
         assert_eq!(helper.join().unwrap(), 1);
         assert!(started.elapsed() < Duration::from_secs(5));
+        // A newer file from another Mac removed the tile on purpose: it stays removed.
+        std::fs::write(&path, copy(9, "air").to_string()).unwrap();
+        assert_eq!(keep_def(&path, &kept, Duration::from_millis(200), Duration::from_millis(20), &|| true), 0);
+        assert!(back().is_none());
+        // A newer file this Mac wrote without it (a stale in-memory copy) gets it back.
+        std::fs::write(&path, copy(9, "mini").to_string()).unwrap();
+        assert_eq!(keep_def(&path, &kept, Duration::from_millis(100), Duration::from_millis(20), &|| true), 1);
+        assert_eq!(back().unwrap().extra["sync"]["revision"], 10);
         // Once ended, a missing def stays missing.
         std::fs::write(&path, older.to_string()).unwrap();
         assert_eq!(keep_def(&path, &kept, Duration::from_millis(200), Duration::from_millis(20), &|| false), 0);
