@@ -28,6 +28,10 @@ vi.mock("@xterm/xterm", () => {
     onData(cb: (d: string) => void) {
       this.dataHandler = cb;
     }
+    keyHandler: ((e: KeyboardEvent) => boolean) | null = null;
+    attachCustomKeyEventHandler(cb: (e: KeyboardEvent) => boolean) {
+      this.keyHandler = cb;
+    }
     onResize() {}
     write() {}
     loadAddon() {}
@@ -76,7 +80,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn(async 
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useStore } from "../store";
 import { ipc } from "./ipc";
-import { CWD_POLL_AFTER_ENTER_MS, CWD_POLL_INTERVAL_MS, IMAGE_PASTE_KEY, attach, decodeOsc52, decodeOsc7, dispose, prepare } from "./xtermRegistry";
+import { CWD_POLL_AFTER_ENTER_MS, CWD_POLL_INTERVAL_MS, IMAGE_PASTE_KEY, SHIFT_ENTER_SEQUENCE, attach, decodeOsc52, decodeOsc7, dispose, prepare } from "./xtermRegistry";
 
 function info(id: string, name = id): TerminalInfo {
   return { id, name, cwd: "/tmp/x", exited: null, error: null };
@@ -207,6 +211,42 @@ describe("copy selection to clipboard on mouse-up", () => {
   // it the real interval `attach` starts.
   it("leaves no terminal of its own attached", () => {
     expect(opened.filter((t) => !t.disposed)).toEqual([]);
+  });
+});
+
+describe("Shift+Enter", () => {
+  const key = (type: string, init: KeyboardEventInit) => new KeyboardEvent(type, init);
+  const handlerOf = (term: unknown) => (term as { keyHandler: (e: KeyboardEvent) => boolean }).keyHandler;
+
+  beforeEach(() => {
+    useStore.setState({ terminals: { k: { id: "k", name: "k", cwd: "/", exited: null, error: null } }, order: ["k"], settings: { k: { ssh: null, claude: null, command: null, extra: {} } } });
+    vi.mocked(ipc.writeTerminal).mockClear();
+  });
+  afterEach(() => dispose("k"));
+
+  it("sends a line feed (Claude inserts a newline; shells treat it as Enter) instead of a carriage return", () => {
+    const { term } = attach("k", document.createElement("div"));
+    expect(handlerOf(term)(key("keydown", { key: "Enter", shiftKey: true }))).toBe(false);
+    expect(ipc.writeTerminal).toHaveBeenCalledTimes(1);
+    expect(ipc.writeTerminal).toHaveBeenCalledWith("k", SHIFT_ENTER_SEQUENCE);
+    expect(SHIFT_ENTER_SEQUENCE).toBe("\n");
+  });
+
+  it("swallows the matching keypress and keyup without sending again", () => {
+    const { term } = attach("k", document.createElement("div"));
+    expect(handlerOf(term)(key("keypress", { key: "Enter", shiftKey: true }))).toBe(false);
+    expect(handlerOf(term)(key("keyup", { key: "Enter", shiftKey: true }))).toBe(false);
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  it("leaves plain Enter and other modified Enters to xterm", () => {
+    const { term } = attach("k", document.createElement("div"));
+    expect(handlerOf(term)(key("keydown", { key: "Enter" }))).toBe(true);
+    expect(handlerOf(term)(key("keydown", { key: "Enter", shiftKey: true, ctrlKey: true }))).toBe(true);
+    expect(handlerOf(term)(key("keydown", { key: "Enter", shiftKey: true, altKey: true }))).toBe(true);
+    expect(handlerOf(term)(key("keydown", { key: "Enter", shiftKey: true, metaKey: true }))).toBe(true);
+    expect(handlerOf(term)(key("keydown", { key: "a", shiftKey: true }))).toBe(true);
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
   });
 });
 

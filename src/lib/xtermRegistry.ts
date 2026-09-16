@@ -13,6 +13,9 @@ export const CWD_POLL_INTERVAL_MS = 5000;
 
 /** Ctrl+V. Claude Code reads it as "paste the image on my clipboard", which for an ssh tile is
  * the remote Mac's clipboard, not the one the user just copied into. */
+/** What Shift+Enter sends: a line feed, which Claude Code reads as "insert newline". */
+export const SHIFT_ENTER_SEQUENCE = "\n";
+
 export const IMAGE_PASTE_KEY = "\x16";
 
 /** Largest OSC 52 payload honoured (base64 chars); anything bigger is dropped, not truncated. */
@@ -166,6 +169,17 @@ function createEntry(id: string): Entry {
     if (host) void sendImageOrForward(id, host);
     else void ipc.writeTerminal(id, data).catch(() => {});
     if (data.includes("\r")) scheduleEnterPoll(id, entry);
+  });
+  // xterm.js sends CR for Shift+Enter, the same byte as Enter, so Claude Code submits. It does not
+  // speak the kitty keyboard protocol Claude probes for, so send LF instead: Claude inserts a
+  // newline for it, and a shell treats it exactly like Enter.
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.key !== "Enter" || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return true;
+    if (e.type === "keydown") {
+      void ipc.writeTerminal(id, SHIFT_ENTER_SEQUENCE).catch(() => {});
+      scheduleEnterPoll(id, entry);
+    }
+    return false;
   });
   term.onResize(({ cols, rows }) => {
     void ipc.resizeTerminal(id, cols, rows).catch(() => {});
