@@ -56,6 +56,11 @@ fn home(tag: &str) -> Arc<TestHome> {
 /// stdout to a private, uniquely-named file and waiting with `status()` (no pipes at all) sidesteps
 /// the race entirely, for every caller, not just the concurrent one.
 fn tool(home: &Path, args: &[&str]) -> (i32, serde_json::Value) {
+    tool_env(home, args, &[])
+}
+
+/// `tool` with extra environment for the tool process.
+fn tool_env(home: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, serde_json::Value) {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::SeqCst);
     let out_path = std::env::temp_dir().join(format!("szc-out-{}-{seq}.json", std::process::id()));
@@ -64,6 +69,7 @@ fn tool(home: &Path, args: &[&str]) -> (i32, serde_json::Value) {
         .args(args)
         .env("HOME", home)
         .env("SWARMZ_HOLDER_SHELL", "/bin/sh")
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(Stdio::null())
@@ -95,6 +101,121 @@ fn version_prints_tool_and_protocol() {
     assert_eq!(v["v"], 1);
     assert_eq!(v["protocol"], PROTOCOL_VERSION);
     assert!(v["tool"].as_str().is_some());
+    assert!(v["build"].as_u64().is_some_and(|b| b > 0), "{v}");
+}
+
+fn wait_dead(pid: i64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pid_alive(pid) {
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    true
+}
+
+#[test]
+fn close_ends_a_running_session_and_says_when_there_was_none() {
+    let h = home("close");
+    let cwd = h.path.to_string_lossy().into_owned();
+    let (code, a) = tool(&h.path, &["hold", "t10", "--cwd", &cwd, "--name", "ten"]);
+    assert_eq!(code, 0, "{a}");
+    h.track(a["socket"].as_str().unwrap());
+    let pid = a["pid"].as_i64().unwrap();
+    // Something busy in the foreground, as a Claude would be.
+    let hello = Hello { v: PROTOCOL_VERSION, cols: 80, rows: 24, viewer: "window".into() };
+    let c = HolderClient::connect(Path::new(a["socket"].as_str().unwrap()), &hello, |_, _| {}, |_| {}).unwrap();
+    c.write(b"sleep 100\n").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let (code, v) = tool(&h.path, &["close", "t10"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v, serde_json::json!({ "v": 1, "closed": true }));
+    assert!(wait_dead(pid), "the holder is still running after close");
+    let (code, info) = tool(&h.path, &["info", "t10"]);
+    assert_eq!((code, &info["running"]), (0, &serde_json::json!(false)));
+    let (code, again) = tool(&h.path, &["close", "t10"]);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(again, serde_json::json!({ "v": 1, "closed": false }));
+    let (code, never) = tool(&h.path, &["close", "nothing-here"]);
+    assert_eq!((code, never["closed"].as_bool()), (0, Some(false)), "{never}");
+    let (code, bad) = tool(&h.path, &["close", "../x"]);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("invalid")), "{bad}");
+    let (code, extra) = tool(&h.path, &["close"]);
+    assert_eq!((code, extra["code"].as_str()), (1, Some("usage")), "{extra}");
+}
+
+#[test]
+fn the_holder_runs_from_root_and_its_shell_drops_stale_ssh_variables() {
+    let h = home("holder-env");
+    let cwd = h.path.to_string_lossy().into_owned();
+    let (code, a) = tool_env(
+        &h.path,
+        &["hold", "t13", "--cwd", &cwd, "--name", "thirteen", "--env", "SSH_CLIENT=explicit"],
+        &[("SSH_AUTH_SOCK", "/stale/agent"), ("SSH_TTY", "/dev/ttys999"), ("SSH_CONNECTION", "1 2 3 4"), ("SSH_CLIENT", "1 2 3")],
+    );
+    assert_eq!(code, 0, "{a}");
+    h.track(a["socket"].as_str().unwrap());
+    let pid = a["pid"].as_i64().unwrap();
+    let lsof = Command::new("lsof").args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"]).output().unwrap();
+    let text = String::from_utf8_lossy(&lsof.stdout).into_owned();
+    assert!(text.lines().any(|l| l == "n/"), "the holder should run from /: {text:?}");
+    let (_, info) = tool(&h.path, &["info", "t13"]);
+    let real = std::fs::canonicalize(&h.path).unwrap();
+    assert_eq!(info["cwd"], real.to_string_lossy().as_ref(), "the shell still starts in the tile folder");
+
+    let out = Arc::new(Mutex::new(Vec::new()));
+    let o = out.clone();
+    let hello = Hello { v: PROTOCOL_VERSION, cols: 80, rows: 24, viewer: "window".into() };
+    let c = HolderClient::connect(Path::new(a["socket"].as_str().unwrap()), &hello, move |b, _| o.lock().unwrap().extend(b), |_| {}).unwrap();
+    c.write(b"echo \"ssh=[$SSH_AUTH_SOCK][$SSH_TTY][$SSH_CONNECTION][$SSH_CLIENT]\"\n").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !String::from_utf8_lossy(&out.lock().unwrap()).contains("ssh=[][][][explicit]") {
+        assert!(Instant::now() < deadline, "stale ssh variables reached the shell: {}", String::from_utf8_lossy(&out.lock().unwrap()));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn attach_refuses_to_attach_the_tile_it_runs_in() {
+    let h = home("attach-self");
+    let cwd = h.path.to_string_lossy().into_owned();
+    let (code, e) = tool_env(&h.path, &["attach", "t11", "--cwd", &cwd], &[("SWARMZ_TERMINAL_ID", "t11")]);
+    assert_eq!(code, 1, "{e}");
+    assert_eq!(e["code"], "self");
+    let (_, info) = tool(&h.path, &["info", "t11"]);
+    assert_eq!(info["running"], false, "no session may be started for a refused attach");
+}
+
+#[test]
+fn a_failed_attach_prints_only_its_error() {
+    let h = home("attach-fail");
+    let dir = swarmz_tool::paths::sessions_dir_in(&h.path);
+    swarmz_tool::paths::ensure_dir(&dir).unwrap();
+    let paths = swarmz_tool::paths::session_paths(&dir, "t12").unwrap();
+    // A "holder" that is live by every check `hold` makes, but hangs up on every viewer.
+    let listener = UnixListener::bind(&paths.socket).unwrap();
+    std::thread::spawn(move || {
+        for s in listener.incoming() {
+            drop(s);
+        }
+    });
+    let meta = swarmz_tool::paths::Meta {
+        v: PROTOCOL_VERSION,
+        pid: std::process::id(),
+        shell_pid: None,
+        cwd: "/".into(),
+        name: "t12".into(),
+        started_at: "t".into(),
+        exited_at: None,
+        exit_code: None,
+        cwd_fallback: false,
+    };
+    swarmz_tool::paths::write_meta(&paths.meta, &meta).unwrap();
+    // `tool` parses the whole of stdout as one JSON value, so a marker ahead of it fails this.
+    let (code, e) = tool(&h.path, &["attach", "t12"]);
+    assert_eq!(code, 1, "{e}");
+    assert_eq!(e["code"], "failed", "stdout must hold nothing but the error: {e}");
 }
 
 #[test]
@@ -436,6 +557,7 @@ fn attach_bridges_a_terminal_and_reattaches_after_a_drop() {
         let end_at = text.find(swarmz_tool::attach::REPLAY_END_MARKER).unwrap();
         assert!(attach_at < replay_at && replay_at < history_at && history_at < end_at, "order was wrong: {text:?}");
         assert_eq!(text.matches(swarmz_tool::attach::REPLAY_END_MARKER).count(), 1);
+        assert_eq!(replay_at, attach_at + swarmz_tool::attach::marker(false).len(), "the replay must follow the attach marker directly: {text:?}");
     }
     std::io::Write::write_all(&mut w2, b"echo live-$((3+4))\r").unwrap();
     assert!(wait_out(&out2, "live-7"));

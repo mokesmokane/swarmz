@@ -140,8 +140,10 @@ pub fn hold(exe: &Path, dir: &Path, req: &HoldRequest) -> Result<HoldResult, Cli
         // top of it.
         return Err(CliError::new("busy", format!("a holder is running for {} without valid metadata", req.tile)));
     }
-    let (cwd, fallback) = if Path::new(&req.cwd).is_dir() {
-        (req.cwd.clone(), false)
+    // The holder runs from `/` (below), so a relative folder is resolved here, against ours.
+    let requested = std::env::current_dir().map(|d| d.join(&req.cwd)).unwrap_or_else(|_| Path::new(&req.cwd).to_path_buf());
+    let (cwd, fallback) = if requested.is_dir() {
+        (requested.to_string_lossy().into_owned(), false)
     } else if req.require_cwd {
         return Err(CliError::new("cwd_missing", format!("{} is not a directory", req.cwd)));
     } else {
@@ -173,6 +175,9 @@ pub fn hold(exe: &Path, dir: &Path, req: &HoldRequest) -> Result<HoldResult, Cli
         cmd.arg("--env").arg(format!("{k}={v}"));
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::from(log)).stderr(Stdio::from(log2));
+    // The holder lives for days: it must not keep whatever folder we were started in busy (an
+    // unmountable volume, a folder the user deletes). The shell gets its own folder via `--cwd`.
+    cmd.current_dir("/");
     // A new session with no controlling terminal: hang-ups aimed at whoever started us (the
     // app, an ssh session) never reach the holder, and it is reparented to launchd once its
     // starter exits.

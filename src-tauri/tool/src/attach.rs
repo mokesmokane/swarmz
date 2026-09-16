@@ -71,20 +71,26 @@ enum Done {
     OutputClosed,
 }
 
+/// Refuses to attach a tile from inside that tile's own session (`SWARMZ_TERMINAL_ID` is set in
+/// every holder's shell): the bridge would feed the session its own output forever.
+pub fn refuse_self_attach(tile: &str, own_tile: Option<&str>) -> Result<(), CliError> {
+    if own_tile == Some(tile) {
+        return Err(CliError::new("self", format!("already inside tile {tile}'s session; not attaching it to itself")));
+    }
+    Ok(())
+}
+
 /// Holds the tile's session (starting it if needed) and bridges this terminal to it. Returns the
 /// process exit code: the shell's when it exits (or 1 when it exited without reporting a code, as
 /// for a signal-killed shell or a connection that broke unexpectedly), 0 when our input or output
 /// closes (the ssh connection went away), leaving the session running.
 pub fn attach(exe: &Path, dir: &Path, mut req: HoldRequest) -> Result<i32, CliError> {
+    refuse_self_attach(&req.tile, std::env::var("SWARMZ_TERMINAL_ID").ok().as_deref())?;
     let (cols, rows) = term_size();
     req.cols = cols;
     req.rows = rows;
     let held = hold(exe, dir, &req)?;
-    {
-        let mut out = std::io::stdout();
-        let _ = out.write_all(marker(!held.existed).as_bytes());
-        let _ = out.flush();
-    }
+    let attach_marker = marker(!held.existed);
     let raw = RawMode::enable();
     let (done_tx, done_rx) = mpsc::channel::<Done>();
     let stdout = Arc::new(Mutex::new(std::io::stdout()));
@@ -99,10 +105,16 @@ pub fn attach(exe: &Path, dir: &Path, mut req: HoldRequest) -> Result<i32, CliEr
             // A write or flush failure (e.g. EPIPE, the other end of the ssh pipe has gone away)
             // ends the bridge exactly like stdin closing: detach and leave the session running,
             // rather than surfacing it as the shell having exited.
-            let mut ok = o.write_all(&bytes).is_ok();
-            if ok && replay {
-                ok = o.write_all(REPLAY_END_MARKER.as_bytes()).is_ok();
-            }
+            // The replay is written once, before any live byte, framed by the two markers under
+            // one lock. The attach marker is only written once the session has answered, so a
+            // failed connect prints nothing but its JSON error.
+            let ok = if replay {
+                o.write_all(attach_marker.as_bytes()).is_ok()
+                    && o.write_all(&bytes).is_ok()
+                    && o.write_all(REPLAY_END_MARKER.as_bytes()).is_ok()
+            } else {
+                o.write_all(&bytes).is_ok()
+            };
             if !ok || o.flush().is_err() {
                 let _ = output_done.send(Done::OutputClosed);
             }
@@ -173,5 +185,12 @@ mod tests {
         assert_eq!(marker(true), "\x1b]1337;swarmz-attach;new=1;end=1\x07");
         assert_eq!(marker(false), "\x1b]1337;swarmz-attach;new=0;end=1\x07");
         assert!(marker(false).starts_with(ATTACH_MARKER_PREFIX));
+    }
+
+    #[test]
+    fn attaching_the_tile_you_are_in_is_refused() {
+        assert_eq!(refuse_self_attach("t1", Some("t1")).unwrap_err().code, "self");
+        assert!(refuse_self_attach("t1", Some("t2")).is_ok());
+        assert!(refuse_self_attach("t1", None).is_ok());
     }
 }
