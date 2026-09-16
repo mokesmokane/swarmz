@@ -434,6 +434,24 @@ export function claimSize(id: string): void {
   tryClaimSize(id, entry, () => entry.fit.fit());
 }
 
+/** Mouse tracking (every encoding), bracketed paste, focus reports, application cursor and
+ * keypad modes off; cursor shown; text attributes reset. */
+export const TERMINAL_MODES_RESET = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?2004l\x1b[?1004l\x1b[?1l\x1b>\x1b[?25h\x1b[0m";
+
+/** Turns off what a remote program may have left on when its connection dropped (mouse tracking
+ * in every encoding, bracketed paste, focus reports, application cursor and keypad modes, a
+ * hidden cursor, text attributes), so the local shell the tile falls back to gets plain input:
+ * otherwise moving the mouse types SGR reports into it. Written to the xterm only, never to the
+ * PTY. Leaves the alternate screen only when it is active (leaving it restores the saved cursor).
+ * Also ends any remote replay in progress: nothing after a drop is replayed history. */
+export function resetTerminalModes(id: string): void {
+  const entry = entries.get(id);
+  if (!entry) return;
+  endRemoteReplay(entry);
+  const alternate = entry.term.buffer.active.type === "alternate";
+  entry.term.write((alternate ? "\x1b[?1049l" : "") + TERMINAL_MODES_RESET);
+}
+
 export function prepare(id: string): Promise<void> {
   const entry = entries.get(id) ?? createEntry(id);
   return entry.ready;
@@ -507,6 +525,7 @@ export function dispose(id: string): void {
 beforeSpawn.hook = prepare;
 beforeSpawn.size = size;
 beforeSpawn.claimSize = claimSize;
+beforeSpawn.resetModes = resetTerminalModes;
 
 useStore.subscribe((state, prev) => {
   if (state.terminals === prev.terminals) return;

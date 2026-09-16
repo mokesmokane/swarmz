@@ -80,10 +80,23 @@ export function startupUsesClaude(s: TerminalSettings): boolean {
 
 export type Step = { line: string; via: "local" | "remote" };
 
-export const SSH_OPTS = "-t -o ControlMaster=auto -o ControlPath=~/.swarmz/ssh/%C -o ControlPersist=10m";
+/** The shared-socket options every typed ssh line uses (`CONTROL_PATH` in remote.rs). */
+const SSH_SHARED_OPTS = "-o ControlMaster=auto -o ControlPath=~/.swarmz/ssh/%C -o ControlPersist=10m";
 
+export const SSH_OPTS = `-t ${SSH_SHARED_OPTS}`;
+
+/** Callers pass a host that passed `validateHost` (letters, digits and `._@:-` only, so it needs
+ * no quoting). */
 export function sshLine(host: string): string {
   return `ssh ${SSH_OPTS} ${host}`;
+}
+
+/** Logs in once and leaves only the shared master running in the background (no session, no
+ * tty): the tile's shell gets its prompt back as soon as the login is done, and the app's
+ * BatchMode checks and the real connect line then reuse the master without prompting. Same host
+ * rules as `sshLine`. */
+export function sshMasterLine(host: string): string {
+  return `ssh -fN ${SSH_SHARED_OPTS} ${host}`;
 }
 
 const REMOTE_TOOL = "~/.swarmz/bin/swarmz";

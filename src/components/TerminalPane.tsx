@@ -24,6 +24,7 @@ export function TerminalPane({ id }: { id: string }) {
   const machines = useStore((s) => s.machines);
   const connecting = useStore((s) => s.sshConnecting[id] === true);
   const connected = useStore((s) => s.sshConnected[id] === true);
+  const dropped = useStore((s) => s.sshDropped[id] === true);
   const cancelConnecting = useStore((s) => s.cancelConnecting);
   const chooseRemoteDir = useStore((s) => s.chooseRemoteDir);
   const copiedAt = useStore((s) => s.copiedAt[id]);
@@ -108,7 +109,7 @@ export function TerminalPane({ id }: { id: string }) {
             {note && <div className="text-xs text-amber-300">{note}</div>}
             <SessionHistory id={id} />
             <div className="flex items-center gap-2 pt-1">
-              <button className="rounded bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-500" onClick={() => void runStartup(id)}>Connect</button>
+              <button className="rounded bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-500" onClick={() => void runStartup(id)}>{dropped ? "Reconnect" : "Connect"}</button>
               <button className="rounded px-3 py-1.5 text-neutral-300 hover:bg-neutral-800" onClick={() => skipStartup(id)} title="Open a plain local shell instead">Skip</button>
               <span className="flex-1" />
               <button className="rounded px-3 py-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-red-300" onClick={() => closeTerminal(id).catch(() => {})} title="Remove this terminal from the workspace">Close</button>

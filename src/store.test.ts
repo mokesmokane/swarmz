@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalInfo } from "./lib/ipc";
 
 vi.mock("./lib/ipc", () => {
@@ -69,13 +69,14 @@ import {
   SSH_POLL_MS,
   SSH_POLL_TIMEOUT_MS,
   SSH_SETTLE_MS,
+  SSH_WATCHDOG_MS,
   beforeSpawn,
   machineFor,
   terminalColor,
   useStore,
 } from "./store";
 import { findGroup, findGroupOf, type GroupNode, type Layout, type SplitNode } from "./lib/layout";
-import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, shellQuote, toWorkspace, type TerminalDef, type Workspace } from "./lib/workspace";
+import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, sshMasterLine, shellQuote, toWorkspace, type TerminalDef, type Workspace } from "./lib/workspace";
 
 const omitKey = <T,>(o: Record<string, T>, k: string): Record<string, T> => {
   const { [k]: _drop, ...rest } = o;
@@ -104,6 +105,7 @@ beforeEach(async () => {
     persistenceReady: true,
     sshConnected: {},
     sshConnecting: {},
+    sshDropped: {},
     toolReady: {},
     machines: {},
     tailscale: null,
@@ -119,6 +121,7 @@ beforeEach(async () => {
   beforeSpawn.hook = async () => {};
   beforeSpawn.size = () => null;
   beforeSpawn.claimSize = () => {};
+  beforeSpawn.resetModes = () => {};
   vi.mocked(ipc.saveWorkspace).mockClear();
   vi.mocked(ipc.loadWorkspace).mockClear().mockResolvedValue(null);
   vi.mocked(ipc.createTerminal)
@@ -723,7 +726,8 @@ describe("createSshTerminal", () => {
     expect(createCall[4]).toBe("other-mac");
     expect(s.settings[id].ssh).toEqual({ host: "mokes@other-mac.local", cwd: "/remote" });
     expect(s.settings[id].claude).toBeNull();
-    expect(ipc.writeTerminal).toHaveBeenLastCalledWith(id, `${sshLine("mokes@other-mac.local")}\r`);
+    // No master yet and the host's tool is unknown: log in first.
+    expect(ipc.writeTerminal).toHaveBeenLastCalledWith(id, `${sshMasterLine("mokes@other-mac.local")}\r`);
     expect(s.startupPending[id]).toBe(false);
     expect(s.focusedTerminalId).toBe(id);
   });
@@ -735,7 +739,7 @@ describe("createSshTerminal", () => {
     expect(c.skipPermissions).toBe(true);
     expect(c.sessionId).toMatch(/^[0-9a-f-]{36}$/);
     expect(c.started).toBe(false);
-    expect(ipc.writeTerminal).toHaveBeenLastCalledWith(id, `${sshLine("me@box")}\r`);
+    expect(ipc.writeTerminal).toHaveBeenLastCalledWith(id, `${sshMasterLine("me@box")}\r`);
     expect(useStore.getState().sshConnecting[id]).toBe(true);
     expect(needsRemoteFolder(useStore.getState().settings[id])).toBe(true);
   });
@@ -765,6 +769,8 @@ describe("ssh two-step startup", () => {
       layout: { kind: "group", id: "g", tabs: ["a"], active: "a" },
       settings: { a: sshClaude(cwd) },
       startupPending: { a: true },
+      // The host's tool was asked already (no swarmz there): plain ssh, no login step.
+      toolReady: { "me@box": false },
     });
   }
 
@@ -2068,7 +2074,9 @@ describe("agent state", () => {
       expect(ipc.agentsUnwatch).toHaveBeenCalledWith("me@box");
       await vi.advanceTimersByTimeAsync(30_000);
       expect(ipc.agentsWatch).not.toHaveBeenCalledWith("me@box");
-      expect(useStore.getState().startupNotes[id]).toBeUndefined();
+      // Same verdict as the connection watchdog: the tile offers Connect again.
+      expect(useStore.getState().startupNotes[id]).toBe("Connection to box ended");
+      expect(useStore.getState().startupPending[id]).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -2396,7 +2404,11 @@ describe("selectSession", () => {
     __stopAllPolling();
     // __stopAllPolling only clears the interval; the poller startPolling kicked off during
     // creation already flipped sshConnecting, which would otherwise short-circuit runStartup.
-    useStore.setState((s) => ({ sshConnecting: omitKey(s.sshConnecting, id), settings: { ...s.settings, [id]: { ...s.settings[id], sessions: [rec("old", "/p/old", "t1")] } } }));
+    useStore.setState((s) => ({
+      sshConnecting: omitKey(s.sshConnecting, id),
+      toolReady: { "me@box": false },
+      settings: { ...s.settings, [id]: { ...s.settings[id], sessions: [rec("old", "/p/old", "t1")] } },
+    }));
     vi.mocked(ipc.writeTerminal).mockClear();
     await useStore.getState().selectSession(id, "old", { connect: true });
     expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toMatch(/^ssh -t /);
@@ -2624,9 +2636,12 @@ describe("reattaching to running sessions", () => {
 });
 
 describe("remote attach", () => {
-  // Attach mode needs to know which Mac this is (it never attaches a tile to its own Mac).
+  // Attach mode needs to know which Mac this is (it never attaches a tile to its own Mac). The
+  // host's master is up (a key login, or one made earlier), so the tool is asked right away; the
+  // login-first flow has its own tests.
   beforeEach(() => {
     useStore.setState({ selfMachine: "here" });
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
   });
 
   const sshTile = async () => {
@@ -2845,8 +2860,8 @@ describe("remote attach", () => {
       expect(useStore.getState().startupNotes[id]).toBe("the swarmz session on box could not start; see the terminal and click Run");
       // The next Run asks the tool again instead of retrying attach mode blindly.
       expect(useStore.getState().toolReady["me@box"]).toBeUndefined();
+      // The failed attach logged in, so the master is still up: the tool is asked at once.
       vi.mocked(ipc.toolRemoteReady).mockClear().mockResolvedValue(false);
-      vi.mocked(ipc.sshCheck).mockResolvedValue(false);
       vi.mocked(ipc.writeTerminal).mockClear();
       await useStore.getState().runStartup(id);
       expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(1);
@@ -2917,6 +2932,8 @@ describe("remote attach", () => {
     try {
       vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
       const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: { skipPermissions: false } });
+      // The attach never comes up (no master): the poller times out.
+      vi.mocked(ipc.sshCheck).mockResolvedValue(false);
       await vi.advanceTimersByTimeAsync(SSH_POLL_TIMEOUT_MS + SSH_POLL_MS * 2);
       expect(useStore.getState().sshConnecting[id]).toBeUndefined();
       vi.mocked(ipc.sshCheck).mockResolvedValue(true);
@@ -3103,5 +3120,368 @@ describe("remote attach", () => {
       expect(resumeOld()).toHaveLength(1);
       expect(ipc.remoteTileInfo).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("login first, then attach", () => {
+  const MASTER = `${sshMasterLine("me@box")}\r`;
+  const ATTACH = "~/.swarmz/bin/swarmz attach a";
+  const lines = () => vi.mocked(ipc.writeTerminal).mock.calls.map((c) => String(c[1]));
+
+  function seed() {
+    useStore.setState({
+      selfMachine: "here",
+      terminals: { a: { id: "a", name: "a", cwd: "/home/me", exited: null, error: null } },
+      order: ["a"],
+      layout: { kind: "group", id: "g", tabs: ["a"], active: "a" },
+      settings: {
+        a: { ssh: { host: "me@box", cwd: "/proj", machine: "box" }, claude: { enabled: true, sessionId: "sid", skipPermissions: false, started: false }, command: null },
+      },
+      startupPending: { a: true },
+    });
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    seed();
+  });
+  afterEach(() => {
+    __stopAllPolling();
+    vi.useRealTimers();
+  });
+
+  it("with no master, types the master line, asks the tool once the master is up, then types the attach line", async () => {
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    await useStore.getState().runStartup("a");
+    expect(lines()).toEqual([MASTER]);
+    expect(ipc.toolRemoteReady).not.toHaveBeenCalled();
+    expect(useStore.getState().sshConnecting.a).toBe(true);
+    expect(useStore.getState().startupPending.a).toBe(false);
+    // Logging in: the shell is busy with ssh, no master yet.
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 4);
+    expect(lines()).toEqual([MASTER]);
+    // Logged in: ssh went to the background, the master is up.
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS);
+    expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(1);
+    expect(lines()).toHaveLength(2);
+    expect(lines()[1]).toMatch(/^ssh -t .* me@box '/);
+    expect(lines()[1]).toContain(ATTACH);
+    expect(useStore.getState().toolReady["me@box"]).toBe(true);
+    expect(useStore.getState().sshConnecting.a).toBe(true);
+    // The attach marker connects it and types the startup step.
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    const p = useStore.getState().remoteAttached("a", true);
+    await vi.advanceTimersByTimeAsync(SSH_SETTLE_MS);
+    await p;
+    expect(lines()[2]).toBe(`export SWARMZ_TERMINAL_ID=a && cd ${shellQuote("/proj")} && claude --session-id sid\r`);
+    expect(useStore.getState().sshConnected.a).toBe(true);
+  });
+
+  it("with no master and no usable tool, types the master line, then plain ssh, then the remote step", async () => {
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(false);
+    await useStore.getState().runStartup("a");
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS);
+    expect(lines()).toEqual([MASTER, `${sshLine("me@box")}\r`]);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS + SSH_SETTLE_MS + 10);
+    expect(lines()).toEqual([MASTER, `${sshLine("me@box")}\r`, `export SWARMZ_TERMINAL_ID=a && cd ${shellQuote("/proj")} && claude --session-id sid\r`]);
+    expect(useStore.getState().sshConnected.a).toBe(true);
+    expect(useStore.getState().sshConnecting.a).toBeUndefined();
+  });
+
+  it("a tool check that fails after login falls back to plain ssh", async () => {
+    vi.mocked(ipc.toolRemoteReady).mockRejectedValue("timed out");
+    await useStore.getState().runStartup("a");
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS);
+    expect(lines()).toEqual([MASTER, `${sshLine("me@box")}\r`]);
+    expect(useStore.getState().toolReady["me@box"]).toBeUndefined();
+  });
+
+  it("with the master already up, asks the tool first and types no master line", async () => {
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    await useStore.getState().runStartup("a");
+    expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(1);
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toContain(ATTACH);
+  });
+
+  it("with the host's tool already known, types the connect line directly", async () => {
+    useStore.setState({ toolReady: { "me@box": true } });
+    await useStore.getState().runStartup("a");
+    expect(ipc.sshCheck).toHaveBeenCalledTimes(1); // only the liveness check
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toContain(ATTACH);
+  });
+
+  it("a login that fails (the shell is back, no master) shows the note and the card", async () => {
+    await useStore.getState().runStartup("a");
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 3);
+    expect(useStore.getState().sshConnecting.a).toBe(true);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS);
+    expect(useStore.getState().sshConnecting.a).toBe(true); // one miss is not enough
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS);
+    const s = useStore.getState();
+    expect(s.sshConnecting.a).toBeUndefined();
+    expect(s.startupPending.a).toBe(true);
+    expect(s.startupNotes.a).toBe("could not log in to box; see the terminal and click Connect");
+    expect(lines()).toEqual([MASTER]);
+    expect(ipc.toolRemoteReady).not.toHaveBeenCalled();
+    // Connect again logs in again.
+    await useStore.getState().runStartup("a");
+    expect(lines()).toEqual([MASTER, MASTER]);
+  });
+
+  it("a login that never finishes times out with the usual note", async () => {
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    await useStore.getState().runStartup("a");
+    await vi.advanceTimersByTimeAsync(SSH_POLL_TIMEOUT_MS + SSH_POLL_MS * 2);
+    const s = useStore.getState();
+    expect(s.sshConnecting.a).toBeUndefined();
+    expect(s.startupPending.a).toBe(true);
+    expect(s.startupNotes.a).toContain("not detected");
+    expect(lines()).toEqual([MASTER]);
+  });
+
+  it("a second Connect during the login or the tool check types nothing twice", async () => {
+    let resolve: (v: boolean) => void = () => {};
+    vi.mocked(ipc.toolRemoteReady).mockImplementation(() => new Promise<boolean>((r) => (resolve = r)));
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    await Promise.all([useStore.getState().runStartup("a"), useStore.getState().runStartup("a")]);
+    await useStore.getState().runStartup("a");
+    expect(lines()).toEqual([MASTER]);
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS);
+    expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(1);
+    // The tool check is in flight: still connecting, and Connect does nothing.
+    expect(useStore.getState().sshConnecting.a).toBe(true);
+    await useStore.getState().runStartup("a");
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 3);
+    expect(lines()).toEqual([MASTER]);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    resolve(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lines()).toHaveLength(2);
+    expect(lines()[1]).toContain(ATTACH);
+    await useStore.getState().runStartup("a");
+    expect(lines()).toHaveLength(2);
+  });
+
+  it("cancelling during the tool check types no connect line", async () => {
+    let resolve: (v: boolean) => void = () => {};
+    vi.mocked(ipc.toolRemoteReady).mockImplementation(() => new Promise<boolean>((r) => (resolve = r)));
+    await useStore.getState().runStartup("a");
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS);
+    expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(1);
+    useStore.getState().cancelConnecting("a");
+    resolve(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 2);
+    expect(lines()).toEqual([MASTER]);
+    expect(useStore.getState().sshConnecting.a).toBeUndefined();
+    expect(useStore.getState().startupPending.a).toBe(true);
+    // The answer is kept: the next Connect attaches straight away.
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    await useStore.getState().runStartup("a");
+    expect(lines()).toHaveLength(2);
+    expect(lines()[1]).toContain(ATTACH);
+  });
+
+  it("a tile closed during the tool check types nothing", async () => {
+    let resolve: (v: boolean) => void = () => {};
+    vi.mocked(ipc.toolRemoteReady).mockImplementation(() => new Promise<boolean>((r) => (resolve = r)));
+    await useStore.getState().runStartup("a");
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS);
+    await useStore.getState().closeTerminal("a");
+    resolve(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 2);
+    expect(lines()).toEqual([MASTER]);
+  });
+});
+
+describe("connection watchdog", () => {
+  const resetModes = vi.fn();
+
+  function connectedTile(opts: { attached?: boolean } = {}) {
+    useStore.setState({
+      selfMachine: "here",
+      terminals: { a: { id: "a", name: "a", cwd: "/home/me", exited: null, error: null } },
+      order: ["a"],
+      layout: { kind: "group", id: "g", tabs: ["a"], active: "a" },
+      settings: {
+        a: { ssh: { host: "me@box", cwd: "/proj", machine: "box" }, claude: { enabled: true, sessionId: "sid", skipPermissions: false, started: true }, command: null },
+      },
+      toolReady: opts.attached ? { "me@box": true } : { "me@box": false },
+      startupPending: { a: false },
+      sshConnected: { a: true },
+    });
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetModes.mockClear();
+    beforeSpawn.resetModes = resetModes;
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+  });
+  afterEach(() => {
+    __stopAllPolling();
+    vi.useRealTimers();
+  });
+
+  it("notices the local shell back in the foreground, offers Reconnect and resets the pane", async () => {
+    connectedTile();
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS * 3);
+    expect(ipc.terminalForegroundBusy).toHaveBeenCalledWith("a");
+    expect(useStore.getState().sshConnected.a).toBe(true);
+    expect(resetModes).not.toHaveBeenCalled();
+    // Wi-Fi off: ssh printed "Shared connection to … closed." and exited.
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS);
+    const s = useStore.getState();
+    expect(s.sshConnected.a).toBeUndefined();
+    expect(s.startupPending.a).toBe(true);
+    expect(s.startupNotes.a).toBe("Connection to box ended");
+    expect(s.sshDropped.a).toBe(true);
+    expect(resetModes).toHaveBeenCalledTimes(1);
+    expect(resetModes).toHaveBeenCalledWith("a");
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+    // Not connected any more: no more checks.
+    vi.mocked(ipc.terminalForegroundBusy).mockClear();
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS * 3);
+    expect(ipc.terminalForegroundBusy).not.toHaveBeenCalled();
+  });
+
+  it("Reconnect types the connect line again, and connecting clears the dropped mark", async () => {
+    connectedTile();
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS);
+    expect(useStore.getState().sshDropped.a).toBe(true);
+    await useStore.getState().runStartup("a");
+    expect(vi.mocked(ipc.writeTerminal).mock.calls.map((c) => c[1])).toEqual([`${sshLine("me@box")}\r`]);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(SSH_POLL_MS + SSH_SETTLE_MS + 10);
+    const s = useStore.getState();
+    expect(s.sshConnected.a).toBe(true);
+    expect(s.sshDropped.a).toBeUndefined();
+    expect(s.startupNotes.a).toBeUndefined();
+  });
+
+  it("an attached tile says its session is still running, and Reconnect rejoins it", async () => {
+    // Connecting installs the agent hooks, which asks the tool again.
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    connectedTile({ attached: true });
+    await useStore.getState().remoteAttached("a", false);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS);
+    expect(useStore.getState().startupNotes.a).toBe("Connection to box ended; the session is still running there, and Reconnect rejoins it");
+    expect(useStore.getState().startupPending.a).toBe(true);
+    vi.mocked(ipc.sshCheck).mockResolvedValue(false);
+    await useStore.getState().runStartup("a");
+    const typed = vi.mocked(ipc.writeTerminal).mock.calls.map((c) => String(c[1]));
+    expect(typed).toHaveLength(1);
+    expect(typed[0]).toContain("~/.swarmz/bin/swarmz attach a");
+    await useStore.getState().remoteAttached("a", false);
+    expect(useStore.getState().sshConnected.a).toBe(true);
+    expect(vi.mocked(ipc.writeTerminal).mock.calls).toHaveLength(1);
+  });
+
+  it("an attach that was still pending is forgotten when the connection ends", async () => {
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    connectedTile({ attached: true });
+    useStore.setState({ sshConnected: {} });
+    vi.mocked(ipc.sshCheck).mockResolvedValue(false);
+    await useStore.getState().runStartup("a"); // types the attach line; not connected yet
+    expect(vi.mocked(ipc.writeTerminal).mock.lastCall?.[1]).toContain("swarmz attach a");
+    // The attach reported in, then the connection dropped before the step was typed.
+    __stopAllPolling();
+    useStore.setState((s) => ({ sshConnecting: omitKey(s.sshConnecting, "a"), sshConnected: { a: true } }));
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS);
+    expect(useStore.getState().sshConnected.a).toBeUndefined();
+    // A late marker from a later connection must not type the step for the old attach line.
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    vi.mocked(ipc.writeTerminal).mockClear();
+    const p = useStore.getState().remoteAttached("a", true);
+    await vi.advanceTimersByTimeAsync(SSH_SETTLE_MS);
+    await p;
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  it("never judges a tile while it is connecting or logging in", async () => {
+    connectedTile();
+    useStore.setState({ toolReady: {} });
+    vi.mocked(ipc.sshCheck).mockResolvedValue(false);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    await useStore.getState().runStartup("a"); // master line; connecting
+    expect(useStore.getState().sshConnecting.a).toBe(true);
+    // Something marks it connected while the login is still polling: the watchdog keeps out.
+    useStore.setState({ sshConnected: { a: true } });
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    vi.mocked(ipc.toolRemoteReady).mockImplementation(() => new Promise(() => {}));
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS * 3);
+    const s = useStore.getState();
+    expect(s.startupNotes.a).toBeUndefined();
+    expect(s.sshDropped.a).toBeUndefined();
+    expect(resetModes).not.toHaveBeenCalled();
+  });
+
+  it("an unanswered check is not a disconnect, and only one check runs per tile", async () => {
+    connectedTile();
+    vi.mocked(ipc.terminalForegroundBusy).mockRejectedValueOnce("holder busy");
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS);
+    expect(useStore.getState().sshConnected.a).toBe(true);
+    vi.mocked(ipc.terminalForegroundBusy).mockClear().mockImplementation(() => new Promise(() => {}));
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS * 4);
+    expect(ipc.terminalForegroundBusy).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().sshConnected.a).toBe(true);
+  });
+
+  it("stops when the tile closes or exits", async () => {
+    connectedTile();
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS);
+    await useStore.getState().closeTerminal("a");
+    vi.mocked(ipc.terminalForegroundBusy).mockClear().mockResolvedValue(false);
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS * 3);
+    expect(ipc.terminalForegroundBusy).not.toHaveBeenCalled();
+    expect(resetModes).not.toHaveBeenCalled();
+
+    connectedTile();
+    useStore.getState().markExited("a", 0);
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS * 3);
+    expect(ipc.terminalForegroundBusy).not.toHaveBeenCalled();
+    expect(useStore.getState().startupNotes.a).toBeUndefined();
+  });
+
+  it("never watches local tiles", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/x");
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    vi.mocked(ipc.terminalForegroundBusy).mockClear().mockResolvedValue(false);
+    await vi.advanceTimersByTimeAsync(SSH_WATCHDOG_MS * 2);
+    expect(ipc.terminalForegroundBusy).not.toHaveBeenCalled();
+  });
+
+  it("a rejoined tile whose ssh died gets its pane reset along with the card", async () => {
+    vi.mocked(ipc.loadWorkspace).mockResolvedValue({
+      version: 1,
+      terminals: [{ id: "r", name: "r", cwd: "/home/me", ssh: { host: "me@box", cwd: "/proj" }, claude: null, command: null }],
+      layout: { kind: "group", id: "g", tabs: ["r"], active: "r" },
+    } as Workspace);
+    vi.mocked(ipc.createTerminal).mockImplementation(async (id: string, cwd: string) => ({ id, name: "r", cwd, exited: null, error: null, existed: true }));
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    useStore.setState({ persistenceReady: false });
+    await useStore.getState().loadWorkspace();
+    await vi.waitFor(() => expect(useStore.getState().startupPending.r).toBe(true));
+    await vi.waitFor(() => expect(resetModes).toHaveBeenCalledWith("r"));
   });
 });

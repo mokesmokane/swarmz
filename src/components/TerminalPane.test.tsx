@@ -76,6 +76,7 @@ beforeEach(() => {
     startupNotes: {},
     sshConnected: {},
     sshConnecting: {},
+    sshDropped: {},
     machines: { box: { alias: "Desk Mac", color: "#f59e0b", lastUsed: "t" } },
     persistenceReady: true,
   });
@@ -107,9 +108,19 @@ describe("TerminalPane connect card", () => {
   it("Connect runs the startup and reveals the terminal", async () => {
     render(<TerminalPane id={ID} />);
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
-    await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith(ID, expect.stringMatching(/^ssh -t .*mokes@box\r$/)));
+    await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith(ID, expect.stringMatching(/^ssh -fN .*mokes@box\r$/)));
     await vi.waitFor(() => expect(screen.queryByRole("dialog", { name: /connect/i })).toBeNull());
     expect(screen.getByTestId("terminal-mount").className).not.toContain("invisible");
+  });
+
+  it("offers Reconnect with the note after a connection ended", async () => {
+    useStore.setState({ sshDropped: { [ID]: true }, startupNotes: { [ID]: "Connection to Desk Mac ended" } });
+    render(<TerminalPane id={ID} />);
+    const card = screen.getByRole("dialog", { name: /connect/i });
+    expect(card.textContent).toContain("Connection to Desk Mac ended");
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith(ID, expect.stringMatching(/^ssh -fN .*mokes@box\r$/)));
   });
 
   it("Skip drops to the plain shell without running anything", () => {

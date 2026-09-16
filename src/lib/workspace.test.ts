@@ -23,6 +23,7 @@ import {
   sanitizeLayout,
   shellQuote,
   sshLine,
+  sshMasterLine,
   startupIsSsh,
   startupLine,
   startupSummary,
@@ -89,6 +90,11 @@ describe("startupLine", () => {
 
   it("ssh only", () => {
     expect(startupLine({ ...EMPTY_SETTINGS, ssh: { host: "me@host" } })).toBe(sshLine("me@host"));
+  });
+
+  it("the master-only line shares the socket options but has no tty and no session", () => {
+    expect(sshMasterLine("me@host")).toBe("ssh -fN -o ControlMaster=auto -o ControlPath=~/.swarmz/ssh/%C -o ControlPersist=10m me@host");
+    expect(SSH_OPTS).toBe("-t -o ControlMaster=auto -o ControlPath=~/.swarmz/ssh/%C -o ControlPersist=10m");
   });
 
   it("claude only", () => {

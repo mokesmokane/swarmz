@@ -32,6 +32,7 @@ import {
   sameWorkspaceContent,
   sanitizeLayout,
   shellQuote,
+  sshMasterLine,
   startupIsSsh,
   startupLine,
   startupSteps,
@@ -40,6 +41,7 @@ import {
   validateAlias,
   validateHost,
   validateUser,
+  validHost,
   MACHINES_MAX,
   type MachineConfig,
   type Machines,
@@ -68,6 +70,8 @@ function resumedSessionIn(line: string): string | null {
 export const SSH_POLL_MS = 500;
 export const SSH_POLL_TIMEOUT_MS = 120_000;
 export const SSH_SETTLE_MS = 300;
+/** How often a connected ssh tile checks that its ssh still owns the terminal. */
+export const SSH_WATCHDOG_MS = 3_000;
 
 export const SYNC_PULL_MS = 30_000;
 export const SYNC_STAT_MS = 5_000;
@@ -219,14 +223,18 @@ function agentWatchSurvived(host: string | null) {
 async function agentTilesStillLive(host: string): Promise<boolean> {
   const s = useStore.getState();
   const ids = s.order.filter((id) => s.settings[id]?.ssh?.host?.trim() === host && s.sshConnected[id]);
-  const dead: string[] = [];
   let live = false;
   for (const id of ids) {
-    if (await tileLive(id, host)) live = true;
-    else dead.push(id);
-  }
-  if (dead.length > 0) {
-    useStore.setState((st) => ({ sshConnected: dead.reduce((acc, id) => omit(acc, id), st.sshConnected) }));
+    // The watchdog's rule: the local shell back in the foreground means the ssh is gone. A tile
+    // whose ssh still runs but whose master check fails is dropped too (its watcher cannot run),
+    // without touching the pane's modes, since the ssh may still own them.
+    const busy = await foregroundBusyOrNull(id);
+    if (busy === true && (await safeSshCheck(host))) {
+      live = true;
+      continue;
+    }
+    if (!useStore.getState().sshConnected[id]) continue;
+    markDisconnected(id, { resetModes: busy === false });
   }
   return live;
 }
@@ -268,10 +276,14 @@ export const beforeSpawn: {
   size: (id: string) => { cols: number; rows: number } | null;
   /** After joining a running session without a size: send the pane's size once it is laid out. */
   claimSize: (id: string) => void;
+  /** After an ssh tile's connection ended: turn off the modes the remote program left on in the
+   * pane (`resetTerminalModes`), writing to the xterm only. */
+  resetModes: (id: string) => void;
 } = {
   hook: async () => {},
   size: () => null,
   claimSize: () => {},
+  resetModes: () => {},
 };
 
 /** Where a new terminal goes: a tab in a tile, or a new tile beside one. */
@@ -303,6 +315,9 @@ export interface WorkbenchState {
   persistenceReady: boolean;
   sshConnected: Record<string, boolean>;
   sshConnecting: Record<string, boolean>;
+  /** Ssh tiles whose connection ended under them (the card offers Reconnect); cleared once
+   * connected again. */
+  sshDropped: Record<string, boolean>;
   /** Per ssh host: whether its swarmz tool speaks our protocol, so its tiles attach to a session
    * holder there (`swarmz attach`). Absent means not asked yet; false falls back to plain ssh. */
   toolReady: Record<string, boolean>;
@@ -704,6 +719,10 @@ async function openDefs(
       if (startupInFlight.has(id) || st.sshConnecting[id] || st.sshConnected[id]) return;
       if (startupLine(st.settings[id] ?? EMPTY_SETTINGS) === null) return;
       set((st) => ({ startupPending: { ...st.startupPending, [id]: true } }));
+      // The replay may have left the dead remote program's mouse tracking on in the pane.
+      void foregroundBusyOrNull(id).then((busy) => {
+        if (busy === false && useStore.getState().terminals[id] && !useStore.getState().sshConnected[id]) beforeSpawn.resetModes(id);
+      });
     });
   }
   return { anyFailed: failedCount > 0 };
@@ -714,6 +733,16 @@ async function safeSshCheck(host: string): Promise<boolean> {
     return await ipc.sshCheck(host);
   } catch {
     return false;
+  }
+}
+
+/** The tile's foreground state, or null when the holder could not be asked (never a guess: the
+ * watchdog must not call a connection dead because one round trip failed). */
+async function foregroundBusyOrNull(id: string): Promise<boolean | null> {
+  try {
+    return await ipc.terminalForegroundBusy(id);
+  } catch {
+    return null;
   }
 }
 
@@ -830,12 +859,21 @@ async function applyPendingSwitch(id: string): Promise<void> {
   useStore.setState((st) => ({ startupNotes: { ...st.startupNotes, [id]: note } }));
 }
 
+/** What a poller waits for: the plain ssh line's session, the attach line's marker, or the
+ * master that the master-only login line leaves behind. */
+type PollMode = "connect" | "attach" | "master";
+
 const pollers = new Map<
   string,
-  { timer: ReturnType<typeof setInterval>; started: number; busy: boolean; staleForeground: number; attach: boolean }
+  { timer: ReturnType<typeof setInterval>; started: number; busy: boolean; staleForeground: number; mode: PollMode }
 >();
 
+/** Tiles between their master coming up and their connect line being typed (the tool check can
+ * take a while): the token goes when the step is cancelled, so its end types nothing. */
+const masterSteps = new Map<string, object>();
+
 function stopPolling(id: string) {
+  masterSteps.delete(id);
   const p = pollers.get(id);
   if (p) {
     clearInterval(p.timer);
@@ -845,6 +883,79 @@ function stopPolling(id: string) {
 
 export function __stopAllPolling() {
   for (const id of Array.from(pollers.keys())) stopPolling(id);
+  masterSteps.clear();
+  stopWatchdog();
+}
+
+/** Whether the watchdog may judge this tile now: a connected, running ssh tile that no connect
+ * step owns. */
+function watchable(id: string): boolean {
+  const s = useStore.getState();
+  return (
+    s.sshConnected[id] === true &&
+    s.terminals[id]?.exited === null &&
+    !!s.settings[id]?.ssh?.host?.trim() &&
+    !s.sshConnecting[id] &&
+    !startupInFlight.has(id) &&
+    !pollers.has(id) &&
+    !masterSteps.has(id)
+  );
+}
+
+/**
+ * The tile's ssh ended (the network dropped, the other Mac slept, the user typed exit): the local
+ * shell has the terminal back. Offers Connect again and turns off whatever the remote program
+ * left on in the pane, so the shell does not receive mouse reports. An attached tile's session
+ * is still running on its host, and Connect rejoins it. A picked session stays pending for that
+ * rejoin.
+ */
+function markDisconnected(id: string, opts: { resetModes: boolean }) {
+  const s = useStore.getState();
+  const host = s.settings[id]?.ssh?.host?.trim();
+  if (!s.terminals[id] || !host) return;
+  attachPending.delete(id);
+  if (opts.resetModes) beforeSpawn.resetModes(id);
+  const machine = machineOf(id, host);
+  const note = attachedTiles.has(id)
+    ? `Connection to ${machine} ended; the session is still running there, and Reconnect rejoins it`
+    : `Connection to ${machine} ended`;
+  useStore.setState((st) => ({
+    sshConnected: omit(st.sshConnected, id),
+    sshDropped: { ...st.sshDropped, [id]: true },
+    startupPending: { ...st.startupPending, [id]: startupLine(st.settings[id] ?? EMPTY_SETTINGS) !== null },
+    startupNotes: { ...st.startupNotes, [id]: note },
+  }));
+}
+
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+/** Tiles with a watchdog check in flight (one per tile). */
+const watchdogChecks = new Set<string>();
+
+function stopWatchdog() {
+  if (watchdogTimer) clearInterval(watchdogTimer);
+  watchdogTimer = null;
+  watchdogChecks.clear();
+}
+
+function watchdogTick() {
+  const s = useStore.getState();
+  for (const id of s.order) {
+    if (watchdogChecks.has(id) || !watchable(id)) continue;
+    watchdogChecks.add(id);
+    void foregroundBusyOrNull(id)
+      .then((busy) => {
+        // Only a definite answer counts, and only if nothing started connecting meanwhile.
+        if (busy === false && watchable(id)) markDisconnected(id, { resetModes: true });
+      })
+      .finally(() => watchdogChecks.delete(id));
+  }
+}
+
+/** Runs the watchdog while any ssh tile is connected. */
+function syncWatchdog(s: WorkbenchState) {
+  const wanted = s.order.some((id) => s.sshConnected[id] && s.terminals[id]?.exited === null && !!s.settings[id]?.ssh?.host?.trim());
+  if (wanted && !watchdogTimer) watchdogTimer = setInterval(watchdogTick, SSH_WATCHDOG_MS);
+  else if (!wanted && watchdogTimer) stopWatchdog();
 }
 
 export function __resetAttachState() {
@@ -857,10 +968,10 @@ export function __resetAttachState() {
   joinedTiles.clear();
 }
 
-function startPolling(id: string, host: string, attach = false) {
+function startPolling(id: string, host: string, mode: PollMode) {
   stopPolling(id);
   useStore.setState((s) => ({ sshConnecting: { ...s.sshConnecting, [id]: true }, sshConnected: omit(s.sshConnected, id) }));
-  const entry = { timer: setInterval(() => void tick(), SSH_POLL_MS), started: Date.now(), busy: false, staleForeground: 0, attach };
+  const entry = { timer: setInterval(() => void tick(), SSH_POLL_MS), started: Date.now(), busy: false, staleForeground: 0, mode };
   pollers.set(id, entry);
 
   async function tick() {
@@ -883,6 +994,11 @@ function startPolling(id: string, host: string, attach = false) {
     }
     entry.busy = true;
     const sshOk = await safeSshCheck(host);
+    if (entry.mode === "master") {
+      await masterTick(sshOk);
+      entry.busy = false;
+      return;
+    }
     if (!sshOk) {
       entry.busy = false;
       entry.staleForeground = 0;
@@ -902,7 +1018,7 @@ function startPolling(id: string, host: string, attach = false) {
       entry.staleForeground += 1;
       if (entry.staleForeground >= 2) {
         stopPolling(id);
-        if (entry.attach) {
+        if (entry.mode === "attach") {
           // The master is up but the attach is gone: most likely the remote tool refused or
           // failed (its error is in the terminal). Forget the host's answer so the next Run
           // checks the tool again instead of retrying attach mode forever.
@@ -929,11 +1045,63 @@ function startPolling(id: string, host: string, attach = false) {
     // and decides whether to type the remote step, and it stops this poller. Until then keep
     // polling without typing, so a tool that fails (ssh exits) or never answers still ends in the
     // exit and timeout notes above instead of a tile stuck connecting.
-    if (entry.attach) return;
+    if (entry.mode === "attach") return;
     stopPolling(id);
     useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true }, sshConnecting: omit(s.sshConnecting, id) }));
     await new Promise((r) => setTimeout(r, SSH_SETTLE_MS));
     await useStore.getState().runRemoteStep(id);
+  }
+
+  /** The master-only login: `ssh -fN` goes to the background once logged in, so the shell is
+   * idle both before a failed login and after a good one; only the master tells them apart. */
+  async function masterTick(sshOk: boolean) {
+    if (!pollers.has(id)) return;
+    if (sshOk) {
+      stopPolling(id);
+      await connectAfterMaster(id, host);
+      return;
+    }
+    const busy = await foregroundBusyOrNull(id);
+    if (!pollers.has(id)) return;
+    if (busy !== false) {
+      // Still logging in (or the holder did not answer this time).
+      entry.staleForeground = 0;
+      return;
+    }
+    // No master and the shell has the terminal back, twice in a row: the login failed (wrong
+    // password, host unreachable); its error is in the terminal.
+    entry.staleForeground += 1;
+    if (entry.staleForeground < 2) return;
+    stopPolling(id);
+    useStore.setState((s) => ({
+      sshConnecting: omit(s.sshConnecting, id),
+      startupPending: { ...s.startupPending, [id]: true },
+      startupNotes: { ...s.startupNotes, [id]: `could not log in to ${machineOf(id, host)}; see the terminal and click Connect` },
+    }));
+  }
+}
+
+/** The master is up: ask the host's tool (its BatchMode ssh can use the master now), then type
+ * the connect line, which reuses the master and so does not prompt either. The tile stays
+ * connecting throughout, which also keeps a second Connect out. */
+async function connectAfterMaster(id: string, host: string): Promise<void> {
+  const token = {};
+  masterSteps.set(id, token);
+  const owned = !startupInFlight.has(id);
+  startupInFlight.add(id);
+  try {
+    await checkToolReady(host);
+    if (masterSteps.get(id) !== token || !useStore.getState().terminals[id]) return;
+    masterSteps.delete(id);
+    await typeConnectLine(id);
+    // Typing started a poller (connecting again), or found the tile already live (connected).
+    if (!pollers.has(id)) useStore.setState((s) => ({ sshConnecting: omit(s.sshConnecting, id) }));
+  } finally {
+    if (masterSteps.get(id) === token) {
+      masterSteps.delete(id);
+      useStore.setState((s) => ({ sshConnecting: omit(s.sshConnecting, id) }));
+    }
+    if (owned) startupInFlight.delete(id);
   }
 }
 
@@ -943,17 +1111,38 @@ async function runStartupNow(id: string): Promise<void> {
   attachPending.delete(id);
   const settings = s.settings[id] ?? EMPTY_SETTINGS;
   if (startupSteps(settings, id).length === 0) return;
-  const isSsh = startupIsSsh(settings);
-  const host = settings.ssh?.host?.trim();
-  if (isSsh && host && useStore.getState().toolReady[host] === undefined) {
+  const host = startupIsSsh(settings) ? validHost(settings) : null;
+  if (host && useStore.getState().toolReady[host] === undefined) {
+    // Whether to attach depends on the host's tool, and asking it needs a login. With no master
+    // yet (a password host cannot log in in BatchMode), log in first, in the tile, with a
+    // master-only line; the poller then asks the tool and types the connect line.
+    if (!(await safeSshCheck(host))) {
+      if (!useStore.getState().terminals[id]) return;
+      await ipc.writeTerminal(id, sshMasterLine(host) + "\r");
+      useStore.setState((st) => {
+        if (!st.terminals[id]) return {};
+        return { startupPending: { ...st.startupPending, [id]: false }, startupNotes: omit(st.startupNotes, id) };
+      });
+      startPolling(id, host, "master");
+      return;
+    }
     await checkToolReady(host);
     if (!useStore.getState().terminals[id]) return;
   }
-  const attach = isSsh && attachModeFor(id);
+  await typeConnectLine(id);
+}
+
+/** Types the tile's first startup line (for an ssh tile: the attach line when its host's tool is
+ * ready, else plain ssh) unless its ssh is already live, and starts watching the connection. */
+async function typeConnectLine(id: string): Promise<void> {
   const cur = useStore.getState();
-  const steps = startupSteps(cur.settings[id] ?? settings, id, { attach, name: cur.terminals[id]?.name });
+  const settings = cur.settings[id] ?? EMPTY_SETTINGS;
+  const isSsh = startupIsSsh(settings);
+  const host = isSsh ? validHost(settings) : null;
+  const attach = isSsh && attachModeFor(id);
+  const steps = startupSteps(settings, id, { attach, name: cur.terminals[id]?.name });
   if (steps.length === 0) return;
-  if (isSsh && host && (await tileLive(id, host))) {
+  if (host && (await tileLive(id, host))) {
     // This tile's ssh is already live (e.g. Run was clicked again right after connecting,
     // before the bar updated): don't retype the ssh line, just proceed to the remote step —
     // unless the tile is attached, where the session may already be running Claude: then only a
@@ -980,7 +1169,7 @@ async function runStartupNow(id: string): Promise<void> {
       startupNotes: omit(st.startupNotes, id),
     };
   });
-  if (isSsh && host) startPolling(id, host, attach);
+  if (host) startPolling(id, host, attach ? "attach" : "connect");
 }
 
 function resetSessionIfFolderChanged(cur: TerminalSettings, next: TerminalSettings): { settings: TerminalSettings; note: string | null } {
@@ -1051,6 +1240,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   persistenceReady: false,
   sshConnected: {},
   sshConnecting: {},
+  sshDropped: {},
   toolReady: {},
   machines: {},
   tailscale: null,
@@ -1178,6 +1368,7 @@ export const useStore = create<WorkbenchState>((set) => ({
         startupNotes: omit(s.startupNotes, id),
         sshConnected: omit(s.sshConnected, id),
         sshConnecting: omit(s.sshConnecting, id),
+        sshDropped: omit(s.sshDropped, id),
         agentState: omit(s.agentState, id),
         ...focusFor(layout, fallback),
       };
@@ -1195,6 +1386,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       startupPending: { ...s.startupPending, [id]: !info.existed && startupLine(s.settings[id] ?? EMPTY_SETTINGS) !== null },
       sshConnected: omit(s.sshConnected, id),
       sshConnecting: omit(s.sshConnecting, id),
+      sshDropped: omit(s.sshDropped, id),
       agentState: s.agentState[id] ? { ...s.agentState, [id]: OFFLINE } : s.agentState,
     }));
     // The fit addon only fires onResize when dimensions change, so if the
@@ -2246,6 +2438,13 @@ useStore.subscribe((s, prev) => {
 
 useStore.subscribe((s, prev) => {
   if (s.sshConnected !== prev.sshConnected || s.order !== prev.order) void s.ensureAgentWatchers();
+});
+
+useStore.subscribe((s, prev) => {
+  if (s.sshConnected === prev.sshConnected && s.order === prev.order && s.terminals === prev.terminals && s.settings === prev.settings) return;
+  syncWatchdog(s);
+  const reconnected = Object.keys(s.sshDropped).filter((id) => s.sshConnected[id] || !s.terminals[id]);
+  if (reconnected.length > 0) useStore.setState((st) => ({ sshDropped: reconnected.reduce((acc, id) => omit(acc, id), st.sshDropped) }));
 });
 
 useStore.subscribe((s, prev) => {

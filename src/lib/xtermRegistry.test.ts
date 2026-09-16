@@ -42,6 +42,7 @@ vi.mock("@xterm/xterm", () => {
     log: string[] = [];
     cols = 80;
     rows = 24;
+    buffer = { active: { type: "normal" as "normal" | "alternate" } };
     write(data: unknown, done?: () => void) {
       this.writes.push({ data, done });
       this.log.push("write");
@@ -126,6 +127,8 @@ import {
   dispose,
   parseAttachMarker,
   prepare,
+  resetTerminalModes,
+  TERMINAL_MODES_RESET,
 } from "./xtermRegistry";
 
 function info(id: string, name = id): TerminalInfo {
@@ -1073,5 +1076,60 @@ describe("parseAttachMarker", () => {
     for (const d of ["swarmz-attach", "swarmz-attach;new=2", "swarmz-attach;end=1;new=0", "swarmz-replay-end", "File=inline=1:abc", "swarmz-attach;new=01", ""]) {
       expect(parseAttachMarker(d)).toBeNull();
     }
+  });
+});
+
+describe("resetTerminalModes", () => {
+  interface FakeTerm {
+    writes: Array<{ data: unknown; done?: () => void }>;
+    buffer: { active: { type: "normal" | "alternate" } };
+    oscHandlers: Record<number, (data: string) => boolean>;
+  }
+  const tile = (id: string) =>
+    useStore.setState({
+      terminals: { [id]: { id, name: id, cwd: "/", exited: null, error: null } },
+      order: [id],
+      settings: { [id]: { ssh: { host: "me@box", cwd: "/p" }, claude: null, command: null, extra: {} } },
+    });
+
+  it("writes the mode resets to the xterm only, leaving the alternate screen only when it is active", async () => {
+    tile("rm1");
+    attach("rm1", document.createElement("div"));
+    await prepare("rm1");
+    const term = instances[instances.length - 1] as unknown as FakeTerm;
+    vi.mocked(ipc.writeTerminal).mockClear();
+    resetTerminalModes("rm1");
+    expect(term.writes[term.writes.length - 1]?.data).toBe(TERMINAL_MODES_RESET);
+    expect(TERMINAL_MODES_RESET).toBe("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?2004l\x1b[?1004l\x1b[?1l\x1b>\x1b[?25h\x1b[0m");
+    term.buffer.active.type = "alternate";
+    resetTerminalModes("rm1");
+    expect(term.writes[term.writes.length - 1]?.data).toBe("\x1b[?1049l" + TERMINAL_MODES_RESET);
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+    dispose("rm1");
+  });
+
+  it("ends a remote replay, so live clipboard writes work again", async () => {
+    tile("rm2");
+    const remoteAttached = useStore.getState().remoteAttached;
+    useStore.setState({ remoteAttached: vi.fn(async () => {}) });
+    try {
+      attach("rm2", document.createElement("div"));
+      await prepare("rm2");
+      const term = instances[instances.length - 1] as unknown as FakeTerm;
+      term.oscHandlers[1337]("swarmz-attach;new=0;end=1");
+      vi.mocked(writeText).mockClear();
+      term.oscHandlers[52](`c;${btoa("history")}`);
+      expect(writeText).not.toHaveBeenCalled();
+      resetTerminalModes("rm2");
+      term.oscHandlers[52](`c;${btoa("live")}`);
+      await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("live"));
+    } finally {
+      useStore.setState({ remoteAttached });
+      dispose("rm2");
+    }
+  });
+
+  it("does nothing for an unknown tile", () => {
+    expect(() => resetTerminalModes("nope")).not.toThrow();
   });
 });
