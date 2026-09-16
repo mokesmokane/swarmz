@@ -459,16 +459,7 @@ mod tests {
 
     #[test]
     fn an_exit_that_races_the_start_waits_for_the_session_to_be_recorded() {
-        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let target = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| manifest.join("target"));
-        let target = if target.is_absolute() { target } else { manifest.join(target) };
-        let status = std::process::Command::new(env!("CARGO"))
-            .args(["build", "-p", "swarmz-tool"])
-            .current_dir(&manifest)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let tool = target.join("debug/swarmz-tool");
+        let tool = crate::toolbin::tests::built_tool();
 
         let home = std::path::PathBuf::from(format!("/tmp/szb-{}-gate", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);

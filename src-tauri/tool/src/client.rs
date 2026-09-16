@@ -48,9 +48,12 @@ impl HolderClient {
     ) -> Result<HolderClient, String> {
         let stream = UnixStream::connect(socket).map_err(|e| format!("could not reach the session at {}: {e}", socket.display()))?;
         let mut w = stream.try_clone().map_err(|e| e.to_string())?;
-        w.write_all(&encode(Kind::Hello, &json(hello))).map_err(|e| e.to_string())?;
         let mut r = stream.try_clone().map_err(|e| e.to_string())?;
+        // Before the Hello: once the holder has answered it may close at once (another protocol,
+        // or a shell that exited), and macOS refuses socket options on a socket whose peer has
+        // gone (EINVAL), which would hide the holder's answer.
         r.set_read_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
+        w.write_all(&encode(Kind::Hello, &json(hello))).map_err(|e| e.to_string())?;
         let first = read_frame(&mut r)
             .map_err(|e| format!("the session did not answer: {e}"))?
             .ok_or_else(|| "the session closed the connection".to_string())?;
@@ -78,7 +81,8 @@ impl HolderClient {
             return Err(format!("expected a replay frame, got kind {}", second.kind));
         }
         on_output(second.payload, true);
-        r.set_read_timeout(None).map_err(|e| e.to_string())?;
+        // Failing here means the holder has already gone; the reader below then sees the end.
+        let _ = r.set_read_timeout(None);
 
         let info_tx: InfoSlot = Arc::new(Mutex::new(None));
         let closing = Arc::new(AtomicBool::new(false));

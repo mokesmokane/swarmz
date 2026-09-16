@@ -354,7 +354,7 @@ pub fn remote_close(host: &str, id: &str) -> Result<bool, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::path::PathBuf;
 
@@ -381,17 +381,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    fn built_tool() -> PathBuf {
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let status = std::process::Command::new(env!("CARGO"))
-            .args(["build", "-p", "swarmz-tool"])
-            .current_dir(&manifest)
-            .status()
-            .unwrap();
-        assert!(status.success(), "building swarmz-tool failed");
-        let target = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| manifest.join("target"));
-        let target = if target.is_absolute() { target } else { manifest.join(target) };
-        target.join("debug/swarmz-tool")
+    /// Builds the tool once per test process. Every `cargo build` re-links
+    /// `target/debug/swarmz-tool`, so building it again while another test is starting holders
+    /// from that path makes those starts intermittently slow.
+    pub(crate) fn built_tool() -> PathBuf {
+        static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        BUILT
+            .get_or_init(|| {
+                let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                let status = std::process::Command::new(env!("CARGO"))
+                    .args(["build", "-p", "swarmz-tool"])
+                    .current_dir(&manifest)
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "building swarmz-tool failed");
+                let target = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| manifest.join("target"));
+                let target = if target.is_absolute() { target } else { manifest.join(target) };
+                target.join("debug/swarmz-tool")
+            })
+            .clone()
     }
 
     fn alive(pid: u32) -> bool {
