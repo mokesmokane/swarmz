@@ -2,11 +2,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalInfo } from "./ipc";
 
-const { instances, dataCallbacks, replayCallbacks, fitCalls } = vi.hoisted(() => ({
+const { instances, dataCallbacks, replayCallbacks, fitCalls, fitDims } = vi.hoisted(() => ({
   instances: [] as { disposed: boolean; selection: string; element: HTMLElement | null }[],
   dataCallbacks: {} as Record<string, (b: Uint8Array) => void>,
   replayCallbacks: {} as Record<string, (b: Uint8Array, size?: { cols: number; rows: number } | null) => void>,
   fitCalls: { n: 0 },
+  /** What the fake fit addon proposes: undefined for a hidden or unlaid pane. */
+  fitDims: { value: { cols: 80, rows: 24 } as { cols: number; rows: number } | undefined },
 }));
 
 vi.mock("@xterm/xterm", () => {
@@ -76,6 +78,9 @@ vi.mock("@xterm/addon-fit", () => {
     fit() {
       fitCalls.n += 1;
     }
+    proposeDimensions() {
+      return fitDims.value;
+    }
   }
   return { FitAddon };
 });
@@ -115,6 +120,7 @@ import {
   REPLAY_END_MARKER,
   SHIFT_ENTER_SEQUENCE,
   attach,
+  claimSize,
   decodeOsc52,
   decodeOsc7,
   dispose,
@@ -653,9 +659,10 @@ describe("joining a running session", () => {
   beforeEach(() => {
     vi.mocked(ipc.resizeTerminal).mockClear();
     vi.mocked(ipc.writeTerminal).mockClear();
+    fitDims.value = { cols: 80, rows: 24 };
   });
 
-  it("parses the history at the size it was written at, and claims the pane's size on first input", async () => {
+  it("parses the history at the size it was written at", async () => {
     tile("js1");
     await prepare("js1");
     const term = instances[instances.length - 1] as unknown as FakeTerm;
@@ -664,13 +671,55 @@ describe("joining a running session", () => {
     const fits = fitCalls.n;
     term.writes[term.writes.length - 1].done?.();
     expect(fitCalls.n).toBe(fits); // not laid out yet: the pane fits it when it opens
+    // Nothing is claimed until the session is recorded (claimSize), and input claims nothing.
     term.dataHandler?.("a");
-    expect(ipc.resizeTerminal).toHaveBeenCalledWith("js1", 120, 40);
-    expect(ipc.writeTerminal).toHaveBeenCalledWith("js1", "a");
-    expect(vi.mocked(ipc.resizeTerminal).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(ipc.writeTerminal).mock.invocationCallOrder[0]);
-    term.dataHandler?.("b");
-    expect(ipc.resizeTerminal).toHaveBeenCalledTimes(1);
+    expect(ipc.resizeTerminal).not.toHaveBeenCalled();
     dispose("js1");
+  });
+
+  it("claims the pane's size once when the session is recorded, even when fitting changed nothing", async () => {
+    tile("jc1");
+    const { fit } = attach("jc1", document.createElement("div"));
+    await prepare("jc1");
+    replayCallbacks.jc1(enc("\x1b[!phistory"), { cols: 80, rows: 24 });
+    const fake = instances[instances.length - 1] as unknown as FakeTerm;
+    fake.writes[fake.writes.length - 1].done?.();
+    expect(ipc.resizeTerminal).not.toHaveBeenCalled();
+    claimSize("jc1");
+    expect(ipc.resizeTerminal).toHaveBeenCalledTimes(1);
+    expect(ipc.resizeTerminal).toHaveBeenCalledWith("jc1", 80, 24);
+    // A later fit sends nothing more.
+    fit.fit();
+    expect(ipc.resizeTerminal).toHaveBeenCalledTimes(1);
+    dispose("jc1");
+  });
+
+  it("a hidden pane claims its size on its first real fit", async () => {
+    tile("jc2");
+    fitDims.value = undefined;
+    const { fit } = attach("jc2", document.createElement("div"));
+    await prepare("jc2");
+    claimSize("jc2");
+    fit.fit();
+    expect(ipc.resizeTerminal).not.toHaveBeenCalled();
+    fitDims.value = { cols: 100, rows: 30 };
+    fit.fit();
+    expect(ipc.resizeTerminal).toHaveBeenCalledTimes(1);
+    expect(ipc.resizeTerminal).toHaveBeenCalledWith("jc2", 80, 24);
+    fit.fit();
+    expect(ipc.resizeTerminal).toHaveBeenCalledTimes(1);
+    dispose("jc2");
+  });
+
+  it("a pane that is not open yet claims once it is laid out", async () => {
+    tile("jc3");
+    await prepare("jc3");
+    claimSize("jc3");
+    expect(ipc.resizeTerminal).not.toHaveBeenCalled();
+    const { fit } = attach("jc3", document.createElement("div"));
+    fit.fit();
+    expect(ipc.resizeTerminal).toHaveBeenCalledTimes(1);
+    dispose("jc3");
   });
 
   it("fits an open pane once the history is parsed", async () => {

@@ -113,9 +113,9 @@ interface Entry {
   /** Something has been written to the terminal (output, a replay, an exit line). */
   hasOutput: boolean;
   /** The tile joined a running session without a size of its own (the holder keeps the size its
-   * other viewers set), so its first input also sends its size: by the size rule, whoever types
-   * sets the size, and a pane whose fit did not change anything never sent one. */
-  claimSize: boolean;
+   * other viewers set) and has not sent its size yet: it does so once, as soon as the pane is laid
+   * out, even when fitting changed nothing (xterm then fires no resize). */
+  claimPending: boolean;
 }
 
 const entries = new Map<string, Entry>();
@@ -290,21 +290,20 @@ function createEntry(id: string): Entry {
     replayBoundary: false,
     remotePolling: false,
     hasOutput: false,
-    claimSize: false,
+    claimPending: false,
   };
 
-  /** Before input goes out: a tile that joined without a size says its size first. */
-  const claimSizeOnInput = () => {
-    if (!entry.claimSize) return;
-    entry.claimSize = false;
-    void ipc.resizeTerminal(id, term.cols, term.rows).catch(() => {});
+  // Every fit (the pane's own included) is also the moment a pending size claim can go out.
+  const fitNow = fit.fit.bind(fit);
+  fit.fit = () => {
+    fitNow();
+    if (entry.claimPending) tryClaimSize(id, entry, fitNow);
   };
 
   term.onData((data) => {
     // Fallback for a tool without the end marker: input from the user (keys, pastes, mouse
     // reports) means the replay is on screen.
     userInput(entry);
-    claimSizeOnInput();
     const host = data === IMAGE_PASTE_KEY ? connectedSshHost(id) : null;
     // Writes to an already-exited pane are expected to fail; ignore.
     if (host) void sendImageOrForward(id, host);
@@ -318,7 +317,6 @@ function createEntry(id: string): Entry {
     if (e.key !== "Enter" || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return true;
     if (e.type === "keydown") {
       userInput(entry);
-      claimSizeOnInput();
       void ipc.writeTerminal(id, SHIFT_ENTER_SEQUENCE).catch(() => {});
       scheduleEnterPoll(id, entry);
     }
@@ -374,10 +372,7 @@ function createEntry(id: string): Entry {
         entry.hasOutput = true;
         // Parse the history at the size it was written at; the fit below (or the pane's, once it
         // is laid out) then reflows it to this pane.
-        if (size) {
-          if (size.cols !== term.cols || size.rows !== term.rows) term.resize(size.cols, size.rows);
-          entry.claimSize = true;
-        }
+        if (size && (size.cols !== term.cols || size.rows !== term.rows)) term.resize(size.cols, size.rows);
         term.write(bytes, () => {
           entry.replaying = false;
           if (size && entry.opened) {
@@ -410,6 +405,33 @@ function createEntry(id: string): Entry {
   });
   entries.set(id, entry);
   return entry;
+}
+
+/** Whether the pane has a real size to report (open, visible and laid out). */
+function laidOut(entry: Entry): boolean {
+  if (!entry.opened) return false;
+  const dims = entry.fit.proposeDimensions();
+  return !!dims && Number.isFinite(dims.cols) && Number.isFinite(dims.rows) && dims.cols > 0 && dims.rows > 0;
+}
+
+function tryClaimSize(id: string, entry: Entry, fitNow: () => void): void {
+  if (!entry.claimPending || !laidOut(entry)) return;
+  entry.claimPending = false;
+  try {
+    fitNow();
+  } catch {
+    // layout thrash; the size below is still the pane's latest
+  }
+  void ipc.resizeTerminal(id, entry.term.cols, entry.term.rows).catch(() => {});
+}
+
+/** Called once the tile's session is recorded after joining it without a size: sends the pane's
+ * size now if it is laid out, else on its first real fit. */
+export function claimSize(id: string): void {
+  const entry = entries.get(id);
+  if (!entry) return;
+  entry.claimPending = true;
+  tryClaimSize(id, entry, () => entry.fit.fit());
 }
 
 export function prepare(id: string): Promise<void> {
@@ -484,6 +506,7 @@ export function dispose(id: string): void {
 
 beforeSpawn.hook = prepare;
 beforeSpawn.size = size;
+beforeSpawn.claimSize = claimSize;
 
 useStore.subscribe((state, prev) => {
   if (state.terminals === prev.terminals) return;

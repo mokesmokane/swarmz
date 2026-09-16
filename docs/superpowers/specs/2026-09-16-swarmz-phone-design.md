@@ -150,11 +150,13 @@ The tool's `output` and `pending` commands (§4) use it; viewers do not.
   Only a new holder arms the card (today's behaviour after a reboot), except
   that a rejoined ssh tile whose ssh has died shows it. The window joins a
   running session with a zero-size `Hello`, parses the replay at the
-  `Welcome` size (sent with the replay event), then fits and sends its own
-  size; its first input also sends its size. A replay with history that
+  `Welcome` size (sent with the replay event), then fits, and sends its own
+  size once the session is recorded (immediately if the pane is laid out,
+  else on its first real fit), even when it equals the current size. A replay with history that
   arrives in a pane that already shows output (a reattach) resets the pane
   first. Agent events from before launch still apply to tiles that rejoined
-  a running session.
+  a running session, from that holder's `startedAt` on; the app holds them
+  until its first load has opened the tiles.
 - **Remote tile (home is another Mac):** the tile's local holder runs a
   shell, and the app types
   `ssh -t <shared-socket opts> <host> ~/.swarmz/bin/swarmz attach <tile> --cwd <dir> --name <name>`
