@@ -159,6 +159,25 @@ pub fn hold(exe: &Path, dir: &Path, req: &HoldRequest) -> Result<HoldResult, Cli
             if libc::setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
             }
+            // macOS has no `pipe2()`: creating a pipe and marking it close-on-exec are two
+            // separate syscalls, so a `fork()` on one thread of a multi-threaded process (the
+            // app, or this very CLI run concurrently from several threads) can land in the gap
+            // between them on another thread and inherit a write end that was never meant to
+            // survive exec. Inherited by an ordinary short-lived child that would just be a
+            // leaked fd; inherited by this holder it is fatal, because the holder runs for
+            // days, so whoever's stdout/stderr that pipe belongs to never sees EOF and hangs
+            // forever waiting to read it (this is exactly the hang `tests/cli.rs`'s concurrent
+            // `hold` test hit). Close every fd we didn't set up ourselves: std's own
+            // exec-error-reporting pipe is already CLOEXEC, so this can't break failure
+            // reporting, and both `getdtablesize` and `fcntl` are async-signal-safe, so they're
+            // safe to call here, after `fork` and before `exec`. The result is ignored: EBADF
+            // for an fd that was never open is expected and the common case, and there is
+            // nothing safer to do about any other errno in this post-fork, pre-exec context
+            // than to keep going.
+            let limit = libc::getdtablesize().clamp(0, 65_536);
+            for fd in 3..limit {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            }
             Ok(())
         });
     }

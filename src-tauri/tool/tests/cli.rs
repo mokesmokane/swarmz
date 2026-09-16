@@ -286,3 +286,63 @@ fn concurrent_hold_for_the_same_tile_converges_on_one_holder() {
     let count = text.lines().filter(|l| l.contains(&cwd)).count();
     assert_eq!(count, 1, "expected exactly one holder for r1, found:\n{text}");
 }
+
+#[test]
+fn the_holder_closes_a_leaked_pipe_fd_it_never_asked_for() {
+    let h = home("fd-leak");
+    let cwd = h.path.to_string_lossy().into_owned();
+
+    // A pipe deliberately left without close-on-exec, standing in for the write end of some
+    // *other*, unrelated `Command::output()` call's stdout pipe that a racing fork() (from
+    // another thread, e.g. the app spawning several `hold`s at once) could hand to this `hold`
+    // invocation -- see the comment in `hold()`'s `pre_exec` closure for why that race exists on
+    // macOS. Rust's `Command` does not close arbitrary fds it doesn't know about, so if `hold`
+    // (and, through it, the detached holder it spawns) doesn't close this deliberately, the
+    // write end leaks all the way down into a process that outlives this test by days.
+    let mut fds = [0i32; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    assert_eq!(rc, 0, "pipe() failed: {}", std::io::Error::last_os_error());
+    let (read_fd, write_fd) = (fds[0], fds[1]);
+    // Non-blocking so the poll loop below can enforce its own deadline instead of the raw `read`
+    // blocking forever when the fix regresses (a blocking read would just trade one hang for
+    // another).
+    unsafe {
+        libc::fcntl(read_fd, libc::F_SETFL, libc::O_NONBLOCK);
+    }
+
+    // `tool()` spawns `swarmz-tool hold` with plain `Command::spawn`, which inherits our open,
+    // non-CLOEXEC `write_fd` exactly as an unrelated racing fork() would.
+    let (code, v) = tool(&h.path, &["hold", "t7", "--cwd", &cwd, "--name", "seven"]);
+    assert_eq!(code, 0, "{v}");
+    h.track(v["socket"].as_str().unwrap());
+
+    // Only a lingering copy in the holder should matter from here: close ours.
+    unsafe {
+        libc::close(write_fd);
+    }
+
+    // The holder is still alive. If it still holds the write end open, the kernel considers the
+    // pipe to still have a writer and `read` never returns 0, however long we wait.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut buf = [0u8; 1];
+    let mut eof = false;
+    loop {
+        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+        if n == 0 {
+            eof = true;
+            break;
+        }
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock, "unexpected read error: {err}");
+        }
+        if Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    unsafe {
+        libc::close(read_fd);
+    }
+    assert!(eof, "read end of the pipe never saw EOF: the holder is still holding a leaked fd open");
+}
