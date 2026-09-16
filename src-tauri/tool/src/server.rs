@@ -36,16 +36,7 @@ struct Viewer {
     tx: mpsc::Sender<Vec<u8>>,
     queued: Arc<AtomicUsize>,
     stream: UnixStream,
-    // When `queued` first went over cap; cleared once it falls back under. A viewer only gets
-    // dropped once it has stayed over cap for `OVERFLOW_GRACE` straight, not on the first tick
-    // it crosses — a broadcast burst can outrun a viewer's writer thread's OS scheduling for a
-    // moment even though that thread is actively draining it.
-    over_since: Mutex<Option<Instant>>,
 }
-
-/// How long a viewer's queue may sit over its cap before it is considered stuck rather than
-/// just momentarily behind (see `over_since`).
-const OVERFLOW_GRACE: Duration = Duration::from_millis(500);
 
 struct Shared {
     // Lock order: ring, then viewers. Never take ring while holding viewers.
@@ -63,14 +54,8 @@ impl Shared {
     fn enqueue(v: &Viewer, frame: Vec<u8>, cap: usize) -> bool {
         let len = frame.len();
         if v.queued.load(Ordering::SeqCst) + len > cap {
-            let mut over = v.over_since.lock().unwrap();
-            let since = *over.get_or_insert_with(Instant::now);
-            if since.elapsed() > OVERFLOW_GRACE {
-                let _ = v.stream.shutdown(Shutdown::Both);
-                return false;
-            }
-        } else {
-            *v.over_since.lock().unwrap() = None;
+            let _ = v.stream.shutdown(Shutdown::Both);
+            return false;
         }
         v.queued.fetch_add(len, Ordering::SeqCst);
         v.tx.send(frame).is_ok()
@@ -186,12 +171,14 @@ pub fn run_holder(cfg: HolderConfig) -> Result<Option<i32>, String> {
     let code = exit_rx.recv().unwrap_or(None);
     // Let the reader thread hand over the shell's last output before announcing the exit.
     std::thread::sleep(Duration::from_millis(50));
+    // Remove the socket before broadcasting Exit, not after: otherwise a viewer could connect
+    // in between and never receive an Exit frame of its own, waiting forever.
+    let _ = std::fs::remove_file(&paths.socket);
     {
         let _ring = shared.ring.lock().unwrap();
         let mut vs = shared.viewers.lock().unwrap();
         shared.broadcast(&mut vs, &encode(Kind::Exit, &json(&ExitInfo { code })));
     }
-    let _ = std::fs::remove_file(&paths.socket);
     let _ = write_meta(&paths.meta, &Meta { exited_at: Some(now_iso()), exit_code: Some(code.unwrap_or(-1)), ..meta });
     shared.wait_drained(Duration::from_secs(1));
     Ok(code)
@@ -219,17 +206,9 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
     let Ok(mut wstream) = stream.try_clone() else { return };
     let wq = queued.clone();
     std::thread::spawn(move || {
-        // Coalesces whatever has already piled up in the channel into one write, rather than
-        // one syscall per PTY chunk: under a fast burst that keeps outpacing a single small
-        // write, batching is what lets a genuinely-draining viewer's queued total fall rather
-        // than merely track the producer one frame behind.
-        while let Ok(first) = rx.recv() {
-            let mut batch = first;
-            while let Ok(more) = rx.try_recv() {
-                batch.extend(more);
-            }
-            let n = batch.len();
-            if wstream.write_all(&batch).is_err() {
+        for buf in rx {
+            let n = buf.len();
+            if wstream.write_all(&buf).is_err() {
                 break;
             }
             wq.fetch_sub(n, Ordering::SeqCst);
@@ -250,7 +229,6 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
             tx,
             queued,
             stream: vstream,
-            over_since: Mutex::new(None),
         };
         let mut replay = REPLAY_PREFIX.to_vec();
         replay.extend(ring.replay());
@@ -414,7 +392,14 @@ mod tests {
                     Err(_) => {}
                 }
             }
-            String::from_utf8_lossy(&self.out).contains(needle)
+            // On timeout, an empty needle must not trivially read as "found" (every string
+            // "contains" ""): report whether an Exit frame actually arrived, so a caller waiting
+            // for exit fails the assertion instead of hanging forever in `h.join()`.
+            if needle.is_empty() {
+                self.exit.is_some()
+            } else {
+                String::from_utf8_lossy(&self.out).contains(needle)
+            }
         }
     }
 
@@ -548,10 +533,28 @@ mod tests {
     #[test]
     fn a_viewer_that_stops_reading_is_dropped_without_stalling_others() {
         let (_d, p, h) = start("slow", 64 * 1024);
-        let _stuck = Viewer::connect(&p, "tool", 80, 24);
+        let mut stuck = Viewer::connect(&p, "tool", 80, 24);
+        // Set the drain timeout now, while the connection is still fully alive: once the holder
+        // evicts and fully closes its end (all clones dropped, not just shut down), some
+        // platforms refuse further socket-option calls on our end of an already-gone peer
+        // (getpeername-style EINVAL) even though plain reads keep working fine and correctly
+        // reach EOF.
+        stuck.s.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
         let mut fast = Viewer::connect(&p, "window", 80, 24);
         fast.send(b"head -c 3000000 /dev/zero | tr '\\0' a; echo; echo done-$((40+2))\n");
         assert!(fast.wait_for("done-42", 30), "holder stalled on a viewer that never reads");
+        // The stuck viewer should have been disconnected once its queue went over cap: its
+        // socket should reach EOF (or otherwise error out) within a reasonable time, rather than
+        // sitting open forever.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match read_frame(&mut stuck.s) {
+                Ok(None) => break,
+                Err(e) if e.kind() != std::io::ErrorKind::WouldBlock && e.kind() != std::io::ErrorKind::TimedOut => break,
+                _ => {}
+            }
+            assert!(Instant::now() < deadline, "stuck viewer's socket never reached EOF");
+        }
         fast.send(b"exit 0\n");
         assert!(fast.wait_for("", 5));
         h.join().unwrap().unwrap();
