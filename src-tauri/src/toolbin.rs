@@ -21,9 +21,11 @@ pub fn installed_path() -> PathBuf {
 /// The copy shipped next to the app's own executable (`Contents/MacOS/swarmz-tool` in the
 /// bundle, `target/<profile>/swarmz-tool` in development).
 pub fn bundled_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let p = exe.parent()?.join("swarmz-tool");
-    p.is_file().then_some(p)
+    bundled_candidate().filter(|p| p.is_file())
+}
+
+fn bundled_candidate() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.join("swarmz-tool"))
 }
 
 /// Copies `src` to `dest` (mode 0755, atomically) unless it already has the same bytes.
@@ -57,14 +59,23 @@ pub fn ensure_installed() -> Result<PathBuf, String> {
     let dest = installed_path();
     if !*checked || !dest.is_file() {
         if let Some(src) = bundled_path() {
-            install_from(&src, &dest)?;
+            match install_from(&src, &dest) {
+                Ok(_) => {}
+                // An older installed copy still runs sessions; better than none.
+                Err(e) if dest.is_file() => eprintln!("swarmz: keeping the installed tool: {e}"),
+                Err(e) => return Err(e),
+            }
         }
         *checked = true;
     }
     if dest.is_file() {
         Ok(dest)
     } else {
-        Err("the swarmz tool is not installed and no bundled copy was found".into())
+        let bundled = bundled_candidate().map(|p| p.display().to_string()).unwrap_or_else(|| "(unknown)".into());
+        Err(format!(
+            "the swarmz tool is not installed at {} and no bundled copy was found at {bundled}",
+            dest.display()
+        ))
     }
 }
 
@@ -139,7 +150,9 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "building swarmz-tool failed");
-        manifest.join("target/debug/swarmz-tool")
+        let target = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| manifest.join("target"));
+        let target = if target.is_absolute() { target } else { manifest.join(target) };
+        target.join("debug/swarmz-tool")
     }
 
     fn alive(pid: u32) -> bool {

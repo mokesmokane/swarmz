@@ -5,8 +5,9 @@ use crate::workspace as ws_file;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use swarmz_tool::client::HolderClient;
 use swarmz_tool::proto::{Hello, PROTOCOL_VERSION};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -18,6 +19,8 @@ pub struct AppState {
     pub registry: Mutex<TerminalRegistry>,
     pub sessions: Mutex<Sessions>,
     pub next_gen: AtomicU64,
+    /// Ids closed before their start had registered them, with when (see `close_terminal`).
+    pub closed_early: Mutex<HashMap<String, Instant>>,
     pub watchers: Mutex<HashMap<Option<String>, (u64, crate::agents::Watcher)>>,
 }
 
@@ -31,6 +34,53 @@ fn take_if_current(sessions: &mut Sessions, id: &str, gen: u64) -> bool {
         }
     }
     false
+}
+
+/// Opens once a start has recorded (or refused) its session. The session's exit callback waits
+/// for it, so an exit that races the start never looks for an entry that is not there yet.
+#[derive(Default)]
+struct Gate {
+    open: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl Gate {
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+
+    fn wait(&self, timeout: Duration) {
+        let guard = self.open.lock().unwrap();
+        let _ = self.cv.wait_timeout_while(guard, timeout, |open| !*open);
+    }
+}
+
+/// Longer than a start can take between connecting and recording its session (a lock and an
+/// insert), short enough that a stuck start never pins the exit thread for long.
+const EXIT_GATE_WAIT: Duration = Duration::from_secs(10);
+
+/// How long a close for a tile that was not registered yet is remembered; above the longest a
+/// start can take before it registers the tile.
+const CLOSED_EARLY_TTL: Duration = Duration::from_secs(60);
+
+/// The exit side of a session: once the start has finished, removes the session if it is still
+/// the tile's current one and marks the tile exited. Returns whether it did (and so whether the
+/// exit should be reported).
+fn finish_exit(
+    sessions: &Mutex<Sessions>,
+    registry: &Mutex<TerminalRegistry>,
+    gate: &Gate,
+    id: &str,
+    gen: u64,
+    code: Option<i32>,
+) -> bool {
+    gate.wait(EXIT_GATE_WAIT);
+    let mine = take_if_current(&mut sessions.lock().unwrap(), id, gen);
+    if mine {
+        registry.lock().unwrap().set_exited(id, code, None);
+    }
+    mine
 }
 
 #[derive(Serialize, Clone)]
@@ -71,13 +121,14 @@ fn spawn_for(app: &AppHandle, info: &TerminalInfo, cols: u16, rows: u16) -> Resu
     let exit_app = app.clone();
     let exit_id = info.id.clone();
 
-    // Hold the sessions lock across the connect call (and the insert that follows) so the
-    // exit callback - which runs on the client's reader thread and can fire before this
-    // function returns if the shell exits at once - can never observe the map without our
-    // entry. It blocks on the same mutex until the insert lands, then finds and removes its
-    // own entry via `take_if_current`. The replay is delivered inside `connect`, on this
-    // thread, before it returns.
-    let mut sessions = state.sessions.lock().unwrap();
+    // The exit callback runs on the client's reader thread and can fire before this function
+    // has recorded the session (a shell that exits at once). It waits on `gate` until the
+    // insert below has landed (or been refused), then finds and removes its own entry via
+    // `take_if_current`. The sessions lock is not held across `connect`, which blocks on the
+    // holder (and delivers the replay on this thread before it returns): writes and resizes
+    // for every other tile take that lock on the main thread.
+    let gate = Arc::new(Gate::default());
+    let exit_gate = gate.clone();
     let hello = Hello { v: PROTOCOL_VERSION, cols, rows, viewer: "window".into() };
     let client = HolderClient::connect(
         std::path::Path::new(&held.socket),
@@ -88,23 +139,21 @@ fn spawn_for(app: &AppHandle, info: &TerminalInfo, cols: u16, rows: u16) -> Resu
         },
         move |code| {
             if let Some(st) = exit_app.try_state::<AppState>() {
-                let mine = take_if_current(&mut st.sessions.lock().unwrap(), &exit_id, gen);
-                if !mine {
+                if !finish_exit(&st.sessions, &st.registry, &exit_gate, &exit_id, gen, code) {
                     return;
                 }
-                st.registry.lock().unwrap().set_exited(&exit_id, code, None);
             }
             let _ = exit_app.emit(&format!("pty:exit:{exit_id}"), ExitPayload { code });
         },
     )?;
     let client: Arc<dyn TerminalSession> = Arc::new(client);
-    if !insert_if_registered(&mut sessions, &state.registry, &info.id, gen, client.clone()) {
-        drop(sessions);
+    let inserted = insert_if_registered(&mut state.sessions.lock().unwrap(), &state.registry, &info.id, gen, client.clone());
+    gate.open();
+    if !inserted {
         // The tile is gone: end its session rather than leave a holder nobody shows.
         client.terminate();
         return Err(format!("terminal {} was closed while it was starting", info.id));
     }
-    drop(sessions);
     Ok(held.existed)
 }
 
@@ -121,7 +170,16 @@ pub async fn create_terminal(
 ) -> Result<TerminalInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let info = state.registry.lock().unwrap().add(id, name, cwd).map_err(|e| e.to_string())?;
+        let info = {
+            let mut reg = state.registry.lock().unwrap();
+            let info = reg.add(id, name, cwd).map_err(|e| e.to_string())?;
+            // Checked under the registry lock that `close_terminal` records early closes under.
+            if state.closed_early.lock().unwrap().remove(&info.id).is_some() {
+                reg.remove(&info.id);
+                return Err(format!("terminal {} was closed before it started", info.id));
+            }
+            info
+        };
         match spawn_for(&app, &info, cols, rows) {
             Ok(existed) => Ok(TerminalInfo { existed, ..info }),
             Err(e) => {
@@ -214,7 +272,16 @@ pub fn rename_terminal(state: State<'_, AppState>, id: String, name: String) -> 
 pub fn close_terminal(state: State<'_, AppState>, id: String) -> Result<(), String> {
     // Registry first: a start still in flight checks the registry before recording its session
     // (see `insert_if_registered`), so it either sees the tile gone or its session is found here.
-    state.registry.lock().unwrap().remove(&id);
+    {
+        let mut reg = state.registry.lock().unwrap();
+        if reg.remove(&id).is_none() {
+            // A start may not have registered the tile yet; leave a note it checks after `add`.
+            let mut early = state.closed_early.lock().unwrap();
+            let now = Instant::now();
+            early.retain(|_, at| now.duration_since(*at) < CLOSED_EARLY_TTL);
+            early.insert(id.clone(), now);
+        }
+    }
     let session = state.sessions.lock().unwrap().remove(&id);
     if let Some((_, session)) = session {
         // Closing a tile ends its shell; dropping the client afterwards only detaches.
@@ -309,6 +376,57 @@ mod tests {
         assert!(!take_if_current(&mut sessions, "missing", 1));
 
         session.terminate();
+    }
+
+    #[test]
+    fn an_exit_that_races_the_start_waits_for_the_session_to_be_recorded() {
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let target = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| manifest.join("target"));
+        let target = if target.is_absolute() { target } else { manifest.join(target) };
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "-p", "swarmz-tool"])
+            .current_dir(&manifest)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let tool = target.join("debug/swarmz-tool");
+
+        let home = std::path::PathBuf::from(format!("/tmp/szb-{}-gate", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        // A shell that exits with 3 shortly after the holder is up.
+        let script = home.join("quick-exit.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 0.3\nexit 3\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cmd = std::process::Command::new(&tool);
+        cmd.args(["hold", "g1", "--cwd", home.to_str().unwrap(), "--name", "g", "--require-cwd"])
+            .env("HOME", &home)
+            .env("SWARMZ_HOLDER_SHELL", &script);
+        let out = cmd.output().unwrap();
+        let held: swarmz_tool::hold::HoldResult = serde_json::from_slice(&out.stdout).unwrap();
+
+        let state = Arc::new(AppState::default());
+        state.registry.lock().unwrap().add("g1".into(), None, home.to_string_lossy().into_owned()).unwrap();
+        let gen = 7;
+        let gate = Arc::new(Gate::default());
+        let (st, g) = (state.clone(), gate.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let hello = Hello { v: PROTOCOL_VERSION, cols: 80, rows: 24, viewer: "window".into() };
+        let client = HolderClient::connect(std::path::Path::new(&held.socket), &hello, |_, _| {}, move |code| {
+            let _ = tx.send(finish_exit(&st.sessions, &st.registry, &g, "g1", gen, code));
+        })
+        .unwrap();
+        // The shell exits while the start is still "between" connecting and recording.
+        std::thread::sleep(Duration::from_millis(1000));
+        let client: Arc<dyn TerminalSession> = Arc::new(client);
+        assert!(insert_if_registered(&mut state.sessions.lock().unwrap(), &state.registry, "g1", gen, client));
+        gate.open();
+
+        assert!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "the exit did not find its session");
+        assert!(state.sessions.lock().unwrap().is_empty());
+        assert_eq!(state.registry.lock().unwrap().get("g1").unwrap().exited, Some(3));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

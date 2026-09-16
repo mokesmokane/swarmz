@@ -13,10 +13,14 @@ use std::time::Duration;
 ///
 /// Dropping a `HolderClient` detaches it (the holder keeps running); `on_exit` only runs when
 /// the holder itself reports the shell exiting, never as a side effect of dropping or detaching.
+/// The pending `info()` call's sender, tagged with that call's sequence number.
+type InfoSlot = Arc<Mutex<Option<(u64, mpsc::Sender<Info>)>>>;
+
 pub struct HolderClient {
     stream: UnixStream,
     writer: Mutex<UnixStream>,
-    info_tx: Arc<Mutex<Option<mpsc::Sender<Info>>>>,
+    info_tx: InfoSlot,
+    info_seq: std::sync::atomic::AtomicU64,
     /// Held for a whole `info()` round trip so concurrent callers take turns.
     info_call: Mutex<()>,
     closing: Arc<AtomicBool>,
@@ -63,7 +67,7 @@ impl HolderClient {
         on_output(second.payload, true);
         r.set_read_timeout(None).map_err(|e| e.to_string())?;
 
-        let info_tx: Arc<Mutex<Option<mpsc::Sender<Info>>>> = Arc::new(Mutex::new(None));
+        let info_tx: InfoSlot = Arc::new(Mutex::new(None));
         let closing = Arc::new(AtomicBool::new(false));
         let (it, cl) = (info_tx.clone(), closing.clone());
         std::thread::spawn(move || {
@@ -86,7 +90,7 @@ impl HolderClient {
                         }
                         Some(Kind::InfoReply) => {
                             if let Ok(info) = serde_json::from_slice::<Info>(&f.payload) {
-                                if let Some(tx) = it.lock().unwrap().take() {
+                                if let Some((_, tx)) = it.lock().unwrap().take() {
                                     let _ = tx.send(info);
                                 }
                             }
@@ -105,7 +109,7 @@ impl HolderClient {
             }
         });
 
-        Ok(HolderClient { stream, writer: Mutex::new(w), info_tx, info_call: Mutex::new(()), closing, welcome })
+        Ok(HolderClient { stream, writer: Mutex::new(w), info_tx, info_seq: std::sync::atomic::AtomicU64::new(0), info_call: Mutex::new(()), closing, welcome })
     }
 
     pub fn welcome(&self) -> &Welcome {
@@ -134,9 +138,19 @@ impl HolderClient {
     pub fn info(&self, timeout: Duration) -> Option<Info> {
         let _turn = self.info_call.lock().unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = mpsc::channel();
-        *self.info_tx.lock().ok()? = Some(tx);
-        self.send(Kind::Info, b"").ok()?;
-        rx.recv_timeout(timeout).ok()
+        let seq = self.info_seq.fetch_add(1, Ordering::SeqCst);
+        *self.info_tx.lock().ok()? = Some((seq, tx));
+        let reply = self.send(Kind::Info, b"").ok().and_then(|_| rx.recv_timeout(timeout).ok());
+        if reply.is_none() {
+            // Unanswered: withdraw this call's sender (only ours) so a late reply is dropped
+            // instead of waiting in the slot.
+            if let Ok(mut slot) = self.info_tx.lock() {
+                if slot.as_ref().is_some_and(|(s, _)| *s == seq) {
+                    *slot = None;
+                }
+            }
+        }
+        reply
     }
 
     /// Disconnects without ending the session.
