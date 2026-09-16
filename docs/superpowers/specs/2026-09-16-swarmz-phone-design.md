@@ -186,7 +186,7 @@ each carrying `"v": 1`. Failures exit non-zero with
 | `send <tile> <text>` | types the text as a bracketed paste, then Enter as a separate write 50 ms later |
 | `key <tile> <name>` | one of `esc`, `ctrl-c`, `tab`, `shift-tab`, `up`, `down`, `enter` |
 | `pending <tile>` | `{tool, summary, options:[{n, label}]}` or `null` (§4.4) |
-| `answer <tile> <n>` | selects option `n` if the same question is still pending; otherwise `{ignored:true}` |
+| `answer <tile> <yes\|always\|no\|deny\|n>` | selects that option if the same question is still pending (§4.4); otherwise `{ignored:true}` |
 | `folders [<path>]` | `{path, parent, dirs}` (same rules as the desktop folder picker) |
 | `new --folder <dir> [--skip-permissions] [--name <name>]` | the new tile, §4.5 |
 | `restart <tile>` | holds a fresh session for a tile that is not running and types its startup step (Claude tiles resume their session); returns the tile |
@@ -236,12 +236,21 @@ From the session's `transcript_path` (known from `SessionStart`):
   carries `tool_name` and `tool_input`; the tool derives `summary`
   (`Bash` → the command, `Edit`/`Write` → the file path, `WebFetch` → the
   URL, others → the tool name).
-- `pending` reads the numbered options from the holder's screen model (the
-  lines of Claude's dialog matching `^\s*[❯>]?\s*(\d+)\.\s+(.+)$` inside the
-  dialog box). If the screen cannot be read, it falls back to
-  `[{1,"Yes"},{3,"No"}]`.
-- `answer <n>` checks the same dialog is still on screen, then sends the
-  digit.
+- `pending` reads the dialog from the holder's screen model. Verified
+  against Claude Code 2.1.273 (spike, 2026-09-16), the dialog is: a heading
+  (for example "Bash command"), the command or target, a one-line
+  description, "Do you want to proceed?", numbered options, and a footer line
+  starting "Esc to cancel". An option is a line matching
+  `^\s*[❯>]?\s*(\d+)\.\s+(.+)$`; indented lines after it, up to the next
+  option or the footer, are continuations of its label (long labels wrap).
+  The heading and command line give `summary` when the hook event has not
+  arrived yet. If no footer is on screen, `pending` returns `null`.
+- Option numbers are not fixed (the spike showed "No" as option 3, after a
+  wrapped "Yes, and always allow …"). `answer` therefore takes an option
+  label (`yes`, `always`, `no`) or a number, resolves it against the options
+  currently on screen, checks the same dialog is still showing, and sends
+  that digit. `answer <tile> deny` sends Esc, which always cancels the
+  request; notification **Deny** actions use it.
 
 ### 4.5 New sessions
 
@@ -441,8 +450,7 @@ have run once on the first Mac (so the tool is installed).
   state so anything that started needing you while offline alerts once.
 - **Alerts** (notification channels, each switchable):
   - *Needs you — permission* (high priority): "<tile> wants to run
-    <summary>", actions **Allow once** (`answer` 1) and **Deny** (`answer`
-    with the "No" option).
+    <summary>", actions **Allow once** (`answer yes`) and **Deny** (`answer deny`).
   - *Needs you — question* (high): Claude's last message, action **Reply**
     (inline text, sent with `send`).
   - *Finished* (default): "<tile> finished" with the last message.
@@ -488,10 +496,11 @@ have run once on the first Mac (so the tool is installed).
 
 Before sub-project 1's plan, two short spikes (throwaway):
 
-1. A detached child started from the Tauri app keeps running after the app
-   quits on macOS.
-2. Claude Code's permission dialog as rendered by the `vt100` crate matches
-   the option pattern in §4.4.
+1. A detached child started from a macOS app keeps running after the app
+   ends. Done 2026-09-16: yes (double fork + `setsid`, reparented to
+   launchd); sub-project 1 re-checks it with the real swarmz and Cmd+Q.
+2. Claude Code's permission dialog can be read from a screen model.
+   Done 2026-09-16: yes, with wrapped labels and variable numbering (§4.4).
 
 Then:
 
