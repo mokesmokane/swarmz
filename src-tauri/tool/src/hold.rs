@@ -1,7 +1,9 @@
 use crate::paths::{clear_stale, ensure_dir, home_dir, live_session, session_paths, Meta};
 use crate::proto::PROTOCOL_VERSION;
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -72,13 +74,49 @@ pub fn holder_program() -> (String, Vec<String>) {
     (shell, vec!["-l".to_string()])
 }
 
+/// Opens (creating if needed) `<dir>/<tile>.lock`, always 0600, and takes a blocking exclusive
+/// `flock` on it. The file is never deleted: it exists purely to serialise concurrent `hold`
+/// calls for the same tile, so only one of them ever starts a holder. Callers keep the returned
+/// `File` alive for as long as the critical section runs; dropping it (on any return path) closes
+/// the fd and releases the lock.
+fn acquire_tile_lock(dir: &Path, tile: &str) -> Result<File, CliError> {
+    let path = dir.join(format!("{tile}.lock"));
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| CliError::new("failed", format!("could not open {}: {e}", path.display())))?;
+    // `mode()` on `OpenOptions` only applies when the file is created; re-assert 0600 in case an
+    // earlier version of this file was left with different permissions.
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if rc != 0 {
+        return Err(CliError::new("failed", format!("could not lock {}: {}", path.display(), std::io::Error::last_os_error())));
+    }
+    Ok(file)
+}
+
 /// Finds the tile's live holder or starts a detached one, and waits until it is listening.
+///
+/// Holds an exclusive flock on `<dir>/<tile>.lock` across the whole decision: the live check, the
+/// stale-record cleanup, spawning `__holder`, and waiting for it to start listening. Without this,
+/// concurrent callers for the same tile all see no live session, all spawn a holder, and each new
+/// holder's `run_holder` unlinks and rebinds the socket out from under the one before it, leaking
+/// every holder but the last as an unreachable orphan. With the lock, only the caller holding it
+/// can decide to spawn, and every other caller either blocks until that decision is durably
+/// recorded (in the session's `Meta`) and then observes the same live session, or is itself the
+/// only one that gets to spawn.
 pub fn hold(exe: &Path, dir: &Path, req: &HoldRequest) -> Result<HoldResult, CliError> {
     let paths = session_paths(dir, &req.tile).map_err(|e| CliError::new("invalid", e))?;
     ensure_dir(dir).map_err(|e| CliError::new("failed", format!("could not create {}: {e}", dir.display())))?;
+    let _lock = acquire_tile_lock(dir, &req.tile)?;
+
     if let Some(meta) = live_session(&paths) {
         return Ok(result(&paths.socket, meta, true));
     }
+    // Safe to clear now: we hold the tile's lock, so no other `hold` call can be mid-spawn for
+    // this tile, and `run_holder` itself refuses to steal a socket that is still live.
     clear_stale(&paths);
     let (cwd, fallback) = if Path::new(&req.cwd).is_dir() {
         (req.cwd.clone(), false)
@@ -92,6 +130,10 @@ pub fn hold(exe: &Path, dir: &Path, req: &HoldRequest) -> Result<HoldResult, Cli
         .append(true)
         .open(&paths.log)
         .map_err(|e| CliError::new("failed", format!("could not open {}: {e}", paths.log.display())))?;
+    // Only ever report log lines written by *this* spawn attempt in an error: the log file is
+    // shared across every holder this tile has ever had, and without this offset a failure here
+    // could show a previous session's last words instead of this one's.
+    let log_start = log.metadata().map(|m| m.len()).unwrap_or(0);
     let log2 = log.try_clone().map_err(|e| CliError::new("failed", e.to_string()))?;
 
     let mut cmd = Command::new(exe);
@@ -132,8 +174,15 @@ pub fn hold(exe: &Path, dir: &Path, req: &HoldRequest) -> Result<HoldResult, Cli
             return Ok(result(&paths.socket, meta, false));
         }
         if !crate::paths::pid_alive(pid) || Instant::now() > deadline {
-            let log = std::fs::read_to_string(&paths.log).unwrap_or_default();
-            let tail: String = log.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            // Whether it died on its own or just never got as far as listening, don't leave it
+            // running out of our sight: kill it before reporting the failure.
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+            let log_bytes = std::fs::read(&paths.log).unwrap_or_default();
+            let start = (log_start as usize).min(log_bytes.len());
+            let tail_str = String::from_utf8_lossy(&log_bytes[start..]);
+            let tail: String = tail_str.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
             return Err(CliError::new("failed", format!("the session holder did not start: {tail}")));
         }
         std::thread::sleep(Duration::from_millis(25));

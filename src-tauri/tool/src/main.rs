@@ -8,6 +8,7 @@ use swarmz_tool::proto::{Hello, PROTOCOL_VERSION};
 use swarmz_tool::server::{run_holder, HolderConfig, VIEWER_QUEUE_CAP};
 
 const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir"];
+const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback"];
 
 struct Args {
     positional: Vec<String>,
@@ -22,10 +23,19 @@ impl Args {
         while i < raw.len() {
             let s = &raw[i];
             if VALUED.contains(&s.as_str()) {
-                let v = raw.get(i + 1).ok_or_else(|| CliError::new("usage", format!("{s} needs a value")))?;
+                // A missing value, or one that looks like another option (starts with `--`), is
+                // always a usage error rather than being silently swallowed as this option's
+                // value.
+                let v = raw
+                    .get(i + 1)
+                    .filter(|v| !v.starts_with("--"))
+                    .ok_or_else(|| CliError::new("usage", format!("{s} needs a value")))?;
                 a.opts.push((s.clone(), v.clone()));
                 i += 2;
             } else if s.starts_with("--") {
+                if !ALLOWED_FLAGS.contains(&s.as_str()) {
+                    return Err(CliError::new("usage", format!("unknown flag {s}")));
+                }
                 a.flags.push(s.clone());
                 i += 1;
             } else {
@@ -51,7 +61,13 @@ impl Args {
     fn num(&self, name: &str, default: u16) -> Result<u16, CliError> {
         match self.opt(name) {
             None => Ok(default),
-            Some(v) => v.parse().map_err(|_| CliError::new("usage", format!("{name} must be a number"))),
+            Some(v) => {
+                let n: u16 = v.parse().map_err(|_| CliError::new("usage", format!("{name} must be a number")))?;
+                if n < 1 {
+                    return Err(CliError::new("usage", format!("{name} must be at least 1")));
+                }
+                Ok(n)
+            }
         }
     }
 
@@ -59,12 +75,34 @@ impl Args {
         self.all("--env")
             .into_iter()
             .map(|kv| {
-                kv.split_once('=')
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .ok_or_else(|| CliError::new("usage", format!("--env expects KEY=VALUE, got {kv}")))
+                let (k, v) = kv
+                    .split_once('=')
+                    .ok_or_else(|| CliError::new("usage", format!("--env expects KEY=VALUE, got {kv}")))?;
+                if !is_valid_env_key(k) {
+                    return Err(CliError::new("usage", format!("--env key {k:?} must match [A-Za-z_][A-Za-z0-9_]*")));
+                }
+                Ok((k.to_string(), v.to_string()))
             })
             .collect()
     }
+
+    /// Rejects trailing positional arguments a command doesn't expect (beyond the command name
+    /// itself plus, for most commands, one tile id).
+    fn expect_positional(&self, n: usize, usage: &str) -> Result<(), CliError> {
+        if self.positional.len() != n {
+            return Err(CliError::new("usage", format!("usage: swarmz {usage}")));
+        }
+        Ok(())
+    }
+}
+
+fn is_valid_env_key(k: &str) -> bool {
+    let mut chars = k.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn tile_arg(a: &Args) -> Result<String, CliError> {
@@ -78,8 +116,12 @@ fn exe() -> Result<PathBuf, CliError> {
 fn run(raw: &[String]) -> Result<serde_json::Value, CliError> {
     let a = Args::parse(raw)?;
     match a.positional.first().map(String::as_str) {
-        Some("version") => Ok(json!({ "v": 1, "tool": env!("CARGO_PKG_VERSION"), "protocol": PROTOCOL_VERSION })),
+        Some("version") => {
+            a.expect_positional(1, "version")?;
+            Ok(json!({ "v": 1, "tool": env!("CARGO_PKG_VERSION"), "protocol": PROTOCOL_VERSION }))
+        }
         Some("hold") => {
+            a.expect_positional(2, "hold <tile> --cwd D --name N [--cols C] [--rows R] [--env K=V]... [--require-cwd]")?;
             let tile = tile_arg(&a)?;
             let req = HoldRequest {
                 name: a.opt("--name").unwrap_or(&tile).to_string(),
@@ -94,6 +136,7 @@ fn run(raw: &[String]) -> Result<serde_json::Value, CliError> {
             Ok(serde_json::to_value(r).expect("hold result serialises"))
         }
         Some("info") => {
+            a.expect_positional(2, "info <tile>")?;
             let tile = tile_arg(&a)?;
             let paths = session_paths(&sessions_dir(), &tile).map_err(|e| CliError::new("invalid", e))?;
             if live_session(&paths).is_none() {
@@ -111,6 +154,7 @@ fn run(raw: &[String]) -> Result<serde_json::Value, CliError> {
             }))
         }
         Some("__holder") => {
+            a.expect_positional(2, "__holder <tile> --name N --cwd D --dir D [--cols C] [--rows R] [--cwd-fallback] [--env K=V]...")?;
             let tile = tile_arg(&a)?;
             let (program, args) = holder_program();
             let name = a.opt("--name").unwrap_or(&tile).to_string();
@@ -137,7 +181,7 @@ fn run(raw: &[String]) -> Result<serde_json::Value, CliError> {
             let code = run_holder(cfg)?;
             std::process::exit(code.unwrap_or(0));
         }
-        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|attach> …")),
+        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info> …")),
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::paths::{ensure_dir, now_iso, session_paths, write_meta, Meta};
+use crate::paths::{ensure_dir, now_iso, session_paths, socket_live, write_meta, Meta};
 use crate::proto::{encode, json, parse_resize, read_frame, ExitInfo, Hello, Info, Kind, Welcome, PROTOCOL_VERSION};
 use crate::pty::{PtySession, SpawnSpec};
 use crate::ring::{Ring, REPLAY_PREFIX, RING_CAP};
@@ -104,6 +104,11 @@ impl Shared {
 pub fn run_holder(cfg: HolderConfig) -> Result<Option<i32>, String> {
     ensure_dir(&cfg.dir).map_err(|e| format!("could not create {}: {e}", cfg.dir.display()))?;
     let paths = session_paths(&cfg.dir, &cfg.tile)?;
+    // A live holder already owns this tile's socket: never steal it out from under it. Only a
+    // dead socket (stale file, nothing listening) is safe to unlink and rebind.
+    if socket_live(&paths.socket) {
+        return Err(format!("a session holder is already listening on {}", paths.socket.display()));
+    }
     let _ = std::fs::remove_file(&paths.socket);
     let listener = UnixListener::bind(&paths.socket).map_err(|e| format!("could not listen on {}: {e}", paths.socket.display()))?;
     let _ = std::fs::set_permissions(&paths.socket, std::fs::Permissions::from_mode(0o600));
