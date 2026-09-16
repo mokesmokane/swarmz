@@ -23,6 +23,9 @@ pub struct Span {
     pub bg: Option<Color>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bold: bool,
+    /// Reverse video on default colours (which a swap could not express).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inverse: bool,
 }
 
 pub type Line = Vec<Span>;
@@ -31,8 +34,8 @@ pub type Line = Vec<Span>;
 pub struct Snapshot {
     pub cols: u16,
     pub rows: u16,
-    /// (index into `lines`, column)
-    pub cursor: (usize, u16),
+    /// (index into `lines`, column); `None` when the cursor's row is not among `lines`.
+    pub cursor: Option<(usize, u16)>,
     pub lines: Vec<Line>,
 }
 
@@ -44,27 +47,38 @@ fn color(c: vt100::Color) -> Option<Color> {
     }
 }
 
-fn row_line(screen: &vt100::Screen, row: u16, cols: u16) -> Line {
+/// One row as spans. Reads until the row ends rather than to the screen width: scrollback rows
+/// keep the width they were written at.
+fn row_line(screen: &vt100::Screen, row: u16) -> Line {
     let mut out: Line = Vec::new();
-    for col in 0..cols {
-        let Some(cell) = screen.cell(row, col) else { continue };
+    let mut col: u16 = 0;
+    while let Some(cell) = screen.cell(row, col) {
+        col = match col.checked_add(1) {
+            Some(c) => c,
+            None => break,
+        };
         if cell.is_wide_continuation() {
             continue;
         }
         let text = if cell.has_contents() { cell.contents() } else { " " };
         let (mut fg, mut bg) = (color(cell.fgcolor()), color(cell.bgcolor()));
+        let mut inverse = false;
         if cell.inverse() {
-            std::mem::swap(&mut fg, &mut bg);
+            if fg.is_none() && bg.is_none() {
+                inverse = true;
+            } else {
+                std::mem::swap(&mut fg, &mut bg);
+            }
         }
         let bold = cell.bold();
         match out.last_mut() {
-            Some(s) if s.fg == fg && s.bg == bg && s.bold == bold => s.text.push_str(text),
-            _ => out.push(Span { text: text.to_string(), fg, bg, bold }),
+            Some(s) if s.fg == fg && s.bg == bg && s.bold == bold && s.inverse == inverse => s.text.push_str(text),
+            _ => out.push(Span { text: text.to_string(), fg, bg, bold, inverse }),
         }
     }
     // Trailing blanks on the default background carry nothing.
     while let Some(last) = out.last_mut() {
-        if last.bg.is_some() {
+        if last.bg.is_some() || last.inverse {
             break;
         }
         let keep = last.text.trim_end_matches(' ').len();
@@ -91,12 +105,12 @@ pub fn snapshot(parser: &mut vt100::Parser, max_lines: usize) -> Snapshot {
         screen.set_scrollback(off);
         let take = off.min(rows as usize);
         for r in 0..take as u16 {
-            lines.push(row_line(screen, r, cols));
+            lines.push(row_line(screen, r));
         }
         off -= take;
     }
     screen.set_scrollback(0);
-    let mut visible: Vec<Line> = (0..rows).map(|r| row_line(screen, r, cols)).collect();
+    let mut visible: Vec<Line> = (0..rows).map(|r| row_line(screen, r)).collect();
     while visible.len() > cur_row as usize + 1 && visible.last().is_some_and(|l| l.is_empty()) {
         visible.pop();
     }
@@ -104,8 +118,22 @@ pub fn snapshot(parser: &mut vt100::Parser, max_lines: usize) -> Snapshot {
     lines.extend(visible);
     let start = lines.len().saturating_sub(max_lines);
     let lines = lines.split_off(start);
-    let cursor_line = (visible_start + cur_row as usize).saturating_sub(start);
-    Snapshot { cols, rows, cursor: (cursor_line, cur_col), lines }
+    let cursor = (visible_start + cur_row as usize).checked_sub(start).map(|l| (l, cur_col));
+    Snapshot { cols, rows, cursor, lines }
+}
+
+/// `snap` serialised to at most `max_bytes` (when it can be), dropping its oldest lines as
+/// needed: a frame over `MAX_FRAME` would read as the session ending.
+pub fn fit_snapshot(mut snap: Snapshot, max_bytes: usize) -> Vec<u8> {
+    loop {
+        let bytes = serde_json::to_vec(&snap).unwrap_or_default();
+        if bytes.len() <= max_bytes || snap.lines.is_empty() {
+            return bytes;
+        }
+        let drop = (snap.lines.len() / 2).max(1);
+        snap.lines.drain(..drop);
+        snap.cursor = snap.cursor.and_then(|(l, c)| l.checked_sub(drop).map(|l| (l, c)));
+    }
 }
 
 pub fn line_text(line: &Line) -> String {
@@ -161,7 +189,51 @@ mod tests {
         let s = snapshot(&mut p, 100);
         assert_eq!(text_lines(&s), vec!["one", "two", "$"]);
         assert_eq!((s.cols, s.rows), (20, 5));
-        assert_eq!(s.cursor, (2, 2));
+        assert_eq!(s.cursor, Some((2, 2)));
+    }
+
+    #[test]
+    fn the_cursor_is_none_when_its_row_is_not_returned() {
+        let mut p = vt100::Parser::new(5, 20, SCROLLBACK);
+        p.process(b"a\r\nb\x1b[H");
+        assert_eq!(snapshot(&mut p, 10).cursor, Some((0, 0)));
+        let s = snapshot(&mut p, 1);
+        assert_eq!(text_lines(&s), vec!["b"]);
+        assert_eq!(s.cursor, None);
+    }
+
+    #[test]
+    fn scrollback_rows_keep_their_width_after_a_narrowing() {
+        let mut p = vt100::Parser::new(3, 30, SCROLLBACK);
+        p.process(b"abcdefghijklmnopqrstuvwxyz\r\n1\r\n2\r\n3\r\n");
+        p.screen_mut().set_size(3, 10);
+        let s = snapshot(&mut p, 100);
+        assert_eq!(line_text(&s.lines[0]), "abcdefghijklmnopqrstuvwxyz");
+        assert_eq!(s.cols, 10);
+    }
+
+    #[test]
+    fn a_snapshot_is_cut_to_the_byte_budget_from_the_top() {
+        let mut p = vt100::Parser::new(10, 40, SCROLLBACK);
+        for i in 0..200u32 {
+            for c in 0..40u32 {
+                p.process(format!("\x1b[38;2;{};{};{}m#", (i + c) % 256, c * 3 % 256, i % 256).as_bytes());
+            }
+            p.process(b"\x1b[0m\r\n");
+        }
+        p.process(b"$ ");
+        let full = snapshot(&mut p, 1000);
+        assert!(serde_json::to_vec(&full).unwrap().len() > 20_000);
+        let last = line_text(full.lines.last().unwrap());
+        let bytes = fit_snapshot(full, 20_000);
+        assert!(bytes.len() <= 20_000, "{}", bytes.len());
+        let cut: Snapshot = serde_json::from_slice(&bytes).unwrap();
+        assert!(!cut.lines.is_empty());
+        assert_eq!(line_text(cut.lines.last().unwrap()), last);
+        assert_eq!(cut.cursor, Some((cut.lines.len() - 1, 2)));
+        // A snapshot that already fits is unchanged.
+        let small = snapshot(&mut p, 2);
+        assert_eq!(serde_json::from_slice::<Snapshot>(&fit_snapshot(small.clone(), 20_000)).unwrap(), small);
     }
 
     #[test]
@@ -186,8 +258,8 @@ mod tests {
         p.process(b"\x1b[1;31mred\x1b[0m plain \x1b[38;2;37;191;53mgreen\x1b[0m");
         let s = snapshot(&mut p, 10);
         let line = &s.lines[0];
-        assert_eq!(line[0], Span { text: "red".into(), fg: Some(Color::Index(1)), bg: None, bold: true });
-        assert_eq!(line[1], Span { text: " plain ".into(), fg: None, bg: None, bold: false });
+        assert_eq!(line[0], Span { text: "red".into(), fg: Some(Color::Index(1)), bg: None, bold: true, inverse: false });
+        assert_eq!(line[1], Span { text: " plain ".into(), fg: None, bg: None, bold: false, inverse: false });
         assert_eq!(line[2].fg, Some(Color::Rgb("#25bf35".into())));
         let json = serde_json::to_value(line).unwrap();
         assert_eq!(json[0], serde_json::json!({"text": "red", "fg": 1, "bold": true}));
@@ -197,14 +269,20 @@ mod tests {
     #[test]
     fn inverse_swaps_colours() {
         let mut p = vt100::Parser::new(2, 10, SCROLLBACK);
-        p.process(b"\x1b[7mX\x1b[0m");
+        p.process(b"\x1b[7mX\x1b[0m\r\n\x1b[31;7mY\x1b[0m\x1b[7m  \x1b[0m");
         let s = snapshot(&mut p, 10);
         assert_eq!(s.lines[0][0].text, "X");
         assert_eq!(s.lines[0][0].fg, None);
+        assert!(s.lines[0][0].inverse);
+        assert_eq!(serde_json::to_value(&s.lines[0][0]).unwrap(), serde_json::json!({"text": "X", "inverse": true}));
+        // A set colour is swapped instead of flagged.
+        assert_eq!(s.lines[1][0], Span { text: "Y".into(), fg: None, bg: Some(Color::Index(1)), bold: false, inverse: false });
+        // Inverse blanks at the end of a row are visible, so they are kept.
+        assert_eq!(s.lines[1][1], Span { text: "  ".into(), fg: None, bg: None, bold: false, inverse: true });
     }
 
     fn l(s: &str) -> Line {
-        vec![Span { text: s.into(), fg: None, bg: None, bold: false }]
+        vec![Span { text: s.into(), fg: None, bg: None, bold: false, inverse: false }]
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use crate::paths::{build_id, ensure_dir, now_iso, session_paths, socket_live, write_meta, Meta};
-use crate::proto::{encode, json, parse_resize, read_frame, ExitInfo, Hello, Info, Kind, ScreenRequest, Welcome, PROTOCOL_VERSION};
+use crate::proto::{encode, json, parse_resize, read_frame, ExitInfo, Hello, Info, Kind, ScreenRequest, Welcome, MAX_FRAME, PROTOCOL_VERSION};
 use crate::pty::{PtySession, SpawnSpec};
 use crate::ring::{Ring, REPLAY_PREFIX, RING_CAP};
-use crate::screen::{snapshot, SCROLLBACK};
+use crate::screen::{fit_snapshot, snapshot, SCROLLBACK};
 use std::io::Write;
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
@@ -175,12 +175,10 @@ pub fn run_holder(cfg: HolderConfig) -> Result<Option<i32>, String> {
         move |bytes| {
             let mut ring = on_data_shared.ring.lock().unwrap();
             ring.push(&bytes);
+            on_data_shared.screen.lock().unwrap().process(&bytes);
             let frame = encode(Kind::Data, &bytes);
             let mut vs = on_data_shared.viewers.lock().unwrap();
             on_data_shared.broadcast(&mut vs, &frame);
-            // After viewers, not before (lock order): ring stays held, so the screen sees the
-            // bytes in the same order as the ring.
-            on_data_shared.screen.lock().unwrap().process(&bytes);
         },
         move |code| {
             let _ = exit_tx.send(code);
@@ -345,9 +343,11 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
                 let want = serde_json::from_slice::<ScreenRequest>(&frame.payload).map(|r| r.lines).unwrap_or(200).clamp(1, SCROLLBACK + 500);
                 // Built with only the screen lock held; viewers are locked afterwards (lock order).
                 let snap = snapshot(&mut shared.screen.lock().unwrap(), want);
+                // A reply over MAX_FRAME would read as the session ending: drop the oldest lines.
+                let payload = fit_snapshot(snap, MAX_FRAME - 1024);
                 let vs = shared.viewers.lock().unwrap();
                 if let Some(v) = vs.iter().find(|v| v.id == id) {
-                    Shared::enqueue(v, encode(Kind::ScreenReply, &json(&snap)), usize::MAX);
+                    Shared::enqueue(v, encode(Kind::ScreenReply, &payload), usize::MAX);
                 }
             }
             _ => {}
