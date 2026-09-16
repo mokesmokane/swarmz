@@ -4,7 +4,7 @@ use crate::client::HolderClient;
 use crate::dialog::parse_dialog;
 use crate::hold::{hold, CliError, HoldRequest};
 use crate::newtile::{add_def, claude_line, empty_workspace, list_folders, session_started, startup_line, unique_name, workspace_file};
-use crate::paths::{live_session, session_paths, sessions_dir_in, valid_tile_id};
+use crate::paths::{live_session, pid_alive, read_meta, session_paths, sessions_dir_in, valid_tile_id};
 use crate::proto::{Hello, PROTOCOL_VERSION};
 use crate::screen::line_text;
 use crate::server::TOOL_VIEWER;
@@ -223,29 +223,58 @@ fn check_folder(folder: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Best effort: ends a session this command started and could not finish setting up.
-fn end_session(env: &Env, tile: &str) {
+const KILL_GRACE: Duration = Duration::from_secs(2);
+
+/// Best effort: ends a session this command started (its holder is `pid`) and could not finish
+/// setting up. Asks the holder over its socket, or failing that signals the holder itself.
+fn end_session(env: &Env, tile: &str, pid: u32) {
     if let Ok(client) = connect_tool(env, tile) {
-        let _ = client.terminate();
+        if client.terminate().is_ok() {
+            return;
+        }
+    }
+    if let Ok(paths) = session_paths(&env.sessions(), tile) {
+        kill_holder(&paths.meta, pid);
     }
 }
 
-/// Holds the tile and types `line` into it. Returns false, typing nothing, when the session was
-/// already running (another start got there first). A session this call started is ended again
-/// if the line cannot be typed.
-fn hold_and_type(env: &Env, tile: &str, name: &str, cwd: &str, line: Option<&str>) -> Result<bool, CliError> {
+/// SIGTERM, then SIGKILL after `KILL_GRACE`, to `pid` -- each only while the session's metadata
+/// still names that pid and it is alive, so a reused pid is never signalled.
+fn kill_holder(meta: &Path, pid: u32) {
+    let ours = || pid_alive(pid) && read_meta(meta).is_some_and(|m| m.pid == pid);
+    if pid == 0 || pid > i32::MAX as u32 || !ours() {
+        return;
+    }
+    unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    let deadline = Instant::now() + KILL_GRACE;
+    while Instant::now() < deadline {
+        if !ours() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if ours() {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+}
+
+/// Holds the tile and types `line` into it. Returns the holder's pid when this call started the
+/// session, or None, typing nothing, when it was already running (another start got there
+/// first). A session this call started is ended again if the line cannot be typed.
+fn hold_and_type(env: &Env, tile: &str, name: &str, cwd: &str, line: Option<&str>) -> Result<Option<u32>, CliError> {
     let req = HoldRequest { tile: tile.to_string(), name: name.to_string(), cwd: cwd.to_string(), cols: 80, rows: 24, env: vec![], require_cwd: true };
-    if hold(&env.exe, &env.sessions(), &req)?.existed {
-        return Ok(false);
+    let held = hold(&env.exe, &env.sessions(), &req)?;
+    if held.existed {
+        return Ok(None);
     }
     if let Some(line) = line {
         let typed = connect_tool(env, tile).and_then(|c| c.write(format!("{line}\r").as_bytes()).map_err(failed));
         if let Err(e) = typed {
-            end_session(env, tile);
+            end_session(env, tile, held.pid);
             return Err(e);
         }
     }
-    Ok(true)
+    Ok(Some(held.pid))
 }
 
 fn names(ws: &Workspace) -> Vec<String> {
@@ -263,9 +292,9 @@ pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&s
     let claude = ClaudeConfig { enabled: true, session_id: new_uuid(), skip_permissions, started: false };
     // Held and typed before the workspace names the tile: an app that adopts it then finds the
     // session running and never types a second Claude line.
-    if !hold_and_type(env, &id, &tentative, folder, Some(&claude_line(&claude)))? {
+    let Some(pid) = hold_and_type(env, &id, &tentative, folder, Some(&claude_line(&claude)))? else {
         return Err(failed(format!("a session for the new tile {id} was already running")));
-    }
+    };
     // Reloaded just before saving, so changes made while the session started are kept.
     let recorded = env.workspace().and_then(|ws| {
         let mut ws = ws.unwrap_or_else(empty_workspace);
@@ -275,7 +304,7 @@ pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&s
         save_to(&workspace_file(&env.home), &ws).map_err(failed)
     });
     if let Err(e) = recorded {
-        end_session(env, &id);
+        end_session(env, &id, pid);
         return Err(e);
     }
     row(env, &id)
@@ -295,8 +324,48 @@ pub fn restart(env: &Env, tile: &str) -> Result<Value, CliError> {
     if let Some(c) = def.claude.as_mut() {
         c.started = started;
     }
-    if !hold_and_type(env, tile, &def.name, &def.cwd, startup_line(&def).as_deref())? {
+    if hold_and_type(env, tile, &def.name, &def.cwd, startup_line(&def).as_deref())?.is_none() {
         return Err(CliError::new("running", format!("{} is already running", def.name)));
     }
     row(env, tile)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::{write_meta, Meta};
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Command;
+
+    fn meta_for(dir: &Path, pid: u32) -> PathBuf {
+        let path = dir.join("t.json");
+        let meta = Meta { v: 1, pid, shell_pid: None, cwd: "/".into(), name: "t".into(), started_at: "s".into(), exited_at: None, exit_code: None, cwd_fallback: false, build: None };
+        write_meta(&path, &meta).unwrap();
+        path
+    }
+
+    #[test]
+    fn kill_holder_signals_only_the_pid_the_metadata_names() {
+        let dir = PathBuf::from(format!("/tmp/szc-{}-commands-kill", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+
+        // The metadata names another pid: nothing is signalled.
+        let meta = meta_for(&dir, pid + 1);
+        kill_holder(&meta, pid);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(child.try_wait().unwrap().is_none(), "a pid the metadata does not name was signalled");
+        // No metadata at all: nothing is signalled either.
+        std::fs::remove_file(&meta).unwrap();
+        kill_holder(&meta, pid);
+        assert!(child.try_wait().unwrap().is_none());
+
+        let meta = meta_for(&dir, pid);
+        kill_holder(&meta, pid);
+        let status = child.wait().unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

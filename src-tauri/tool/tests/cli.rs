@@ -95,8 +95,11 @@ struct KillOnDrop(std::process::Child);
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        // Only a child not yet reaped is signalled: its pid cannot have been reused.
+        if let Ok(None) = self.0.try_wait() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
     }
 }
 
@@ -118,8 +121,12 @@ impl std::ops::DerefMut for PtyChild {
 
 impl Drop for PtyChild {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        // portable-pty's `kill` signals `id()` even after the child was reaped, when the pid may
+        // already belong to someone else: only signal a child that is still ours.
+        if let Ok(None) = self.0.try_wait() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
     }
 }
 
