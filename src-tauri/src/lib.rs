@@ -42,6 +42,8 @@ pub fn run() {
             commands::workspace_stat,
             commands::agents_install_local,
             commands::agents_install_remote,
+            commands::tool_remote_ready,
+            commands::remote_tile_info,
             commands::agents_watch,
             commands::agents_unwatch,
             commands::paste_image_to_remote,

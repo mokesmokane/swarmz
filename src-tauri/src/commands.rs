@@ -499,6 +499,19 @@ pub async fn agents_install_remote(host: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || crate::agents::install_remote(&host)).await.map_err(|e| e.to_string())?
 }
 
+/// Installs or updates the swarmz tool on `host` when the architecture matches. True when the
+/// remote tool speaks this protocol afterwards.
+#[tauri::command]
+pub async fn tool_remote_ready(host: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::toolbin::remote_ready(&host)).await.map_err(|e| e.to_string())?
+}
+
+/// The remote tool's `info` output for a tile on `host`.
+#[tauri::command]
+pub async fn remote_tile_info(host: String, id: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::toolbin::remote_info(&host, &id)).await.map_err(|e| e.to_string())?
+}
+
 /// Starts tailing the agent log for `host` (None = this machine) and returns the generation of
 /// the watcher now running for it, so the caller can tell a `agent:watch-ended` from that
 /// watcher apart from one from a watcher it has already replaced. Already watching is a no-op

@@ -174,7 +174,7 @@ pub fn split_remote_read(stdout: &str) -> (Option<String>, Option<String>) {
     (clean(a), clean(b))
 }
 
-fn ssh_command(host: &str) -> Result<Command, String> {
+pub(crate) fn ssh_command(host: &str) -> Result<Command, String> {
     crate::remote::ensure_ssh_dir()?;
     let mut cmd = Command::new("ssh");
     cmd.arg("-o").arg(format!("ControlPath={CONTROL_PATH}"))
