@@ -1,4 +1,4 @@
-use crate::paths::{ensure_dir, now_iso, session_paths, socket_live, write_meta, Meta};
+use crate::paths::{build_id, ensure_dir, now_iso, session_paths, socket_live, write_meta, Meta};
 use crate::proto::{encode, json, parse_resize, read_frame, ExitInfo, Hello, Info, Kind, Welcome, PROTOCOL_VERSION};
 use crate::pty::{PtySession, SpawnSpec};
 use crate::ring::{Ring, REPLAY_PREFIX, RING_CAP};
@@ -200,6 +200,7 @@ pub fn run_holder(cfg: HolderConfig) -> Result<Option<i32>, String> {
         exited_at: None,
         exit_code: None,
         cwd_fallback: cfg.cwd_fallback,
+        build: Some(build_id()),
     };
     write_meta(&paths.meta, &meta).map_err(|e| format!("could not write {}: {e}", paths.meta.display()))?;
 

@@ -48,6 +48,10 @@ pub struct HoldResult {
     pub shell_pid: Option<u32>,
     pub cwd: String,
     pub cwd_fallback: bool,
+    /// The holder's build id; None for a holder started by a tool that predates it, which applies
+    /// a zero-size `Hello` literally instead of ignoring it.
+    #[serde(default)]
+    pub build: Option<u64>,
 }
 
 fn result(socket: &Path, meta: Meta, existed: bool) -> HoldResult {
@@ -59,6 +63,7 @@ fn result(socket: &Path, meta: Meta, existed: bool) -> HoldResult {
         shell_pid: meta.shell_pid,
         cwd: meta.cwd,
         cwd_fallback: meta.cwd_fallback,
+        build: meta.build,
     }
 }
 

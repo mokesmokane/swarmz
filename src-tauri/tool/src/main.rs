@@ -4,14 +4,9 @@ use std::time::Duration;
 use swarmz_tool::attach::attach;
 use swarmz_tool::client::HolderClient;
 use swarmz_tool::hold::{hold, holder_program, CliError, HoldRequest};
-use swarmz_tool::paths::{home_dir, live_session, session_paths, sessions_dir};
+use swarmz_tool::paths::{build_id, home_dir, live_session, session_paths, sessions_dir};
 use swarmz_tool::proto::{Hello, PROTOCOL_VERSION};
 use swarmz_tool::server::{run_holder, HolderConfig, TOOL_VIEWER, VIEWER_QUEUE_CAP};
-
-/// Seconds since the epoch when this binary was built (see build.rs).
-fn build_id() -> u64 {
-    env!("SWARMZ_BUILD_ID").parse().unwrap_or(0)
-}
 
 /// How long `close` waits for the session to end: above the holder's 3 s SIGHUP-to-SIGKILL grace.
 const CLOSE_WAIT: Duration = Duration::from_secs(5);

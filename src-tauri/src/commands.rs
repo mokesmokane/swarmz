@@ -107,8 +107,10 @@ pub fn replay_payload(bytes: &[u8], (cols, rows): (u16, u16)) -> ReplayPayload {
 /// The size a window asks for when it connects. A session that was already running keeps its
 /// size until the pane has laid out and sends a real resize (the pane may not be fitted yet, and
 /// its placeholder size would squash whatever is on screen); a new one starts at the pane's size.
-fn hello_size(existed: bool, cols: u16, rows: u16) -> (u16, u16) {
-    if existed {
+/// A holder without a build id predates sizeless `Hello`s and would apply 0x0, so it gets the
+/// pane's size as before.
+fn hello_size(held: &swarmz_tool::hold::HoldResult, cols: u16, rows: u16) -> (u16, u16) {
+    if held.existed && held.build.is_some() {
         (0, 0)
     } else {
         (cols, rows)
@@ -156,7 +158,7 @@ fn spawn_for(app: &AppHandle, info: &TerminalInfo, cols: u16, rows: u16) -> Resu
     // for every other tile take that lock on the main thread.
     let gate = Arc::new(Gate::default());
     let exit_gate = gate.clone();
-    let (hello_cols, hello_rows) = hello_size(held.existed, cols, rows);
+    let (hello_cols, hello_rows) = hello_size(&held, cols, rows);
     let hello = Hello { v: PROTOCOL_VERSION, cols: hello_cols, rows: hello_rows, viewer: "window".into() };
     let replay_size = Arc::new(Mutex::new((0u16, 0u16)));
     let welcome_size = replay_size.clone();
@@ -390,8 +392,20 @@ mod tests {
 
     #[test]
     fn a_running_session_is_joined_without_a_size() {
-        assert_eq!(hello_size(true, 80, 24), (0, 0));
-        assert_eq!(hello_size(false, 132, 40), (132, 40));
+        let held = |existed: bool, build: Option<u64>| swarmz_tool::hold::HoldResult {
+            v: PROTOCOL_VERSION,
+            socket: "/s".into(),
+            existed,
+            pid: 1,
+            shell_pid: None,
+            cwd: "/".into(),
+            cwd_fallback: false,
+            build,
+        };
+        assert_eq!(hello_size(&held(true, Some(1)), 80, 24), (0, 0));
+        assert_eq!(hello_size(&held(false, Some(1)), 132, 40), (132, 40));
+        // A holder from an older tool would apply 0x0 literally.
+        assert_eq!(hello_size(&held(true, None), 132, 40), (132, 40));
     }
 
     #[test]

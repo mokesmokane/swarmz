@@ -61,6 +61,15 @@ pub struct Meta {
     pub exit_code: Option<i32>,
     #[serde(default)]
     pub cwd_fallback: bool,
+    /// The build id of the tool running the holder; absent from holders that predate it (which
+    /// also predate sizeless `Hello`s, §3.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<u64>,
+}
+
+/// Seconds since the epoch when this tool was built (see build.rs).
+pub fn build_id() -> u64 {
+    env!("SWARMZ_BUILD_ID").parse().unwrap_or(0)
 }
 
 pub fn write_meta(path: &Path, meta: &Meta) -> io::Result<()> {
@@ -174,6 +183,7 @@ mod tests {
             exited_at: None,
             exit_code: None,
             cwd_fallback: false,
+            build: None,
         };
         write_meta(&p.meta, &m).unwrap();
         assert_eq!(read_meta(&p.meta), Some(m.clone()));

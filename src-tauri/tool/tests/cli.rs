@@ -210,6 +210,7 @@ fn a_failed_attach_prints_only_its_error() {
         exited_at: None,
         exit_code: None,
         cwd_fallback: false,
+        build: None,
     };
     swarmz_tool::paths::write_meta(&paths.meta, &meta).unwrap();
     // `tool` parses the whole of stdout as one JSON value, so a marker ahead of it fails this.
@@ -227,6 +228,7 @@ fn hold_starts_once_then_finds_the_same_session() {
     h.track(a["socket"].as_str().unwrap());
     assert_eq!(a["existed"], false);
     assert!(a["pid"].as_i64().unwrap() > 0);
+    assert!(a["build"].as_u64().is_some_and(|b| b > 0), "a holder reports its build: {a}");
     let (c2, b) = tool(&h.path, &["hold", "t1", "--cwd", &cwd, "--name", "one"]);
     assert_eq!(c2, 0, "{b}");
     assert_eq!(b["existed"], true);
