@@ -27,7 +27,9 @@ input=$(cat 2>/dev/null | tr -d '\n\r')
 case "$input" in *'"agent_id"'*) exit 0 ;; esac
 if [ "$event" = "PostToolUse" ]; then
   # Only which session moved on matters; tool inputs and results can be large.
-  sid=$(printf '%s' "$input" | sed -n 's/^.*"session_id" *: *"\([^"]*\)".*$/\1/p' | tr -cd 'A-Za-z0-9-')
+  # The first "session_id" is the event's own; a later one belongs to the tool's input or result.
+  sid=$(printf '%s' "$input" | sed 's/"session_id" *: *"/\
+/' | sed -n '2s/".*$//p' | tr -cd 'A-Za-z0-9-')
   input="{\"session_id\":\"$sid\"}"
 fi
 dir="$HOME/.swarmz/agents"
@@ -52,7 +54,9 @@ pub fn hook_entry(event: &str) -> Value {
     let mut entry = Map::new();
     entry.insert("type".into(), json!("command"));
     entry.insert("command".into(), json!(format!("sh \"$HOME/{SCRIPT_MARKER}\" {event}")));
-    if event != "SessionEnd" {
+    // Synchronous events are logged before Claude moves on: `SessionEnd` so the end is never
+    // lost, `PostToolUse` so it can never land after the next `PermissionRequest`.
+    if event != "SessionEnd" && event != "PostToolUse" {
         entry.insert("async".into(), json!(true));
     }
     entry.insert("timeout".into(), json!(5));
@@ -480,8 +484,8 @@ mod tests {
             assert_eq!(entry["type"], "command");
             assert_eq!(entry["command"], format!("sh \"$HOME/.swarmz/hooks/claude.sh\" {ev}"));
             assert_eq!(entry["timeout"], 5);
-            if ev == "SessionEnd" {
-                assert!(entry.get("async").is_none());
+            if ev == "SessionEnd" || ev == "PostToolUse" {
+                assert!(entry.get("async").is_none(), "{ev}");
             } else {
                 assert_eq!(entry["async"], true);
             }
@@ -509,7 +513,7 @@ mod tests {
             }
             assert!(child.wait().unwrap().success());
         };
-        run("PostToolUse", r#"{"session_id":"5e2b-1","tool_name":"Write","tool_input":{"file_path":"/a","content":"lots\nof\ttext \"quoted\""},"tool_response":{"ok":true}}"#);
+        run("PostToolUse", r#"{"session_id":"5e2b-1","tool_name":"Write","tool_input":{"file_path":"/a","content":"lots\nof\ttext \"quoted\"","session_id":"not-this"},"tool_response":{"ok":true,"session_id":"nor-this"}}"#);
         run("PermissionRequest", r#"{"session_id":"5e2b-1","tool_name":"Bash","tool_input":{"command":"npm test"}}"#);
         let log = std::fs::read_to_string(dir.join(".swarmz/agents/events.log")).unwrap();
         let lines: Vec<&str> = log.lines().collect();
@@ -517,6 +521,16 @@ mod tests {
         assert_eq!(lines[0].split('\t').nth(3), Some(r#"{"session_id":"5e2b-1"}"#));
         assert!(lines[1].contains(r#""command":"npm test""#));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_async_post_tool_use_entry_is_replaced() {
+        let old = json!({"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "sh \"$HOME/.swarmz/hooks/claude.sh\" PostToolUse", "async": true, "timeout": 5}]}]}});
+        let (out, changed) = install_hooks(Some(&old.to_string())).unwrap();
+        assert!(changed);
+        let arr = hooks_of(&out)["PostToolUse"].as_array().unwrap().clone();
+        assert_eq!(arr.len(), 1);
+        assert!(arr[0]["hooks"][0].get("async").is_none());
     }
 
     #[test]
