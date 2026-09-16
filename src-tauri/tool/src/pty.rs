@@ -1,6 +1,7 @@
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub struct SpawnSpec {
@@ -17,6 +18,7 @@ pub struct PtySession {
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     shell_pid: Option<u32>,
+    exited: Arc<AtomicBool>,
 }
 
 impl PtySession {
@@ -62,6 +64,8 @@ impl PtySession {
         // shell we spawned, used by `foreground_busy` to tell whether the pty's foreground
         // process group is still that shell (idle) or something the shell launched (busy).
         let shell_pid = child.process_id();
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited_for_waiter = exited.clone();
 
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -75,6 +79,7 @@ impl PtySession {
 
         std::thread::spawn(move || {
             let code = child.wait().ok().map(|status| status.exit_code() as i32);
+            exited_for_waiter.store(true, Ordering::SeqCst);
             on_exit(code);
         });
 
@@ -83,6 +88,7 @@ impl PtySession {
             writer: Mutex::new(writer),
             killer: Mutex::new(killer),
             shell_pid,
+            exited,
         })
     }
 
@@ -148,6 +154,12 @@ impl PtySession {
         self.shell_pid
     }
 
+    /// Whether the shell's waiter thread has observed `wait()` return, i.e. the shell process
+    /// has already exited. Set right before the exit callback fires.
+    pub fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::SeqCst)
+    }
+
     /// The pty's foreground process group, when the master can report it.
     #[cfg(unix)]
     pub fn foreground_pgrp(&self) -> Option<i32> {
@@ -196,12 +208,16 @@ impl PtySession {
         None
     }
 
-    /// Hangs up the shell and whatever runs in its foreground; kills both if the shell is
-    /// still alive three seconds later.
+    /// Hangs up the shell and whatever runs in its foreground; kills both if the shell has
+    /// not exited on its own three seconds later. Waits on `exited` (set by the waiter thread
+    /// right before the exit callback fires) rather than probing the pid with `kill(p, 0)`:
+    /// once the shell has exited, its pid can be reused by an unrelated process within the
+    /// three-second window, and signalling that pid's process group would hit the wrong one.
     #[cfg(unix)]
     pub fn terminate(&self) {
         let shell = self.shell_pid.map(|p| p as i32);
         let fg = self.foreground_pgrp();
+        let exited = self.exited.clone();
         let send = move |sig: i32| {
             for g in [shell, fg].into_iter().flatten() {
                 if g > 0 {
@@ -214,10 +230,8 @@ impl PtySession {
         send(libc::SIGHUP);
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(3));
-            if let Some(p) = shell {
-                if unsafe { libc::kill(p, 0) } == 0 {
-                    send(libc::SIGKILL);
-                }
+            if !exited.load(Ordering::SeqCst) {
+                send(libc::SIGKILL);
             }
         });
     }
@@ -440,7 +454,36 @@ mod cwd_tests {
         .unwrap();
         session.write(b"sleep 100\n").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!session.has_exited(), "shell should still be running before terminate");
         session.terminate();
         assert!(rx.recv_timeout(std::time::Duration::from_secs(6)).is_ok(), "shell did not exit after terminate");
+        assert!(session.has_exited(), "has_exited should be true once the exit callback has fired");
+    }
+
+    #[test]
+    fn terminate_does_not_signal_after_the_shell_has_exited() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spec = SpawnSpec {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "exit 0".to_string()],
+            cwd: "/".to_string(),
+            env: vec![],
+            cols: 80,
+            rows: 24,
+        };
+        let session = PtySession::spawn(spec, |_| {}, move |code| {
+            let _ = tx.send(code);
+        })
+        .unwrap();
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(), "shell did not exit");
+        // Give the flag a moment to be set: it's written just before the exit callback fires,
+        // so by the time recv above returns it should already be true, but poll briefly anyway.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && !session.has_exited() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(session.has_exited(), "has_exited should be true after the shell exited");
+        // Should not panic, and must not signal a possibly-reused pid.
+        session.terminate();
     }
 }
