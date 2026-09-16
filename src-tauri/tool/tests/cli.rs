@@ -815,6 +815,7 @@ fn folders_and_machines() {
     assert_eq!(home_list["path"], h.path.to_str().unwrap());
 
     write_ws(&h.path, serde_json::json!([]), serde_json::json!({"studio": {"alias": "Studio", "color": "#ff0000", "lastUsed": "t"}}));
+    // With SWARMZ_MACHINE set Tailscale is never asked: the workspace's machines and this Mac.
     let (code, m) = tool_env(&h.path, &["machines"], MINI);
     assert_eq!(code, 0, "{m}");
     let ms = m["machines"].as_array().unwrap();

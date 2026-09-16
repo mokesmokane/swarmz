@@ -222,29 +222,35 @@ pub fn watch(env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
 
 pub fn machines(env: &Env) -> Result<Value, CliError> {
     let ws = env.workspace()?.unwrap_or_else(empty_workspace);
-    let configured = ws.extra.get("machines").and_then(|m| m.as_object()).cloned().unwrap_or_default();
     let status = if env.uses_tailscale() { crate::tailscale::status().ok() } else { None };
+    Ok(json!({"v": 1, "machines": machine_list(&ws, env.machine.as_deref(), status.as_ref())}))
+}
+
+/// The workspace's machines, this Mac, and the other Macs online on the tailnet: this Mac first,
+/// then by name.
+pub fn machine_list(ws: &Workspace, self_machine: Option<&str>, status: Option<&crate::tailscale::TailscaleStatus>) -> Vec<Value> {
+    let configured = ws.extra.get("machines").and_then(|m| m.as_object()).cloned().unwrap_or_default();
     let mut names: BTreeSet<String> = configured.keys().cloned().collect();
-    if let Some(m) = &env.machine {
-        names.insert(m.clone());
+    names.extend(status.map(|s| s.online_macs()).unwrap_or_default());
+    if let Some(m) = self_machine {
+        names.insert(m.to_string());
     }
     let mut list: Vec<Value> = names
         .into_iter()
         .map(|name| {
             let cfg = configured.get(&name);
             let text = |k: &str| cfg.and_then(|c| c.get(k)).and_then(|v| v.as_str()).map(str::to_string);
-            let is_self = env.machine.as_deref() == Some(name.as_str());
+            let is_self = self_machine == Some(name.as_str());
             let online = if is_self {
                 Some(true)
             } else {
-                status.as_ref().and_then(|s| s.peers.iter().find(|p| p.name == name)).map(|p| p.online)
+                status.and_then(|s| s.peers.iter().find(|p| p.name == name)).map(|p| p.online)
             };
             json!({"name": name, "alias": text("alias"), "color": text("color"), "online": online, "self": is_self})
         })
         .collect();
-    // This Mac first, then by name.
     list.sort_by_key(|m| (!m["self"].as_bool().unwrap_or(false), m["name"].as_str().unwrap_or("").to_string()));
-    Ok(json!({"v": 1, "machines": list}))
+    list
 }
 
 pub fn sessions(env: &Env) -> Result<Value, CliError> {
@@ -715,6 +721,7 @@ fn truncate_chars(s: &str, n: usize) -> String {
 
 /// Runs `swarmz <args>` on every other Mac swarmz knows, over ssh without prompting, one thread
 /// per machine so the total wait is about the single ssh call's 15 s limit rather than their sum.
+/// The other Macs are the workspace's machines plus the Macs online on the tailnet.
 /// Results are joined back in `machine_hosts`' order (sorted by machine name).
 ///
 /// `Err` only when the set of other Macs itself could not be determined -- an unreadable or
@@ -725,7 +732,8 @@ fn truncate_chars(s: &str, n: usize) -> String {
 fn fan_out(env: &Env, args: &[&str]) -> Result<Vec<Value>, String> {
     let ws = env.workspace().map_err(|e| e.message)?.unwrap_or_else(empty_workspace);
     let remote = std::iter::once("~/.swarmz/bin/swarmz".to_string()).chain(args.iter().map(|a| sh_quote(a))).collect::<Vec<_>>().join(" ");
-    let hosts = machine_hosts(&ws, env.machine.as_deref(), &default_user());
+    let peers = if env.uses_tailscale() { crate::tailscale::status().map(|s| s.online_macs()).unwrap_or_default() } else { vec![] };
+    let hosts = machine_hosts(&ws, env.machine.as_deref(), &default_user(), &peers);
     let handles: Vec<_> = hosts
         .into_iter()
         .map(|(machine, host)| {
@@ -812,6 +820,26 @@ mod tests {
         let meta = Meta { v: 1, pid, shell_pid: None, cwd: "/".into(), name: "t".into(), started_at: "s".into(), exited_at: None, exit_code: None, cwd_fallback: false, build: None };
         write_meta(&path, &meta).unwrap();
         path
+    }
+
+    #[test]
+    fn machines_include_online_macs_on_the_tailnet() {
+        let ws: Workspace = serde_json::from_value(json!({"version": 1, "terminals": [], "layout": null, "machines": {"studio": {"alias": "Studio"}}})).unwrap();
+        let status = crate::tailscale::parse_status(
+            r#"{"BackendState": "Running", "Self": {"DNSName": "mini.ts.net.", "OS": "macOS", "Online": true},
+               "Peer": {"a": {"DNSName": "air.ts.net.", "OS": "macOS", "Online": true},
+                        "b": {"DNSName": "old.ts.net.", "OS": "macOS", "Online": false},
+                        "c": {"DNSName": "pi.ts.net.", "OS": "linux", "Online": true},
+                        "d": {"DNSName": "studio.ts.net.", "OS": "macOS", "Online": false}}}"#,
+            "me",
+        )
+        .unwrap();
+        let list = machine_list(&ws, Some("mini"), Some(&status));
+        let rows: Vec<(String, Value, bool)> = list.iter().map(|m| (m["name"].as_str().unwrap().to_string(), m["online"].clone(), m["self"].as_bool().unwrap())).collect();
+        assert_eq!(rows, vec![("mini".into(), json!(true), true), ("air".into(), json!(true), false), ("studio".into(), json!(false), false)]);
+        // Without Tailscale: the workspace and this Mac only.
+        let names: Vec<String> = machine_list(&ws, Some("mini"), None).iter().map(|m| m["name"].as_str().unwrap().to_string()).collect();
+        assert_eq!(names, vec!["mini", "studio"]);
     }
 
     #[test]

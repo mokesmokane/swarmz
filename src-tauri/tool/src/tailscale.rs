@@ -79,6 +79,13 @@ pub fn parse_status(json: &str, user: &str) -> Result<TailscaleStatus, String> {
     Ok(TailscaleStatus { running: true, message: None, user: user.to_string(), self_machine, peers })
 }
 
+impl TailscaleStatus {
+    /// Other Macs that are online now, by machine name.
+    pub fn online_macs(&self) -> Vec<String> {
+        self.peers.iter().filter(|p| p.online && p.os.eq_ignore_ascii_case("macOS")).map(|p| p.name.clone()).collect()
+    }
+}
+
 const CANDIDATES: [&str; 3] = [
     "/usr/local/bin/tailscale",
     "/opt/homebrew/bin/tailscale",
@@ -158,6 +165,12 @@ mod tests {
         assert!(mini.online);
         assert_eq!(st.peers[2].ip, None);
         assert!(!st.peers[2].online);
+    }
+
+    #[test]
+    fn online_macs_are_the_online_macos_peers() {
+        let st = parse_status(SAMPLE, "mokes").unwrap();
+        assert_eq!(st.online_macs(), vec!["martins-mac-mini".to_string()]);
     }
 
     #[test]

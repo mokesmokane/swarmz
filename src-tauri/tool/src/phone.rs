@@ -231,29 +231,30 @@ fn valid_ssh_user(user: &str) -> bool {
     head_ok && bytes[1..].iter().all(|&b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
 }
 
-/// The other Macs swarmz knows, as ssh destinations. A machine is skipped when its name is
-/// not a valid tile id or starts with `-`, or when neither its configured user nor
-/// `default_user` is a valid ssh username (an invalid configured user is never silently
-/// replaced by the default).
-pub fn machine_hosts(ws: &Workspace, self_machine: Option<&str>, default_user: &str) -> Vec<(String, String)> {
-    let Some(machines) = ws.extra.get("machines").and_then(|m| m.as_object()) else { return vec![] };
-    let mut out: Vec<(String, String)> = machines
-        .iter()
-        .filter(|(name, _)| Some(name.as_str()) != self_machine)
-        .filter(|(name, _)| crate::paths::valid_tile_id(name) && !name.starts_with('-'))
-        .filter_map(|(name, cfg)| {
-            let configured = cfg.get("user").and_then(|u| u.as_str()).map(str::trim).filter(|u| !u.is_empty());
+/// The other Macs swarmz knows, as ssh destinations: the workspace's `machines` plus `peers`
+/// (other Macs online on the tailnet, which use `default_user` unless configured). A machine is
+/// skipped when its name is not a valid tile id or starts with `-`, or when neither its
+/// configured user nor `default_user` is a valid ssh username (an invalid configured user is
+/// never silently replaced by the default).
+pub fn machine_hosts(ws: &Workspace, self_machine: Option<&str>, default_user: &str, peers: &[String]) -> Vec<(String, String)> {
+    let empty = serde_json::Map::new();
+    let machines = ws.extra.get("machines").and_then(|m| m.as_object()).unwrap_or(&empty);
+    let names: std::collections::BTreeSet<&str> = machines.keys().map(String::as_str).chain(peers.iter().map(String::as_str)).collect();
+    names
+        .into_iter()
+        .filter(|name| Some(*name) != self_machine)
+        .filter(|name| crate::paths::valid_tile_id(name) && !name.starts_with('-'))
+        .filter_map(|name| {
+            let configured = machines.get(name).and_then(|cfg| cfg.get("user")).and_then(|u| u.as_str()).map(str::trim).filter(|u| !u.is_empty());
             let user = match configured {
                 Some(u) if valid_ssh_user(u) => u,
                 Some(_) => return None,
                 None if valid_ssh_user(default_user) => default_user,
                 None => return None,
             };
-            Some((name.clone(), format!("{user}@{name}")))
+            Some((name.to_string(), format!("{user}@{name}")))
         })
-        .collect();
-    out.sort();
-    out
+        .collect()
 }
 
 #[cfg(test)]
@@ -424,8 +425,24 @@ mod tests {
             "machines": {"mini": {"lastUsed": "t"}, "studio": {"user": "admin", "lastUsed": "t"}, "air": {"lastUsed": "t"}}
         }))
         .unwrap();
-        let hosts = machine_hosts(&ws, Some("mini"), "me");
+        let hosts = machine_hosts(&ws, Some("mini"), "me", &[]);
         assert_eq!(hosts, vec![("air".to_string(), "me@air".to_string()), ("studio".to_string(), "admin@studio".to_string())]);
+    }
+
+    #[test]
+    fn machine_hosts_add_tailnet_peers_with_the_default_user() {
+        let ws: crate::workspace::Workspace = serde_json::from_value(serde_json::json!({
+            "version": 1, "terminals": [], "layout": null,
+            "machines": {"mini": {"lastUsed": "t"}, "studio": {"user": "admin", "lastUsed": "t"}}
+        }))
+        .unwrap();
+        let peers = ["studio", "laptop", "mini", "-evil", "a.b"].map(String::from);
+        let hosts = machine_hosts(&ws, Some("mini"), "me", &peers);
+        assert_eq!(hosts, vec![("laptop".to_string(), "me@laptop".to_string()), ("studio".to_string(), "admin@studio".to_string())]);
+        // No workspace machines at all: the peers alone.
+        let bare: crate::workspace::Workspace = serde_json::from_value(serde_json::json!({"version": 1, "terminals": [], "layout": null})).unwrap();
+        assert_eq!(machine_hosts(&bare, None, "me", &["air".to_string()]), vec![("air".to_string(), "me@air".to_string())]);
+        assert_eq!(machine_hosts(&bare, None, "", &["air".to_string()]), vec![]);
     }
 
     #[test]
@@ -436,7 +453,7 @@ mod tests {
         }))
         .unwrap();
         // Invalid configured user: skipped, never falls back to default_user.
-        assert_eq!(machine_hosts(&ws, None, "me"), vec![]);
+        assert_eq!(machine_hosts(&ws, None, "me", &[]), vec![]);
     }
 
     #[test]
@@ -446,7 +463,7 @@ mod tests {
             "machines": {"studio": {"user": "a@b", "lastUsed": "t"}}
         }))
         .unwrap();
-        assert_eq!(machine_hosts(&ws, None, "me"), vec![]);
+        assert_eq!(machine_hosts(&ws, None, "me", &[]), vec![]);
     }
 
     #[test]
@@ -456,7 +473,7 @@ mod tests {
             "machines": {"studio": {"lastUsed": "t"}}
         }))
         .unwrap();
-        assert_eq!(machine_hosts(&ws, None, ""), vec![]);
+        assert_eq!(machine_hosts(&ws, None, "", &[]), vec![]);
     }
 
     #[test]
@@ -468,6 +485,6 @@ mod tests {
         .unwrap();
         // valid_tile_id alone would accept this (letters, digits, `-`); the leading dash
         // must be rejected explicitly so it can never be mistaken for an ssh option.
-        assert_eq!(machine_hosts(&ws, None, "me"), vec![]);
+        assert_eq!(machine_hosts(&ws, None, "me", &[]), vec![]);
     }
 }
