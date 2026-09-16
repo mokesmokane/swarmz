@@ -728,6 +728,10 @@ const attachPending = new Set<string>();
  * (a reattach, or Connect on a live tile) if the session's shell is idle. */
 const pendingSwitch = new Set<string>();
 
+/** Tiles typing the remote step for a session their attach just started: until it is typed (and
+ * Claude has the tile), a picked session must not be typed on top of it. */
+const newSessionStep = new Set<string>();
+
 function forgetAttach(id: string) {
   attachPending.delete(id);
   pendingSwitch.delete(id);
@@ -745,7 +749,7 @@ export const SWITCH_BUSY_NOTE = "Claude is still running in the session on ";
  * or explains why not. */
 async function applyPendingSwitch(id: string): Promise<void> {
   const host = useStore.getState().settings[id]?.ssh?.host?.trim();
-  if (!host || !pendingSwitch.has(id)) return;
+  if (!host || !pendingSwitch.has(id) || newSessionStep.has(id)) return;
   let info: Awaited<ReturnType<typeof ipc.remoteTileInfo>> | null = null;
   let error: string | null = null;
   try {
@@ -753,7 +757,7 @@ async function applyPendingSwitch(id: string): Promise<void> {
   } catch (e) {
     error = typeof e === "string" ? e : String(e);
   }
-  if (!pendingSwitch.has(id) || !useStore.getState().terminals[id]) return;
+  if (!pendingSwitch.has(id) || newSessionStep.has(id) || !useStore.getState().terminals[id]) return;
   pendingSwitch.delete(id);
   if (info?.running && info.foregroundBusy === false) {
     await useStore.getState().runRemoteStep(id);
@@ -784,6 +788,7 @@ export function __stopAllPolling() {
 export function __resetAttachState() {
   toolChecks.clear();
   startupInFlight.clear();
+  newSessionStep.clear();
   attachPending.clear();
   pendingSwitch.clear();
 }
@@ -838,6 +843,7 @@ function startPolling(id: string, host: string, attach = false) {
           // failed (its error is in the terminal). Forget the host's answer so the next Run
           // checks the tool again instead of retrying attach mode forever.
           attachPending.delete(id);
+          pendingSwitch.delete(id);
           useStore.setState((s) => ({
             sshConnecting: omit(s.sshConnecting, id),
             toolReady: omit(s.toolReady, host),
@@ -1416,9 +1422,21 @@ export const useStore = create<WorkbenchState>((set) => ({
     // its shell is idle); only a session the holder just started for our own attach line needs
     // the `cd` / Claude line, which already carries any picked session.
     if (isNew && typedAttach) {
-      pendingSwitch.delete(id);
-      await new Promise((r) => setTimeout(r, SSH_SETTLE_MS));
-      await useStore.getState().runRemoteStep(id);
+      // Hold the tile for the whole step: a Connect or a session pick in the settle window must
+      // not type a second line (the shell looks idle until Claude has started).
+      const owned = !startupInFlight.has(id);
+      startupInFlight.add(id);
+      newSessionStep.add(id);
+      try {
+        await new Promise((r) => setTimeout(r, SSH_SETTLE_MS));
+        // The step reads the settings now, so it already carries any session picked so far; a
+        // pick after this point stays pending for the next reattach.
+        pendingSwitch.delete(id);
+        await useStore.getState().runRemoteStep(id);
+      } finally {
+        newSessionStep.delete(id);
+        if (owned) startupInFlight.delete(id);
+      }
     } else if (!isNew) {
       await applyPendingSwitch(id);
     }

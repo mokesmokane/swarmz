@@ -2843,6 +2843,56 @@ describe("remote attach", () => {
       expect(ipc.remoteTileInfo).not.toHaveBeenCalled();
     });
 
+    it("a pick during a new session's settle window types exactly one line, the picked one", async () => {
+      vi.useFakeTimers();
+      try {
+        const id = await attachedTile();
+        vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+        vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+        vi.mocked(ipc.remoteTileInfo).mockResolvedValue({ running: true, cwd: "/p", foregroundBusy: false });
+        vi.mocked(ipc.writeTerminal).mockClear();
+        const marker = useStore.getState().remoteAttached(id, true);
+        await vi.advanceTimersByTimeAsync(SSH_SETTLE_MS / 2);
+        await useStore.getState().selectSession(id, "old", { connect: false });
+        expect(ipc.writeTerminal).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(SSH_SETTLE_MS);
+        await marker;
+        expect(ipc.writeTerminal).toHaveBeenCalledTimes(1);
+        expect(resumeOld()).toHaveLength(1);
+        // The pick was carried by that line, so a later reattach does not type it again.
+        await useStore.getState().remoteAttached(id, false);
+        expect(ipc.writeTerminal).toHaveBeenCalledTimes(1);
+        // Run works again once the step is done.
+        vi.mocked(ipc.remoteTileInfo).mockClear();
+        await useStore.getState().selectSession(id, "cur", { connect: true });
+        expect(ipc.remoteTileInfo).toHaveBeenCalledTimes(1);
+      } finally {
+        __stopAllPolling();
+        vi.useRealTimers();
+      }
+    });
+
+    it("a failed attach drops the pending switch", async () => {
+      vi.useFakeTimers();
+      try {
+        const id = await attachedTile();
+        await useStore.getState().selectSession(id, "old", { connect: true });
+        expect(useStore.getState().sshConnecting[id]).toBe(true);
+        vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+        vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+        await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 3);
+        expect(useStore.getState().startupNotes[id]).toMatch(/could not start/);
+        vi.mocked(ipc.remoteTileInfo).mockClear();
+        vi.mocked(ipc.writeTerminal).mockClear();
+        await useStore.getState().remoteAttached(id, false);
+        expect(ipc.remoteTileInfo).not.toHaveBeenCalled();
+        expect(ipc.writeTerminal).not.toHaveBeenCalled();
+      } finally {
+        __stopAllPolling();
+        vi.useRealTimers();
+      }
+    });
+
     it("a new session started for the attach line resumes the picked session directly", async () => {
       const id = await attachedTile();
       await useStore.getState().selectSession(id, "old", { connect: true });
