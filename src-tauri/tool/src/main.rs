@@ -354,7 +354,7 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         },
         Some("ssh-gate") => {
             a.expect_positional(1, "ssh-gate")?;
-            Err(cmd::ssh_gate(&cmd::Env::from_process()?))
+            Err(cmd::ssh_gate(&cmd::Env::for_gate()?))
         }
         _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|transcript|image|phone|ssh-gate> …")),
     }

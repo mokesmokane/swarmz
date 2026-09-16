@@ -58,6 +58,13 @@ impl Env {
         Ok(Env { home: crate::paths::home_dir(), exe, machine })
     }
 
+    /// The environment for `ssh-gate`, which only checks and execs a command: it never asks
+    /// Tailscale for this Mac's name (the command it runs does, if it needs it).
+    pub fn for_gate() -> Result<Env, CliError> {
+        let exe = std::env::current_exe().map_err(|e| failed(format!("cannot locate this program: {e}")))?;
+        Ok(Env { home: crate::paths::home_dir(), exe, machine: None })
+    }
+
     fn sessions(&self) -> PathBuf {
         sessions_dir_in(&self.home)
     }
@@ -249,7 +256,7 @@ pub fn machine_list(ws: &Workspace, self_machine: Option<&str>, status: Option<&
 }
 
 pub fn sessions(env: &Env) -> Result<Value, CliError> {
-    Ok(json!({"v": 1, "sessions": session_rows(&env.home)}))
+    Ok(json!({"v": 1, "sessions": session_rows(&env.home).map_err(failed)?}))
 }
 
 pub fn prune(env: &Env) -> Result<Value, CliError> {
@@ -732,7 +739,7 @@ fn truncate_chars(s: &str, n: usize) -> String {
 /// error here; it is reported per machine in the returned list instead.
 fn fan_out(env: &Env, args: &[&str]) -> Result<Vec<Value>, String> {
     let ws = env.workspace().map_err(|e| e.message)?.unwrap_or_else(empty_workspace);
-    let remote = std::iter::once("~/.swarmz/bin/swarmz".to_string()).chain(args.iter().map(|a| sh_quote(a))).collect::<Vec<_>>().join(" ");
+    let remote = std::iter::once(TOOL_WORD.to_string()).chain(args.iter().map(|a| sh_quote(a))).collect::<Vec<_>>().join(" ");
     let peers = if env.uses_tailscale() { crate::tailscale::status().map(|s| s.online_macs()).unwrap_or_default() } else { vec![] };
     let hosts = machine_hosts(&ws, env.machine.as_deref(), &default_user(), &peers);
     let handles: Vec<_> = hosts
@@ -786,6 +793,9 @@ pub fn phone_revoke(env: &Env, device: &str, local: bool) -> Result<Value, CliEr
     Ok(json!({"v": 1, "removed": removed, "machines": machines}))
 }
 
+/// How other Macs' tools are named on an ssh command line.
+const TOOL_WORD: &str = "~/.swarmz/bin/swarmz";
+
 /// Replaces this process with the allowed tool command in `SSH_ORIGINAL_COMMAND`. Returns only
 /// when the command is refused or cannot be run.
 pub fn ssh_gate(env: &Env) -> CliError {
@@ -797,7 +807,13 @@ pub fn ssh_gate(env: &Env) -> CliError {
         Ok(w) => w,
         Err(e) => return denied(e),
     };
-    let mut tools = vec![env.home.join(".swarmz/bin/swarmz").to_string_lossy().into_owned(), env.exe.to_string_lossy().into_owned()];
+    // `~/.swarmz/bin/swarmz` as a literal word too: it is what `fan_out` sends, and a forced
+    // command's words are never expanded.
+    let mut tools = vec![
+        TOOL_WORD.to_string(),
+        env.home.join(".swarmz/bin/swarmz").to_string_lossy().into_owned(),
+        env.exe.to_string_lossy().into_owned(),
+    ];
     if let Ok(real) = std::fs::canonicalize(&env.exe) {
         tools.push(real.to_string_lossy().into_owned());
     }

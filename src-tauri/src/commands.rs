@@ -583,13 +583,14 @@ pub async fn remote_tile_close(host: String, id: String) -> Result<bool, String>
 
 const SESSION_PRUNE_AGE: Duration = Duration::from_secs(7 * 86_400);
 
-/// Every session on this Mac; dead ones older than a week are removed first.
+/// Every session on this Mac; dead ones older than a week are removed first. When the workspace
+/// cannot be read no session can be told to be outside it, so none is reported (fail closed).
 #[tauri::command]
 pub async fn local_sessions() -> Result<Vec<swarmz_tool::tiles::SessionRow>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let home = swarmz_tool::paths::home_dir();
         swarmz_tool::tiles::prune(&home, SESSION_PRUNE_AGE);
-        swarmz_tool::tiles::session_rows(&home)
+        swarmz_tool::tiles::session_rows(&home).unwrap_or_default()
     })
     .await
     .map_err(|e| e.to_string())

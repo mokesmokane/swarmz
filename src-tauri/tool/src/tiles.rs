@@ -257,6 +257,8 @@ pub struct SessionRow {
 }
 
 const SESSION_EXTS: [&str; 4] = ["json", "sock", "log", "lock"];
+/// A session's files other than its lock, which is never removed (a start may hold it).
+const SESSION_FILES: [&str; 3] = ["json", "sock", "log"];
 
 fn session_ids(dir: &Path) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
@@ -271,15 +273,16 @@ fn session_ids(dir: &Path) -> BTreeSet<String> {
     ids
 }
 
-pub fn session_rows(home: &Path) -> Vec<SessionRow> {
+/// Every session with files beyond its lock. An error when `workspace.json` exists and cannot be
+/// read: without it no session can be told apart from one outside the workspace.
+pub fn session_rows(home: &Path) -> Result<Vec<SessionRow>, String> {
     let dir = sessions_dir_in(home);
-    let known: BTreeSet<String> = read_from(&workspace_path(home))
-        .ok()
-        .flatten()
+    let known: BTreeSet<String> = read_from(&workspace_path(home))?
         .map(|ws| ws.terminals.into_iter().map(|t| t.id).collect())
         .unwrap_or_default();
-    session_ids(&dir)
+    Ok(session_ids(&dir)
         .into_iter()
+        .filter(|id| SESSION_FILES.iter().any(|e| dir.join(format!("{id}.{e}")).exists()))
         .filter_map(|id| {
             let paths = session_paths(&dir, &id).ok()?;
             let meta = read_meta(&paths.meta);
@@ -295,12 +298,12 @@ pub fn session_rows(home: &Path) -> Vec<SessionRow> {
                 id,
             })
         })
-        .collect()
+        .collect())
 }
 
-/// Removes every file of sessions that are not running and whose files are all older than
-/// `older_than`. Returns how many sessions were removed. A lock file is only ever removed with
-/// the rest of its session, never while a start could be using it.
+/// Removes the files of sessions that are not running and whose files are all older than
+/// `older_than`. Returns how many sessions were removed. Lock files are never removed: a start
+/// may hold one at any moment, and removing it would let a second start take a fresh lock.
 pub fn prune(home: &Path, older_than: Duration) -> usize {
     let dir = sessions_dir_in(home);
     let now = SystemTime::now();
@@ -310,7 +313,10 @@ pub fn prune(home: &Path, older_than: Duration) -> usize {
         if live_session(&paths).is_some() || socket_live(&paths.socket) {
             continue;
         }
-        let files: Vec<PathBuf> = SESSION_EXTS.iter().map(|e| dir.join(format!("{id}.{e}"))).filter(|p| p.exists()).collect();
+        let files: Vec<PathBuf> = SESSION_FILES.iter().map(|e| dir.join(format!("{id}.{e}"))).filter(|p| p.exists()).collect();
+        if files.is_empty() {
+            continue;
+        }
         let old = files.iter().all(|p| {
             std::fs::symlink_metadata(p)
                 .and_then(|m| m.modified())
@@ -616,15 +622,24 @@ mod tests {
         std::fs::write(dir.join("zz.json"), meta("gone")).unwrap();
         std::fs::write(dir.join("zz.lock"), "").unwrap();
         std::fs::write(dir.join("new.lock"), "").unwrap();
-        let rows = session_rows(&h);
+        let rows = session_rows(&h).unwrap();
+        // A lock alone is not a session.
         let ids: Vec<(&str, bool)> = rows.iter().map(|r| (r.id.as_str(), r.known)).collect();
-        assert_eq!(ids, vec![("c1", true), ("new", false), ("zz", false)]);
+        assert_eq!(ids, vec![("c1", true), ("zz", false)]);
         assert!(rows.iter().all(|r| !r.running));
         // Nothing is old enough yet.
         assert_eq!(prune(&h, Duration::from_secs(7 * 86_400)), 0);
-        // With a zero age everything dead goes, including a lock with no metadata.
-        assert_eq!(prune(&h, Duration::ZERO), 3);
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        // With a zero age everything dead goes, except the locks.
+        assert_eq!(prune(&h, Duration::ZERO), 2);
+        let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, vec!["new.lock", "zz.lock"]);
+        assert_eq!(prune(&h, Duration::ZERO), 0);
+        assert!(session_rows(&h).unwrap().is_empty());
+        // An unreadable workspace is an error, not "no session is known".
+        std::fs::write(h.join(".swarmz/workspace.json"), "{ broken").unwrap();
+        std::fs::write(dir.join("c1.json"), meta("api")).unwrap();
+        assert!(session_rows(&h).is_err());
         let _ = std::fs::remove_dir_all(&h);
     }
 }

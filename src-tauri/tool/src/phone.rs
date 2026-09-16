@@ -10,8 +10,13 @@ use std::path::{Path, PathBuf};
 
 pub const KEY_TAG: &str = "swarmz-phone:";
 
-/// Everything in a `key_line` before the public key itself.
-const OPTIONS_PREFIX: &str =
+/// Everything in a `key_line` before the public key itself. `from=` admits only tailnet
+/// addresses (Tailscale's IPv4 CGNAT range and its IPv6 prefix).
+const OPTIONS_PREFIX: &str = "command=\"$HOME/.swarmz/bin/swarmz ssh-gate\",from=\"100.64.0.0/10,fd7a:115c:a1e0::/48\",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ";
+
+/// The prefix keys were added with before `from=`: still listed and revoked, and replaced when
+/// the same key is added again.
+const OLD_OPTIONS_PREFIX: &str =
     "command=\"$HOME/.swarmz/bin/swarmz ssh-gate\",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ";
 
 pub fn authorized_keys(home: &Path) -> PathBuf {
@@ -47,6 +52,8 @@ struct GatedLine {
     key_type: String,
     blob: String,
     device: String,
+    /// Written before `from=` was added.
+    old: bool,
 }
 
 /// Parses a line as: exactly the options prefix `key_line` writes, then `<key_type> <blob> `,
@@ -55,7 +62,10 @@ struct GatedLine {
 /// tag — is not a gated line and is ignored by every caller here.
 fn parse_gated_line(line: &str) -> Option<GatedLine> {
     let line = line.strip_suffix('\r').unwrap_or(line);
-    let rest = line.strip_prefix(OPTIONS_PREFIX)?;
+    let (rest, old) = match line.strip_prefix(OPTIONS_PREFIX) {
+        Some(rest) => (rest, false),
+        None => (line.strip_prefix(OLD_OPTIONS_PREFIX)?, true),
+    };
     let mut parts = rest.splitn(3, ' ');
     let key_type = parts.next()?;
     if key_type != "ssh-ed25519" {
@@ -70,7 +80,7 @@ fn parse_gated_line(line: &str) -> Option<GatedLine> {
     if device.is_empty() {
         return None;
     }
-    Some(GatedLine { key_type: key_type.to_string(), blob: blob.to_string(), device: device.to_string() })
+    Some(GatedLine { key_type: key_type.to_string(), blob: blob.to_string(), device: device.to_string(), old })
 }
 
 /// The last `n` characters of `s`, by character, not by byte.
@@ -136,7 +146,8 @@ fn read_or_empty(path: &Path) -> Result<String, String> {
     }
 }
 
-/// Appends the phone's line unless the key is already there on a live gated line (`Ok(false)`).
+/// Appends the phone's line unless the key is already there on a live gated line (`Ok(false)`);
+/// a line for the key written before `from=` is replaced by a current one (`Ok(true)`).
 /// An error if the same key material already appears on some other, non-gated line: adding it
 /// again would be misleading, since that copy of the key is not restricted to the gate.
 pub fn add_key(path: &Path, device: &str, pubkey: &str) -> Result<bool, String> {
@@ -150,9 +161,11 @@ pub fn add_key(path: &Path, device: &str, pubkey: &str) -> Result<bool, String> 
     let mut text = read_or_empty(path)?;
 
     let mut present_unrestricted = false;
+    let mut replace_old = false;
     for line in text.lines() {
         match parse_gated_line(line) {
-            Some(gated) if gated.blob == blob => return Ok(false),
+            Some(gated) if gated.blob == blob && !gated.old => return Ok(false),
+            Some(gated) if gated.blob == blob => replace_old = true,
             Some(_) => {}
             None => {
                 if line.split(' ').any(|w| w == blob) {
@@ -163,6 +176,9 @@ pub fn add_key(path: &Path, device: &str, pubkey: &str) -> Result<bool, String> 
     }
     if present_unrestricted {
         return Err("this key is already present without the swarmz restriction".into());
+    }
+    if replace_old {
+        text = text.split_inclusive('\n').filter(|l| !parse_gated_line(l.trim_end_matches('\n')).is_some_and(|g| g.blob == blob)).collect();
     }
 
     if !text.is_empty() && !text.ends_with('\n') {
@@ -295,7 +311,7 @@ mod tests {
     fn the_line_forces_the_gate() {
         assert_eq!(
             key_line("fold", KEY),
-            format!("command=\"$HOME/.swarmz/bin/swarmz ssh-gate\",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty {KEY} swarmz-phone:fold")
+            format!("command=\"$HOME/.swarmz/bin/swarmz ssh-gate\",from=\"100.64.0.0/10,fd7a:115c:a1e0::/48\",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty {KEY} swarmz-phone:fold")
         );
     }
 
@@ -321,6 +337,24 @@ mod tests {
         assert_eq!(revoke(&path, "other").unwrap(), 0);
         assert_eq!(revoke(&path, "fold").unwrap(), 1);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "ssh-ed25519 AAAAmine me@mac\n");
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn keys_added_before_from_are_listed_revoked_and_upgraded() {
+        let h = tmp("oldprefix");
+        let path = authorized_keys(&h);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let old = format!("{OLD_OPTIONS_PREFIX}{KEY} swarmz-phone:fold\n");
+        std::fs::write(&path, format!("ssh-ed25519 AAAAmine me@mac\n{old}")).unwrap();
+        assert_eq!(list_keys(&path).len(), 1);
+        // Adding the same key again replaces the old line with a current one.
+        assert!(add_key(&path, "fold", KEY).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("ssh-ed25519 AAAAmine me@mac\n{}\n", key_line("fold", KEY)));
+        assert!(!add_key(&path, "fold", KEY).unwrap());
+        std::fs::write(&path, &old).unwrap();
+        assert_eq!(revoke(&path, "fold").unwrap(), 1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
         let _ = std::fs::remove_dir_all(&h);
     }
 

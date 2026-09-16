@@ -1196,7 +1196,7 @@ fn phone_keys_are_added_listed_and_revoked() {
     assert_eq!(code, 0, "{v}");
     assert_eq!((v["added"].as_bool(), v["machines"].as_array().map(|m| m.len())), (Some(true), Some(0)));
     let line = std::fs::read_to_string(h.path.join(".ssh/authorized_keys")).unwrap();
-    assert!(line.starts_with("command=\"$HOME/.swarmz/bin/swarmz ssh-gate\",no-port-forwarding"));
+    assert!(line.starts_with("command=\"$HOME/.swarmz/bin/swarmz ssh-gate\",from=\"100.64.0.0/10,fd7a:115c:a1e0::/48\",no-port-forwarding"), "{line}");
     assert!(line.trim_end().ends_with("swarmz-phone:Galaxy Fold"));
     let (_, again) = tool_env(&h.path, &["phone", "add", "--name", "Galaxy Fold", "--key", TEST_KEY, "--local"], MINI);
     assert_eq!(again["added"], false);
@@ -1235,6 +1235,10 @@ fn the_gate_runs_only_allowed_commands() {
     let exe = std::fs::canonicalize(EXE).unwrap();
     let (code, v) = gate(&h.path, Some(&format!("'{}' version", exe.display())));
     assert_eq!(code, 0, "{v}");
+    // The literal word the phone fan-out sends names the installed tool.
+    let (code, v) = gate(&h.path, Some("~/.swarmz/bin/swarmz version"));
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["protocol"], PROTOCOL_VERSION);
     for bad in [
         "swarmz attach t1",
         "swarmz ls; rm -rf ~",
@@ -1246,6 +1250,8 @@ fn the_gate_runs_only_allowed_commands() {
         "swarmz __keep-def t1",
         "swarmz ssh-gate",
         "/tmp/swarmz version",
+        "~/swarmz version",
+        "'~/.swarmz/bin/swarmz ls'",
     ] {
         let (code, v) = gate(&h.path, Some(bad));
         assert_eq!((code, v["code"].as_str()), (126, Some("denied")), "{bad}: {v}");
