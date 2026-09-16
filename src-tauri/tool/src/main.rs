@@ -351,14 +351,20 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    match run(&raw) {
+    let is_gate = raw.first().map(String::as_str) == Some("ssh-gate");
+    // Every failure while running `ssh-gate` is reported as a refusal, whatever raised it --
+    // `Args::parse`, `expect_positional`, `Env::from_process`, or `ssh_gate` itself -- so a phone
+    // key's forced command never leaks an internal error code (`usage`, `failed`, …) in place of
+    // `denied`.
+    let result = if is_gate { run(&raw).map_err(|e| CliError::new("denied", e.message)) } else { run(&raw) };
+    match result {
         Ok(Some(v)) => {
             println!("{v}");
         }
         Ok(None) => {}
         Err(e) => {
             println!("{}", json!({ "v": 1, "error": e.message, "code": e.code }));
-            std::process::exit(if raw.first().map(String::as_str) == Some("ssh-gate") { 126 } else { 1 });
+            std::process::exit(if is_gate { 126 } else { 1 });
         }
     }
 }

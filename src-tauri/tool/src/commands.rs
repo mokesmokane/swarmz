@@ -610,31 +610,64 @@ fn default_user() -> String {
     std::env::var("USER").unwrap_or_default()
 }
 
-/// Runs `swarmz <args>` on every other Mac swarmz knows, over ssh without prompting.
-fn fan_out(env: &Env, args: &[&str]) -> Vec<Value> {
-    let ws = env.workspace().ok().flatten().unwrap_or_else(empty_workspace);
+/// The last non-blank line of `s`, trimmed; `s` itself, trimmed, when every line is blank.
+fn last_line(s: &str) -> String {
+    s.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or_else(|| s.trim()).to_string()
+}
+
+/// `s` cut to at most `n` characters (by character, not byte), so a hostile or runaway remote
+/// message can never bloat a fan-out result.
+fn truncate_chars(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n).collect()
+    }
+}
+
+/// Runs `swarmz <args>` on every other Mac swarmz knows, over ssh without prompting, one thread
+/// per machine so the total wait is about the single ssh call's 15 s limit rather than their sum.
+/// Results are joined back in `machine_hosts`' order (sorted by machine name).
+///
+/// `Err` only when the set of other Macs itself could not be determined -- an unreadable or
+/// corrupt workspace file. That must never be read as "there are no other Macs": a caller whose
+/// local change already applied (e.g. a revoked key) has to say the other Macs could not be
+/// reached, not report a clean, empty result. An individual machine being unreachable is not an
+/// error here; it is reported per machine in the returned list instead.
+fn fan_out(env: &Env, args: &[&str]) -> Result<Vec<Value>, String> {
+    let ws = env.workspace().map_err(|e| e.message)?.unwrap_or_else(empty_workspace);
     let remote = std::iter::once("~/.swarmz/bin/swarmz".to_string()).chain(args.iter().map(|a| sh_quote(a))).collect::<Vec<_>>().join(" ");
-    machine_hosts(&ws, env.machine.as_deref(), &default_user())
+    let hosts = machine_hosts(&ws, env.machine.as_deref(), &default_user());
+    let handles: Vec<_> = hosts
         .into_iter()
         .map(|(machine, host)| {
-            let mut c = std::process::Command::new("ssh");
-            c.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ControlPath=~/.swarmz/ssh/%C", "-o", "ControlMaster=no", "--", &host, &remote]);
-            match run_with_timeout(c, Duration::from_secs(15), "ssh") {
-                Ok(done) if done.status.success() => json!({"machine": machine, "ok": true}),
-                Ok(done) => {
-                    let reply: Value = serde_json::from_str(done.stdout.trim()).unwrap_or(Value::Null);
-                    let error = reply["error"].as_str().map(str::to_string).unwrap_or_else(|| done.stderr.trim().to_string());
-                    json!({"machine": machine, "ok": false, "error": error})
+            let remote = remote.clone();
+            std::thread::spawn(move || {
+                let mut c = std::process::Command::new("ssh");
+                c.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ControlPath=~/.swarmz/ssh/%C", "-o", "ControlMaster=no", "--", &host, &remote]);
+                match run_with_timeout(c, Duration::from_secs(15), "ssh") {
+                    Ok(done) if done.status.success() => json!({"machine": machine, "ok": true}),
+                    Ok(done) => {
+                        let reply: Value = serde_json::from_str(done.stdout.trim()).unwrap_or(Value::Null);
+                        let error = reply["error"].as_str().map(str::to_string).unwrap_or_else(|| last_line(&done.stderr));
+                        json!({"machine": machine, "ok": false, "error": truncate_chars(&error, 200)})
+                    }
+                    Err(e) => json!({"machine": machine, "ok": false, "error": truncate_chars(&e, 200)}),
                 }
-                Err(e) => json!({"machine": machine, "ok": false, "error": e}),
-            }
+            })
         })
-        .collect()
+        .collect();
+    Ok(handles.into_iter().map(|h| h.join().unwrap_or_else(|_| json!({"ok": false, "error": "the ssh thread panicked"}))).collect())
 }
 
 pub fn phone_add(env: &Env, device: &str, key: &str, local: bool) -> Result<Value, CliError> {
     let added = add_key(&authorized_keys(&env.home), device, key).map_err(|e| CliError::new("invalid", e))?;
-    let machines = if local { vec![] } else { fan_out(env, &["phone", "add", "--name", device, "--key", key, "--local"]) };
+    let machines = if local {
+        vec![]
+    } else {
+        fan_out(env, &["phone", "add", "--name", device, "--key", key, "--local"])
+            .map_err(|e| CliError::new("failed", format!("added here; could not reach the other Macs: {e}")))?
+    };
     Ok(json!({"v": 1, "added": added, "machines": machines}))
 }
 
@@ -647,7 +680,12 @@ pub fn phone_revoke(env: &Env, device: &str, local: bool) -> Result<Value, CliEr
         return Err(CliError::new("invalid", format!("invalid device name {device:?}")));
     }
     let removed = revoke(&authorized_keys(&env.home), device).map_err(failed)?;
-    let machines = if local { vec![] } else { fan_out(env, &["phone", "revoke", device, "--local"]) };
+    let machines = if local {
+        vec![]
+    } else {
+        fan_out(env, &["phone", "revoke", device, "--local"])
+            .map_err(|e| CliError::new("failed", format!("revoked here; could not reach the other Macs: {e}")))?
+    };
     Ok(json!({"v": 1, "removed": removed, "machines": machines}))
 }
 

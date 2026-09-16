@@ -1125,7 +1125,9 @@ fn phone_keys_are_added_listed_and_revoked() {
 /// Runs `ssh-gate` with `tool_command`'s HOME/PATH (never the developer's real one), the given
 /// `SSH_ORIGINAL_COMMAND` (or none), and `SWARMZ_MACHINE=mini` so it never asks Tailscale.
 fn gate(home: &Path, original: Option<&str>) -> (i32, serde_json::Value) {
-    let out_path = home.join(format!("gate-{}.out", original.map(|o| o.len()).unwrap_or(0)));
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::SeqCst);
+    let out_path = home.join(format!("gate-{seq}.out"));
     let mut cmd = tool_command(home);
     cmd.arg("ssh-gate").env("SWARMZ_MACHINE", "mini").env_remove("SSH_ORIGINAL_COMMAND");
     if let Some(o) = original {
@@ -1145,10 +1147,38 @@ fn the_gate_runs_only_allowed_commands() {
     let exe = std::fs::canonicalize(EXE).unwrap();
     let (code, v) = gate(&h.path, Some(&format!("'{}' version", exe.display())));
     assert_eq!(code, 0, "{v}");
-    for bad in ["swarmz attach t1", "swarmz ls; rm -rf ~", "swarmz phone add --name x --key y", "bash", "swarmz 'unterminated"] {
+    for bad in [
+        "swarmz attach t1",
+        "swarmz ls; rm -rf ~",
+        "swarmz phone add --name x --key y",
+        "bash",
+        "swarmz 'unterminated",
+        "",
+        "swarmz hold t1",
+        "swarmz ssh-gate",
+        "/tmp/swarmz version",
+    ] {
         let (code, v) = gate(&h.path, Some(bad));
         assert_eq!((code, v["code"].as_str()), (126, Some("denied")), "{bad}: {v}");
     }
     let (code, v) = gate(&h.path, None);
     assert_eq!((code, v["code"].as_str()), (126, Some("denied")));
+}
+
+#[test]
+fn phone_revoke_surfaces_a_broken_workspace_instead_of_reporting_success() {
+    let h = home("phone-broken");
+    write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
+    let (code, v) = tool_env(&h.path, &["phone", "add", "--name", "Fold", "--key", TEST_KEY, "--local"], MINI);
+    assert_eq!(code, 0, "{v}");
+    // Corrupt the workspace after the local add: `load_from` moves it aside and returns an
+    // error, so fan-out must surface that rather than treat it as "no other Macs".
+    std::fs::write(h.path.join(".swarmz/workspace.json"), "not json").unwrap();
+    let (code, v) = tool_env(&h.path, &["phone", "revoke", "Fold"], MINI);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["code"].as_str(), Some("failed"), "{v}");
+    assert!(v["error"].as_str().unwrap().contains("revoked here"), "{v}");
+    // The local revoke went ahead despite the workspace being unreadable for fan-out.
+    let (_, ls) = tool_env(&h.path, &["phone", "ls"], MINI);
+    assert!(ls["phones"].as_array().unwrap().is_empty(), "{ls}");
 }
