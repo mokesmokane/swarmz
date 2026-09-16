@@ -28,6 +28,7 @@ vi.mock("../lib/ipc", () => ({
     agentsInstallRemote: vi.fn(async () => false),
     toolRemoteReady: vi.fn(async () => false),
     remoteTileInfo: vi.fn(async () => ({ running: false })),
+    remoteTileClose: vi.fn(async () => false),
     pasteImageToRemote: vi.fn(async () => null),
     agentsWatch: vi.fn(async () => 1),
     agentsUnwatch: vi.fn(async () => {}),

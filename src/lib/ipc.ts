@@ -46,6 +46,21 @@ export interface AgentEventPayload {
   event: AgentEvent;
 }
 
+export interface TermSize {
+  cols: number;
+  rows: number;
+}
+
+interface ReplayPayload {
+  data: string;
+  cols: number;
+  rows: number;
+}
+
+export function replaySize(p: { cols?: number; rows?: number }): TermSize | null {
+  return p.cols && p.rows && p.cols > 0 && p.rows > 0 ? { cols: p.cols, rows: p.rows } : null;
+}
+
 function base64ToBytes(s: string): Uint8Array {
   const bin = atob(s);
   const out = new Uint8Array(bin.length);
@@ -66,8 +81,10 @@ export const ipc = {
     invoke<TerminalInfo>("restart_terminal", { id, cols, rows }),
   onData: (id: string, cb: (bytes: Uint8Array) => void): Promise<UnlistenFn> =>
     listen<string>(`pty:data:${id}`, (e) => cb(base64ToBytes(e.payload))),
-  onReplay: (id: string, cb: (bytes: Uint8Array) => void): Promise<UnlistenFn> =>
-    listen<string>(`pty:replay:${id}`, (e) => cb(base64ToBytes(e.payload))),
+  /** The replayed history of a session this tile joined, with the size it was written at (null
+   * when the holder did not say). */
+  onReplay: (id: string, cb: (bytes: Uint8Array, size: TermSize | null) => void): Promise<UnlistenFn> =>
+    listen<ReplayPayload>(`pty:replay:${id}`, (e) => cb(base64ToBytes(e.payload.data), replaySize(e.payload))),
   onExit: (id: string, cb: (code: number | null) => void): Promise<UnlistenFn> =>
     listen<{ code: number | null }>(`pty:exit:${id}`, (e) => cb(e.payload.code)),
   loadWorkspace: () => invoke<Workspace | null>("load_workspace"),
@@ -87,6 +104,8 @@ export const ipc = {
   agentsInstallRemote: (host: string) => invoke<boolean>("agents_install_remote", { host }),
   toolRemoteReady: (host: string) => invoke<boolean>("tool_remote_ready", { host }),
   remoteTileInfo: (host: string, id: string) => invoke<RemoteTileInfo>("remote_tile_info", { host, id }),
+  /** Ends the tile's session holder on `host`; true when one was running. */
+  remoteTileClose: (host: string, id: string) => invoke<boolean>("remote_tile_close", { host, id }),
   /** Resolves with the generation of the watcher now running for `host` (see `agents_watch`). */
   agentsWatch: (host: string | null) => invoke<number>("agents_watch", { host }),
   agentsUnwatch: (host: string | null) => invoke<void>("agents_unwatch", { host }),

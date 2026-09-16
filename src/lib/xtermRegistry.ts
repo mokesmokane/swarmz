@@ -36,6 +36,10 @@ export function parseAttachMarker(data: string): { isNew: boolean; endMarker: bo
  * tool's attach.rs), before any live byte. */
 export const REPLAY_END_MARKER = "\x1b]1337;swarmz-replay-end\x07";
 
+/** What every holder replay starts with (`REPLAY_PREFIX` in the tool's ring.rs): a soft reset. A
+ * replay no longer than this carries no history. */
+export const HOLDER_REPLAY_PREFIX_LEN = 4;
+
 /** Largest OSC 52 payload honoured (base64 chars); anything bigger is dropped, not truncated. */
 export const OSC52_MAX_CHARS = 1_000_000;
 
@@ -106,6 +110,12 @@ interface Entry {
   replayBoundary: boolean;
   /** A remote folder poll is in flight (each is an ssh round trip). */
   remotePolling: boolean;
+  /** Something has been written to the terminal (output, a replay, an exit line). */
+  hasOutput: boolean;
+  /** The tile joined a running session without a size of its own (the holder keeps the size its
+   * other viewers set), so its first input also sends its size: by the size rule, whoever types
+   * sets the size, and a pane whose fit did not change anything never sent one. */
+  claimSize: boolean;
 }
 
 const entries = new Map<string, Entry>();
@@ -143,11 +153,11 @@ async function pollCwd(id: string, entry: Entry): Promise<void> {
   if (!localTileAlive(id)) return;
   try {
     const cwd = await ipc.terminalCwd(id);
-    // `lsof` takes ~16 ms; the tile may have exited or turned into an ssh tile meanwhile, and
-    // this local path would then be the wrong Mac's.
+    // Asking the holder is a round trip; the tile may have exited or turned into an ssh tile
+    // meanwhile, and this local path would then be the wrong Mac's.
     if (cwd && localTileAlive(id)) await useStore.getState().setTerminalCwd(id, cwd, "poll");
   } catch {
-    // lsof missing or the tile is gone; the next poll or OSC 7 will catch up
+    // the holder did not answer or the tile is gone; the next poll or OSC 7 will catch up
   }
 }
 
@@ -279,12 +289,22 @@ function createEntry(id: string): Entry {
     remoteMaxTimer: null,
     replayBoundary: false,
     remotePolling: false,
+    hasOutput: false,
+    claimSize: false,
+  };
+
+  /** Before input goes out: a tile that joined without a size says its size first. */
+  const claimSizeOnInput = () => {
+    if (!entry.claimSize) return;
+    entry.claimSize = false;
+    void ipc.resizeTerminal(id, term.cols, term.rows).catch(() => {});
   };
 
   term.onData((data) => {
     // Fallback for a tool without the end marker: input from the user (keys, pastes, mouse
     // reports) means the replay is on screen.
     userInput(entry);
+    claimSizeOnInput();
     const host = data === IMAGE_PASTE_KEY ? connectedSshHost(id) : null;
     // Writes to an already-exited pane are expected to fail; ignore.
     if (host) void sendImageOrForward(id, host);
@@ -298,6 +318,7 @@ function createEntry(id: string): Entry {
     if (e.key !== "Enter" || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return true;
     if (e.type === "keydown") {
       userInput(entry);
+      claimSizeOnInput();
       void ipc.writeTerminal(id, SHIFT_ENTER_SEQUENCE).catch(() => {});
       scheduleEnterPoll(id, entry);
     }
@@ -344,11 +365,28 @@ function createEntry(id: string): Entry {
   });
 
   entry.ready = Promise.all([
-    ipc.onReplay(id, (bytes) => {
+    ipc.onReplay(id, (bytes, size) => {
       entry.replaying = true;
       try {
+        // Rejoining after a disconnect: the history replaces what is on screen rather than
+        // following it. A new session's replay (just the prefix) leaves the old output alone.
+        if (entry.hasOutput && bytes.length > HOLDER_REPLAY_PREFIX_LEN) term.reset();
+        entry.hasOutput = true;
+        // Parse the history at the size it was written at; the fit below (or the pane's, once it
+        // is laid out) then reflows it to this pane.
+        if (size) {
+          if (size.cols !== term.cols || size.rows !== term.rows) term.resize(size.cols, size.rows);
+          entry.claimSize = true;
+        }
         term.write(bytes, () => {
           entry.replaying = false;
+          if (size && entry.opened) {
+            try {
+              entry.fit.fit();
+            } catch {
+              // not laid out; the pane's ResizeObserver fits it
+            }
+          }
         });
       } catch {
         // A malformed replay chunk must not leave the tile permanently suppressing live OSC 52
@@ -357,11 +395,13 @@ function createEntry(id: string): Entry {
       }
     }),
     ipc.onData(id, (bytes) => {
+      entry.hasOutput = true;
       // xterm parses asynchronously and runs the OSC handlers during the parse, so the scan waits
       // for this chunk's write callback, when the replay state matches the chunk's end.
       term.write(bytes, () => scanLiveOutput(id, entry, bytes));
     }),
     ipc.onExit(id, (code) => {
+      entry.hasOutput = true;
       term.write(`\r\n\x1b[90m[process exited with code ${code ?? "unknown"}]\x1b[0m\r\n`);
       useStore.getState().markExited(id, code);
     }),

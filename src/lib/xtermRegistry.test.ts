@@ -2,10 +2,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalInfo } from "./ipc";
 
-const { instances, dataCallbacks, replayCallbacks } = vi.hoisted(() => ({
+const { instances, dataCallbacks, replayCallbacks, fitCalls } = vi.hoisted(() => ({
   instances: [] as { disposed: boolean; selection: string; element: HTMLElement | null }[],
   dataCallbacks: {} as Record<string, (b: Uint8Array) => void>,
-  replayCallbacks: {} as Record<string, (b: Uint8Array) => void>,
+  replayCallbacks: {} as Record<string, (b: Uint8Array, size?: { cols: number; rows: number } | null) => void>,
+  fitCalls: { n: 0 },
 }));
 
 vi.mock("@xterm/xterm", () => {
@@ -35,8 +36,21 @@ vi.mock("@xterm/xterm", () => {
     }
     onResize() {}
     writes: Array<{ data: unknown; done?: () => void }> = [];
+    /** Writes, resets and resizes, in order. */
+    log: string[] = [];
+    cols = 80;
+    rows = 24;
     write(data: unknown, done?: () => void) {
       this.writes.push({ data, done });
+      this.log.push("write");
+    }
+    reset() {
+      this.log.push("reset");
+    }
+    resize(cols: number, rows: number) {
+      this.cols = cols;
+      this.rows = rows;
+      this.log.push(`resize ${cols}x${rows}`);
     }
     loadAddon() {}
     open(container: HTMLElement) {
@@ -59,7 +73,9 @@ vi.mock("@xterm/xterm", () => {
 
 vi.mock("@xterm/addon-fit", () => {
   class FitAddon {
-    fit() {}
+    fit() {
+      fitCalls.n += 1;
+    }
   }
   return { FitAddon };
 });
@@ -72,7 +88,7 @@ vi.mock("./ipc", () => ({
       dataCallbacks[_id] = cb;
       return () => {};
     }),
-    onReplay: vi.fn(async (_id: string, cb: (b: Uint8Array) => void) => {
+    onReplay: vi.fn(async (_id: string, cb: (b: Uint8Array, size?: { cols: number; rows: number } | null) => void) => {
       replayCallbacks[_id] = cb;
       return () => {};
     }),
@@ -81,6 +97,7 @@ vi.mock("./ipc", () => ({
     setTerminalCwd: vi.fn(async (id: string, cwd: string) => ({ id, name: "x", cwd, exited: null, error: null })),
     pasteImageToRemote: vi.fn(async () => null as string | null),
     remoteTileInfo: vi.fn(async () => ({ running: false }) as { running: boolean; cwd?: string | null }),
+    remoteTileClose: vi.fn(async () => false),
   },
 }));
 
@@ -615,6 +632,91 @@ describe("replayed output", () => {
     osc7("file:///new/path");
     await vi.waitFor(() => expect(ipc.setTerminalCwd).toHaveBeenCalledWith("rp2", "/new/path"));
     dispose("rp2");
+  });
+});
+
+describe("joining a running session", () => {
+  interface FakeTerm {
+    log: string[];
+    cols: number;
+    rows: number;
+    writes: Array<{ data: unknown; done?: () => void }>;
+    dataHandler: ((d: string) => void) | null;
+  }
+  const enc = (t: string) => new TextEncoder().encode(t);
+  const tile = (id: string) =>
+    useStore.setState({
+      terminals: { [id]: { id, name: id, cwd: "/", exited: null, error: null } },
+      order: [id],
+      settings: { [id]: { ssh: null, claude: null, command: null, extra: {} } },
+    });
+  beforeEach(() => {
+    vi.mocked(ipc.resizeTerminal).mockClear();
+    vi.mocked(ipc.writeTerminal).mockClear();
+  });
+
+  it("parses the history at the size it was written at, and claims the pane's size on first input", async () => {
+    tile("js1");
+    await prepare("js1");
+    const term = instances[instances.length - 1] as unknown as FakeTerm;
+    replayCallbacks.js1(enc("\x1b[!phistory"), { cols: 120, rows: 40 });
+    expect(term.log).toEqual(["resize 120x40", "write"]);
+    const fits = fitCalls.n;
+    term.writes[term.writes.length - 1].done?.();
+    expect(fitCalls.n).toBe(fits); // not laid out yet: the pane fits it when it opens
+    term.dataHandler?.("a");
+    expect(ipc.resizeTerminal).toHaveBeenCalledWith("js1", 120, 40);
+    expect(ipc.writeTerminal).toHaveBeenCalledWith("js1", "a");
+    expect(vi.mocked(ipc.resizeTerminal).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(ipc.writeTerminal).mock.invocationCallOrder[0]);
+    term.dataHandler?.("b");
+    expect(ipc.resizeTerminal).toHaveBeenCalledTimes(1);
+    dispose("js1");
+  });
+
+  it("fits an open pane once the history is parsed", async () => {
+    tile("js2");
+    const { term } = attach("js2", document.createElement("div"));
+    await prepare("js2");
+    const fake = term as unknown as FakeTerm;
+    replayCallbacks.js2(enc("\x1b[!phistory"), { cols: 100, rows: 30 });
+    const fits = fitCalls.n;
+    fake.writes[fake.writes.length - 1].done?.();
+    expect(fitCalls.n).toBe(fits + 1);
+    dispose("js2");
+  });
+
+  it("without a size, leaves the terminal alone and claims nothing", async () => {
+    tile("js3");
+    await prepare("js3");
+    const term = instances[instances.length - 1] as unknown as FakeTerm;
+    replayCallbacks.js3(enc("\x1b[!phistory"), null);
+    expect(term.log).toEqual(["write"]);
+    expect([term.cols, term.rows]).toEqual([80, 24]);
+    term.dataHandler?.("a");
+    expect(ipc.resizeTerminal).not.toHaveBeenCalled();
+    dispose("js3");
+  });
+
+  it("replaces what is on screen when history is replayed into a used terminal, but keeps it for a new session", async () => {
+    tile("js4");
+    await prepare("js4");
+    const term = instances[instances.length - 1] as unknown as FakeTerm;
+    dataCallbacks.js4(enc("before the disconnect"));
+    replayCallbacks.js4(enc("\x1b[!pbefore the disconnect"), { cols: 80, rows: 24 });
+    expect(term.log).toEqual(["write", "reset", "write"]);
+    // A restart that started a new session replays only the prefix: the old output stays.
+    replayCallbacks.js4(enc("\x1b[!p"), { cols: 80, rows: 24 });
+    expect(term.log).toEqual(["write", "reset", "write", "write"]);
+    dispose("js4");
+  });
+
+  it("a first replay into a fresh terminal does not reset it", async () => {
+    tile("js5");
+    await prepare("js5");
+    const term = instances[instances.length - 1] as unknown as FakeTerm;
+    replayCallbacks.js5(enc("\x1b[!phistory"), { cols: 80, rows: 24 });
+    expect(term.log).toEqual(["write"]);
+    dispose("js5");
   });
 });
 
