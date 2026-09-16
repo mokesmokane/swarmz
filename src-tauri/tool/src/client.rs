@@ -1,4 +1,5 @@
-use crate::proto::{encode, json, read_frame, resize_payload, ExitInfo, Hello, Info, Kind, Welcome, PROTOCOL_VERSION};
+use crate::proto::{encode, json, read_frame, resize_payload, ExitInfo, Hello, Info, Kind, ScreenRequest, Welcome, PROTOCOL_VERSION};
+use crate::screen::Snapshot;
 use std::io::Write;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -15,14 +16,18 @@ use std::time::Duration;
 /// the holder itself reports the shell exiting, never as a side effect of dropping or detaching.
 /// The pending `info()` call's sender, tagged with that call's sequence number.
 type InfoSlot = Arc<Mutex<Option<(u64, mpsc::Sender<Info>)>>>;
+/// The pending `screen()` call's sender, tagged with that call's sequence number.
+type ScreenSlot = Arc<Mutex<Option<(u64, mpsc::Sender<Snapshot>)>>>;
 
 pub struct HolderClient {
     stream: UnixStream,
     writer: Mutex<UnixStream>,
     info_tx: InfoSlot,
     info_seq: std::sync::atomic::AtomicU64,
-    /// Held for a whole `info()` round trip so concurrent callers take turns.
-    info_call: Mutex<()>,
+    screen_tx: ScreenSlot,
+    screen_seq: std::sync::atomic::AtomicU64,
+    /// Held for a whole `info()` or `screen()` round trip so requests take turns.
+    request_call: Mutex<()>,
     closing: Arc<AtomicBool>,
     welcome: Welcome,
 }
@@ -85,8 +90,9 @@ impl HolderClient {
         let _ = r.set_read_timeout(None);
 
         let info_tx: InfoSlot = Arc::new(Mutex::new(None));
+        let screen_tx: ScreenSlot = Arc::new(Mutex::new(None));
         let closing = Arc::new(AtomicBool::new(false));
-        let (it, cl) = (info_tx.clone(), closing.clone());
+        let (it, st, cl) = (info_tx.clone(), screen_tx.clone(), closing.clone());
         std::thread::spawn(move || {
             let mut on_exit = Some(on_exit);
             loop {
@@ -112,6 +118,13 @@ impl HolderClient {
                                 }
                             }
                         }
+                        Some(Kind::ScreenReply) => {
+                            if let Ok(snap) = serde_json::from_slice::<Snapshot>(&f.payload) {
+                                if let Some((_, tx)) = st.lock().unwrap().take() {
+                                    let _ = tx.send(snap);
+                                }
+                            }
+                        }
                         _ => {}
                     },
                     _ => {
@@ -126,7 +139,17 @@ impl HolderClient {
             }
         });
 
-        Ok(HolderClient { stream, writer: Mutex::new(w), info_tx, info_seq: std::sync::atomic::AtomicU64::new(0), info_call: Mutex::new(()), closing, welcome })
+        Ok(HolderClient {
+            stream,
+            writer: Mutex::new(w),
+            info_tx,
+            info_seq: std::sync::atomic::AtomicU64::new(0),
+            screen_tx,
+            screen_seq: std::sync::atomic::AtomicU64::new(0),
+            request_call: Mutex::new(()),
+            closing,
+            welcome,
+        })
     }
 
     pub fn welcome(&self) -> &Welcome {
@@ -153,7 +176,7 @@ impl HolderClient {
     /// Safe to call from several threads: an `InfoReply` carries no correlation id, so calls
     /// take turns (a waiting call's own `timeout` starts once its turn comes).
     pub fn info(&self, timeout: Duration) -> Option<Info> {
-        let _turn = self.info_call.lock().unwrap_or_else(|e| e.into_inner());
+        let _turn = self.request_call.lock().unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = mpsc::channel();
         let seq = self.info_seq.fetch_add(1, Ordering::SeqCst);
         *self.info_tx.lock().ok()? = Some((seq, tx));
@@ -162,6 +185,26 @@ impl HolderClient {
             // Unanswered: withdraw this call's sender (only ours) so a late reply is dropped
             // instead of waiting in the slot.
             if let Ok(mut slot) = self.info_tx.lock() {
+                if slot.as_ref().is_some_and(|(s, _)| *s == seq) {
+                    *slot = None;
+                }
+            }
+        }
+        reply
+    }
+
+    /// The last `lines` styled lines of the session's screen (spec §3.4). Takes turns with `info`.
+    pub fn screen(&self, lines: usize, timeout: Duration) -> Option<Snapshot> {
+        let _turn = self.request_call.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = mpsc::channel();
+        let seq = self.screen_seq.fetch_add(1, Ordering::SeqCst);
+        *self.screen_tx.lock().ok()? = Some((seq, tx));
+        let reply = self
+            .send(Kind::Screen, &json(&ScreenRequest { lines }))
+            .ok()
+            .and_then(|_| rx.recv_timeout(timeout).ok());
+        if reply.is_none() {
+            if let Ok(mut slot) = self.screen_tx.lock() {
                 if slot.as_ref().is_some_and(|(s, _)| *s == seq) {
                     *slot = None;
                 }
@@ -363,5 +406,35 @@ mod tests {
         let err = HolderClient::connect(&sock, &hello(), |_, _| {}, |_| {}).err().unwrap();
         assert!(err.contains("expected a replay frame"), "{err}");
         assert!(err.contains(&(Kind::Data as u8).to_string()), "{err}");
+    }
+
+    #[test]
+    fn screen_returns_what_the_shell_printed() {
+        let (_d, sock, h) = start("screen");
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let o = out.clone();
+        let c = HolderClient::connect(&sock, &hello(), move |b, _| o.lock().unwrap().extend(b), |_| {}).unwrap();
+        c.write(b"printf 'alpha\\nbeta\\n'\n").unwrap();
+        assert!(wait(&out, "beta"));
+        std::thread::sleep(Duration::from_millis(200));
+        let tool = HolderClient::connect(
+            &sock,
+            &Hello { v: PROTOCOL_VERSION, cols: 0, rows: 0, viewer: "tool".into() },
+            |_, _| {},
+            |_| {},
+        )
+        .unwrap();
+        let snap = tool.screen(50, Duration::from_secs(3)).expect("a screen reply");
+        let texts: Vec<String> = snap.lines.iter().map(crate::screen::line_text).collect();
+        assert!(texts.iter().any(|t| t == "alpha"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "beta"), "{texts:?}");
+        assert_eq!((snap.cols, snap.rows), (80, 24));
+        // Info and Screen answers never cross.
+        assert!(tool.info(Duration::from_secs(3)).is_some());
+        c.resize(100, 30).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(tool.screen(5, Duration::from_secs(3)).unwrap().cols, 100);
+        c.terminate().unwrap();
+        h.join().unwrap().unwrap();
     }
 }

@@ -6,6 +6,7 @@ pub mod proc;
 pub mod proto;
 pub mod pty;
 pub mod ring;
+pub mod screen;
 pub mod server;
 pub mod tailscale;
 pub mod util;

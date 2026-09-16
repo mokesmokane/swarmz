@@ -1,7 +1,8 @@
 use crate::paths::{build_id, ensure_dir, now_iso, session_paths, socket_live, write_meta, Meta};
-use crate::proto::{encode, json, parse_resize, read_frame, ExitInfo, Hello, Info, Kind, Welcome, PROTOCOL_VERSION};
+use crate::proto::{encode, json, parse_resize, read_frame, ExitInfo, Hello, Info, Kind, ScreenRequest, Welcome, PROTOCOL_VERSION};
 use crate::pty::{PtySession, SpawnSpec};
 use crate::ring::{Ring, REPLAY_PREFIX, RING_CAP};
+use crate::screen::{snapshot, SCROLLBACK};
 use std::io::Write;
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
@@ -45,12 +46,13 @@ struct Viewer {
 }
 
 struct Shared {
-    // Lock order: ring, then viewers. Never take ring while holding viewers.
+    // Lock order: ring, viewers, applied, screen. The Screen handler takes screen alone and releases it before viewers.
     ring: Mutex<Ring>,
     viewers: Mutex<Vec<Viewer>>,
     session: OnceLock<Arc<PtySession>>,
     welcome: OnceLock<Welcome>,
     applied: Mutex<(u16, u16)>,
+    screen: Mutex<vt100::Parser>,
     clock: AtomicU64,
     next_id: AtomicU64,
     cap: usize,
@@ -90,6 +92,7 @@ impl Shared {
             if let Some(s) = self.session.get() {
                 let _ = s.resize(size.0, size.1);
             }
+            self.screen.lock().unwrap().screen_mut().set_size(size.1, size.0);
         }
     }
 
@@ -152,6 +155,7 @@ pub fn run_holder(cfg: HolderConfig) -> Result<Option<i32>, String> {
         session: OnceLock::new(),
         welcome: OnceLock::new(),
         applied: Mutex::new((cfg.cols, cfg.rows)),
+        screen: Mutex::new(vt100::Parser::new(cfg.rows, cfg.cols, SCROLLBACK)),
         clock: AtomicU64::new(1),
         next_id: AtomicU64::new(1),
         cap: cfg.viewer_queue_cap,
@@ -174,6 +178,9 @@ pub fn run_holder(cfg: HolderConfig) -> Result<Option<i32>, String> {
             let frame = encode(Kind::Data, &bytes);
             let mut vs = on_data_shared.viewers.lock().unwrap();
             on_data_shared.broadcast(&mut vs, &frame);
+            // After viewers, not before (lock order): ring stays held, so the screen sees the
+            // bytes in the same order as the ring.
+            on_data_shared.screen.lock().unwrap().process(&bytes);
         },
         move |code| {
             let _ = exit_tx.send(code);
@@ -332,6 +339,15 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
                 let vs = shared.viewers.lock().unwrap();
                 if let Some(v) = vs.iter().find(|v| v.id == id) {
                     Shared::enqueue(v, encode(Kind::InfoReply, &json(&info)), usize::MAX);
+                }
+            }
+            Some(Kind::Screen) => {
+                let want = serde_json::from_slice::<ScreenRequest>(&frame.payload).map(|r| r.lines).unwrap_or(200).clamp(1, SCROLLBACK + 500);
+                // Built with only the screen lock held; viewers are locked afterwards (lock order).
+                let snap = snapshot(&mut shared.screen.lock().unwrap(), want);
+                let vs = shared.viewers.lock().unwrap();
+                if let Some(v) = vs.iter().find(|v| v.id == id) {
+                    Shared::enqueue(v, encode(Kind::ScreenReply, &json(&snap)), usize::MAX);
                 }
             }
             _ => {}

@@ -16,6 +16,8 @@ pub enum Kind {
     Terminate = 7,
     Info = 8,
     InfoReply = 9,
+    Screen = 10,
+    ScreenReply = 11,
 }
 
 impl Kind {
@@ -30,6 +32,8 @@ impl Kind {
             7 => Kind::Terminate,
             8 => Kind::Info,
             9 => Kind::InfoReply,
+            10 => Kind::Screen,
+            11 => Kind::ScreenReply,
             _ => return None,
         })
     }
@@ -128,6 +132,11 @@ pub struct Info {
     pub foreground_command: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScreenRequest {
+    pub lines: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,6 +168,7 @@ mod tests {
     #[test]
     fn kinds_and_resize_payloads() {
         assert_eq!(Kind::from_u8(9), Some(Kind::InfoReply));
+        assert_eq!(Kind::from_u8(11), Some(Kind::ScreenReply));
         assert_eq!(Kind::from_u8(42), None);
         assert_eq!(parse_resize(&resize_payload(132, 43)), Some((132, 43)));
         assert_eq!(parse_resize(&[1, 2, 3]), None);
