@@ -430,3 +430,28 @@ fn attach_bridges_a_terminal_and_reattaches_after_a_drop() {
     let status = child2.wait().unwrap();
     assert_eq!(status.exit_code(), 4);
 }
+
+#[test]
+fn attach_reports_a_nonzero_exit_when_the_holder_vanishes() {
+    let h = home("attach-vanish");
+    let paths = swarmz_tool::paths::session_paths(&swarmz_tool::paths::sessions_dir_in(&h.path), "t9").unwrap();
+    h.track(&paths.socket.to_string_lossy());
+    let (mut child, out, _w) = run_attach(&h.path, "t9");
+    assert!(wait_out(&out, "\x1b]1337;swarmz-attach;new=1\x07"), "first attach must say new=1");
+
+    // Kill the holder itself (not the shell inside it, and not the attach process): the session's
+    // own metadata carries its pid.
+    let meta = swarmz_tool::paths::read_meta(&paths.meta).expect("holder must have written its meta by now");
+    let rc = unsafe { libc::kill(meta.pid as i32, libc::SIGKILL) };
+    assert_eq!(rc, 0, "could not signal the holder: {}", std::io::Error::last_os_error());
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let status = loop {
+        if let Ok(Some(s)) = child.try_wait() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "attach never exited after the holder vanished");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_ne!(status.exit_code(), 0, "a vanished holder must not look like a clean exit");
+}

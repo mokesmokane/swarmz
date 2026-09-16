@@ -43,6 +43,9 @@ impl Drop for RawMode {
     }
 }
 
+/// Queries fd 1 (stdout), not fd 0: under `ssh -t` (how this CLI is actually invoked) stdin and
+/// stdout are the same pty, but a plain redirect could leave only one of them attached to it, and
+/// stdout is the one whose size actually matters for wrapping the shell's own output.
 fn term_size() -> (u16, u16) {
     unsafe {
         let mut ws: libc::winsize = std::mem::zeroed();
@@ -57,11 +60,13 @@ fn term_size() -> (u16, u16) {
 enum Done {
     ShellExited(Option<i32>),
     InputClosed,
+    OutputClosed,
 }
 
 /// Holds the tile's session (starting it if needed) and bridges this terminal to it. Returns the
-/// process exit code: the shell's when it exits, 0 when our input closes (the ssh connection
-/// went away), leaving the session running.
+/// process exit code: the shell's when it exits (or 1 when it exited without reporting a code, as
+/// for a signal-killed shell or a connection that broke unexpectedly), 0 when our input or output
+/// closes (the ssh connection went away), leaving the session running.
 pub fn attach(exe: &Path, dir: &Path, mut req: HoldRequest) -> Result<i32, CliError> {
     let (cols, rows) = term_size();
     req.cols = cols;
@@ -76,14 +81,18 @@ pub fn attach(exe: &Path, dir: &Path, mut req: HoldRequest) -> Result<i32, CliEr
     let (done_tx, done_rx) = mpsc::channel::<Done>();
     let stdout = Arc::new(Mutex::new(std::io::stdout()));
     let exit_tx = done_tx.clone();
+    let output_done = done_tx.clone();
     let hello = Hello { v: PROTOCOL_VERSION, cols, rows, viewer: "window".into() };
     let client = HolderClient::connect(
         Path::new(&held.socket),
         &hello,
         move |bytes, _replay| {
-            if let Ok(mut o) = stdout.lock() {
-                let _ = o.write_all(&bytes);
-                let _ = o.flush();
+            let Ok(mut o) = stdout.lock() else { return };
+            // A write or flush failure (e.g. EPIPE, the other end of the ssh pipe has gone away)
+            // ends the bridge exactly like stdin closing: detach and leave the session running,
+            // rather than surfacing it as the shell having exited.
+            if o.write_all(&bytes).is_err() || o.flush().is_err() {
+                let _ = output_done.send(Done::OutputClosed);
             }
         },
         move |code| {
@@ -131,8 +140,12 @@ pub fn attach(exe: &Path, dir: &Path, mut req: HoldRequest) -> Result<i32, CliEr
     let done = done_rx.recv().unwrap_or(Done::InputClosed);
     drop(raw);
     match done {
-        Done::ShellExited(code) => Ok(code.unwrap_or(0)),
-        Done::InputClosed => {
+        // `None` covers both a shell that exited without a reportable code (killed by a signal)
+        // and a connection that broke before the holder ever reported an exit at all (see
+        // `HolderClient`'s fallback `on_exit(None)` when its reader loop ends unexpectedly): both
+        // are failures, never success.
+        Done::ShellExited(code) => Ok(code.unwrap_or(1)),
+        Done::InputClosed | Done::OutputClosed => {
             client.detach();
             Ok(0)
         }
