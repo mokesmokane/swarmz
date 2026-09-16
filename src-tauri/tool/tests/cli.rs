@@ -597,3 +597,168 @@ fn attach_reports_a_nonzero_exit_when_the_holder_vanishes() {
     };
     assert_ne!(status.exit_code(), 0, "a vanished holder must not look like a clean exit");
 }
+
+fn write_ws(home: &Path, terminals: serde_json::Value, machines: serde_json::Value) {
+    std::fs::create_dir_all(home.join(".swarmz")).unwrap();
+    let ws = serde_json::json!({"version": 1, "layout": null, "terminals": terminals, "machines": machines,
+        "sync": {"revision": 4, "updatedAt": "2026-09-16T10:00:00.000Z", "updatedBy": "mini"}});
+    std::fs::write(home.join(".swarmz/workspace.json"), ws.to_string()).unwrap();
+}
+
+const MINI: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini")];
+
+/// `MINI` with a PATH that holds no `claude`: a tile that types a Claude line must not start the
+/// real Claude Code installed on this Mac.
+const MINI_NO_CLAUDE: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")];
+
+fn wait_until(mut f: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        if f() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+#[test]
+fn ls_sessions_and_prune() {
+    let h = home("ls");
+    let cwd = h.path.to_string_lossy().into_owned();
+    write_ws(&h.path, serde_json::json!([{"id": "t1", "name": "one", "cwd": cwd, "origin": "mini"}, {"id": "t2", "name": "two", "cwd": "/nowhere", "origin": "mini"}]), serde_json::json!({}));
+    let (code, v) = tool_env(&h.path, &["hold", "t1", "--cwd", &cwd, "--name", "one"], MINI);
+    assert_eq!(code, 0, "{v}");
+    h.track(v["socket"].as_str().unwrap());
+    let (_, orphan) = tool_env(&h.path, &["hold", "zz", "--cwd", &cwd, "--name", "orphan"], MINI);
+    h.track(orphan["socket"].as_str().unwrap());
+
+    let (code, v) = tool_env(&h.path, &["ls"], MINI);
+    assert_eq!(code, 0, "{v}");
+    let tiles = v["tiles"].as_array().unwrap();
+    assert_eq!(tiles.len(), 2);
+    assert_eq!((tiles[0]["id"].as_str(), tiles[0]["running"].as_bool(), tiles[0]["kind"].as_str()), (Some("t1"), Some(true), Some("shell")));
+    assert_eq!(tiles[1]["running"], false);
+    assert_eq!(tiles[0]["machine"], "mini");
+
+    let (_, s) = tool_env(&h.path, &["sessions"], MINI);
+    let rows = s["sessions"].as_array().unwrap();
+    let known: Vec<(String, bool, bool)> = rows.iter().map(|r| (r["id"].as_str().unwrap().to_string(), r["known"].as_bool().unwrap(), r["running"].as_bool().unwrap())).collect();
+    assert_eq!(known, vec![("t1".to_string(), true, true), ("zz".to_string(), false, true)]);
+
+    let (_, p) = tool_env(&h.path, &["prune"], MINI);
+    assert_eq!(p["removed"], 0);
+    let (code, bad) = tool_env(&h.path, &["ls", "extra"], MINI);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("usage")));
+}
+
+#[test]
+fn new_tiles_are_held_typed_and_recorded_and_restart_brings_them_back() {
+    let h = home("new");
+    let proj = h.path.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let folder = proj.to_string_lossy().into_owned();
+    write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
+
+    let (code, v) = tool_env(&h.path, &["new", "--folder", &folder, "--skip-permissions"], MINI_NO_CLAUDE);
+    assert_eq!(code, 0, "{v}");
+    let tile = &v["tile"];
+    let id = tile["id"].as_str().unwrap().to_string();
+    assert_eq!((tile["name"].as_str(), tile["kind"].as_str(), tile["running"].as_bool()), (Some("proj"), Some("claude"), Some(true)));
+    let paths = swarmz_tool::paths::session_paths(&h.path.join(".swarmz/sessions"), &id).unwrap();
+    h.track(paths.socket.to_str().unwrap());
+
+    let ws: serde_json::Value = serde_json::from_slice(&std::fs::read(h.path.join(".swarmz/workspace.json")).unwrap()).unwrap();
+    assert_eq!(ws["sync"]["revision"], 5);
+    assert_eq!(ws["sync"]["updatedBy"], "mini");
+    let def = &ws["terminals"][0];
+    assert_eq!((def["origin"].as_str(), def["cwd"].as_str()), (Some("mini"), Some(folder.as_str())));
+    assert_eq!((def["claude"]["started"].as_bool(), def["claude"]["skipPermissions"].as_bool()), (Some(false), Some(true)));
+    let sid = def["claude"]["sessionId"].as_str().unwrap().to_string();
+    assert!(swarmz_tool::util::valid_uuid(&sid));
+
+    // The Claude line was typed into the session. It is longer than the 80-column screen, so
+    // the rows are joined before searching.
+    let hello = Hello { v: PROTOCOL_VERSION, cols: 0, rows: 0, viewer: "tool".into() };
+    let c = HolderClient::connect(&paths.socket, &hello, |_, _| {}, |_| {}).unwrap();
+    let want = format!("claude --dangerously-skip-permissions --session-id {sid}");
+    let joined = || c.screen(50, Duration::from_secs(2)).map(|s| s.lines.iter().map(swarmz_tool::screen::line_text).collect::<String>()).unwrap_or_default();
+    assert!(wait_until(|| joined().contains(&want)), "{}", joined());
+
+    // A second tile in the same folder gets the next name.
+    let (_, v2) = tool_env(&h.path, &["new", "--folder", &folder], MINI_NO_CLAUDE);
+    assert_eq!(v2["tile"]["name"], "proj-2");
+    let id2 = v2["tile"]["id"].as_str().unwrap().to_string();
+    h.track(swarmz_tool::paths::session_paths(&h.path.join(".swarmz/sessions"), &id2).unwrap().socket.to_str().unwrap());
+
+    // Restart refuses a running tile, and brings a closed one back.
+    let (code, r) = tool_env(&h.path, &["restart", &id], MINI_NO_CLAUDE);
+    assert_eq!((code, r["code"].as_str()), (1, Some("running")));
+    let (_, closed) = tool_env(&h.path, &["close", &id], MINI_NO_CLAUDE);
+    assert_eq!(closed["closed"], true);
+    let (code, r) = tool_env(&h.path, &["restart", &id], MINI_NO_CLAUDE);
+    assert_eq!(code, 0, "{r}");
+    assert_eq!(r["tile"]["running"], true);
+    h.track(paths.socket.to_str().unwrap());
+    let (code, r) = tool_env(&h.path, &["restart", "not-a-tile"], MINI_NO_CLAUDE);
+    assert_eq!((code, r["code"].as_str()), (1, Some("unknown")));
+
+    // Folder checks and a missing machine name.
+    let (code, bad) = tool_env(&h.path, &["new", "--folder", "relative"], MINI_NO_CLAUDE);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("invalid")));
+    let (code, bad) = tool_env(&h.path, &["new", "--folder", "/definitely/not/here"], MINI_NO_CLAUDE);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("cwd_missing")));
+    let (code, bad) = tool_env(&h.path, &["new", "--folder", &folder], &[("SWARMZ_MACHINE", ""), ("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")]);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("no_machine")));
+}
+
+#[test]
+fn folders_and_machines() {
+    let h = home("folders");
+    std::fs::create_dir_all(h.path.join("b")).unwrap();
+    std::fs::create_dir_all(h.path.join("a")).unwrap();
+    let (code, v) = tool_env(&h.path, &["folders", h.path.to_str().unwrap()], MINI);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["dirs"], serde_json::json!(["a", "b"]));
+    let (_, home_list) = tool_env(&h.path, &["folders"], MINI);
+    assert_eq!(home_list["path"], h.path.to_str().unwrap());
+
+    write_ws(&h.path, serde_json::json!([]), serde_json::json!({"studio": {"alias": "Studio", "color": "#ff0000", "lastUsed": "t"}}));
+    let (code, m) = tool_env(&h.path, &["machines"], MINI);
+    assert_eq!(code, 0, "{m}");
+    let ms = m["machines"].as_array().unwrap();
+    assert_eq!(ms.len(), 2);
+    assert_eq!((ms[0]["name"].as_str(), ms[0]["self"].as_bool(), ms[0]["online"].as_bool()), (Some("mini"), Some(true), Some(true)));
+    assert_eq!((ms[1]["name"].as_str(), ms[1]["alias"].as_str(), ms[1]["color"].as_str()), (Some("studio"), Some("Studio"), Some("#ff0000")));
+    assert!(ms[1]["online"].is_null());
+}
+
+#[test]
+fn watch_streams_a_snapshot_then_changes() {
+    let h = home("watch");
+    let cwd = h.path.to_string_lossy().into_owned();
+    write_ws(&h.path, serde_json::json!([{"id": "w1", "name": "one", "cwd": cwd, "origin": "mini"}]), serde_json::json!({}));
+    let out_path = h.path.join("watch.out");
+    let mut child = Command::new(EXE)
+        .arg("watch")
+        .env("HOME", &h.path)
+        .env("SWARMZ_MACHINE", "mini")
+        .stdin(Stdio::null())
+        .stdout(std::fs::File::create(&out_path).unwrap())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let read = || std::fs::read_to_string(&out_path).unwrap_or_default();
+    assert!(wait_until(|| read().contains("\"snapshot\"")), "{}", read());
+    let (_, held) = tool_env(&h.path, &["hold", "w1", "--cwd", &cwd, "--name", "one"], MINI);
+    h.track(held["socket"].as_str().unwrap());
+    assert!(wait_until(|| read().lines().any(|l| l.contains("\"type\":\"tile\"") && l.contains("\"running\":true"))), "{}", read());
+    write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
+    assert!(wait_until(|| read().contains("\"type\":\"gone\"")), "{}", read());
+    let _ = child.kill();
+    let _ = child.wait();
+    for line in read().lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["v"], 1);
+    }
+}

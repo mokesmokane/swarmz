@@ -7,7 +7,7 @@ use crate::transcript::{guess_path, last_assistant_text};
 use crate::workspace::{load_from, TerminalDef, Workspace};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -58,9 +58,21 @@ pub fn tile_rows(
     live_cwd: &dyn Fn(&str) -> Option<String>,
     dialog_open: &dyn Fn(&str) -> Option<bool>,
 ) -> Vec<TileRow> {
+    tile_rows_with_folds(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog_open)
+}
+
+/// `tile_rows` with the hook log already folded, so a caller that polls (`watch`) folds the log
+/// only when it changes.
+pub fn tile_rows_with_folds(
+    home: &Path,
+    self_machine: Option<&str>,
+    folds: &HashMap<String, Fold>,
+    live_cwd: &dyn Fn(&str) -> Option<String>,
+    dialog_open: &dyn Fn(&str) -> Option<bool>,
+) -> Vec<TileRow> {
     let dir = sessions_dir_in(home);
     let running = |id: &str| session_paths(&dir, id).ok().and_then(|p| live_session(&p)).is_some();
-    tile_rows_with(home, self_machine, live_cwd, dialog_open, &running)
+    rows_from(home, self_machine, folds, live_cwd, dialog_open, &running)
 }
 
 /// `tile_rows` with the liveness check supplied (tests use it without real holders).
@@ -71,8 +83,18 @@ pub fn tile_rows_with(
     dialog_open: &dyn Fn(&str) -> Option<bool>,
     running: &dyn Fn(&str) -> bool,
 ) -> Vec<TileRow> {
+    rows_from(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog_open, running)
+}
+
+fn rows_from(
+    home: &Path,
+    self_machine: Option<&str>,
+    folds: &HashMap<String, Fold>,
+    live_cwd: &dyn Fn(&str) -> Option<String>,
+    dialog_open: &dyn Fn(&str) -> Option<bool>,
+    running: &dyn Fn(&str) -> bool,
+) -> Vec<TileRow> {
     let Ok(Some(ws)) = load_from(&workspace_path(home)) else { return vec![] };
-    let folds = fold_log(&read_log(home));
     let dir = sessions_dir_in(home);
     homed_defs(&ws, self_machine)
         .into_iter()
@@ -308,6 +330,25 @@ mod tests {
         let rows = tile_rows_with(&h, Some("mini"), &|_| None, &|_| Some(false), &|id| id == "c1");
         let v = serde_json::to_value(rows.iter().find(|r| r.id == "c1").unwrap()).unwrap();
         assert_eq!((v["status"].as_str(), v["needs"].as_str(), v["summary"].as_str()), (Some("working"), None, None));
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn rows_use_the_fold_they_are_given_not_the_log_file() {
+        let h = home("folds");
+        write_workspace(&h);
+        let log = format!("1\tc1\tSessionStart\t{}", json!({"session_id": "s", "permission_mode": "plan"}));
+        std::fs::write(h.join(".swarmz/agents/events.log"), log).unwrap();
+        let mut folds = HashMap::new();
+        folds.insert("c1".to_string(), Fold { mode: Some("acceptEdits".into()), ..Fold::default() });
+        let rows = tile_rows_with_folds(&h, Some("mini"), &folds, &|_| None, &|_| None);
+        let c1 = rows.iter().find(|r| r.id == "c1").unwrap();
+        assert_eq!(c1.mode.as_deref(), Some("acceptEdits"));
+        let rows = tile_rows_with_folds(&h, Some("mini"), &HashMap::new(), &|_| None, &|_| None);
+        assert_eq!(rows.iter().find(|r| r.id == "c1").unwrap().mode, None);
+        // The file-reading wrapper still folds the log.
+        let rows = tile_rows(&h, Some("mini"), &|_| None, &|_| None);
+        assert_eq!(rows.iter().find(|r| r.id == "c1").unwrap().mode.as_deref(), Some("plan"));
         let _ = std::fs::remove_dir_all(&h);
     }
 

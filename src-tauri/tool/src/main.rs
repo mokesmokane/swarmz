@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use swarmz_tool::attach::attach;
 use swarmz_tool::client::HolderClient;
+use swarmz_tool::commands as cmd;
 use swarmz_tool::hold::{hold, holder_program, CliError, HoldRequest};
 use swarmz_tool::paths::{build_id, home_dir, live_session, session_paths, sessions_dir};
 use swarmz_tool::proto::{Hello, PROTOCOL_VERSION};
@@ -15,8 +16,8 @@ const CLOSE_WAIT: Duration = Duration::from_secs(5);
 /// gone by the time the shell uses them), never the shell's own.
 const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT"];
 
-const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir"];
-const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback"];
+const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary"];
+const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local"];
 
 struct Args {
     positional: Vec<String>,
@@ -121,12 +122,12 @@ fn exe() -> Result<PathBuf, CliError> {
     std::env::current_exe().map_err(|e| CliError::new("failed", format!("cannot locate this program: {e}")))
 }
 
-fn run(raw: &[String]) -> Result<serde_json::Value, CliError> {
+fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
     let a = Args::parse(raw)?;
     match a.positional.first().map(String::as_str) {
         Some("version") => {
             a.expect_positional(1, "version")?;
-            Ok(json!({ "v": 1, "tool": env!("CARGO_PKG_VERSION"), "protocol": PROTOCOL_VERSION, "build": build_id() }))
+            Ok(Some(json!({ "v": 1, "tool": env!("CARGO_PKG_VERSION"), "protocol": PROTOCOL_VERSION, "build": build_id() })))
         }
         Some("hold") => {
             a.expect_positional(2, "hold <tile> --cwd D --name N [--cols C] [--rows R] [--env K=V]... [--require-cwd]")?;
@@ -141,32 +142,32 @@ fn run(raw: &[String]) -> Result<serde_json::Value, CliError> {
                 tile,
             };
             let r = hold(&exe()?, &sessions_dir(), &req)?;
-            Ok(serde_json::to_value(r).expect("hold result serialises"))
+            Ok(Some(serde_json::to_value(r).expect("hold result serialises")))
         }
         Some("info") => {
             a.expect_positional(2, "info <tile>")?;
             let tile = tile_arg(&a)?;
             let paths = session_paths(&sessions_dir(), &tile).map_err(|e| CliError::new("invalid", e))?;
             if live_session(&paths).is_none() {
-                return Ok(json!({ "v": 1, "running": false }));
+                return Ok(Some(json!({ "v": 1, "running": false })));
             }
             let hello = Hello { v: PROTOCOL_VERSION, cols: 0, rows: 0, viewer: TOOL_VIEWER.into() };
             let client = HolderClient::connect(&paths.socket, &hello, |_, _| {}, |_| {}).map_err(|e| CliError::new("failed", e))?;
             let info = client.info(Duration::from_secs(3)).ok_or_else(|| CliError::new("failed", "the session did not answer"))?;
-            Ok(json!({
+            Ok(Some(json!({
                 "v": 1,
                 "running": true,
                 "cwd": info.cwd,
                 "foregroundBusy": info.foreground_busy,
                 "foregroundCommand": info.foreground_command,
-            }))
+            })))
         }
         Some("close") => {
             a.expect_positional(2, "close <tile>")?;
             let tile = tile_arg(&a)?;
             let paths = session_paths(&sessions_dir(), &tile).map_err(|e| CliError::new("invalid", e))?;
             if live_session(&paths).is_none() {
-                return Ok(json!({ "v": 1, "closed": false }));
+                return Ok(Some(json!({ "v": 1, "closed": false })));
             }
             let (tx, rx) = std::sync::mpsc::channel::<()>();
             let hello = Hello { v: PROTOCOL_VERSION, cols: 0, rows: 0, viewer: TOOL_VIEWER.into() };
@@ -174,12 +175,12 @@ fn run(raw: &[String]) -> Result<serde_json::Value, CliError> {
             let Ok(client) = HolderClient::connect(&paths.socket, &hello, |_, _| {}, move |_| {
                 let _ = tx.send(());
             }) else {
-                return Ok(json!({ "v": 1, "closed": false }));
+                return Ok(Some(json!({ "v": 1, "closed": false })));
             };
             client.terminate().map_err(|e| CliError::new("failed", format!("could not reach the session: {e}")))?;
             // The exit callback runs on the holder's Exit frame and when the connection ends.
             rx.recv_timeout(CLOSE_WAIT).map_err(|_| CliError::new("failed", "the session did not end in time"))?;
-            Ok(json!({ "v": 1, "closed": true }))
+            Ok(Some(json!({ "v": 1, "closed": true })))
         }
         Some("attach") => {
             a.expect_positional(2, "attach <tile> [--cwd D] [--name N] [--env K=V]...")?;
@@ -229,16 +230,54 @@ fn run(raw: &[String]) -> Result<serde_json::Value, CliError> {
             let code = run_holder(cfg)?;
             std::process::exit(code.unwrap_or(0));
         }
-        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach> …")),
+        Some("ls") => {
+            a.expect_positional(1, "ls")?;
+            Ok(Some(cmd::ls(&cmd::Env::from_process()?)?))
+        }
+        Some("watch") => {
+            a.expect_positional(1, "watch")?;
+            cmd::watch(&cmd::Env::from_process()?, &mut std::io::stdout())?;
+            Ok(None)
+        }
+        Some("machines") => {
+            a.expect_positional(1, "machines")?;
+            Ok(Some(cmd::machines(&cmd::Env::from_process()?)?))
+        }
+        Some("sessions") => {
+            a.expect_positional(1, "sessions")?;
+            Ok(Some(cmd::sessions(&cmd::Env::from_process()?)?))
+        }
+        Some("prune") => {
+            a.expect_positional(1, "prune")?;
+            Ok(Some(cmd::prune(&cmd::Env::from_process()?)?))
+        }
+        Some("folders") => {
+            if a.positional.len() > 2 {
+                return Err(CliError::new("usage", "usage: swarmz folders [<path>]"));
+            }
+            Ok(Some(cmd::folders(&cmd::Env::from_process()?, a.positional.get(1).map(String::as_str))?))
+        }
+        Some("new") => {
+            a.expect_positional(1, "new --folder <dir> [--skip-permissions] [--name <name>]")?;
+            let folder = a.opt("--folder").ok_or_else(|| CliError::new("usage", "missing --folder"))?;
+            Ok(Some(cmd::new_tile(&cmd::Env::from_process()?, folder, a.flag("--skip-permissions"), a.opt("--name"))?))
+        }
+        Some("restart") => {
+            a.expect_positional(2, "restart <tile>")?;
+            let tile = cmd::tile_arg(&tile_arg(&a)?)?;
+            Ok(Some(cmd::restart(&cmd::Env::from_process()?, &tile)?))
+        }
+        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|…> …")),
     }
 }
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     match run(&raw) {
-        Ok(v) => {
+        Ok(Some(v)) => {
             println!("{v}");
         }
+        Ok(None) => {}
         Err(e) => {
             println!("{}", json!({ "v": 1, "error": e.message, "code": e.code }));
             std::process::exit(1);

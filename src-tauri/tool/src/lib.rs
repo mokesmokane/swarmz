@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod attach;
 pub mod client;
+pub mod commands;
 pub mod dialog;
 pub mod gate;
 pub mod hold;
