@@ -1097,3 +1097,58 @@ fn commands_on_a_missing_or_bad_tile_say_so() {
     let (code, v) = tool_env(&h.path, &["output", "nope", "--lines", "0"], MINI);
     assert_eq!((code, v["code"].as_str()), (1, Some("usage")));
 }
+
+const TEST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq4Jm5mJ0x1bm9SZXBsYWNlVGhpc0tleUZvclRlc3Q";
+
+#[test]
+fn phone_keys_are_added_listed_and_revoked() {
+    let h = home("phone");
+    write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
+    let (code, v) = tool_env(&h.path, &["phone", "add", "--name", "Galaxy Fold", "--key", TEST_KEY], MINI);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!((v["added"].as_bool(), v["machines"].as_array().map(|m| m.len())), (Some(true), Some(0)));
+    let line = std::fs::read_to_string(h.path.join(".ssh/authorized_keys")).unwrap();
+    assert!(line.starts_with("command=\"$HOME/.swarmz/bin/swarmz ssh-gate\",no-port-forwarding"));
+    assert!(line.trim_end().ends_with("swarmz-phone:Galaxy Fold"));
+    let (_, again) = tool_env(&h.path, &["phone", "add", "--name", "Galaxy Fold", "--key", TEST_KEY, "--local"], MINI);
+    assert_eq!(again["added"], false);
+    let (_, ls) = tool_env(&h.path, &["phone", "ls"], MINI);
+    assert_eq!(ls["phones"][0]["device"], "Galaxy Fold");
+    let (_, r) = tool_env(&h.path, &["phone", "revoke", "Galaxy Fold"], MINI);
+    assert_eq!(r["removed"], 1);
+    let (code, bad) = tool_env(&h.path, &["phone", "add", "--name", "x", "--key", "ssh-rsa AAAA"], MINI);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("invalid")));
+    let (code, bad) = tool_env(&h.path, &["phone", "wipe"], MINI);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("usage")));
+}
+
+/// Runs `ssh-gate` with `tool_command`'s HOME/PATH (never the developer's real one), the given
+/// `SSH_ORIGINAL_COMMAND` (or none), and `SWARMZ_MACHINE=mini` so it never asks Tailscale.
+fn gate(home: &Path, original: Option<&str>) -> (i32, serde_json::Value) {
+    let out_path = home.join(format!("gate-{}.out", original.map(|o| o.len()).unwrap_or(0)));
+    let mut cmd = tool_command(home);
+    cmd.arg("ssh-gate").env("SWARMZ_MACHINE", "mini").env_remove("SSH_ORIGINAL_COMMAND");
+    if let Some(o) = original {
+        cmd.env("SSH_ORIGINAL_COMMAND", o);
+    }
+    let status = cmd.stdin(Stdio::null()).stdout(std::fs::File::create(&out_path).unwrap()).stderr(Stdio::null()).status().unwrap();
+    let v = serde_json::from_slice(&std::fs::read(&out_path).unwrap()).unwrap_or(serde_json::Value::Null);
+    (status.code().unwrap_or(-1), v)
+}
+
+#[test]
+fn the_gate_runs_only_allowed_commands() {
+    let h = home("gate");
+    let (code, v) = gate(&h.path, Some("swarmz version"));
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["protocol"], PROTOCOL_VERSION);
+    let exe = std::fs::canonicalize(EXE).unwrap();
+    let (code, v) = gate(&h.path, Some(&format!("'{}' version", exe.display())));
+    assert_eq!(code, 0, "{v}");
+    for bad in ["swarmz attach t1", "swarmz ls; rm -rf ~", "swarmz phone add --name x --key y", "bash", "swarmz 'unterminated"] {
+        let (code, v) = gate(&h.path, Some(bad));
+        assert_eq!((code, v["code"].as_str()), (126, Some("denied")), "{bad}: {v}");
+    }
+    let (code, v) = gate(&h.path, None);
+    assert_eq!((code, v["code"].as_str()), (126, Some("denied")));
+}

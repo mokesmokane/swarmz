@@ -46,6 +46,11 @@ pub fn self_machine() -> Option<String> {
     crate::tailscale::status().ok()?.self_machine.map(|m| m.name).filter(|n| !n.is_empty())
 }
 
+/// One word for a POSIX shell.
+pub fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +94,14 @@ mod tests {
         assert!(t.ends_with('Z'));
         assert_eq!(&t[19..20], ".");
         assert_eq!(format_iso_ms(0, 7), "1970-01-01T00:00:00.007Z");
+    }
+
+    #[test]
+    fn shell_quoting() {
+        assert_eq!(sh_quote("abc"), "'abc'");
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+        assert_eq!(sh_quote(""), "''");
+        let words = crate::gate::split_words(&format!("x {}", sh_quote("a 'b' $c; d"))).unwrap();
+        assert_eq!(words, vec!["x", "a 'b' $c; d"]);
     }
 }

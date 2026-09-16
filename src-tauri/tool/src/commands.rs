@@ -9,16 +9,20 @@ use crate::screen::line_text;
 use crate::server::TOOL_VIEWER;
 use crate::agent::{fold_log, read_log, Fold, Needs};
 use crate::dialog::{live_dialog, resolve, Answer, Dialog};
+use crate::gate::{check, split_words};
 use crate::input::{key_bytes, paste_bytes};
+use crate::phone::{add_key, authorized_keys, list_keys, machine_hosts, revoke, valid_device};
+use crate::proc::run_with_timeout;
 use crate::screen::{diff_lines, LinesUpdate};
 use crate::transcript::{after, guess_path, image as transcript_image, page, Change, Normaliser};
 use crate::tiles::{homed_defs, prune as prune_sessions, session_rows, tile_rows, try_tile_rows_with_folds, watch_events, TileRow};
-use crate::util::{new_uuid, now_iso_ms, valid_abs_path};
+use crate::util::{new_uuid, now_iso_ms, sh_quote, valid_abs_path};
 use crate::workspace::{load_from, save_to, ClaudeConfig, TerminalDef, Workspace};
 use serde_json::{json, Map, Value};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -600,6 +604,74 @@ pub fn image(env: &Env, tile: &str, image_id: &str) -> Result<Value, CliError> {
     let (path, _) = transcript_path(env, tile)?;
     let (mime, data) = transcript_image(&path, image_id).ok_or_else(|| CliError::new("unknown", format!("no image {image_id}")))?;
     Ok(json!({"v": 1, "mime": mime, "base64": data}))
+}
+
+fn default_user() -> String {
+    std::env::var("USER").unwrap_or_default()
+}
+
+/// Runs `swarmz <args>` on every other Mac swarmz knows, over ssh without prompting.
+fn fan_out(env: &Env, args: &[&str]) -> Vec<Value> {
+    let ws = env.workspace().ok().flatten().unwrap_or_else(empty_workspace);
+    let remote = std::iter::once("~/.swarmz/bin/swarmz".to_string()).chain(args.iter().map(|a| sh_quote(a))).collect::<Vec<_>>().join(" ");
+    machine_hosts(&ws, env.machine.as_deref(), &default_user())
+        .into_iter()
+        .map(|(machine, host)| {
+            let mut c = std::process::Command::new("ssh");
+            c.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ControlPath=~/.swarmz/ssh/%C", "-o", "ControlMaster=no", "--", &host, &remote]);
+            match run_with_timeout(c, Duration::from_secs(15), "ssh") {
+                Ok(done) if done.status.success() => json!({"machine": machine, "ok": true}),
+                Ok(done) => {
+                    let reply: Value = serde_json::from_str(done.stdout.trim()).unwrap_or(Value::Null);
+                    let error = reply["error"].as_str().map(str::to_string).unwrap_or_else(|| done.stderr.trim().to_string());
+                    json!({"machine": machine, "ok": false, "error": error})
+                }
+                Err(e) => json!({"machine": machine, "ok": false, "error": e}),
+            }
+        })
+        .collect()
+}
+
+pub fn phone_add(env: &Env, device: &str, key: &str, local: bool) -> Result<Value, CliError> {
+    let added = add_key(&authorized_keys(&env.home), device, key).map_err(|e| CliError::new("invalid", e))?;
+    let machines = if local { vec![] } else { fan_out(env, &["phone", "add", "--name", device, "--key", key, "--local"]) };
+    Ok(json!({"v": 1, "added": added, "machines": machines}))
+}
+
+pub fn phone_ls(env: &Env) -> Result<Value, CliError> {
+    Ok(json!({"v": 1, "phones": list_keys(&authorized_keys(&env.home))}))
+}
+
+pub fn phone_revoke(env: &Env, device: &str, local: bool) -> Result<Value, CliError> {
+    if !valid_device(device) {
+        return Err(CliError::new("invalid", format!("invalid device name {device:?}")));
+    }
+    let removed = revoke(&authorized_keys(&env.home), device).map_err(failed)?;
+    let machines = if local { vec![] } else { fan_out(env, &["phone", "revoke", device, "--local"]) };
+    Ok(json!({"v": 1, "removed": removed, "machines": machines}))
+}
+
+/// Replaces this process with the allowed tool command in `SSH_ORIGINAL_COMMAND`. Returns only
+/// when the command is refused or cannot be run.
+pub fn ssh_gate(env: &Env) -> CliError {
+    let denied = |m: String| CliError::new("denied", m);
+    let Ok(original) = std::env::var("SSH_ORIGINAL_COMMAND") else {
+        return denied("this key only runs swarmz commands".into());
+    };
+    let words = match split_words(&original) {
+        Ok(w) => w,
+        Err(e) => return denied(e),
+    };
+    let mut tools = vec![env.home.join(".swarmz/bin/swarmz").to_string_lossy().into_owned(), env.exe.to_string_lossy().into_owned()];
+    if let Ok(real) = std::fs::canonicalize(&env.exe) {
+        tools.push(real.to_string_lossy().into_owned());
+    }
+    let args = match check(&words, &tools) {
+        Ok(a) => a,
+        Err(e) => return denied(e),
+    };
+    let err = std::process::Command::new(&env.exe).args(&args).exec();
+    failed(format!("could not run swarmz: {err}"))
 }
 
 #[cfg(test)]

@@ -324,7 +324,28 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             let tile = cmd::tile_arg(&a.positional[1])?;
             Ok(Some(cmd::image(&cmd::Env::from_process()?, &tile, &a.positional[2])?))
         }
-        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|transcript|image> …")),
+        Some("phone") => match a.positional.get(1).map(String::as_str) {
+            Some("add") => {
+                a.expect_positional(2, "phone add --name <device> --key <pubkey> [--local]")?;
+                let name = a.opt("--name").ok_or_else(|| CliError::new("usage", "missing --name"))?;
+                let key = a.opt("--key").ok_or_else(|| CliError::new("usage", "missing --key"))?;
+                Ok(Some(cmd::phone_add(&cmd::Env::from_process()?, name, key, a.flag("--local"))?))
+            }
+            Some("ls") => {
+                a.expect_positional(2, "phone ls")?;
+                Ok(Some(cmd::phone_ls(&cmd::Env::from_process()?)?))
+            }
+            Some("revoke") => {
+                a.expect_positional(3, "phone revoke <device> [--local]")?;
+                Ok(Some(cmd::phone_revoke(&cmd::Env::from_process()?, &a.positional[2], a.flag("--local"))?))
+            }
+            _ => Err(CliError::new("usage", "usage: swarmz phone <add|ls|revoke> …")),
+        },
+        Some("ssh-gate") => {
+            a.expect_positional(1, "ssh-gate")?;
+            Err(cmd::ssh_gate(&cmd::Env::from_process()?))
+        }
+        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|transcript|image|phone|ssh-gate> …")),
     }
 }
 
@@ -337,7 +358,7 @@ fn main() {
         Ok(None) => {}
         Err(e) => {
             println!("{}", json!({ "v": 1, "error": e.message, "code": e.code }));
-            std::process::exit(1);
+            std::process::exit(if raw.first().map(String::as_str) == Some("ssh-gate") { 126 } else { 1 });
         }
     }
 }
