@@ -62,13 +62,17 @@ crate as the app (a second `[[bin]]`), bundled with swarmz and installed at
 - `swarmz hold <tile> --cwd <dir> --name <name> [--env K=V]...` starts a
   holder for the tile unless one is already running, and prints
   `{"v":1,"socket":…,"existed":bool,"pid":…,"shellPid":…}`.
-- A new holder detaches completely (double fork, `setsid`, stdio to
-  `/dev/null`, log to `~/.swarmz/sessions/<tile>.log`) so it survives the
-  swarmz app, ssh sessions, and terminal closures.
+- A new holder detaches completely (one fork plus `setsid`, so it has no
+  controlling terminal and is reparented to launchd when `hold` exits; stdin
+  from `/dev/null`, stdout and stderr to `~/.swarmz/sessions/<tile>.log`,
+  working directory `/`) so it survives the swarmz app, ssh sessions, and
+  terminal closures.
 - It spawns `$SHELL -l` in `<dir>` (falling back to `$HOME` with the existing
   "no longer exists" note if `<dir>` is missing) in a PTY with
   `TERM=xterm-256color`, `COLORTERM=truecolor`, `SWARMZ_TERMINAL_ID`,
-  `SWARMZ_TERMINAL_NAME` and any `--env`.
+  `SWARMZ_TERMINAL_NAME` and any `--env`. `SSH_AUTH_SOCK`, `SSH_TTY`,
+  `SSH_CONNECTION` and `SSH_CLIENT` are removed (they describe whichever ssh
+  session started the holder) unless given with `--env`.
 - It listens on `~/.swarmz/sessions/<tile>.sock` (directory mode 0700,
   socket 0600) and writes `~/.swarmz/sessions/<tile>.json`
   `{v, pid, shellPid, cwd, name, startedAt}`.
@@ -86,9 +90,9 @@ Frames on the socket: `type: u8`, `len: u32 BE`, `payload`.
 
 | Type | Direction | Payload |
 |------|-----------|---------|
-| `Hello` 1 | viewer→holder | JSON `{v, cols, rows, viewer}` (`viewer` is a free label, e.g. `window`, `phone`, `tool`) |
-| `Welcome` 2 | holder→viewer | JSON `{v, shellPid, cwd, startedAt}`; a holder with a different major `v` closes the connection after sending it |
-| `Replay` 3 | holder→viewer | bytes (§3.3), sent once right after `Welcome` |
+| `Hello` 1 | viewer→holder | JSON `{v, cols, rows, viewer}` (`viewer` is a free label, e.g. `window`, `phone`, `tool`); `cols` or `rows` of 0 means "no size yet" (§3.5) |
+| `Welcome` 2 | holder→viewer | JSON `{v, shellPid, cwd, startedAt, cols, rows}`, where `cols`/`rows` is the PTY size applied when the viewer connected (the size its replay was written at; absent from older holders); a holder with a different major `v` closes the connection after sending it |
+| `Replay` 3 | holder→viewer | bytes (§3.3), sent once right after `Welcome` (empty for `tool` viewers) |
 | `Data` 4 | both | bytes: shell output to viewers, input from a viewer |
 | `Resize` 5 | viewer→holder | `cols: u16`, `rows: u16` |
 | `Exit` 6 | holder→viewer | JSON `{code}` (null when killed by a signal) |
@@ -108,6 +112,8 @@ time; the holder never blocks on a slow viewer (per-viewer queue capped at
   never begins inside an escape sequence).
 - After `Replay` it sends SIGWINCH to the shell's foreground process group,
   so full-screen programs (Claude) redraw for the viewer.
+- A `tool` viewer only asks questions: its `Replay` is empty and it causes no
+  SIGWINCH.
 
 ### 3.4 Screen model
 
@@ -120,6 +126,10 @@ The tool's `output` and `pending` commands (§4) use it; viewers do not.
 
 - The applied PTY size is the size of the **most recently active viewer**:
   the last one to send `Data` or `Hello`.
+- A `Hello` with a zero size (a swarmz window rejoining a running session
+  before its pane is laid out) does not make the viewer active and applies
+  nothing; its first non-zero `Resize` counts as its `Hello`, and `Data` from
+  it adopts the size already applied. A `Resize` with a zero is ignored.
 - When that viewer disconnects, the next most recent viewer's last size
   applies.
 - Viewers that never type (the tool, the phone's output stream) send
@@ -137,9 +147,21 @@ The tool's `output` and `pending` commands (§4) use it; viewers do not.
   unchanged. `close_terminal` sends `Terminate`.
 - **Relaunch:** `loadWorkspace` holds every local def. `existed: true` means
   the session is alive: the tile attaches and **no connect card is shown**.
-  Only a new holder arms the card (today's behaviour after a reboot).
-- **Remote tile (home is another Mac):** the local PTY runs
-  `ssh -t <shared-socket opts> <host> ~/.swarmz/bin/swarmz attach <tile> --cwd <dir> --name <name>`.
+  Only a new holder arms the card (today's behaviour after a reboot), except
+  that a rejoined ssh tile whose ssh has died shows it. The window joins a
+  running session with a zero-size `Hello`, parses the replay at the
+  `Welcome` size (sent with the replay event), then fits and sends its own
+  size; its first input also sends its size. A replay with history that
+  arrives in a pane that already shows output (a reattach) resets the pane
+  first. Agent events from before launch still apply to tiles that rejoined
+  a running session.
+- **Remote tile (home is another Mac):** the tile's local holder runs a
+  shell, and the app types
+  `ssh -t <shared-socket opts> <host> ~/.swarmz/bin/swarmz attach <tile> --cwd <dir> --name <name>`
+  into it, so the ssh itself also survives a relaunch. Attach is used only
+  when this Mac's own machine name is known and the host is not this Mac;
+  `attach` also refuses (code `self`) when its `SWARMZ_TERMINAL_ID` is the
+  tile it was asked to attach.
   `attach` holds (starting a holder if needed), then bridges the ssh stdin
   and stdout to the socket in raw mode, forwarding window-size changes.
   Before bridging it writes `ESC ] 1337 ; swarmz-attach ; new=<0|1> ; end=1 BEL`,
@@ -148,15 +170,26 @@ The tool's `output` and `pending` commands (§4) use it; viewers do not.
   until it arrives, and still parses the plain `new=<0|1>` form from older
   tools). The xterm registry handles the OSC and, only when `new=1` for an
   attach line it typed, types the remote startup step (`export SWARMZ_TERMINAL_ID=… && cd … && claude …`).
+  The attach marker is written together with the replay, after the holder
+  has answered, so a failed attach prints only its JSON error.
   A dropped ssh connection leaves the remote holder and its Claude running;
-  reconnecting reattaches.
+  reconnecting reattaches. **Closing** a remote tile closes both holders: the
+  app ends the local one and, best effort and without waiting, runs
+  `swarmz close <tile>` on the host over the shared ssh socket
+  (`remote_tile_close`) when the host's tool is ready or the tile attached
+  this run.
 - **Checks move to the holder.** Local `foreground_busy`/`cwd` come from
   `Info`. Remote folder tracking asks the remote tool (`swarmz info <tile>`
   over the shared ssh socket) on the same Enter/interval schedule, so a bare
   `cd` on a remote shell is tracked. "Is the remote tile connected" becomes
   "the local PTY's ssh process is alive and the attach marker arrived".
 - Remote installs of the tool happen with the hooks install (first connect
-  per run) and refuse to copy when `uname -m` differs from this Mac's.
+  per run) and refuse to copy when `uname -m` differs from this Mac's. A
+  remote tool with the same version but other bytes is replaced only when
+  its build id (`swarmz version` reports `build`) is missing or older than
+  ours; the local install likewise keeps a newer build of the same version.
+  Only a definite "not usable" answer is remembered per host; a failed check
+  is retried on the next Run.
 - Everything that passes bytes (scrollback, copy on select, OSC 52, OSC 7,
   Shift+Enter, image paste, resume-failure detection) is unchanged because the
   holder passes bytes through untouched.
@@ -180,6 +213,8 @@ each carrying `"v": 1`. Failures exit non-zero with
 | `hold <tile> …` | §3.1 |
 | `attach <tile> …` | raw bridge (§3.6); never used by the phone |
 | `info <tile>` | `{cwd, foregroundBusy, foregroundCommand, running}` |
+| `close <tile>` | ends the tile's holder (`Terminate`) and waits up to 5 s: `{closed}`, false when none was running |
+| `version` | `{v, tool, protocol, build}` |
 | `machines` | `[{name, alias, color, online, self}]` from `workspace.json` machines and `tailscale status` (with `TERM` set) |
 | `ls` | tiles homed on this Mac: `[{id, name, cwd, kind: "claude"\|"shell", running, exitCode, status, needs, since, lastEvent, mode, lastMessage, turnEndedAt}]` |
 | `watch` | stream: a full `ls` snapshot first, then `{type:"tile", tile:{…}}` on every change and `{type:"gone", id}` when a tile is closed |
