@@ -1,6 +1,7 @@
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::Mutex;
+use std::time::Duration;
 
 pub struct SpawnSpec {
     pub program: String,
@@ -141,6 +142,89 @@ impl PtySession {
     #[cfg(not(unix))]
     pub fn cwd(&self) -> Option<String> {
         None
+    }
+
+    pub fn shell_pid(&self) -> Option<u32> {
+        self.shell_pid
+    }
+
+    /// The pty's foreground process group, when the master can report it.
+    #[cfg(unix)]
+    pub fn foreground_pgrp(&self) -> Option<i32> {
+        let master = self.master.lock().ok()?;
+        master.process_group_leader().map(|p| p as i32)
+    }
+
+    #[cfg(not(unix))]
+    pub fn foreground_pgrp(&self) -> Option<i32> {
+        None
+    }
+
+    /// Sends `sig` to the pty's foreground process group (for example SIGWINCH so a
+    /// full-screen program redraws for a viewer that just attached).
+    #[cfg(unix)]
+    pub fn signal_foreground(&self, sig: i32) {
+        if let Some(pgrp) = self.foreground_pgrp() {
+            if pgrp > 0 {
+                unsafe {
+                    libc::kill(-pgrp, sig);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub fn signal_foreground(&self, _sig: i32) {}
+
+    /// The short name of the program in the foreground (`zsh`, `sleep`, `ssh`), via `ps`.
+    #[cfg(unix)]
+    pub fn foreground_command(&self) -> Option<String> {
+        let pgrp = self.foreground_pgrp()?;
+        let out = std::process::Command::new("ps")
+            .arg("-o").arg("comm=").arg("-p").arg(pgrp.to_string())
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let base = name.rsplit('/').next().unwrap_or(&name).trim_start_matches('-').to_string();
+        if base.is_empty() { None } else { Some(base) }
+    }
+
+    #[cfg(not(unix))]
+    pub fn foreground_command(&self) -> Option<String> {
+        None
+    }
+
+    /// Hangs up the shell and whatever runs in its foreground; kills both if the shell is
+    /// still alive three seconds later.
+    #[cfg(unix)]
+    pub fn terminate(&self) {
+        let shell = self.shell_pid.map(|p| p as i32);
+        let fg = self.foreground_pgrp();
+        let send = move |sig: i32| {
+            for g in [shell, fg].into_iter().flatten() {
+                if g > 0 {
+                    unsafe {
+                        libc::kill(-g, sig);
+                    }
+                }
+            }
+        };
+        send(libc::SIGHUP);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(3));
+            if let Some(p) = shell {
+                if unsafe { libc::kill(p, 0) } == 0 {
+                    send(libc::SIGKILL);
+                }
+            }
+        });
+    }
+
+    #[cfg(not(unix))]
+    pub fn terminate(&self) {
+        self.kill();
     }
 }
 
@@ -311,5 +395,52 @@ mod cwd_tests {
         }
         session.kill();
         assert!(matches!(got.as_deref(), Some("/tmp") | Some("/private/tmp")), "got {got:?}");
+    }
+
+    #[test]
+    fn exposes_shell_pid_and_foreground_command() {
+        let spec = SpawnSpec {
+            program: "/bin/sh".to_string(),
+            args: vec![],
+            cwd: "/".to_string(),
+            env: vec![],
+            cols: 80,
+            rows: 24,
+        };
+        let session = PtySession::spawn(spec, |_| {}, |_| {}).unwrap();
+        let pid = session.shell_pid().expect("shell pid");
+        assert!(pid > 0);
+        session.write(b"sleep 3\n").unwrap();
+        let mut cmd = None;
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            cmd = session.foreground_command();
+            if cmd.as_deref() == Some("sleep") {
+                break;
+            }
+        }
+        assert_eq!(cmd.as_deref(), Some("sleep"));
+        session.terminate();
+    }
+
+    #[test]
+    fn terminate_ends_a_busy_shell() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spec = SpawnSpec {
+            program: "/bin/sh".to_string(),
+            args: vec![],
+            cwd: "/".to_string(),
+            env: vec![],
+            cols: 80,
+            rows: 24,
+        };
+        let session = PtySession::spawn(spec, |_| {}, move |code| {
+            let _ = tx.send(code);
+        })
+        .unwrap();
+        session.write(b"sleep 100\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        session.terminate();
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(6)).is_ok(), "shell did not exit after terminate");
     }
 }

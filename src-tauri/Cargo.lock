@@ -3245,14 +3245,26 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "image",
+ "libc",
  "portable-pty",
  "serde",
  "serde_json",
+ "swarmz-tool",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-dialog",
  "uuid",
+]
+
+[[package]]
+name = "swarmz-tool"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "portable-pty",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

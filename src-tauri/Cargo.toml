@@ -1,3 +1,6 @@
+[workspace]
+members = ["tool"]
+
 [package]
 name = "swarmz"
 version = "0.1.0"
@@ -22,6 +25,8 @@ portable-pty = "0.9"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
+swarmz-tool = { path = "tool" }
+libc = "0.2"
 
 [profile.release]
 codegen-units = 1

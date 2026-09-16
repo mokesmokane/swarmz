@@ -1,7 +1,7 @@
 pub mod agents;
 pub mod commands;
 pub mod paste;
-pub mod pty;
+pub use swarmz_tool::pty;
 pub mod registry;
 pub mod remote;
 pub mod sync;
