@@ -136,9 +136,16 @@ fn insert_if_registered(
     true
 }
 
-/// Connects the tile to its session holder, starting one if needed. Returns whether the session
-/// was already running.
-fn spawn_for(app: &AppHandle, info: &TerminalInfo, cols: u16, rows: u16) -> Result<bool, String> {
+/// What connecting a tile learned about its session.
+struct Joined {
+    /// The session was already running.
+    existed: bool,
+    /// When the session's holder started.
+    started_at: String,
+}
+
+/// Connects the tile to its session holder, starting one if needed.
+fn spawn_for(app: &AppHandle, info: &TerminalInfo, cols: u16, rows: u16) -> Result<Joined, String> {
     let state = app.state::<AppState>();
     let tool = crate::toolbin::ensure_installed()?;
     let held = crate::toolbin::hold(&tool, None, &info.id, &info.name, &info.cwd, cols, rows)?;
@@ -183,6 +190,7 @@ fn spawn_for(app: &AppHandle, info: &TerminalInfo, cols: u16, rows: u16) -> Resu
             let _ = exit_app.emit(&format!("pty:exit:{exit_id}"), ExitPayload { code });
         },
     )?;
+    let started_at = client.welcome().started_at.clone();
     let client: Arc<dyn TerminalSession> = Arc::new(client);
     let inserted = insert_if_registered(&mut state.sessions.lock().unwrap(), &state.registry, &info.id, gen, client.clone());
     gate.open();
@@ -191,7 +199,7 @@ fn spawn_for(app: &AppHandle, info: &TerminalInfo, cols: u16, rows: u16) -> Resu
         client.terminate();
         return Err(format!("terminal {} was closed while it was starting", info.id));
     }
-    Ok(held.existed)
+    Ok(Joined { existed: held.existed, started_at })
 }
 
 /// Starting a tile runs `swarmz hold` (a process, and up to a few seconds when a new holder has
@@ -226,7 +234,7 @@ pub async fn create_terminal(
             info
         };
         match spawn_for(&app, &info, cols, rows) {
-            Ok(existed) => Ok(TerminalInfo { existed, ..info }),
+            Ok(j) => Ok(TerminalInfo { existed: j.existed, started_at: Some(j.started_at), ..info }),
             Err(e) => {
                 let mut reg = state.registry.lock().unwrap();
                 // The frontend retries a missing folder in the home folder, keyed on this message.
@@ -349,7 +357,7 @@ pub async fn restart_terminal(app: AppHandle, id: String, cols: u16, rows: u16) 
             TerminalInfo { exited: None, error: None, ..current }
         };
         match spawn_for(&app, &info, cols, rows) {
-            Ok(existed) => Ok(TerminalInfo { existed, ..info }),
+            Ok(j) => Ok(TerminalInfo { existed: j.existed, started_at: Some(j.started_at), ..info }),
             Err(e) => {
                 let mut reg = state.registry.lock().unwrap();
                 reg.set_exited(&id, Some(-1), Some(e.clone()));

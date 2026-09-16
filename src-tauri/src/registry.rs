@@ -11,6 +11,9 @@ pub struct TerminalInfo {
     /// Whether the tile's session was already running when the app connected to it.
     #[serde(default)]
     pub existed: bool,
+    /// When the tile's session holder started (UTC, RFC 3339); None until it is connected.
+    #[serde(default, rename = "startedAt", skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -81,7 +84,7 @@ impl TerminalRegistry {
             .and_then(|n| validate_name(&n).ok())
             .unwrap_or_else(|| basename(&cwd));
         let name = self.unique_name(&base);
-        let info = TerminalInfo { id, name, cwd, exited: None, error: None, existed: false };
+        let info = TerminalInfo { id, name, cwd, exited: None, error: None, existed: false, started_at: None };
         self.entries.push(info.clone());
         Ok(info)
     }
@@ -157,6 +160,17 @@ fn basename(cwd: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn started_at_is_sent_as_camel_case_only_when_known() {
+        let mut reg = TerminalRegistry::new();
+        let info = reg.add("a".into(), None, "/tmp".into()).unwrap();
+        assert!(serde_json::to_value(&info).unwrap().get("startedAt").is_none());
+        let joined = TerminalInfo { existed: true, started_at: Some("2026-09-16T10:00:00Z".into()), ..info };
+        let v = serde_json::to_value(&joined).unwrap();
+        assert_eq!(v["startedAt"], "2026-09-16T10:00:00Z");
+        assert_eq!(v["existed"], true);
+    }
 
     #[test]
     fn default_name_is_cwd_basename_and_suffixes_on_collision() {

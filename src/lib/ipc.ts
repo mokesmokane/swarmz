@@ -10,6 +10,8 @@ export interface TerminalInfo {
   exited: number | null;
   error: string | null;
   existed?: boolean;
+  /** When the tile's session holder started (UTC); absent until connected. */
+  startedAt?: string | null;
 }
 
 export interface RemoteListing {

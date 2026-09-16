@@ -75,14 +75,39 @@ export const SYNC_STAT_MS = 5_000;
 /** When this app run started: hook events older than this are replay from before launch. */
 export let APP_LAUNCHED_AT = new Date().toISOString();
 
-/** Local tiles whose session holder was already running when this run joined it: their shells
- * (and any Claude in them) outlived the last run, so their events from before launch still
- * describe them. */
-const joinedTiles = new Set<string>();
+/** Local tiles whose session holder was already running when this run joined it, with when that
+ * holder started (ms, or null when unknown): their shells (and any Claude in them) outlived the
+ * last run, so their events from before launch still describe them, back to the holder's start. */
+const joinedTiles = new Map<string, number | null>();
 
-function noteJoined(id: string, existed: boolean | undefined) {
-  if (existed) joinedTiles.add(id);
-  else joinedTiles.delete(id);
+function noteJoined(info: TerminalInfo) {
+  if (!info.existed) {
+    joinedTiles.delete(info.id);
+    return;
+  }
+  const started = info.startedAt ? Date.parse(info.startedAt) : NaN;
+  joinedTiles.set(info.id, Number.isNaN(started) ? null : started);
+}
+
+/** Whether a local event from before launch describes the tile's current session. */
+function preLaunchEventCounts(id: string, ts: string): boolean {
+  if (!joinedTiles.has(id)) return false;
+  const started = joinedTiles.get(id) ?? null;
+  const at = Date.parse(ts);
+  return started === null || Number.isNaN(at) || at >= started;
+}
+
+/** Local events from before launch that arrived before the first load opened its tiles (the local
+ * watcher replays the log's tail within milliseconds of starting, long before the holders have
+ * answered). Null once they have been applied. */
+let launchReplay: AgentEventPayload[] | null = [];
+const LAUNCH_REPLAY_MAX = 5000;
+
+/** Applies the buffered pre-launch events, in order, now that the joined tiles are known. */
+function finishLaunchReplay() {
+  const pending = launchReplay;
+  launchReplay = null;
+  for (const p of pending ?? []) useStore.getState().applyAgentEvent(p);
 }
 export function __setLaunchedAt(iso: string) {
   APP_LAUNCHED_AT = iso;
@@ -241,9 +266,12 @@ function scheduleAgentRewatch(host: string | null) {
 export const beforeSpawn: {
   hook: (id: string) => Promise<void>;
   size: (id: string) => { cols: number; rows: number } | null;
+  /** After joining a running session without a size: send the pane's size once it is laid out. */
+  claimSize: (id: string) => void;
 } = {
   hook: async () => {},
   size: () => null,
+  claimSize: () => {},
 };
 
 /** Where a new terminal goes: a tab in a tile, or a new tile beside one. */
@@ -463,6 +491,7 @@ let loadStarted = false;
 
 export function __resetLoadGuard() {
   loadStarted = false;
+  launchReplay = [];
 }
 
 /**
@@ -585,7 +614,7 @@ async function openDefs(
       const opening = openingFor(regenerated, selfMachine, machines, defaultUser, known);
       const { info, note } = await spawnDef({ ...regenerated, cwd: opening.cwd ?? (await homeDir()) });
       if (info.existed) existedIds.add(info.id);
-      noteJoined(info.id, info.existed);
+      noteJoined(info);
       // The registry renamed it to avoid a clash: remember what the file asked for, so this
       // machine's suffix never travels back into the shared workspace.
       if (info.name !== regenerated.name) requestedNames.set(info.id, regenerated.name);
@@ -599,6 +628,8 @@ async function openDefs(
         startupNotes: startupNote ? { ...s.startupNotes, [info.id]: startupNote } : s.startupNotes,
         lastCwd: info.cwd,
       }));
+      // The session is recorded now, so the pane's size can no longer be dropped.
+      if (info.existed) beforeSpawn.claimSize(info.id);
     } catch (e) {
       failedCount += 1;
       set({ persistError: `could not open "${def.name}": ${typeof e === "string" ? e : String(e)}` });
@@ -964,6 +995,47 @@ function resetSessionIfFolderChanged(cur: TerminalSettings, next: TerminalSettin
   return { settings: next, note: null };
 }
 
+/** The first load's work (see `loadWorkspace`). */
+async function loadWorkspaceOnce(set: SetState): Promise<void> {
+  // Identity BEFORE the defs are opened: `openDefs` needs `selfMachine` to tell this machine's
+  // own locals from another machine's (which must open as remotes, not as local shells in a
+  // path that belongs to the other Mac) and to stamp `origin` on legacy defs. Waiting for the
+  // caller to refresh Tailscale afterwards would be too late. `refreshTailscale` swallows its
+  // own errors, so a machine without Tailscale just carries on with `selfMachine` null.
+  if (useStore.getState().selfMachine === null) await useStore.getState().refreshTailscale();
+  void useStore.getState().installAgentHooks();
+  void useStore.getState().ensureAgentWatchers();
+  let ws: Awaited<ReturnType<typeof ipc.loadWorkspace>> = null;
+  try {
+    ws = await ipc.loadWorkspace();
+  } catch (e) {
+    const msg = typeof e === "string" ? e : String(e);
+    set({ persistError: `${msg} — saving is paused until a successful Reload`, persistenceReady: false });
+    return;
+  }
+  if (!ws) {
+    neverSyncedAtLoad = true;
+    set({ persistenceReady: true });
+    return;
+  }
+  neverSyncedAtLoad = !ws.sync;
+  // Machines are applied before openDefs (when the file actually carries a `machines`
+  // section) so that `openingFor` can resolve a foreign local's ssh user/color from the
+  // SAME file being loaded. A file with no `machines` key at all (e.g. a peer's copy that
+  // had none to report) leaves whatever machines this app already knows about untouched,
+  // rather than wiping them, since there's no user-facing way to delete a known machine
+  // that a full replace-with-nothing should honor.
+  if (ws.machines !== undefined) {
+    const { machines, dropped } = sanitizeMachines(ws.machines);
+    set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
+  }
+  // openDefs sets persistenceReady itself: true when every def opened cleanly, false
+  // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
+  await openDefs(ws.terminals, ws.layout, set);
+  set({ syncMeta: ws.sync ?? null });
+  lastSeenMtime = await ipc.workspaceStat().catch(() => null);
+}
+
 export const useStore = create<WorkbenchState>((set) => ({
   terminals: {},
   order: [],
@@ -1117,7 +1189,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     forgetAttach(id);
     const dims = beforeSpawn.size(id) ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
     const info = await ipc.restartTerminal(id, dims.cols, dims.rows);
-    noteJoined(id, info.existed);
+    noteJoined(info);
     set((s) => ({
       terminals: { ...s.terminals, [id]: info },
       startupPending: { ...s.startupPending, [id]: !info.existed && startupLine(s.settings[id] ?? EMPTY_SETTINGS) !== null },
@@ -1127,8 +1199,10 @@ export const useStore = create<WorkbenchState>((set) => ({
     }));
     // The fit addon only fires onResize when dimensions change, so if the
     // new PTY already matches dims (e.g. same terminal, no relayout since
-    // exit) it would never be resized without this explicit call.
-    void ipc.resizeTerminal(id, dims.cols, dims.rows).catch(() => {});
+    // exit) it would never be resized without this explicit call. A rejoined
+    // session was joined without a size: the pane sends its own once laid out.
+    if (info.existed) beforeSpawn.claimSize(id);
+    else void ipc.resizeTerminal(id, dims.cols, dims.rows).catch(() => {});
   },
 
   async renameTerminal(id, name) {
@@ -1203,43 +1277,11 @@ export const useStore = create<WorkbenchState>((set) => ({
   async loadWorkspace() {
     if (loadStarted) return;
     loadStarted = true;
-    // Identity BEFORE the defs are opened: `openDefs` needs `selfMachine` to tell this machine's
-    // own locals from another machine's (which must open as remotes, not as local shells in a
-    // path that belongs to the other Mac) and to stamp `origin` on legacy defs. Waiting for the
-    // caller to refresh Tailscale afterwards would be too late. `refreshTailscale` swallows its
-    // own errors, so a machine without Tailscale just carries on with `selfMachine` null.
-    if (useStore.getState().selfMachine === null) await useStore.getState().refreshTailscale();
-    void useStore.getState().installAgentHooks();
-    void useStore.getState().ensureAgentWatchers();
-    let ws: Awaited<ReturnType<typeof ipc.loadWorkspace>> = null;
     try {
-      ws = await ipc.loadWorkspace();
-    } catch (e) {
-      const msg = typeof e === "string" ? e : String(e);
-      set({ persistError: `${msg} — saving is paused until a successful Reload`, persistenceReady: false });
-      return;
+      await loadWorkspaceOnce(set);
+    } finally {
+      finishLaunchReplay();
     }
-    if (!ws) {
-      neverSyncedAtLoad = true;
-      set({ persistenceReady: true });
-      return;
-    }
-    neverSyncedAtLoad = !ws.sync;
-    // Machines are applied before openDefs (when the file actually carries a `machines`
-    // section) so that `openingFor` can resolve a foreign local's ssh user/color from the
-    // SAME file being loaded. A file with no `machines` key at all (e.g. a peer's copy that
-    // had none to report) leaves whatever machines this app already knows about untouched,
-    // rather than wiping them, since there's no user-facing way to delete a known machine
-    // that a full replace-with-nothing should honor.
-    if (ws.machines !== undefined) {
-      const { machines, dropped } = sanitizeMachines(ws.machines);
-      set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
-    }
-    // openDefs sets persistenceReady itself: true when every def opened cleanly, false
-    // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
-    await openDefs(ws.terminals, ws.layout, set);
-    set({ syncMeta: ws.sync ?? null });
-    lastSeenMtime = await ipc.workspaceStat().catch(() => null);
   },
 
   async reloadWorkspace() {
@@ -1575,9 +1617,16 @@ export const useStore = create<WorkbenchState>((set) => ({
     return null;
   },
 
-  applyAgentEvent({ host, event }) {
+  applyAgentEvent(payload) {
+    const { host, event } = payload;
     // The log reached us, so whatever watcher is tailing it is up.
     agentWatchSurvived(host);
+    // This Mac's history, before the first load has said which tiles rejoined running sessions:
+    // keep it until then (see `finishLaunchReplay`).
+    if (host === null && event.ts < APP_LAUNCHED_AT && launchReplay !== null) {
+      if (launchReplay.length < LAUNCH_REPLAY_MAX) launchReplay.push(payload);
+      return;
+    }
     const id = event.terminal;
     let folderToApply: string | null = null;
     set((s) => {
@@ -1589,8 +1638,9 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (host === null ? settings.ssh != null : settings.ssh?.host?.trim() !== host) return {};
       // Replay from before this run: a local tile whose session this run started fresh had its
       // Claude die with the old session, so its history is stale. A tile that joined a session
-      // still running in its holder (and every remote's) keeps its history.
-      if (event.ts < APP_LAUNCHED_AT && host === null && !joinedTiles.has(id)) return {};
+      // still running in its holder keeps the history since that holder started (an older
+      // holder's, e.g. from before a reboot, is stale too); every remote's history counts.
+      if (event.ts < APP_LAUNCHED_AT && host === null && !preLaunchEventCounts(id, event.ts)) return {};
       const focused = s.windowFocused && s.focusedTerminalId === id;
       const next = foldAgentEvent(s.agentState[id], event, focused);
       const patch: Partial<WorkbenchState> = {};

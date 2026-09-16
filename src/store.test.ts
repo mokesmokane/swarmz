@@ -118,6 +118,7 @@ beforeEach(async () => {
   });
   beforeSpawn.hook = async () => {};
   beforeSpawn.size = () => null;
+  beforeSpawn.claimSize = () => {};
   vi.mocked(ipc.saveWorkspace).mockClear();
   vi.mocked(ipc.loadWorkspace).mockClear().mockResolvedValue(null);
   vi.mocked(ipc.createTerminal)
@@ -2532,6 +2533,77 @@ describe("reattaching to running sessions", () => {
     useStore.setState((s) => ({ agentState: omitKey(s.agentState, "kept") }));
     useStore.getState().applyAgentEvent(old("kept", "UserPromptSubmit"));
     expect(useStore.getState().agentState.kept).toBeUndefined();
+  });
+
+  it("applies pre-launch events that arrive while the load is still opening tiles, from the holder's start on", async () => {
+    // The local watcher replays the log's tail as soon as it starts, before any holder answers.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const started: Record<string, string> = { kept: "2026-09-15T07:00:00Z", rebooted: "2026-09-15T08:30:00Z" };
+    vi.mocked(ipc.createTerminal).mockImplementation(async (id: string, cwd: string) => {
+      await gate;
+      return { id, name: id, cwd, exited: null, error: null, existed: id !== "anew", startedAt: started[id] ?? "2026-09-15T09:00:05Z" };
+    });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      layout: null,
+      terminals: ["kept", "rebooted", "anew"].map((id) => ({ id, name: id, cwd: `/tmp/${id}`, ssh: null, claude: null, command: null })),
+    });
+    useStore.setState({ persistenceReady: false });
+    const ev = (terminal: string, event: string, ts: string, extra: Record<string, unknown> = {}) => ({
+      host: null,
+      event: { ts, terminal, event, sessionId: "s1", notificationType: null, source: null, cwd: null, permissionMode: null, ...extra },
+    });
+    const loading = useStore.getState().loadWorkspace();
+    await vi.waitFor(() => expect(ipc.createTerminal).toHaveBeenCalled());
+    // Before the holder started: an older generation's state, never applied.
+    useStore.getState().applyAgentEvent(ev("kept", "Notification", "2026-09-15T06:00:00Z", { notificationType: "permission_prompt" }));
+    useStore.getState().applyAgentEvent(ev("kept", "UserPromptSubmit", "2026-09-15T08:00:00Z"));
+    useStore.getState().applyAgentEvent(ev("kept", "Notification", "2026-09-15T08:05:00Z", { notificationType: "permission_prompt" }));
+    useStore.getState().applyAgentEvent(ev("rebooted", "UserPromptSubmit", "2026-09-15T08:00:00Z"));
+    useStore.getState().applyAgentEvent(ev("anew", "UserPromptSubmit", "2026-09-15T08:00:00Z"));
+    expect(useStore.getState().agentState).toEqual({});
+    release();
+    await loading;
+    // Applied in order: working, then blocked on the permission prompt.
+    expect(useStore.getState().agentState.kept?.status).toBe("blocked");
+    expect(useStore.getState().agentState.rebooted).toBeUndefined();
+    expect(useStore.getState().agentState.anew).toBeUndefined();
+    // After the load, events are handled as they come, with the same rules.
+    useStore.getState().applyAgentEvent(ev("kept", "UserPromptSubmit", "2026-09-15T08:10:00Z"));
+    expect(useStore.getState().agentState.kept?.status).toBe("working");
+    useStore.getState().applyAgentEvent(ev("rebooted", "UserPromptSubmit", "2026-09-15T08:20:00Z"));
+    expect(useStore.getState().agentState.rebooted).toBeUndefined();
+  });
+
+  it("claims the pane size for rejoined sessions once they are recorded", async () => {
+    const claimed: Array<[string, boolean]> = [];
+    beforeSpawn.claimSize = (id) => claimed.push([id, !!useStore.getState().terminals[id]]);
+    vi.mocked(ipc.createTerminal).mockImplementation(async (id: string, cwd: string) => ({ id, name: id, cwd, exited: null, error: null, existed: id === "live" }));
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      layout: null,
+      terminals: [
+        { id: "live", name: "live", cwd: "/tmp/a", ssh: null, claude: null, command: null },
+        { id: "fresh", name: "fresh", cwd: "/tmp/b", ssh: null, claude: null, command: null },
+      ],
+    });
+    useStore.setState({ persistenceReady: false });
+    await useStore.getState().loadWorkspace();
+    expect(claimed).toEqual([["live", true]]);
+
+    // A restart that rejoins claims too; one that starts afresh sends its size directly.
+    await useStore.getState().markExited("live", null);
+    vi.mocked(ipc.resizeTerminal).mockClear();
+    vi.mocked(ipc.restartTerminal).mockResolvedValueOnce({ id: "live", name: "live", cwd: "/tmp/a", exited: null, error: null, existed: true });
+    await useStore.getState().restartTerminal("live");
+    expect(claimed).toEqual([["live", true], ["live", true]]);
+    expect(ipc.resizeTerminal).not.toHaveBeenCalled();
+    await useStore.getState().markExited("fresh", 0);
+    vi.mocked(ipc.restartTerminal).mockResolvedValueOnce({ id: "fresh", name: "fresh", cwd: "/tmp/b", exited: null, error: null, existed: false });
+    await useStore.getState().restartTerminal("fresh");
+    expect(claimed).toHaveLength(2);
+    expect(ipc.resizeTerminal).toHaveBeenCalledWith("fresh", 80, 24);
   });
 
   it("marks an already-running ssh tile connected when its connection is live", async () => {
