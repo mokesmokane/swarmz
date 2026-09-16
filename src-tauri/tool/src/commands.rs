@@ -8,14 +8,18 @@ use crate::paths::{live_session, pid_alive, read_meta, session_paths, sessions_d
 use crate::proto::{Hello, PROTOCOL_VERSION};
 use crate::screen::line_text;
 use crate::server::TOOL_VIEWER;
-use crate::agent::{fold_log, read_log, Fold};
+use crate::agent::{fold_log, read_log, Fold, Needs};
+use crate::dialog::{resolve, Answer, Dialog};
+use crate::input::{key_bytes, paste_bytes};
+use crate::screen::diff_lines;
+use crate::transcript::{after, guess_path, image as transcript_image, page, Change, Normaliser};
 use crate::tiles::{homed_defs, prune as prune_sessions, session_rows, tile_rows, try_tile_rows_with_folds, watch_events, TileRow};
 use crate::util::{new_uuid, now_iso_ms, valid_abs_path};
 use crate::workspace::{load_from, save_to, ClaudeConfig, TerminalDef, Workspace};
 use serde_json::{json, Map, Value};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -23,6 +27,9 @@ const WATCH_TICK: Duration = Duration::from_millis(1000);
 const CWD_EVERY: Duration = Duration::from_secs(5);
 pub const PING_EVERY: Duration = Duration::from_secs(25);
 const PRUNE_AGE: Duration = Duration::from_secs(7 * 86_400);
+const OUTPUT_TICK: Duration = Duration::from_millis(300);
+const TRANSCRIPT_TICK: Duration = Duration::from_millis(500);
+const RESOLVE_EVERY: Duration = Duration::from_secs(2);
 
 pub struct Env {
     pub home: PathBuf,
@@ -328,6 +335,220 @@ pub fn restart(env: &Env, tile: &str) -> Result<Value, CliError> {
         return Err(CliError::new("running", format!("{} is already running", def.name)));
     }
     row(env, tile)
+}
+
+pub fn send(env: &Env, tile: &str, text: &str) -> Result<Value, CliError> {
+    let bytes = paste_bytes(text).map_err(|e| CliError::new("invalid", e))?;
+    let c = connect_tool(env, tile)?;
+    c.write(&bytes).map_err(failed)?;
+    // Enter separately, so the paste has been taken in before the line is submitted.
+    std::thread::sleep(Duration::from_millis(50));
+    c.write(b"\r").map_err(failed)?;
+    Ok(json!({"v": 1, "sent": true}))
+}
+
+pub fn key(env: &Env, tile: &str, name: &str) -> Result<Value, CliError> {
+    let bytes = key_bytes(name).ok_or_else(|| CliError::new("usage", format!("unknown key {name:?}: use esc, ctrl-c, tab, shift-tab, up, down or enter")))?;
+    connect_tool(env, tile)?.write(bytes).map_err(failed)?;
+    Ok(json!({"v": 1, "sent": true}))
+}
+
+fn fold_for(env: &Env, tile: &str) -> Fold {
+    fold_log(&read_log(&env.home)).remove(tile).unwrap_or_default()
+}
+
+/// The dialog on screen with its tool and summary (the hook event's when it describes this
+/// block, else what the screen shows).
+fn current_question(env: &Env, c: &HolderClient, tile: &str) -> Result<Option<(Dialog, String, String)>, CliError> {
+    let texts = screen_texts(c, 200).ok_or_else(|| failed("the session did not answer"))?;
+    let Some(d) = parse_dialog(&texts) else { return Ok(None) };
+    let fold = fold_for(env, tile);
+    let from_hook = fold.needs == Some(Needs::Permission);
+    let tool = fold.tool.filter(|_| from_hook).unwrap_or_else(|| d.heading.clone());
+    let summary = fold.summary.filter(|_| from_hook).unwrap_or_else(|| d.summary());
+    Ok(Some((d, tool, summary)))
+}
+
+pub fn pending(env: &Env, tile: &str) -> Result<Value, CliError> {
+    let c = connect_tool(env, tile)?;
+    Ok(match current_question(env, &c, tile)? {
+        None => json!({"v": 1, "pending": null}),
+        Some((d, tool, summary)) => json!({"v": 1, "pending": {"tool": tool, "summary": summary, "options": d.options}}),
+    })
+}
+
+pub fn answer(env: &Env, tile: &str, choice: &str, expect_summary: Option<&str>) -> Result<Value, CliError> {
+    let known = matches!(choice, "yes" | "always" | "no" | "deny") || (!choice.is_empty() && choice.chars().all(|c| c.is_ascii_digit()));
+    if !known {
+        return Err(CliError::new("usage", format!("unknown answer {choice:?}: use yes, always, no, deny or an option number")));
+    }
+    let c = connect_tool(env, tile)?;
+    let Some((d, _, summary)) = current_question(env, &c, tile)? else {
+        return Ok(json!({"v": 1, "ignored": true, "reason": "no question is showing"}));
+    };
+    if expect_summary.is_some_and(|s| s != summary) {
+        return Ok(json!({"v": 1, "ignored": true, "reason": "a different question is showing"}));
+    }
+    let answer = resolve(choice, &d).map_err(|e| CliError::new("no_option", e))?;
+    let (bytes, option) = match answer {
+        Answer::Esc => (b"\x1b".to_vec(), Value::Null),
+        Answer::Option(o) => (o.n.to_string().into_bytes(), json!(o)),
+    };
+    c.write(&bytes).map_err(failed)?;
+    Ok(json!({"v": 1, "answered": true, "option": option}))
+}
+
+pub fn output(env: &Env, tile: &str, lines: usize, follow: bool, out: &mut dyn Write) -> Result<(), CliError> {
+    let c = connect_tool(env, tile)?;
+    let snap = c.screen(lines, Duration::from_secs(3)).ok_or_else(|| failed("the session did not answer"))?;
+    let first = json!({"v": 1, "cols": snap.cols, "rows": snap.rows, "cursor": snap.cursor, "lines": snap.lines});
+    if !emit(out, &first) || !follow {
+        return Ok(());
+    }
+    let mut prev = snap.lines;
+    let mut last_ping = Instant::now();
+    loop {
+        std::thread::sleep(OUTPUT_TICK);
+        let Some(s) = c.screen(lines, Duration::from_secs(3)) else {
+            emit(out, &json!({"v": 1, "type": "exit"}));
+            return Ok(());
+        };
+        if let Some(u) = diff_lines(&prev, &s.lines) {
+            let ev = json!({"v": 1, "type": "update", "drop": u.drop, "from": u.from, "lines": u.lines, "cursor": s.cursor});
+            if !emit(out, &ev) {
+                return Ok(());
+            }
+            prev = s.lines;
+        }
+        if last_ping.elapsed() >= PING_EVERY {
+            if !emit(out, &json!({"v": 1, "type": "ping"})) {
+                return Ok(());
+            }
+            last_ping = Instant::now();
+        }
+    }
+}
+
+/// The tile's current transcript: the hook's path, else where Claude would keep the session.
+fn transcript_path(env: &Env, tile: &str) -> Result<(PathBuf, Option<String>), CliError> {
+    let fold = fold_for(env, tile);
+    if let Some(p) = fold.transcript_path.clone() {
+        return Ok((PathBuf::from(p), fold.session_id));
+    }
+    let ws = env.workspace()?.unwrap_or_else(empty_workspace);
+    let def = ws.terminals.iter().find(|d| d.id == tile);
+    match def.and_then(|d| d.claude.as_ref().map(|c| (d, c))) {
+        Some((d, c)) => {
+            let sid = fold.session_id.clone().unwrap_or_else(|| c.session_id.clone());
+            Ok((guess_path(&env.home, &d.cwd, &sid), Some(sid)))
+        }
+        None => Err(CliError::new("unknown", format!("no Claude session is known for {tile}"))),
+    }
+}
+
+/// Reads complete lines from `offset` on and feeds them to the normaliser. Returns the changes,
+/// each message once, and the new offset (a partial last line is left for the next read).
+fn read_new(path: &Path, offset: u64, n: &mut Normaliser) -> (Vec<Change>, u64) {
+    let Ok(mut f) = std::fs::File::open(path) else { return (vec![], offset) };
+    if f.seek(SeekFrom::Start(offset)).is_err() {
+        return (vec![], offset);
+    }
+    let mut buf = Vec::new();
+    if f.read_to_end(&mut buf).is_err() {
+        return (vec![], offset);
+    }
+    let Some(end) = buf.iter().rposition(|&b| b == b'\n') else { return (vec![], offset) };
+    let mut changes = Vec::new();
+    for line in String::from_utf8_lossy(&buf[..end]).lines() {
+        for ch in n.push_line(line) {
+            // The view printed is always the latest, so a message new in this read is not also
+            // printed as updated.
+            let seen_new = matches!(ch, Change::Updated(i) if changes.contains(&Change::New(i)));
+            if !seen_new && !changes.contains(&ch) {
+                changes.push(ch);
+            }
+        }
+    }
+    (changes, offset + end as u64 + 1)
+}
+
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+pub fn transcript(
+    env: &Env,
+    tile: &str,
+    before: Option<&str>,
+    after_id: Option<&str>,
+    limit: usize,
+    follow: bool,
+    out: &mut dyn Write,
+) -> Result<(), CliError> {
+    let (mut path, _) = transcript_path(env, tile)?;
+    let mut n = Normaliser::new();
+    let (_, mut offset) = read_new(&path, 0, &mut n);
+    let views = n.views();
+    let first = match after_id {
+        Some(id) => json!({"v": 1, "messages": after(&views, id), "hasMore": false}),
+        None => {
+            let (p, more) = page(&views, before, limit);
+            json!({"v": 1, "messages": p, "hasMore": more})
+        }
+    };
+    if !emit(out, &first) || !follow {
+        return Ok(());
+    }
+    let mut last_resolve = Instant::now();
+    let mut last_ping = Instant::now();
+    loop {
+        std::thread::sleep(TRANSCRIPT_TICK);
+        if last_resolve.elapsed() >= RESOLVE_EVERY {
+            last_resolve = Instant::now();
+            if let Ok((p, s)) = transcript_path(env, tile) {
+                if p != path {
+                    path = p;
+                    n = Normaliser::new();
+                    offset = 0;
+                    if !emit(out, &json!({"v": 1, "type": "session", "sessionId": s})) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        if file_len(&path) < offset {
+            // Rewritten in place: start over.
+            n = Normaliser::new();
+            offset = 0;
+        }
+        let (changes, next) = read_new(&path, offset, &mut n);
+        offset = next;
+        for ch in changes {
+            let (kind, i) = match ch {
+                Change::New(i) => ("message", i),
+                Change::Updated(i) => ("update", i),
+            };
+            if !emit(out, &json!({"v": 1, "type": kind, "message": n.view(i)})) {
+                return Ok(());
+            }
+        }
+        if last_ping.elapsed() >= PING_EVERY {
+            if !emit(out, &json!({"v": 1, "type": "ping"})) {
+                return Ok(());
+            }
+            last_ping = Instant::now();
+        }
+    }
+}
+
+pub fn image(env: &Env, tile: &str, image_id: &str) -> Result<Value, CliError> {
+    let valid = !image_id.is_empty() && image_id.len() <= 100 && image_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if !valid {
+        return Err(CliError::new("invalid", format!("invalid image id {image_id:?}")));
+    }
+    let (path, _) = transcript_path(env, tile)?;
+    let (mime, data) = transcript_image(&path, image_id).ok_or_else(|| CliError::new("unknown", format!("no image {image_id}")))?;
+    Ok(json!({"v": 1, "mime": mime, "base64": data}))
 }
 
 #[cfg(test)]

@@ -824,3 +824,198 @@ fn watch_streams_a_snapshot_then_changes() {
         assert_eq!(v["v"], 1);
     }
 }
+
+fn tool_client(socket: &str) -> HolderClient {
+    let hello = Hello { v: PROTOCOL_VERSION, cols: 0, rows: 0, viewer: "tool".into() };
+    HolderClient::connect(Path::new(socket), &hello, |_, _| {}, |_| {}).unwrap()
+}
+
+fn screen_has(c: &HolderClient, needle: &str) -> bool {
+    c.screen(200, Duration::from_secs(2)).is_some_and(|s| s.lines.iter().any(|l| swarmz_tool::screen::line_text(l).contains(needle)))
+}
+
+fn held(h: &TestHome, tile: &str) -> String {
+    let cwd = h.path.to_string_lossy().into_owned();
+    let (code, v) = tool_env(&h.path, &["hold", tile, "--cwd", &cwd, "--name", tile], MINI);
+    if let Some(s) = v["socket"].as_str() {
+        h.track(s);
+    }
+    assert_eq!(code, 0, "{v}");
+    v["socket"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn send_types_a_bracketed_paste_then_enter() {
+    let h = home("send");
+    let socket = held(&h, "s1");
+    let cap = h.path.join("cap.bin");
+    let want = swarmz_tool::input::paste_bytes("--hi there").unwrap();
+    let script = h.path.join("cap.sh");
+    std::fs::write(&script, format!("stty raw -echo\nprintf 'ready\\n'\ndd bs=1 count={} of='{}' 2>/dev/null\nstty sane\n", want.len() + 1, cap.display())).unwrap();
+    let c = tool_client(&socket);
+    c.write(format!("sh '{}'\n", script.display()).as_bytes()).unwrap();
+    assert!(wait_until(|| screen_has(&c, "ready")));
+    let (code, v) = tool_env(&h.path, &["send", "s1", "--", "--hi there"], MINI);
+    assert_eq!((code, v["sent"].as_bool()), (0, Some(true)), "{v}");
+    assert!(wait_until(|| std::fs::metadata(&cap).map(|m| m.len() as usize == want.len() + 1).unwrap_or(false)));
+    let mut expected = want.clone();
+    expected.push(b'\r');
+    assert_eq!(std::fs::read(&cap).unwrap(), expected);
+}
+
+const DIALOG_SH: &str = r#"printf '%s\n' '' '────────────────────────────' ' Bash command' '' '   npm test' '   Run the tests' '' ' Do you want to proceed?' ' ❯ 1. Yes' "   2. Yes, and don't ask again for npm test commands in /p" '   3. No' '' ' Esc to cancel · Tab to amend'
+stty raw -echo
+c=$(dd bs=1 count=1 2>/dev/null)
+stty sane
+printf '\033[2J\033[H'
+printf 'chose:%s\n' "$(printf %s "$c" | od -An -c | tr -d ' \n')"
+"#;
+
+#[test]
+fn pending_answer_key_and_output_against_a_fake_dialog() {
+    let h = home("dialog");
+    let socket = held(&h, "d1");
+    let script = h.path.join("dialog.sh");
+    std::fs::write(&script, DIALOG_SH).unwrap();
+    let c = tool_client(&socket);
+    let run = format!("sh '{}'\n", script.display());
+
+    let (_, none) = tool_env(&h.path, &["pending", "d1"], MINI);
+    assert!(none["pending"].is_null(), "{none}");
+
+    c.write(run.as_bytes()).unwrap();
+    let mut p = serde_json::Value::Null;
+    assert!(wait_until(|| {
+        p = tool_env(&h.path, &["pending", "d1"], MINI).1;
+        !p["pending"].is_null()
+    }));
+    assert_eq!((p["pending"]["tool"].as_str(), p["pending"]["summary"].as_str()), (Some("Bash command"), Some("npm test")));
+    assert_eq!(p["pending"]["options"].as_array().unwrap().len(), 3);
+
+    let (code, bad) = tool_env(&h.path, &["answer", "d1", "maybe"], MINI);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("usage")));
+    let (_, stale) = tool_env(&h.path, &["answer", "d1", "yes", "--summary", "rm -rf /"], MINI);
+    assert_eq!(stale["ignored"], true);
+    let (code, a) = tool_env(&h.path, &["answer", "d1", "always", "--summary", "npm test"], MINI);
+    assert_eq!(code, 0, "{a}");
+    assert_eq!((a["answered"].as_bool(), a["option"]["n"].as_u64()), (Some(true), Some(2)));
+    assert!(wait_until(|| {
+        let (_, o) = tool_env(&h.path, &["output", "d1", "--lines", "20"], MINI);
+        o["lines"].as_array().is_some_and(|ls| ls.iter().any(|l| l.to_string().contains("chose:2")))
+    }));
+    let (_, gone) = tool_env(&h.path, &["pending", "d1"], MINI);
+    assert!(gone["pending"].is_null());
+    let (_, late) = tool_env(&h.path, &["answer", "d1", "yes"], MINI);
+    assert_eq!(late["ignored"], true);
+
+    c.write(run.as_bytes()).unwrap();
+    assert!(wait_until(|| !tool_env(&h.path, &["pending", "d1"], MINI).1["pending"].is_null()));
+    let (code, k) = tool_env(&h.path, &["key", "d1", "esc"], MINI);
+    assert_eq!((code, k["sent"].as_bool()), (0, Some(true)));
+    assert!(wait_until(|| screen_has(&c, "chose:033")));
+    let (code, bad) = tool_env(&h.path, &["key", "d1", "f13"], MINI);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("usage")));
+}
+
+#[test]
+fn output_follow_streams_updates_and_ends_with_exit() {
+    let h = home("follow");
+    let socket = held(&h, "f1");
+    let out_path = h.path.join("follow.out");
+    let mut child = KillOnDrop(
+        tool_command(&h.path)
+            .args(["output", "f1", "--follow", "--lines", "50"])
+            .env("SWARMZ_MACHINE", "mini")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&out_path).unwrap())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let read = || std::fs::read_to_string(&out_path).unwrap_or_default();
+    assert!(wait_until(|| read().contains("\"cols\"")));
+    tool_client(&socket).write(b"echo hello-follow\n").unwrap();
+    assert!(wait_until(|| read().lines().any(|l| l.contains("\"update\"") && l.contains("hello-follow"))), "{}", read());
+    let (_, closed) = tool_env(&h.path, &["close", "f1"], MINI);
+    assert_eq!(closed["closed"], true);
+    assert!(wait_until(|| read().contains("\"type\":\"exit\"")), "{}", read());
+    assert!(wait_until(|| child.0.try_wait().ok().flatten().is_some()));
+}
+
+#[test]
+fn transcript_pages_follows_and_serves_images() {
+    let h = home("transcript");
+    let sid = "5e2b8a52-0000-4000-8000-000000000001";
+    write_ws(
+        &h.path,
+        serde_json::json!([{"id": "c1", "name": "api", "cwd": "/p", "origin": "mini", "claude": {"enabled": true, "sessionId": sid, "skipPermissions": false, "started": true}}]),
+        serde_json::json!({}),
+    );
+    let tpath = h.path.join("t.jsonl");
+    let user = |uuid: &str, content: serde_json::Value| serde_json::json!({"type": "user", "uuid": uuid, "timestamp": "t", "message": {"role": "user", "content": content}}).to_string();
+    let asst = |uuid: &str, part: serde_json::Value| serde_json::json!({"type": "assistant", "uuid": uuid, "timestamp": "t", "message": {"id": uuid, "role": "assistant", "content": [part]}}).to_string();
+    let lines = [
+        user("u1", serde_json::json!("first")),
+        asst("a1", serde_json::json!({"type": "text", "text": "reply one"})),
+        user("u2", serde_json::json!([{"type": "text", "text": "look"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0K"}}])),
+    ];
+    std::fs::write(&tpath, lines.join("\n") + "\n").unwrap();
+    std::fs::create_dir_all(h.path.join(".swarmz/agents")).unwrap();
+    std::fs::write(
+        h.path.join(".swarmz/agents/events.log"),
+        format!("2026-09-16T10:00:00Z\tc1\tSessionStart\t{}\n", serde_json::json!({"session_id": sid, "transcript_path": tpath})),
+    )
+    .unwrap();
+
+    let (code, v) = tool_env(&h.path, &["transcript", "c1", "--limit", "2"], MINI);
+    assert_eq!(code, 0, "{v}");
+    let texts: Vec<&str> = v["messages"].as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap()).collect();
+    assert_eq!(texts, vec!["reply one", "look"]);
+    assert_eq!(v["hasMore"], true);
+    let (_, older) = tool_env(&h.path, &["transcript", "c1", "--before", "a1"], MINI);
+    assert_eq!(older["messages"][0]["text"], "first");
+    assert_eq!(older["hasMore"], false);
+    let (_, img) = tool_env(&h.path, &["image", "c1", "u2-1"], MINI);
+    assert_eq!((img["mime"].as_str(), img["base64"].as_str()), (Some("image/png"), Some("iVBORw0K")));
+    let (code, missing) = tool_env(&h.path, &["image", "c1", "nope-3"], MINI);
+    assert_eq!((code, missing["code"].as_str()), (1, Some("unknown")));
+    let (code, bad) = tool_env(&h.path, &["image", "c1", "../x"], MINI);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("invalid")));
+
+    let out_path = h.path.join("t.out");
+    let _child = KillOnDrop(
+        tool_command(&h.path)
+            .args(["transcript", "c1", "--follow", "--after", "u2"])
+            .env("SWARMZ_MACHINE", "mini")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&out_path).unwrap())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let read = || std::fs::read_to_string(&out_path).unwrap_or_default();
+    assert!(wait_until(|| read().contains("\"messages\"")));
+    let first: serde_json::Value = serde_json::from_str(read().lines().next().unwrap()).unwrap();
+    assert_eq!(first["messages"][0]["id"], "u2");
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new().append(true).open(&tpath).unwrap();
+    writeln!(f, "{}", asst("a2", serde_json::json!({"type": "text", "text": "reply two"}))).unwrap();
+    assert!(wait_until(|| read().contains("\"type\":\"message\"") && read().contains("reply two")), "{}", read());
+    writeln!(f, "{}", asst("a2", serde_json::json!({"type": "tool_use", "id": "x", "name": "Bash", "input": {"command": "ls"}}))).unwrap();
+    assert!(wait_until(|| read().contains("\"type\":\"update\"") && read().contains("Ran ls")), "{}", read());
+}
+
+#[test]
+fn commands_on_a_missing_or_bad_tile_say_so() {
+    let h = home("missing");
+    for args in [["send", "nope", "hi"].as_slice(), &["pending", "nope"], &["output", "nope"], &["key", "nope", "esc"]] {
+        let (code, v) = tool_env(&h.path, args, MINI);
+        assert_eq!((code, v["code"].as_str()), (1, Some("not_running")), "{args:?} {v}");
+    }
+    let (code, v) = tool_env(&h.path, &["pending", "../etc"], MINI);
+    assert_eq!((code, v["code"].as_str()), (1, Some("invalid")));
+    let (code, v) = tool_env(&h.path, &["transcript", "nope"], MINI);
+    assert_eq!((code, v["code"].as_str()), (1, Some("unknown")));
+    let (code, v) = tool_env(&h.path, &["output", "nope", "--lines", "0"], MINI);
+    assert_eq!((code, v["code"].as_str()), (1, Some("usage")));
+}

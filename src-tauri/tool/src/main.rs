@@ -31,6 +31,11 @@ impl Args {
         let mut i = 0;
         while i < raw.len() {
             let s = &raw[i];
+            // Everything after a lone `--` is positional, so text such as `--hi` is never an option.
+            if s == "--" {
+                a.positional.extend(raw[i + 1..].iter().cloned());
+                break;
+            }
             if VALUED.contains(&s.as_str()) {
                 // A missing value, or one that looks like another option (starts with `--`), is
                 // always a usage error rather than being silently swallowed as this option's
@@ -116,6 +121,18 @@ fn is_valid_env_key(k: &str) -> bool {
 
 fn tile_arg(a: &Args) -> Result<String, CliError> {
     a.positional.get(1).cloned().ok_or_else(|| CliError::new("usage", "missing tile id"))
+}
+
+/// A count option from 1 to `max`, or `default` when not given.
+fn count(a: &Args, name: &str, default: usize, max: usize) -> Result<usize, CliError> {
+    match a.opt(name) {
+        None => Ok(default),
+        Some(v) => v
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=max).contains(n))
+            .ok_or_else(|| CliError::new("usage", format!("{name} must be a number from 1 to {max}"))),
+    }
 }
 
 fn exe() -> Result<PathBuf, CliError> {
@@ -267,7 +284,46 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             let tile = cmd::tile_arg(&tile_arg(&a)?)?;
             Ok(Some(cmd::restart(&cmd::Env::from_process()?, &tile)?))
         }
-        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|…> …")),
+        Some("send") => {
+            a.expect_positional(3, "send <tile> [--] <text>")?;
+            let tile = cmd::tile_arg(&a.positional[1])?;
+            Ok(Some(cmd::send(&cmd::Env::from_process()?, &tile, &a.positional[2])?))
+        }
+        Some("key") => {
+            a.expect_positional(3, "key <tile> <esc|ctrl-c|tab|shift-tab|up|down|enter>")?;
+            let tile = cmd::tile_arg(&a.positional[1])?;
+            Ok(Some(cmd::key(&cmd::Env::from_process()?, &tile, &a.positional[2])?))
+        }
+        Some("pending") => {
+            a.expect_positional(2, "pending <tile>")?;
+            let tile = cmd::tile_arg(&a.positional[1])?;
+            Ok(Some(cmd::pending(&cmd::Env::from_process()?, &tile)?))
+        }
+        Some("answer") => {
+            a.expect_positional(3, "answer <tile> <yes|always|no|deny|n> [--summary S]")?;
+            let tile = cmd::tile_arg(&a.positional[1])?;
+            Ok(Some(cmd::answer(&cmd::Env::from_process()?, &tile, &a.positional[2], a.opt("--summary"))?))
+        }
+        Some("output") => {
+            a.expect_positional(2, "output <tile> [--lines N] [--follow]")?;
+            let tile = cmd::tile_arg(&a.positional[1])?;
+            let lines = count(&a, "--lines", 200, 5000)?;
+            cmd::output(&cmd::Env::from_process()?, &tile, lines, a.flag("--follow"), &mut std::io::stdout())?;
+            Ok(None)
+        }
+        Some("transcript") => {
+            a.expect_positional(2, "transcript <tile> [--before ID] [--after ID] [--limit N] [--follow]")?;
+            let tile = cmd::tile_arg(&a.positional[1])?;
+            let limit = count(&a, "--limit", 50, 500)?;
+            cmd::transcript(&cmd::Env::from_process()?, &tile, a.opt("--before"), a.opt("--after"), limit, a.flag("--follow"), &mut std::io::stdout())?;
+            Ok(None)
+        }
+        Some("image") => {
+            a.expect_positional(3, "image <tile> <imageId>")?;
+            let tile = cmd::tile_arg(&a.positional[1])?;
+            Ok(Some(cmd::image(&cmd::Env::from_process()?, &tile, &a.positional[2])?))
+        }
+        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|transcript|image> …")),
     }
 }
 
