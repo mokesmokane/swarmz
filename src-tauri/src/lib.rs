@@ -6,9 +6,8 @@ pub mod registry;
 pub mod remote;
 pub mod session;
 pub mod sync;
-pub mod tailscale;
 pub mod toolbin;
-pub mod workspace;
+pub use swarmz_tool::{tailscale, workspace};
 
 use commands::AppState;
 use tauri::Manager;

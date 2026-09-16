@@ -1,4 +1,4 @@
-use crate::remote::run_with_timeout;
+use crate::proc::run_with_timeout;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
