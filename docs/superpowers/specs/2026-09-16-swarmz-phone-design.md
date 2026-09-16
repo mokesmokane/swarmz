@@ -1,7 +1,7 @@
 # swarmz on the phone: session holder, Mac tool, Android app, alerts
 
 Date: 2026-09-16
-Status: approved design; sub-project 1 (session holder) implemented
+Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented
 Amends: `2026-09-10-swarmz-design.md` §3.1 (the swarmz window no longer owns
 PTYs); `2026-09-15-agent-state-hooks-design.md` §2.1 (status colours), §3.2
 (hook events gain `PermissionRequest`); `2026-09-15-tile-folder-and-session-history-design.md`
@@ -118,9 +118,24 @@ time; the holder never blocks on a slow viewer (per-viewer queue capped at
 ### 3.4 Screen model
 
 The holder feeds all output through a VT parser (`vt100` crate) at the size
-currently applied, keeping 5 000 lines of scrollback. `Screen` returns lines
-as `[{text, fg, bg, bold}]` spans with colours as `#rrggbb` or palette index.
-The tool's `output` and `pending` commands (§4) use it; viewers do not.
+currently applied, keeping 5 000 lines of scrollback. `ScreenReply` is
+`{cols, rows, cursor, lines}`: `cursor` is `[line, col]` (an index into
+`lines`) or `null` when the cursor's row is not among the returned lines;
+`lines` is `[[{text, fg, bg, bold, inverse}]]`, spans with colours as
+`#rrggbb` or a palette index, `bold` and `inverse` present only when true
+(`inverse` is set only for reverse video on otherwise-default colours — a
+set colour is swapped instead). The reply is cut from its oldest lines as
+needed so it always fits one frame (16 MiB). The tool's `output` and
+`pending` commands (§4) use it; viewers do not.
+
+`output --follow` polls the screen model and, after its first `{cols, rows,
+cursor, lines}` document, emits one of: `{"type":"update","drop":d,
+"from":f,"lines":[…],"cursor":c}` (drop the first `d` lines, keep `f` of
+what remains, then append `lines`; sent with empty `lines` when only the
+cursor moved), `{"type":"ping"}` every 25 s, or `{"type":"exit"}` once,
+when the session really ended (a holder that merely stops answering — up
+to 5 missed reads — fails the command instead, since silence alone is not
+proof the session is gone).
 
 ### 3.5 Size
 
@@ -255,15 +270,17 @@ each carrying `"v": 1`. Failures exit non-zero with
 | `close <tile>` | ends the tile's holder (`Terminate`) and waits up to 5 s: `{closed}`, false when none was running |
 | `version` | `{v, tool, protocol, build}` |
 | `machines` | `[{name, alias, color, online, self}]` from `workspace.json` machines and `tailscale status` (with `TERM` set) |
-| `ls` | tiles homed on this Mac: `[{id, name, cwd, kind: "claude"\|"shell", running, exitCode, status, needs, since, lastEvent, mode, lastMessage, turnEndedAt}]` |
-| `watch` | stream: a full `ls` snapshot first, then `{type:"tile", tile:{…}}` on every change and `{type:"gone", id}` when a tile is closed |
-| `transcript <tile> [--before <id>] [--limit 50] [--follow]` | normalised messages (§4.3) |
+| `ls` | tiles homed on this Mac: `[{id, name, cwd, kind: "claude"\|"shell", running, exitCode, status, needs, since, lastEvent, mode, lastMessage, turnEndedAt, sessionId, summary}]` |
+| `watch` | stream: a full `ls` snapshot first, then `{type:"tile", tile:{…}}` on every change, `{type:"gone", id}` when a tile is closed, and `{type:"ping"}` every 25 s |
+| `sessions` | every session under `~/.swarmz/sessions`, running or not: `[{id, name, running, pid, startedAt, exitedAt, exitCode, known}]`, where `known` means the id is in `workspace.json` |
+| `prune` | removes the files of sessions that are not running and whose files are all older than 7 days; `{removed}` |
+| `transcript <tile> [--before <id>] [--after <id>] [--limit 50] [--follow]` | normalised messages (§4.3) |
 | `image <tile> <imageId>` | `{mime, base64}` |
 | `output <tile> [--lines 200] [--follow]` | styled lines from `Screen` (§3.4); `--follow` emits replaced and appended lines |
-| `send <tile> <text>` | types the text as a bracketed paste, then Enter as a separate write 50 ms later |
+| `send <tile> [--] <text>` | types the text as a bracketed paste, then Enter as a separate write 50 ms later; everything after a lone `--` is text, never an option, so a command that itself starts with `--` can be sent |
 | `key <tile> <name>` | one of `esc`, `ctrl-c`, `tab`, `shift-tab`, `up`, `down`, `enter` |
 | `pending <tile>` | `{tool, summary, options:[{n, label}]}` or `null` (§4.4) |
-| `answer <tile> <yes\|always\|no\|deny\|n>` | selects that option if the same question is still pending (§4.4); otherwise `{ignored:true}` |
+| `answer <tile> <yes\|always\|no\|deny\|n> [--summary <text>]` | selects that option if the same question is still pending (§4.4); otherwise `{ignored:true, reason}`. With `--summary`, the answer applies only if the pending question's summary still equals it (the value may itself start with `--`); notification actions pass it |
 | `folders [<path>]` | `{path, parent, dirs}` (same rules as the desktop folder picker) |
 | `new --folder <dir> [--skip-permissions] [--name <name>]` | the new tile, §4.5 |
 | `restart <tile>` | holds a fresh session for a tile that is not running and types its startup step (Claude tiles resume their session); returns the tile |
@@ -284,6 +301,16 @@ It adds:
   (`plan`, `acceptEdits` → "accept edits", `default`, `bypassPermissions`).
 - `lastMessage`: the last assistant text of the current session (first
   240 characters), from the transcript.
+- `sessionId`: the current Claude session id, from the hook log when it has
+  one for this tile, else the def's own `claude.sessionId`.
+- `summary`: the pending permission's summary (§4.4) while `needs` is
+  `"permission"`, else `null`.
+
+`PostToolUse` (§4.4) folds as "blocked → working" and is ignored otherwise,
+the same as any other event that does not change the status. `ls` also
+clears a tile's `permission` block, independently of the hook log, when the
+holder's screen no longer shows a dialog for it — the user may have
+answered on the Mac itself, and nothing else would tell the phone.
 
 A shared fixture file, `tests/fixtures/agent-status.json` (event sequences
 and expected states), is run by both the TypeScript and Rust test suites so
@@ -302,22 +329,42 @@ From the session's `transcript_path` (known from `SessionStart`):
 - Dropped: thinking, system and attachment entries, meta entries,
   sidechains (subagents), and hook output.
 - Each message: `{id (transcript uuid), ts, role, text, images:[{id, mime}], tools}`.
-- Paging: newest first with `--before`; `--follow` streams new messages
-  after the newest one returned, and resumes from a given id after a
-  reconnect with no gaps or duplicates.
+- Paging: newest first with `--before`; `--after <id>` returns that message
+  (its `tools` may have changed since) and every newer one, so a `--follow`
+  reader that lost its connection resumes from the last id it saw with no
+  gaps or duplicates.
+- `--follow` streams, after the first page, one line per change:
+  `{"type":"message","message":…}` for a new message,
+  `{"type":"update","message":…}` when an already-sent message gains tools
+  or a tool result (never repeated as a new message), and
+  `{"type":"session","sessionId":…}` when the tile's Claude session changes
+  (a fresh transcript path, or the current file rewritten shorter — a
+  session event is sent then too, before its messages are re-sent). It also
+  sends `{"type":"ping"}` every 25 s.
 
 ### 4.4 Permission questions
 
-- The hook set gains `PermissionRequest` (async, 5 s timeout); the hook
-  script version becomes 2 and installs update it on every Mac. Its event
-  carries `tool_name` and `tool_input`; the tool derives `summary`
-  (`Bash` → the command, `Edit`/`Write` → the file path, `WebFetch` → the
-  URL, others → the tool name).
-- `pending` reads the dialog from the holder's screen model. Verified
-  against Claude Code 2.1.273 (spike, 2026-09-16), the dialog is: a heading
-  (for example "Bash command"), the command or target, a one-line
-  description, "Do you want to proceed?", numbered options, and a footer line
-  starting "Esc to cancel". An option is a line matching
+- The hook set gains `PermissionRequest` (async, 5 s timeout) and
+  `PostToolUse` (§4.2): a `PermissionRequest` leaves a tile `blocked` until
+  the next event, and nothing else fires when the user answers, so
+  `PostToolUse` gives the fold a "the turn moved on" signal even when no
+  question was ever asked. The hook script version becomes 2 and installs
+  update it on every Mac; version 2 also rotates `events.log` to
+  `events.log.1` at 2 MiB. `PostToolUse`'s logged input is reduced to
+  `{"session_id":"…"}` before it is written — tool inputs and results can be
+  large — so it carries no `tool_name`/`tool_input` for the fold to read.
+  `PermissionRequest`'s event carries `tool_name` and `tool_input`; the tool
+  derives `summary` (`Bash` → the command, `Edit`/`Write`/`MultiEdit` → the
+  file path, `NotebookEdit` → the notebook path, `WebFetch` → the URL,
+  others → the tool name).
+- `pending` reads the dialog from the holder's screen model, and only when
+  it is actually showing now: its footer line must be within the screen's
+  last `rows` lines, with nothing but blank lines after it (a dialog that
+  has scrolled into history, or that output has been printed below, is not
+  pending). Verified against Claude Code 2.1.273 (spike, 2026-09-16), the
+  dialog is: a heading (for example "Bash command"), the command or target,
+  a one-line description, "Do you want to proceed?", numbered options, and a
+  footer line starting "Esc to cancel". An option is a line matching
   `^\s*[❯>]?\s*(\d+)\.\s+(.+)$`; indented lines after it, up to the next
   option or the footer, are continuations of its label (long labels wrap).
   The heading and command line give `summary` when the hook event has not
@@ -327,7 +374,13 @@ From the session's `transcript_path` (known from `SessionStart`):
   label (`yes`, `always`, `no`) or a number, resolves it against the options
   currently on screen, checks the same dialog is still showing, and sends
   that digit. `answer <tile> deny` sends Esc, which always cancels the
-  request; notification **Deny** actions use it.
+  request; notification **Deny** actions use it. When the tile has hook
+  events at all, `answer` is ignored (`{ignored:true, reason}`) unless the
+  fold says Claude is waiting (`needs` set) — a dialog that merely looks
+  live cannot be answered on the fold's say-so alone. `--summary <text>`
+  (which may itself start with `--`) makes the answer apply only when the
+  pending question's summary still equals it, so a stale phone screen can
+  never answer the wrong question; notification actions always pass it.
 
 ### 4.5 New sessions
 
@@ -359,8 +412,32 @@ check, adopts it and pushes it to peers.
 Phone keys are installed with a forced command (§7.2). `swarmz ssh-gate`
 reads `SSH_ORIGINAL_COMMAND`, splits it with POSIX shell-word rules, requires
 the first word to be `swarmz` or the tool's absolute path and the second to
-be one of the §4.1 subcommands except `attach`, `hold` and `phone add`, then
-execs the tool with those arguments. Anything else exits 126 with an error.
+be one of the §4.1 subcommands except `attach`, `hold`, `phone add`,
+`sessions` and `prune`, then execs the tool with those arguments. Anything
+else exits 126 with an error; every refusal exits 126 with code `denied`,
+including one raised by argument parsing itself, so a phone key's forced
+command never leaks an internal error code in its place. Unquoted newlines
+and the shell metacharacters `; | & < > ( ) $` and a backtick are refused
+before any command is checked, even inside a word the phone did not intend
+as an option — the phone always single-quotes its arguments, so none of
+this affects an ordinary command.
+
+### 4.8 Desktop in this sub-project
+
+- **Outside-sessions notice.** The sidebar polls the same session rows as
+  `sessions` (§4.1) and flags ids that are running, not `known`, not open as
+  a tile here, and started more than a minute ago (fresh enough that a
+  session `new`/`restart` is still setting up is never flagged). When any
+  are found it shows "N sessions running outside this workspace" with a
+  **Close them** button; confirming ends every flagged session (best effort,
+  the first failure shown as an error) and refreshes the list.
+- **Phones list.** A 📱 toggle in the sidebar header opens a panel listing
+  this Mac's paired phones (`phone ls`, §4.1): each device name with the
+  last 8 characters of its key, and a **Revoke** button. Revoking removes
+  the key on this Mac first, then fans it out to every other Mac (§4.7's
+  `fan_out`); a machine that could not be reached is listed under the panel
+  as a failure, and the key is still gone locally even when the fan-out call
+  itself rejects.
 
 ## 5. Shared rules
 
