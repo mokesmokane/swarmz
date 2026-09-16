@@ -74,6 +74,16 @@ export const SYNC_STAT_MS = 5_000;
 
 /** When this app run started: hook events older than this are replay from before launch. */
 export let APP_LAUNCHED_AT = new Date().toISOString();
+
+/** Local tiles whose session holder was already running when this run joined it: their shells
+ * (and any Claude in them) outlived the last run, so their events from before launch still
+ * describe them. */
+const joinedTiles = new Set<string>();
+
+function noteJoined(id: string, existed: boolean | undefined) {
+  if (existed) joinedTiles.add(id);
+  else joinedTiles.delete(id);
+}
 export function __setLaunchedAt(iso: string) {
   APP_LAUNCHED_AT = iso;
 }
@@ -575,6 +585,7 @@ async function openDefs(
       const opening = openingFor(regenerated, selfMachine, machines, defaultUser, known);
       const { info, note } = await spawnDef({ ...regenerated, cwd: opening.cwd ?? (await homeDir()) });
       if (info.existed) existedIds.add(info.id);
+      noteJoined(info.id, info.existed);
       // The registry renamed it to avoid a clash: remember what the file asked for, so this
       // machine's suffix never travels back into the shared workspace.
       if (info.name !== regenerated.name) requestedNames.set(info.id, regenerated.name);
@@ -651,9 +662,17 @@ async function openDefs(
     const host = useStore.getState().settings[id]?.ssh?.host?.trim();
     if (!host) continue;
     void tileLive(id, host).then((live) => {
-      if (live && useStore.getState().terminals[id]) {
+      const st = useStore.getState();
+      if (!st.terminals[id]) return;
+      if (live) {
         set((st) => ({ sshConnected: { ...st.sshConnected, [id]: true }, startupPending: { ...st.startupPending, [id]: false } }));
+        return;
       }
+      // The session survived but its ssh did not (the network dropped, the other Mac slept):
+      // the shell sits at a local prompt, so offer Connect — unless a Run already started.
+      if (startupInFlight.has(id) || st.sshConnecting[id] || st.sshConnected[id]) return;
+      if (startupLine(st.settings[id] ?? EMPTY_SETTINGS) === null) return;
+      set((st) => ({ startupPending: { ...st.startupPending, [id]: true } }));
     });
   }
   return { anyFailed: failedCount > 0 };
@@ -687,11 +706,17 @@ async function tileLive(id: string, host: string): Promise<boolean> {
   return (await safeSshCheck(host)) && (await safeForegroundBusy(id));
 }
 
-/** Whether this ssh tile connects by attaching to a session holder on its host. */
+/** Whether this ssh tile connects by attaching to a session holder on its host. Never when this
+ * Mac's own name is unknown or the host is this Mac: the tile's id names its own local holder
+ * there, and attaching it would run the session inside itself. */
 function attachModeFor(id: string): boolean {
   const s = useStore.getState();
-  const host = s.settings[id]?.ssh?.host?.trim();
-  return !!host && s.toolReady[host] === true;
+  const ssh = s.settings[id]?.ssh;
+  const host = ssh?.host?.trim();
+  if (!host || s.toolReady[host] !== true) return false;
+  const self = s.selfMachine?.trim().toLowerCase();
+  if (!self) return false;
+  return ssh?.machine?.trim().toLowerCase() !== self && hostLabel(host).toLowerCase() !== self;
 }
 
 /** In-flight tool checks by host: a check can upload the tool and take tens of seconds, and every
@@ -699,18 +724,20 @@ function attachModeFor(id: string): boolean {
 const toolChecks = new Map<string, Promise<void>>();
 
 /** Asks `host` whether its swarmz tool is usable (installing it when needed) and records the
- * answer; a failure records false, so the tile falls back to plain ssh. */
+ * answer. Only a definite "no" is remembered; a failed check (host unreachable, password login
+ * with no shared socket yet) leaves the host unknown, so this Run uses plain ssh and the next one
+ * asks again. */
 function checkToolReady(host: string): Promise<void> {
   const running = toolChecks.get(host);
   if (running) return running;
   const check = (async () => {
-    let ok = false;
+    let ok: boolean;
     try {
-      ok = await ipc.toolRemoteReady(host);
+      ok = (await ipc.toolRemoteReady(host)) === true;
     } catch {
-      ok = false;
+      return;
     }
-    useStore.setState((st) => ({ toolReady: { ...st.toolReady, [host]: ok === true } }));
+    useStore.setState((st) => ({ toolReady: { ...st.toolReady, [host]: ok } }));
   })().finally(() => toolChecks.delete(host));
   toolChecks.set(host, check);
   return check;
@@ -731,6 +758,10 @@ const pendingSwitch = new Set<string>();
 /** Tiles typing the remote step for a session their attach just started: until it is typed (and
  * Claude has the tile), a picked session must not be typed on top of it. */
 const newSessionStep = new Set<string>();
+
+/** Ssh tiles whose remote `swarmz attach` has reported in this run: they have a session holder on
+ * their host, which closing the tile must end too. */
+const attachedTiles = new Set<string>();
 
 function forgetAttach(id: string) {
   attachPending.delete(id);
@@ -791,6 +822,8 @@ export function __resetAttachState() {
   newSessionStep.clear();
   attachPending.clear();
   pendingSwitch.clear();
+  attachedTiles.clear();
+  joinedTiles.clear();
 }
 
 function startPolling(id: string, host: string, attach = false) {
@@ -1041,6 +1074,17 @@ export const useStore = create<WorkbenchState>((set) => ({
   async closeTerminal(id) {
     stopPolling(id);
     forgetAttach(id);
+    // A tile whose home is another Mac has a session holder there too (§3.6): end it alongside
+    // the local one, best effort and without waiting (the host may be asleep or offline).
+    const before = useStore.getState();
+    const host = before.settings[id]?.ssh?.host?.trim();
+    if (host && (before.toolReady[host] === true || attachedTiles.has(id))) {
+      void Promise.resolve()
+        .then(() => ipc.remoteTileClose(host, id))
+        .catch(() => {});
+    }
+    attachedTiles.delete(id);
+    joinedTiles.delete(id);
     await ipc.closeTerminal(id);
     set((s) => {
       const terminals = { ...s.terminals };
@@ -1073,6 +1117,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     forgetAttach(id);
     const dims = beforeSpawn.size(id) ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
     const info = await ipc.restartTerminal(id, dims.cols, dims.rows);
+    noteJoined(id, info.existed);
     set((s) => ({
       terminals: { ...s.terminals, [id]: info },
       startupPending: { ...s.startupPending, [id]: !info.existed && startupLine(s.settings[id] ?? EMPTY_SETTINGS) !== null },
@@ -1411,6 +1456,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     // only types anything for a tile whose attach line this app typed and is still waiting on.
     if (!s.terminals[id] || !s.settings[id]?.ssh?.host?.trim()) return;
     const typedAttach = attachPending.delete(id);
+    attachedTiles.add(id);
     stopPolling(id);
     set((st) => ({
       sshConnected: { ...st.sshConnected, [id]: true },
@@ -1541,9 +1587,10 @@ export const useStore = create<WorkbenchState>((set) => ({
       // workspace, so the same id can appear in another Mac's log for a tile that is not this
       // one. Match the tile to the host the event came from (null = this Mac).
       if (host === null ? settings.ssh != null : settings.ssh?.host?.trim() !== host) return {};
-      // Replay from before this run: a Claude in one of our own PTYs died with the app, so only a
-      // remote's (possibly still alive elsewhere) history counts.
-      if (event.ts < APP_LAUNCHED_AT && host === null) return {};
+      // Replay from before this run: a local tile whose session this run started fresh had its
+      // Claude die with the old session, so its history is stale. A tile that joined a session
+      // still running in its holder (and every remote's) keeps its history.
+      if (event.ts < APP_LAUNCHED_AT && host === null && !joinedTiles.has(id)) return {};
       const focused = s.windowFocused && s.focusedTerminalId === id;
       const next = foldAgentEvent(s.agentState[id], event, focused);
       const patch: Partial<WorkbenchState> = {};

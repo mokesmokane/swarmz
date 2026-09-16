@@ -40,6 +40,7 @@ vi.mock("./lib/ipc", () => {
       agentsInstallRemote: vi.fn(async () => false),
       toolRemoteReady: vi.fn(async () => false),
       remoteTileInfo: vi.fn(async () => ({ running: false })),
+      remoteTileClose: vi.fn(async () => false),
       pasteImageToRemote: vi.fn(async () => null),
       agentsWatch: vi.fn(async () => 1),
       agentsUnwatch: vi.fn(async () => {}),
@@ -2484,6 +2485,55 @@ describe("reattaching to running sessions", () => {
     expect(useStore.getState().startupPending.fresh).toBe(true);
   });
 
+  it("offers Connect for an already-running ssh tile whose ssh has died", async () => {
+    vi.mocked(ipc.createTerminal).mockImplementation(async (id: string, cwd: string) => ({ id, name: id, cwd, exited: null, error: null, existed: true }));
+    vi.mocked(ipc.sshCheck).mockResolvedValue(false);
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      layout: null,
+      terminals: [
+        { id: "r2", name: "r2", cwd: "/home/me", ssh: { host: "me@box", cwd: "/p" }, claude: null, command: null },
+        { id: "l2", name: "l2", cwd: "/tmp/a", ssh: null, claude: { enabled: true, sessionId: "s1", skipPermissions: false, started: true }, command: null },
+      ],
+    });
+    useStore.setState({ persistenceReady: false });
+    await useStore.getState().loadWorkspace();
+    await vi.waitFor(() => expect(useStore.getState().startupPending.r2).toBe(true));
+    expect(useStore.getState().sshConnected.r2).toBeUndefined();
+    // A local tile's running session is never offered a card.
+    expect(useStore.getState().startupPending.l2).toBe(false);
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  it("applies agent events from before launch to tiles that rejoined a running session only", async () => {
+    vi.mocked(ipc.createTerminal).mockImplementation(async (id: string, cwd: string) => ({ id, name: id, cwd, exited: null, error: null, existed: id === "kept" }));
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      layout: null,
+      terminals: [
+        { id: "kept", name: "kept", cwd: "/tmp/a", ssh: null, claude: null, command: null },
+        { id: "anew", name: "anew", cwd: "/tmp/b", ssh: null, claude: null, command: null },
+      ],
+    });
+    useStore.setState({ persistenceReady: false });
+    await useStore.getState().loadWorkspace();
+    const old = (terminal: string, event: string) => ({
+      host: null,
+      event: { ts: "2026-09-15T08:00:00Z", terminal, event, sessionId: "s1", notificationType: null, source: null, cwd: null, permissionMode: null },
+    });
+    useStore.getState().applyAgentEvent(old("kept", "UserPromptSubmit"));
+    useStore.getState().applyAgentEvent(old("anew", "UserPromptSubmit"));
+    expect(useStore.getState().agentState.kept?.status).toBe("working");
+    expect(useStore.getState().agentState.anew).toBeUndefined();
+    // Restarting into a new session makes its old history stale too.
+    await useStore.getState().markExited("kept", 0);
+    vi.mocked(ipc.restartTerminal).mockResolvedValueOnce({ id: "kept", name: "kept", cwd: "/tmp/a", exited: null, error: null, existed: false });
+    await useStore.getState().restartTerminal("kept");
+    useStore.setState((s) => ({ agentState: omitKey(s.agentState, "kept") }));
+    useStore.getState().applyAgentEvent(old("kept", "UserPromptSubmit"));
+    expect(useStore.getState().agentState.kept).toBeUndefined();
+  });
+
   it("marks an already-running ssh tile connected when its connection is live", async () => {
     vi.mocked(ipc.createTerminal).mockImplementation(async (id: string, cwd: string) => ({ id, name: id, cwd, exited: null, error: null, existed: true }));
     vi.mocked(ipc.sshCheck).mockResolvedValue(true);
@@ -2502,6 +2552,11 @@ describe("reattaching to running sessions", () => {
 });
 
 describe("remote attach", () => {
+  // Attach mode needs to know which Mac this is (it never attaches a tile to its own Mac).
+  beforeEach(() => {
+    useStore.setState({ selfMachine: "here" });
+  });
+
   const sshTile = async () => {
     const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: { skipPermissions: false } });
     __stopAllPolling();
@@ -2525,14 +2580,86 @@ describe("remote attach", () => {
     expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toMatch(/^ssh -t .*me@box\r$/);
   });
 
-  it("falls back to the plain ssh line when checking the remote tool fails, and asks only once per host", async () => {
+  it("falls back to the plain ssh line when checking the remote tool fails, and asks again on the next Run", async () => {
     vi.mocked(ipc.writeTerminal).mockClear();
     vi.mocked(ipc.toolRemoteReady).mockRejectedValue("ssh: connect to host box: Operation timed out");
     await sshTile();
     expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toMatch(/^ssh -t .*me@box\r$/);
-    expect(useStore.getState().toolReady["me@box"]).toBe(false);
+    expect(useStore.getState().toolReady["me@box"]).toBeUndefined();
+    // The failure was transient: the next Run checks again and attaches.
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    vi.mocked(ipc.writeTerminal).mockClear();
     await sshTile();
+    expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toContain("~/.swarmz/bin/swarmz attach");
+    expect(useStore.getState().toolReady["me@box"]).toBe(true);
+  });
+
+  it("remembers a definite no from the tool check", async () => {
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(false);
+    await sshTile();
+    await sshTile();
+    expect(useStore.getState().toolReady["me@box"]).toBe(false);
     expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(1);
+  });
+
+  it("never attaches a tile to this Mac, or when this Mac's name is unknown", async () => {
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    const plain = /^ssh -t .*\r$/;
+    // The host is this Mac, by machine name.
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().createSshTerminal({ host: "me@here", cwd: "/p", machine: "here" });
+    __stopAllPolling();
+    expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toMatch(plain);
+    expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).not.toContain("swarmz attach");
+    // By host name only (a MagicDNS FQDN, any case).
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().createSshTerminal({ host: "me@Here.tail1234.ts.net", cwd: "/p" });
+    __stopAllPolling();
+    expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).not.toContain("swarmz attach");
+    // Unknown self: no attach anywhere.
+    useStore.setState({ selfMachine: null });
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await sshTile();
+    expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toMatch(/^ssh -t .*me@box\r$/);
+    // Another Mac, with the name known: attach.
+    useStore.setState({ selfMachine: "here" });
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await sshTile();
+    expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toContain("~/.swarmz/bin/swarmz attach");
+  });
+
+  it("closing an attached tile also closes its session on the remote Mac, without waiting for it", async () => {
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    const id = await sshTile();
+    vi.mocked(ipc.remoteTileClose).mockClear().mockImplementation(() => new Promise(() => {}));
+    await useStore.getState().closeTerminal(id);
+    expect(useStore.getState().terminals[id]).toBeUndefined();
+    expect(ipc.closeTerminal).toHaveBeenCalledWith(id);
+    await vi.waitFor(() => expect(ipc.remoteTileClose).toHaveBeenCalledWith("me@box", id));
+  });
+
+  it("a failing remote close never stops the tile from closing", async () => {
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    const id = await sshTile();
+    await useStore.getState().remoteAttached(id, false);
+    // The host's answer was forgotten since (a failed attach elsewhere): the attach still counts.
+    useStore.setState({ toolReady: {} });
+    vi.mocked(ipc.remoteTileClose).mockClear().mockRejectedValue("ssh: host is down");
+    await useStore.getState().closeTerminal(id);
+    expect(useStore.getState().terminals[id]).toBeUndefined();
+    await vi.waitFor(() => expect(ipc.remoteTileClose).toHaveBeenCalledWith("me@box", id));
+  });
+
+  it("closing a local tile or a plain ssh tile closes nothing remote", async () => {
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(false);
+    const local = await useStore.getState().createTerminal("/tmp/x");
+    const plain = await sshTile();
+    vi.mocked(ipc.remoteTileClose).mockClear();
+    await useStore.getState().closeTerminal(local);
+    await useStore.getState().closeTerminal(plain);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ipc.remoteTileClose).not.toHaveBeenCalled();
   });
 
   it("a new remote session gets the startup step; an existing one is only marked connected", async () => {
