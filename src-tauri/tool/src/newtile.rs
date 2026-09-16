@@ -5,7 +5,7 @@ use crate::util::valid_abs_path;
 use crate::workspace::{ClaudeConfig, TerminalDef, Workspace};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Listing {
@@ -29,7 +29,9 @@ pub fn list_folders(path: Option<&str>, home: &Path) -> Result<Listing, String> 
     if !valid_abs_path(&shown) {
         return Err(format!("{shown:?} is not an absolute folder path"));
     }
-    if dir.components().any(|c| matches!(c, Component::CurDir | Component::ParentDir)) {
+    // `Path::components()` silently normalises away internal `.` segments (and does not catch
+    // `..` either), so check the raw string's `/`-separated segments instead.
+    if shown.split('/').any(|s| s == "." || s == "..") {
         return Err(format!("{shown:?} must not contain . or .. segments"));
     }
     let entries = std::fs::read_dir(&dir).map_err(|e| format!("could not open {shown}: {e}"))?;
@@ -168,8 +170,21 @@ mod tests {
 
     #[test]
     fn folders_reject_dot_and_dot_dot_segments() {
-        assert!(list_folders(Some("/tmp/.."), Path::new("/")).is_err());
-        assert!(list_folders(Some("/tmp/./x"), Path::new("/")).is_err());
+        // Every path below exists (so a pass could not be mistaken for "not found"); the guard
+        // must still reject each one for its `.`/`..` segment, not walk into the real folder.
+        let d = tmp("dots");
+        std::fs::create_dir(d.join("sub")).unwrap();
+
+        let msg = |r: Result<Listing, String>| r.unwrap_err();
+        for (label, path) in [
+            ("/tmp/.", "/tmp/.".to_string()),
+            ("{d}/./sub", format!("{}/./sub", d.to_string_lossy())),
+            ("{d}/sub/..", format!("{}/sub/..", d.to_string_lossy())),
+        ] {
+            let err = msg(list_folders(Some(&path), Path::new("/")));
+            assert!(err.contains("must not contain . or .. segments"), "{label}: {err}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
