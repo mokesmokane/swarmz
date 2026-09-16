@@ -8,7 +8,7 @@ use crate::proto::{Hello, PROTOCOL_VERSION};
 use crate::screen::line_text;
 use crate::server::TOOL_VIEWER;
 use crate::agent::{fold_log, read_log, Fold};
-use crate::dialog::{live_dialog, resolve, Answer, Dialog};
+use crate::dialog::{read_screen, resolve, Answer, Dialog, ScreenView};
 use crate::gate::{check, split_words};
 use crate::input::{key_bytes, send_bytes};
 use crate::phone::{add_key, authorized_keys, list_keys, machine_hosts, revoke, valid_device};
@@ -98,8 +98,9 @@ pub fn connect_tool(env: &Env, tile: &str) -> Result<HolderClient, CliError> {
     connect_tool_with_exit(env, tile, false, |_| {})
 }
 
-/// `connect_tool` for a command that reads the screen: a holder that predates `Screen` (its
-/// metadata has no `build`) is refused with `old_session` before anything is sent to it.
+/// `connect_tool` for a command that reads the screen: a holder whose metadata does not say it
+/// answers `Screen` (older holders ignore the frame and would leave us waiting) is refused with
+/// `old_session` before anything is sent to it.
 fn connect_screen(env: &Env, tile: &str) -> Result<HolderClient, CliError> {
     connect_tool_with_exit(env, tile, true, |_| {})
 }
@@ -112,7 +113,7 @@ fn connect_tool_with_exit(env: &Env, tile: &str, need_screen: bool, on_exit: imp
     let Some(meta) = live_session(&paths) else {
         return Err(CliError::new("not_running", format!("{tile} is not running")));
     };
-    if need_screen && meta.build.is_none() {
+    if need_screen && !meta.screen {
         return Err(CliError::new("old_session", OLD_SESSION));
     }
     let hello = Hello { v: PROTOCOL_VERSION, cols: 0, rows: 0, viewer: TOOL_VIEWER.into() };
@@ -123,20 +124,20 @@ pub fn screen_texts(client: &HolderClient, lines: usize) -> Option<Vec<String>> 
     client.screen(lines, Duration::from_secs(3)).map(|s| s.lines.iter().map(line_text).collect())
 }
 
-/// The permission dialog on the session's visible screen now, if any; None when it did not
-/// answer. Only the visible rows are asked for (the size the holder reported on connecting).
-fn screen_dialog(client: &HolderClient) -> Option<Option<Dialog>> {
+/// What the session's visible screen shows now; None when it did not answer. Only the visible
+/// rows are asked for (the size the holder reported on connecting).
+fn screen_view(client: &HolderClient) -> Option<ScreenView> {
     let rows = client.welcome().rows as usize;
     let snap = client.screen(if rows == 0 { 200 } else { rows }, Duration::from_secs(3))?;
     let texts: Vec<String> = snap.lines.iter().map(line_text).collect();
     // A holder that predates `visibleStart`: the last `rows` lines are the screen.
     let start = snap.visible_start.unwrap_or_else(|| texts.len().saturating_sub(snap.rows as usize));
-    Some(live_dialog(&texts, start))
+    Some(read_screen(&texts, start))
 }
 
-/// The dialog a tile shows, for its row; None when it could not be asked.
-fn dialog_for(env: &Env, tile: &str) -> Option<Option<Dialog>> {
-    screen_dialog(&connect_tool(env, tile).ok()?)
+/// What a tile's screen shows, for its row; None when it could not (or must not) be asked.
+fn dialog_for(env: &Env, tile: &str) -> Option<ScreenView> {
+    screen_view(&connect_screen(env, tile).ok()?)
 }
 
 fn live_cwd(env: &Env, tile: &str) -> Option<String> {
@@ -489,10 +490,10 @@ struct Question {
 /// The dialog on the visible screen, with its summary (always the screen's) and tool (the hook
 /// event's when it describes this same question, else the dialog's heading).
 fn current_question(env: &Env, c: &HolderClient, tile: &str) -> Result<Option<Question>, CliError> {
-    let d = screen_dialog(c).ok_or_else(|| failed("the session did not answer"))?;
-    let Some(d) = d else { return Ok(None) };
+    let view = screen_view(c).ok_or_else(|| failed("the session did not answer"))?;
+    let Some(d) = view.dialog.clone() else { return Ok(None) };
     let mut fold = fold_for(env, tile).unwrap_or_default();
-    apply_screen(&mut fold, Some(&d));
+    apply_screen(&mut fold, &view);
     let tool = fold.tool.unwrap_or_else(|| d.heading.clone());
     let summary = fold.summary.unwrap_or_else(|| d.summary());
     Ok(Some(Question { dialog: d, tool, summary }))
@@ -834,7 +835,7 @@ mod tests {
 
     fn meta_for(dir: &Path, pid: u32) -> PathBuf {
         let path = dir.join("t.json");
-        let meta = Meta { v: 1, pid, shell_pid: None, cwd: "/".into(), name: "t".into(), started_at: "s".into(), exited_at: None, exit_code: None, cwd_fallback: false, build: None };
+        let meta = Meta { v: 1, pid, shell_pid: None, cwd: "/".into(), name: "t".into(), started_at: "s".into(), exited_at: None, exit_code: None, cwd_fallback: false, build: None, screen: false, terminating_at: None };
         write_meta(&path, &meta).unwrap();
         path
     }
@@ -885,10 +886,11 @@ mod tests {
         let dir = sessions_dir_in(&home);
         std::fs::create_dir_all(&dir).unwrap();
         let paths = session_paths(&dir, "old1").unwrap();
-        // A live session (our own pid, a listening socket) whose metadata has no build. The
-        // listener never answers, so a command that sent it anything would wait and fail.
+        // A live session (our own pid, a listening socket) whose metadata has a build but no
+        // screen capability, as holders from before it write. The listener never answers, so a
+        // command that sent it anything would wait and fail.
         let _listener = std::os::unix::net::UnixListener::bind(&paths.socket).unwrap();
-        let meta = Meta { v: 1, pid: std::process::id(), shell_pid: None, cwd: "/".into(), name: "old1".into(), started_at: "s".into(), exited_at: None, exit_code: None, cwd_fallback: false, build: None };
+        let meta = Meta { v: 1, pid: std::process::id(), shell_pid: None, cwd: "/".into(), name: "old1".into(), started_at: "s".into(), exited_at: None, exit_code: None, cwd_fallback: false, build: Some(1_789_000_000), screen: false, terminating_at: None };
         write_meta(&paths.meta, &meta).unwrap();
         let env = Env { home: home.clone(), exe: PathBuf::from("/nonexistent"), machine: Some("mini".into()) };
         let started = Instant::now();
@@ -898,6 +900,8 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(output(&env, "old1", 20, false, &mut out).unwrap_err().code, "old_session");
         assert!(out.is_empty());
+        // The rows never ask it either.
+        assert!(dialog_for(&env, "old1").is_none());
         assert!(started.elapsed() < Duration::from_secs(2), "a screen request was sent");
         let _ = std::fs::remove_dir_all(&home);
     }

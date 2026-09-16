@@ -65,6 +65,13 @@ pub struct Meta {
     /// also predate sizeless `Hello`s, §3.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<u64>,
+    /// The holder answers `Screen` frames (§3.4). Holders that predate it (including ones that
+    /// already write `build`) silently ignore them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub screen: bool,
+    /// When the holder was asked to terminate; the session may still be ending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminating_at: Option<String>,
 }
 
 /// Seconds since the epoch when this tool was built (see build.rs).
@@ -72,8 +79,12 @@ pub fn build_id() -> u64 {
     env!("SWARMZ_BUILD_ID").parse().unwrap_or(0)
 }
 
+static META_TMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub fn write_meta(path: &Path, meta: &Meta) -> io::Result<()> {
-    let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+    // Unique per write: the holder writes from more than one thread (terminate mark, exit).
+    let n = META_TMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.tmp-{}-{n}", std::process::id()));
     std::fs::write(&tmp, serde_json::to_vec_pretty(meta).expect("meta serialises"))?;
     std::fs::rename(&tmp, path)
 }
@@ -184,6 +195,8 @@ mod tests {
             exit_code: None,
             cwd_fallback: false,
             build: None,
+            screen: false,
+            terminating_at: None,
         };
         write_meta(&p.meta, &m).unwrap();
         assert_eq!(read_meta(&p.meta), Some(m.clone()));
@@ -214,6 +227,17 @@ mod tests {
         clear_stale(&p);
         assert!(socket_live(&p.socket), "clear_stale must not unlink a socket that is still live");
         assert!(read_meta(&p.meta).is_none());
+    }
+
+    #[test]
+    fn capability_and_terminate_fields_are_optional() {
+        let old: Meta = serde_json::from_str(r#"{"v":1,"pid":1,"shellPid":null,"cwd":"/","name":"n","startedAt":"t","build":5}"#).unwrap();
+        assert_eq!((old.build, old.screen, old.terminating_at.clone()), (Some(5), false, None));
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("screen") && !text.contains("terminatingAt"), "{text}");
+        let new = Meta { screen: true, terminating_at: Some("t2".into()), ..old };
+        let v = serde_json::to_value(&new).unwrap();
+        assert_eq!((v["screen"].as_bool(), v["terminatingAt"].as_str()), (Some(true), Some("t2")));
     }
 
     #[test]

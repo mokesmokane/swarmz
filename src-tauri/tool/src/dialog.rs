@@ -104,6 +104,24 @@ pub fn live_dialog(lines: &[String], visible_start: usize) -> Option<Dialog> {
     parse_dialog(lines)
 }
 
+/// What the visible screen says about Claude's state.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ScreenView {
+    /// The permission dialog showing now (`live_dialog`).
+    pub dialog: Option<Dialog>,
+    /// Claude's "esc to interrupt" hint is on the visible screen: a turn (such as a long
+    /// approved tool run) is in progress.
+    pub interruptible: bool,
+}
+
+pub fn read_screen(lines: &[String], visible_start: usize) -> ScreenView {
+    let visible = &lines[visible_start.min(lines.len())..];
+    ScreenView {
+        dialog: live_dialog(lines, visible_start),
+        interruptible: visible.iter().any(|l| l.to_lowercase().contains("esc to interrupt")),
+    }
+}
+
 pub fn resolve(choice: &str, d: &Dialog) -> Result<Answer, String> {
     let lower = |o: &Opt| o.label.to_lowercase();
     let always = |l: &str| l.contains("always") || l.contains("don't ask") || l.contains("don\u{2019}t ask") || l.contains("allow all");
@@ -217,6 +235,17 @@ mod tests {
         // A blank visible screen (its rows trimmed away) never lets a footer in scrollback count.
         assert!(live_dialog(&real(), real().len()).is_none());
         assert!(live_dialog(&[], 0).is_none());
+    }
+
+    #[test]
+    fn the_interrupt_hint_counts_only_on_the_visible_screen() {
+        let lines: Vec<String> = ["✻ Running… (12s · ESC to interrupt)", "", "> "].iter().map(|s| s.to_string()).collect();
+        assert!(read_screen(&lines, 0).interruptible);
+        assert!(read_screen(&lines, 0).dialog.is_none());
+        assert!(!read_screen(&lines, 1).interruptible);
+        assert!(!read_screen(&lines, 9).interruptible);
+        let v = read_screen(&real(), 0);
+        assert!(v.dialog.is_some() && !v.interruptible);
     }
 
     #[test]

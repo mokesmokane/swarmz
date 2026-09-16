@@ -1,4 +1,4 @@
-use crate::paths::{build_id, ensure_dir, now_iso, session_paths, socket_live, write_meta, Meta};
+use crate::paths::{build_id, ensure_dir, now_iso, read_meta, session_paths, socket_live, write_meta, Meta};
 use crate::proto::{encode, json, parse_resize, read_frame, ExitInfo, Hello, Info, Kind, ScreenRequest, Welcome, MAX_FRAME, PROTOCOL_VERSION};
 use crate::pty::{PtySession, SpawnSpec};
 use crate::ring::{Ring, REPLAY_PREFIX, RING_CAP};
@@ -56,6 +56,8 @@ struct Shared {
     clock: AtomicU64,
     next_id: AtomicU64,
     cap: usize,
+    /// The session's metadata file, marked when a `Terminate` arrives.
+    meta_path: PathBuf,
 }
 
 impl Shared {
@@ -159,6 +161,7 @@ pub fn run_holder(cfg: HolderConfig) -> Result<Option<i32>, String> {
         clock: AtomicU64::new(1),
         next_id: AtomicU64::new(1),
         cap: cfg.viewer_queue_cap,
+        meta_path: paths.meta.clone(),
     });
 
     let (exit_tx, exit_rx) = mpsc::channel::<Option<i32>>();
@@ -206,6 +209,8 @@ pub fn run_holder(cfg: HolderConfig) -> Result<Option<i32>, String> {
         exit_code: None,
         cwd_fallback: cfg.cwd_fallback,
         build: Some(build_id()),
+        screen: true,
+        terminating_at: None,
     };
     write_meta(&paths.meta, &meta).map_err(|e| format!("could not write {}: {e}", paths.meta.display()))?;
 
@@ -325,6 +330,14 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
                 }
             }
             Some(Kind::Terminate) => {
+                // Marked at once: the shell can take seconds to exit, and until then the session
+                // still looks live to anyone who only checks the pid and socket.
+                if let Some(mut m) = read_meta(&shared.meta_path) {
+                    if m.exited_at.is_none() && m.terminating_at.is_none() {
+                        m.terminating_at = Some(now_iso());
+                        let _ = write_meta(&shared.meta_path, &m);
+                    }
+                }
                 if let Some(s) = shared.session.get() {
                     s.terminate();
                 }

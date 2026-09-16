@@ -260,6 +260,8 @@ fn a_failed_attach_prints_only_its_error() {
         exit_code: None,
         cwd_fallback: false,
         build: None,
+        screen: false,
+        terminating_at: None,
     };
     swarmz_tool::paths::write_meta(&paths.meta, &meta).unwrap();
     // `tool` parses the whole of stdout as one JSON value, so a marker ahead of it fails this.
