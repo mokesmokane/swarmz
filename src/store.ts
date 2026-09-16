@@ -562,11 +562,13 @@ async function openDefs(
   const defaultUser = tailscale?.user ?? "";
   const known = knownMachineNames();
   let failedCount = 0;
+  const existedIds = new Set<string>();
   for (const def of defs) {
     const { def: regenerated, note: unsafeNote } = normalized.get(def.id) ?? regenerateIfUnsafe(def);
     try {
       const opening = openingFor(regenerated, selfMachine, machines, defaultUser, known);
       const { info, note } = await spawnDef({ ...regenerated, cwd: opening.cwd ?? (await homeDir()) });
+      if (info.existed) existedIds.add(info.id);
       // The registry renamed it to avoid a clash: remember what the file asked for, so this
       // machine's suffix never travels back into the shared workspace.
       if (info.name !== regenerated.name) requestedNames.set(info.id, regenerated.name);
@@ -604,7 +606,7 @@ async function openDefs(
       for (const id of s.order) {
         const wasOpenBefore = preOpenIds.has(id);
         const changed = !wasOpenBefore || startupKey(settings[id]) !== startupKey(s.settings[id]);
-        if (changed) startupPending[id] = startupLine(settings[id] ?? EMPTY_SETTINGS) !== null;
+        if (changed) startupPending[id] = !existedIds.has(id) && startupLine(settings[id] ?? EMPTY_SETTINGS) !== null;
       }
       const keep =
         s.focusedTerminalId && findGroupOf(layout, s.focusedTerminalId)
@@ -639,6 +641,15 @@ async function openDefs(
       };
     }
   });
+  for (const id of existedIds) {
+    const host = useStore.getState().settings[id]?.ssh?.host?.trim();
+    if (!host) continue;
+    void tileLive(id, host).then((live) => {
+      if (live && useStore.getState().terminals[id]) {
+        set((st) => ({ sshConnected: { ...st.sshConnected, [id]: true }, startupPending: { ...st.startupPending, [id]: false } }));
+      }
+    });
+  }
   return { anyFailed: failedCount > 0 };
 }
 
@@ -898,7 +909,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     const info = await ipc.restartTerminal(id, dims.cols, dims.rows);
     set((s) => ({
       terminals: { ...s.terminals, [id]: info },
-      startupPending: { ...s.startupPending, [id]: startupLine(s.settings[id] ?? EMPTY_SETTINGS) !== null },
+      startupPending: { ...s.startupPending, [id]: !info.existed && startupLine(s.settings[id] ?? EMPTY_SETTINGS) !== null },
       sshConnected: omit(s.sshConnected, id),
       sshConnecting: omit(s.sshConnecting, id),
       agentState: s.agentState[id] ? { ...s.agentState, [id]: OFFLINE } : s.agentState,

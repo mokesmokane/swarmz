@@ -2,9 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalInfo } from "./ipc";
 
-const { instances, dataCallbacks } = vi.hoisted(() => ({
+const { instances, dataCallbacks, replayCallbacks } = vi.hoisted(() => ({
   instances: [] as { disposed: boolean; selection: string; element: HTMLElement | null }[],
   dataCallbacks: {} as Record<string, (b: Uint8Array) => void>,
+  replayCallbacks: {} as Record<string, (b: Uint8Array) => void>,
 }));
 
 vi.mock("@xterm/xterm", () => {
@@ -33,7 +34,10 @@ vi.mock("@xterm/xterm", () => {
       this.keyHandler = cb;
     }
     onResize() {}
-    write() {}
+    writes: Array<{ data: unknown; done?: () => void }> = [];
+    write(data: unknown, done?: () => void) {
+      this.writes.push({ data, done });
+    }
     loadAddon() {}
     open(container: HTMLElement) {
       this.element = document.createElement("div");
@@ -66,6 +70,10 @@ vi.mock("./ipc", () => ({
     resizeTerminal: vi.fn(async () => {}),
     onData: vi.fn(async (_id: string, cb: (b: Uint8Array) => void) => {
       dataCallbacks[_id] = cb;
+      return () => {};
+    }),
+    onReplay: vi.fn(async (_id: string, cb: (b: Uint8Array) => void) => {
+      replayCallbacks[_id] = cb;
       return () => {};
     }),
     onExit: vi.fn(async () => () => {}),
@@ -551,5 +559,24 @@ describe("Ctrl+V in an ssh tile", () => {
     } finally {
       dispose("p6");
     }
+  });
+});
+
+describe("replayed output", () => {
+  it("is written to the terminal but never copies to the clipboard", async () => {
+    useStore.setState({ terminals: { rp: { id: "rp", name: "rp", cwd: "/", exited: null, error: null } }, order: ["rp"], settings: { rp: { ssh: null, claude: null, command: null, extra: {} } } });
+    vi.mocked(writeText).mockClear();
+    const { term } = attach("rp", document.createElement("div"));
+    await prepare("rp");
+    const osc52 = (term as unknown as { oscHandlers: Record<number, (d: string) => boolean> }).oscHandlers[52];
+    const writes = (term as unknown as { writes: Array<{ data: unknown; done?: () => void }> }).writes;
+    replayCallbacks.rp(new TextEncoder().encode("old output"));
+    expect(writes.length).toBeGreaterThan(0);
+    osc52(`c;${btoa("from the past")}`);
+    writes[writes.length - 1].done?.();
+    osc52(`c;${btoa("live")}`);
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText).toHaveBeenCalledWith("live");
+    dispose("rp");
   });
 });

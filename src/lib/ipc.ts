@@ -9,6 +9,7 @@ export interface TerminalInfo {
   cwd: string;
   exited: number | null;
   error: string | null;
+  existed?: boolean;
 }
 
 export interface RemoteListing {
@@ -58,6 +59,8 @@ export const ipc = {
     invoke<TerminalInfo>("restart_terminal", { id, cols, rows }),
   onData: (id: string, cb: (bytes: Uint8Array) => void): Promise<UnlistenFn> =>
     listen<string>(`pty:data:${id}`, (e) => cb(base64ToBytes(e.payload))),
+  onReplay: (id: string, cb: (bytes: Uint8Array) => void): Promise<UnlistenFn> =>
+    listen<string>(`pty:replay:${id}`, (e) => cb(base64ToBytes(e.payload))),
   onExit: (id: string, cb: (code: number | null) => void): Promise<UnlistenFn> =>
     listen<{ code: number | null }>(`pty:exit:${id}`, (e) => cb(e.payload.code)),
   loadWorkspace: () => invoke<Workspace | null>("load_workspace"),

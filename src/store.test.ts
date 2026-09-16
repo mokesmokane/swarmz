@@ -22,6 +22,7 @@ vi.mock("./lib/ipc", () => {
       closeTerminal: vi.fn(async () => {}),
       restartTerminal: vi.fn(async (id: string) => info(id, "/tmp/x")),
       onData: vi.fn(async () => () => {}),
+    onReplay: vi.fn(async () => () => {}),
       onExit: vi.fn(async () => () => {}),
       loadWorkspace: vi.fn(async () => null),
       saveWorkspace: vi.fn(async () => {}),
@@ -113,7 +114,15 @@ beforeEach(async () => {
   beforeSpawn.size = () => null;
   vi.mocked(ipc.saveWorkspace).mockClear();
   vi.mocked(ipc.loadWorkspace).mockClear().mockResolvedValue(null);
-  vi.mocked(ipc.createTerminal).mockClear();
+  vi.mocked(ipc.createTerminal)
+    .mockReset()
+    .mockImplementation(async (id: string, cwd: string, _cols?: number, _rows?: number, name?: string) => ({
+      id,
+      name: name ?? cwd.split("/").pop() ?? "shell",
+      cwd,
+      exited: null,
+      error: null,
+    }));
   vi.mocked(ipc.writeTerminal).mockClear();
   vi.mocked(ipc.sshCheck).mockReset().mockResolvedValue(false);
   vi.mocked(ipc.terminalForegroundBusy).mockReset().mockResolvedValue(false);
@@ -2448,5 +2457,39 @@ describe("paste flash", () => {
     const at = useStore.getState().pastedAt.t1;
     expect(at).toBeGreaterThanOrEqual(before);
     expect(useStore.getState().pastedAt.t2).toBeUndefined();
+  });
+});
+
+describe("reattaching to running sessions", () => {
+  it("does not arm the connect card for a tile whose session was already running", async () => {
+    vi.mocked(ipc.createTerminal).mockImplementation(async (id: string, cwd: string) => ({ id, name: id, cwd, exited: null, error: null, existed: id === "live" }));
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      layout: null,
+      terminals: [
+        { id: "live", name: "live", cwd: "/tmp/a", ssh: null, claude: { enabled: true, sessionId: "s1", skipPermissions: false, started: true }, command: null },
+        { id: "fresh", name: "fresh", cwd: "/tmp/b", ssh: null, claude: { enabled: true, sessionId: "s2", skipPermissions: false, started: true }, command: null },
+      ],
+    });
+    useStore.setState({ persistenceReady: false });
+    await useStore.getState().loadWorkspace();
+    expect(useStore.getState().startupPending.live).toBe(false);
+    expect(useStore.getState().startupPending.fresh).toBe(true);
+  });
+
+  it("marks an already-running ssh tile connected when its connection is live", async () => {
+    vi.mocked(ipc.createTerminal).mockImplementation(async (id: string, cwd: string) => ({ id, name: id, cwd, exited: null, error: null, existed: true }));
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      layout: null,
+      terminals: [{ id: "r1", name: "r1", cwd: "/home/me", ssh: { host: "me@box", cwd: "/p" }, claude: null, command: null }],
+    });
+    useStore.setState({ persistenceReady: false });
+    await useStore.getState().loadWorkspace();
+    await vi.waitFor(() => expect(useStore.getState().sshConnected.r1).toBe(true));
+    expect(useStore.getState().startupPending.r1).toBe(false);
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
   });
 });

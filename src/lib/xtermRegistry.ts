@@ -70,6 +70,9 @@ interface Entry {
   pollTimer: ReturnType<typeof setInterval> | null;
   /** Recent decoded PTY output, kept while a resume watch is active, to scan for the "gone" phrase. */
   tail: string;
+  /** True while a replay chunk's `term.write` is still draining, so side effects that must only
+   * come from live output (OSC 52 clipboard writes, the resume-failure scan) are suppressed. */
+  replaying: boolean;
 }
 
 const entries = new Map<string, Entry>();
@@ -161,6 +164,7 @@ function createEntry(id: string): Entry {
     enterTimer: null,
     pollTimer: null,
     tail: "",
+    replaying: false,
   };
 
   term.onData((data) => {
@@ -187,6 +191,7 @@ function createEntry(id: string): Entry {
   // Programs in the terminal (Claude Code among them) copy their own selections by sending the
   // text base64-encoded in OSC 52; real terminals put it on the clipboard, xterm.js ignores it.
   term.parser.registerOscHandler(52, (data) => {
+    if (entry.replaying) return true;
     const text = decodeOsc52(data);
     if (text !== null) {
       writeText(text)
@@ -202,8 +207,21 @@ function createEntry(id: string): Entry {
   });
 
   entry.ready = Promise.all([
+    ipc.onReplay(id, (bytes) => {
+      entry.replaying = true;
+      try {
+        term.write(bytes, () => {
+          entry.replaying = false;
+        });
+      } catch {
+        // A malformed replay chunk must not leave the tile permanently suppressing live OSC 52
+        // writes and the resume-failure scan.
+        entry.replaying = false;
+      }
+    }),
     ipc.onData(id, (bytes) => {
       term.write(bytes);
+      if (entry.replaying) return;
       const watch = useStore.getState().resumeWatch[id];
       if (!watch) {
         entry.tail = "";
