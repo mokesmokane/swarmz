@@ -94,10 +94,15 @@ pub fn live_session(paths: &SessionPaths) -> Option<Meta> {
     Some(meta)
 }
 
-/// Removes the socket and metadata of a session that is not live. The log is kept.
+/// Removes the socket and metadata of a session that is not live. A socket that is still being
+/// listened on is left alone even when the metadata looks stale (missing, corrupt, or naming a
+/// dead pid): unlinking a live socket would let a second holder bind the path out from under
+/// whatever is already serving it. The log is kept either way.
 pub fn clear_stale(paths: &SessionPaths) {
     if live_session(paths).is_none() {
-        let _ = std::fs::remove_file(&paths.socket);
+        if !socket_live(&paths.socket) {
+            let _ = std::fs::remove_file(&paths.socket);
+        }
         let _ = std::fs::remove_file(&paths.meta);
     }
 }
@@ -183,6 +188,22 @@ mod tests {
         // An exited session is never live.
         write_meta(&p.meta, &Meta { exit_code: Some(0), ..m }).unwrap();
         assert!(live_session(&p).is_none());
+    }
+
+    #[test]
+    fn clear_stale_never_unlinks_a_socket_still_being_listened_on() {
+        let d = tmp("live-no-meta");
+        ensure_dir(&d).unwrap();
+        let p = session_paths(&d, "t1").unwrap();
+        // A live listener with no metadata at all (missing, not just stale): exactly what a
+        // second concurrent `hold` could see mid-startup, before the first one has written
+        // `Meta` yet. `live_session` is correctly None (no metadata to report), but the socket
+        // itself must survive `clear_stale` so nothing else can bind over it.
+        let _l = std::os::unix::net::UnixListener::bind(&p.socket).unwrap();
+        assert!(live_session(&p).is_none());
+        clear_stale(&p);
+        assert!(socket_live(&p.socket), "clear_stale must not unlink a socket that is still live");
+        assert!(read_meta(&p.meta).is_none());
     }
 
     #[test]

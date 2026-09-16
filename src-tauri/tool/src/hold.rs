@@ -1,4 +1,4 @@
-use crate::paths::{clear_stale, ensure_dir, home_dir, live_session, session_paths, Meta};
+use crate::paths::{clear_stale, ensure_dir, home_dir, live_session, session_paths, socket_live, Meta};
 use crate::proto::PROTOCOL_VERSION;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -74,11 +74,16 @@ pub fn holder_program() -> (String, Vec<String>) {
     (shell, vec!["-l".to_string()])
 }
 
-/// Opens (creating if needed) `<dir>/<tile>.lock`, always 0600, and takes a blocking exclusive
-/// `flock` on it. The file is never deleted: it exists purely to serialise concurrent `hold`
-/// calls for the same tile, so only one of them ever starts a holder. Callers keep the returned
-/// `File` alive for as long as the critical section runs; dropping it (on any return path) closes
-/// the fd and releases the lock.
+/// Opens (creating if needed) `<dir>/<tile>.lock`, always 0600, and takes an exclusive `flock` on
+/// it, retrying a non-blocking attempt every 50ms for up to 10s. The file is never deleted: it
+/// exists purely to serialise concurrent `hold` calls for the same tile, so only one of them ever
+/// starts a holder. Callers keep the returned `File` alive for as long as the critical section
+/// runs; dropping it (on any return path) closes the fd and releases the lock.
+///
+/// The attempt is non-blocking (`LOCK_EX | LOCK_NB`, polled) rather than a single blocking
+/// `flock`, so a `hold` that is itself stuck (or just very slow: waiting out the 5s spawn timeout
+/// below) can never wedge every other `hold` for the same tile behind it indefinitely. Past the
+/// 10s deadline this returns a `busy` error instead of continuing to wait.
 fn acquire_tile_lock(dir: &Path, tile: &str) -> Result<File, CliError> {
     let path = dir.join(format!("{tile}.lock"));
     let file = OpenOptions::new()
@@ -90,11 +95,21 @@ fn acquire_tile_lock(dir: &Path, tile: &str) -> Result<File, CliError> {
     // `mode()` on `OpenOptions` only applies when the file is created; re-assert 0600 in case an
     // earlier version of this file was left with different permissions.
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-    if rc != 0 {
-        return Err(CliError::new("failed", format!("could not lock {}: {}", path.display(), std::io::Error::last_os_error())));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc == 0 {
+            return Ok(file);
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EWOULDBLOCK) {
+            return Err(CliError::new("failed", format!("could not lock {}: {err}", path.display())));
+        }
+        if Instant::now() > deadline {
+            return Err(CliError::new("busy", "another start for this tile is still running"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
-    Ok(file)
 }
 
 /// Finds the tile's live holder or starts a detached one, and waits until it is listening.
@@ -118,6 +133,13 @@ pub fn hold(exe: &Path, dir: &Path, req: &HoldRequest) -> Result<HoldResult, Cli
     // Safe to clear now: we hold the tile's lock, so no other `hold` call can be mid-spawn for
     // this tile, and `run_holder` itself refuses to steal a socket that is still live.
     clear_stale(&paths);
+    if socket_live(&paths.socket) {
+        // Something is listening on this tile's socket, but `live_session` above was still
+        // None, so there is no metadata we trust (missing, corrupt, or naming a pid that isn't
+        // running). Whatever it is, it already owns the socket: never spawn a second holder on
+        // top of it.
+        return Err(CliError::new("busy", format!("a holder is running for {} without valid metadata", req.tile)));
+    }
     let (cwd, fallback) = if Path::new(&req.cwd).is_dir() {
         (req.cwd.clone(), false)
     } else if req.require_cwd {
@@ -167,7 +189,7 @@ pub fn hold(exe: &Path, dir: &Path, req: &HoldRequest) -> Result<HoldResult, Cli
             // leaked fd; inherited by this holder it is fatal, because the holder runs for
             // days, so whoever's stdout/stderr that pipe belongs to never sees EOF and hangs
             // forever waiting to read it (this is exactly the hang `tests/cli.rs`'s concurrent
-            // `hold` test hit). Close every fd we didn't set up ourselves: std's own
+            // `hold` test hit). Mark every fd we didn't set up ourselves close-on-exec: std's own
             // exec-error-reporting pipe is already CLOEXEC, so this can't break failure
             // reporting, and both `getdtablesize` and `fcntl` are async-signal-safe, so they're
             // safe to call here, after `fork` and before `exec`. The result is ignored: EBADF
@@ -182,28 +204,47 @@ pub fn hold(exe: &Path, dir: &Path, req: &HoldRequest) -> Result<HoldResult, Cli
         });
     }
     let mut child = cmd.spawn().map_err(|e| CliError::new("failed", format!("could not start the session holder: {e}")))?;
-    let pid = child.id();
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(meta) = live_session(&paths) {
+            // Reap it in the background so it doesn't linger as a zombie once `hold` exits; the
+            // holder itself keeps running detached regardless of what happens to this `Child`.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
             return Ok(result(&paths.socket, meta, false));
         }
-        if !crate::paths::pid_alive(pid) || Instant::now() > deadline {
-            // Whether it died on its own or just never got as far as listening, don't leave it
-            // running out of our sight: kill it before reporting the failure.
-            unsafe {
-                libc::kill(pid as i32, libc::SIGKILL);
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                // It already exited on its own: nothing left to kill, and killing by pid here
+                // would risk hitting an unrelated process that has since reused it.
+                return Err(CliError::new("failed", format!("the session holder did not start: {}", log_tail(&paths.log, log_start))));
             }
-            let log_bytes = std::fs::read(&paths.log).unwrap_or_default();
-            let start = (log_start as usize).min(log_bytes.len());
-            let tail_str = String::from_utf8_lossy(&log_bytes[start..]);
-            let tail: String = tail_str.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-            return Err(CliError::new("failed", format!("the session holder did not start: {tail}")));
+            Ok(None) => {
+                if Instant::now() > deadline {
+                    // Still running but never got as far as listening. `kill`/`wait` act on this
+                    // exact `Child` (tracked by the kernel via the process's `wait()` state, not
+                    // by re-resolving its pid), so there is no risk of the pid having been reused
+                    // by another process by now.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(CliError::new("failed", format!("the session holder did not start: {}", log_tail(&paths.log, log_start))));
+                }
+            }
+            Err(e) => {
+                return Err(CliError::new("failed", format!("could not check on the session holder: {e}")));
+            }
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// The last few log lines written since `start` (an earlier attempt's byte offset into the same,
+/// shared log file), for an error message. Never lines from a previous session's holder.
+fn log_tail(path: &Path, start: u64) -> String {
+    let log_bytes = std::fs::read(path).unwrap_or_default();
+    let start = (start as usize).min(log_bytes.len());
+    let tail_str = String::from_utf8_lossy(&log_bytes[start..]);
+    tail_str.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")
 }

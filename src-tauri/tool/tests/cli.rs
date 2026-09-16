@@ -1,3 +1,4 @@
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -252,6 +253,23 @@ fn info_for_a_missing_session_says_not_running() {
 }
 
 #[test]
+fn hold_refuses_a_second_holder_when_the_socket_is_live_without_metadata() {
+    let h = home("busy-no-meta");
+    let dir = h.path.join(".swarmz/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    // A live listener standing in for a holder that hasn't written `Meta` yet (or whose metadata
+    // is unreadable): `live_session` reports None, but the socket is genuinely live. `hold` must
+    // recognise this and refuse to bind a second holder over it, rather than treating it as free.
+    let listener = UnixListener::bind(dir.join("t8.sock")).unwrap();
+    let cwd = h.path.to_string_lossy().into_owned();
+    let (code, e) = tool(&h.path, &["hold", "t8", "--cwd", &cwd, "--name", "eight"]);
+    assert_eq!(code, 1);
+    assert_eq!(e["code"], "busy");
+    assert!(e["error"].as_str().unwrap().contains("without valid metadata"), "{e}");
+    drop(listener);
+}
+
+#[test]
 fn concurrent_hold_for_the_same_tile_converges_on_one_holder() {
     let h = home("concurrent");
     let cwd = h.path.to_string_lossy().into_owned();
@@ -288,7 +306,7 @@ fn concurrent_hold_for_the_same_tile_converges_on_one_holder() {
 }
 
 #[test]
-fn the_holder_closes_a_leaked_pipe_fd_it_never_asked_for() {
+fn the_holder_marks_a_leaked_pipe_fd_close_on_exec() {
     let h = home("fd-leak");
     let cwd = h.path.to_string_lossy().into_owned();
 
@@ -297,8 +315,9 @@ fn the_holder_closes_a_leaked_pipe_fd_it_never_asked_for() {
     // another thread, e.g. the app spawning several `hold`s at once) could hand to this `hold`
     // invocation -- see the comment in `hold()`'s `pre_exec` closure for why that race exists on
     // macOS. Rust's `Command` does not close arbitrary fds it doesn't know about, so if `hold`
-    // (and, through it, the detached holder it spawns) doesn't close this deliberately, the
-    // write end leaks all the way down into a process that outlives this test by days.
+    // (and, through it, the detached holder it spawns) doesn't mark it close-on-exec
+    // deliberately, the write end leaks all the way down into a process that outlives this test
+    // by days.
     let mut fds = [0i32; 2];
     let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
     assert_eq!(rc, 0, "pipe() failed: {}", std::io::Error::last_os_error());
