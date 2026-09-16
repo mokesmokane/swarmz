@@ -579,4 +579,21 @@ describe("replayed output", () => {
     expect(writeText).toHaveBeenCalledWith("live");
     dispose("rp");
   });
+
+  it("does not apply an OSC 7 cwd fired during replay, but does apply one fired after", async () => {
+    useStore.setState({ terminals: { rp2: { id: "rp2", name: "rp2", cwd: "/orig", exited: null, error: null } }, order: ["rp2"], settings: { rp2: { ssh: null, claude: null, command: null, extra: {} } } });
+    vi.mocked(ipc.setTerminalCwd).mockClear();
+    const { term } = attach("rp2", document.createElement("div"));
+    await prepare("rp2");
+    const osc7 = (term as unknown as { oscHandlers: Record<number, (d: string) => boolean> }).oscHandlers[7];
+    const writes = (term as unknown as { writes: Array<{ data: unknown; done?: () => void }> }).writes;
+    replayCallbacks.rp2(new TextEncoder().encode("old output"));
+    expect(writes.length).toBeGreaterThan(0);
+    osc7("file:///old/path");
+    expect(ipc.setTerminalCwd).not.toHaveBeenCalled();
+    writes[writes.length - 1].done?.();
+    osc7("file:///new/path");
+    await vi.waitFor(() => expect(ipc.setTerminalCwd).toHaveBeenCalledWith("rp2", "/new/path"));
+    dispose("rp2");
+  });
 });

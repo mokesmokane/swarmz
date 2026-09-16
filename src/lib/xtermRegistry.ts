@@ -71,7 +71,8 @@ interface Entry {
   /** Recent decoded PTY output, kept while a resume watch is active, to scan for the "gone" phrase. */
   tail: string;
   /** True while a replay chunk's `term.write` is still draining, so side effects that must only
-   * come from live output (OSC 52 clipboard writes, the resume-failure scan) are suppressed. */
+   * come from live output (OSC 52 clipboard writes, OSC 7 cwd updates, the resume-failure scan)
+   * are suppressed. */
   replaying: boolean;
 }
 
@@ -201,6 +202,7 @@ function createEntry(id: string): Entry {
     return true;
   });
   term.parser.registerOscHandler(7, (data) => {
+    if (entry.replaying) return true;
     const path = decodeOsc7(data);
     if (path) void useStore.getState().setTerminalCwd(id, path, "osc7");
     return true;

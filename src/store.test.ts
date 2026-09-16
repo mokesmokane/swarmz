@@ -22,7 +22,7 @@ vi.mock("./lib/ipc", () => {
       closeTerminal: vi.fn(async () => {}),
       restartTerminal: vi.fn(async (id: string) => info(id, "/tmp/x")),
       onData: vi.fn(async () => () => {}),
-    onReplay: vi.fn(async () => () => {}),
+      onReplay: vi.fn(async () => () => {}),
       onExit: vi.fn(async () => () => {}),
       loadWorkspace: vi.fn(async () => null),
       saveWorkspace: vi.fn(async () => {}),
