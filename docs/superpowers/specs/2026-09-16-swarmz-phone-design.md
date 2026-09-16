@@ -174,8 +174,38 @@ The tool's `output` and `pending` commands (§4) use it; viewers do not.
   attach line it typed, types the remote startup step (`export SWARMZ_TERMINAL_ID=… && cd … && claude …`).
   The attach marker is written together with the replay, after the holder
   has answered, so a failed attach prints only its JSON error.
+  **Login first.** Whether to attach depends on the host's tool, and asking
+  it (a `BatchMode` ssh) needs a login, which a password-only host cannot do
+  on its own. So when the host's tool is not known yet and no shared master
+  is up, Connect first types a master-only line,
+  `ssh -fN -o ControlMaster=auto -o ControlPath=~/.swarmz/ssh/%C -o ControlPersist=10m <host>`
+  (`sshMasterLine`), so the password prompt appears once, in the tile. The
+  tile shows "connecting" while the app polls for the master (same timeout
+  and Cancel as any connect; `ssh -fN` goes to the background, so the shell
+  being idle is not a failure on its own). Once the master is up the app asks
+  the tool, then types the attach line (tool ready and attach allowed) or the
+  plain ssh line and the remote step; both reuse the master and do not
+  prompt. A login that fails (no master, and the shell has the terminal back
+  on two polls in a row) ends in "could not log in to <machine>" and the
+  card. With a master already up, or the tool's answer known, Connect types
+  the connect line directly (asking the tool first when needed).
   A dropped ssh connection leaves the remote holder and its Claude running;
-  reconnecting reattaches. **Closing** a remote tile closes both holders: the
+  reconnecting reattaches.
+  **Disconnect watchdog.** Every 3 s the app asks each connected ssh tile's
+  local holder whether its shell has a foreground job (skipping tiles that
+  are connecting or inside a Connect, one check per tile at a time; an
+  unanswered check counts for nothing). The shell back in the foreground
+  means the ssh (plain or `attach`) ended: the tile is no longer connected,
+  the card returns with "Connection to <machine> ended" (for a tile that
+  attached this run: "the session is still running there, and Reconnect
+  rejoins it") and a **Reconnect** button, a pending attach is forgotten (a
+  picked session stays pending for the rejoin), and the pane's input modes
+  are reset in the xterm only (mouse tracking in every encoding, bracketed
+  paste, focus reports, application cursor and keypad, cursor visibility,
+  attributes, and the alternate screen when it is active), so moving the
+  mouse no longer types reports into the local shell. The agent watcher's
+  liveness re-check reaches the same verdict. A rejoined tile whose ssh died
+  before this launch gets the same pane reset along with its card. **Closing** a remote tile closes both holders: the
   app ends the local one and, best effort and without waiting, runs
   `swarmz close <tile>` on the host over the shared ssh socket
   (`remote_tile_close`) when the host's tool is ready or the tile attached
