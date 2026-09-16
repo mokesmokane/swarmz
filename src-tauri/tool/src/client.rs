@@ -55,9 +55,10 @@ impl HolderClient {
         let second = read_frame(&mut r)
             .map_err(|e| format!("the session did not answer: {e}"))?
             .ok_or_else(|| "the session closed the connection".to_string())?;
-        if second.kind == Kind::Replay as u8 {
-            on_output(second.payload, true);
+        if second.kind != Kind::Replay as u8 {
+            return Err(format!("expected a replay frame, got kind {}", second.kind));
         }
+        on_output(second.payload, true);
         r.set_read_timeout(None).map_err(|e| e.to_string())?;
 
         let info_tx: Arc<Mutex<Option<mpsc::Sender<Info>>>> = Arc::new(Mutex::new(None));
@@ -68,6 +69,10 @@ impl HolderClient {
             loop {
                 match read_frame(&mut r) {
                     Ok(Some(f)) => match Kind::from_u8(f.kind) {
+                        // Unreachable under the current protocol: the holder sends exactly one
+                        // Replay frame, immediately after Welcome, and `connect()` already
+                        // consumes it synchronously above. Kept as harmless defensive handling
+                        // in case that ever changes.
                         Some(Kind::Replay) => on_output(f.payload, true),
                         Some(Kind::Data) => on_output(f.payload, false),
                         Some(Kind::Exit) => {
@@ -122,6 +127,8 @@ impl HolderClient {
         self.send(Kind::Terminate, b"")
     }
 
+    /// Expects one call in flight at a time: an `InfoReply` carries no correlation id, so a
+    /// second `info()` call before the first resolves could deliver its reply to the wrong caller.
     pub fn info(&self, timeout: Duration) -> Option<Info> {
         let (tx, rx) = mpsc::channel();
         *self.info_tx.lock().ok()? = Some(tx);
@@ -273,5 +280,27 @@ mod tests {
         });
         let err = HolderClient::connect(&sock, &hello(), |_, _| {}, |_| {}).err().unwrap();
         assert!(err.contains("protocol 99"), "{err}");
+    }
+
+    #[test]
+    fn refuses_a_holder_that_skips_the_replay_frame() {
+        let dir = PathBuf::from(format!("/tmp/szk-{}-noreplay", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("f.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let _ = crate::proto::read_frame(&mut s);
+                let w = crate::proto::Welcome { v: PROTOCOL_VERSION, shell_pid: None, cwd: "/".into(), started_at: "t".into() };
+                let _ = crate::proto::write_frame(&mut s, crate::proto::Kind::Welcome, &crate::proto::json(&w));
+                // A well-behaved holder always follows Welcome with Replay; this one sends Data
+                // instead, so `connect()` must fail loudly rather than silently drop the frame.
+                let _ = crate::proto::write_frame(&mut s, crate::proto::Kind::Data, b"surprise");
+            }
+        });
+        let err = HolderClient::connect(&sock, &hello(), |_, _| {}, |_| {}).err().unwrap();
+        assert!(err.contains("expected a replay frame"), "{err}");
+        assert!(err.contains(&(Kind::Data as u8).to_string()), "{err}");
     }
 }
