@@ -365,3 +365,68 @@ fn the_holder_marks_a_leaked_pipe_fd_close_on_exec() {
     }
     assert!(eof, "read end of the pipe never saw EOF: the holder is still holding a leaked fd open");
 }
+
+fn run_attach(
+    h: &PathBuf,
+    tile: &str,
+) -> (Box<dyn portable_pty::Child + Send + Sync>, std::sync::Arc<std::sync::Mutex<Vec<u8>>>, Box<dyn std::io::Write + Send>) {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    let pair = native_pty_system().openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
+    let mut cmd = CommandBuilder::new(EXE);
+    cmd.args(["attach", tile, "--cwd", &h.to_string_lossy(), "--name", tile]);
+    cmd.env("HOME", h);
+    cmd.env("SWARMZ_HOLDER_SHELL", "/bin/sh");
+    let child = pair.slave.spawn_command(cmd).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let writer = pair.master.take_writer().unwrap();
+    let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let o = out.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = std::io::Read::read(&mut reader, &mut buf) {
+            if n == 0 {
+                break;
+            }
+            o.lock().unwrap().extend_from_slice(&buf[..n]);
+        }
+    });
+    std::mem::forget(pair.master);
+    (child, out, writer)
+}
+
+fn wait_out(out: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>, needle: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        if String::from_utf8_lossy(&out.lock().unwrap()).contains(needle) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+#[test]
+fn attach_bridges_a_terminal_and_reattaches_after_a_drop() {
+    let h = home("attach");
+    // Tracked up front (before any assertion that could unwind the test) so `TestHome`'s drop
+    // guard terminates the holder even if this test fails partway through.
+    let paths = swarmz_tool::paths::session_paths(&swarmz_tool::paths::sessions_dir_in(&h.path), "t7").unwrap();
+    h.track(&paths.socket.to_string_lossy());
+    let (mut child, out, mut w) = run_attach(&h.path, "t7");
+    assert!(wait_out(&out, "\x1b]1337;swarmz-attach;new=1\x07"), "first attach must say new=1");
+    std::io::Write::write_all(&mut w, b"echo bridged-$((2+3))\r").unwrap();
+    assert!(wait_out(&out, "bridged-5"));
+    // Simulate the ssh connection dropping.
+    child.kill().unwrap();
+    let _ = child.wait();
+    std::thread::sleep(Duration::from_millis(300));
+    let (_, info) = tool(&h.path, &["info", "t7"]);
+    assert_eq!(info["running"], true, "the session must survive the bridge going away");
+    let (mut child2, out2, mut w2) = run_attach(&h.path, "t7");
+    assert!(wait_out(&out2, "\x1b]1337;swarmz-attach;new=0\x07"), "reattach must say new=0");
+    assert!(wait_out(&out2, "bridged-5"), "reattach must replay the history");
+    std::io::Write::write_all(&mut w2, b"exit 4\r").unwrap();
+    let status = child2.wait().unwrap();
+    assert_eq!(status.exit_code(), 4);
+}

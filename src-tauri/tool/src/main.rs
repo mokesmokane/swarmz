@@ -1,6 +1,7 @@
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::Duration;
+use swarmz_tool::attach::attach;
 use swarmz_tool::client::HolderClient;
 use swarmz_tool::hold::{hold, holder_program, CliError, HoldRequest};
 use swarmz_tool::paths::{home_dir, live_session, session_paths, sessions_dir};
@@ -153,6 +154,21 @@ fn run(raw: &[String]) -> Result<serde_json::Value, CliError> {
                 "foregroundCommand": info.foreground_command,
             }))
         }
+        Some("attach") => {
+            a.expect_positional(2, "attach <tile> [--cwd D] [--name N] [--env K=V]...")?;
+            let tile = tile_arg(&a)?;
+            let req = HoldRequest {
+                name: a.opt("--name").unwrap_or(&tile).to_string(),
+                cwd: a.opt("--cwd").map(str::to_string).unwrap_or_else(|| home_dir().to_string_lossy().into_owned()),
+                cols: 80,
+                rows: 24,
+                env: a.envs()?,
+                require_cwd: false,
+                tile,
+            };
+            let code = attach(&exe()?, &sessions_dir(), req)?;
+            std::process::exit(code);
+        }
         Some("__holder") => {
             a.expect_positional(2, "__holder <tile> --name N --cwd D --dir D [--cols C] [--rows R] [--cwd-fallback] [--env K=V]...")?;
             let tile = tile_arg(&a)?;
@@ -181,7 +197,7 @@ fn run(raw: &[String]) -> Result<serde_json::Value, CliError> {
             let code = run_holder(cfg)?;
             std::process::exit(code.unwrap_or(0));
         }
-        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info> …")),
+        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|attach> …")),
     }
 }
 

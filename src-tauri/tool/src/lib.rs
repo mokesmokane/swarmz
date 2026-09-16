@@ -1,3 +1,4 @@
+pub mod attach;
 pub mod client;
 pub mod hold;
 pub mod paths;
