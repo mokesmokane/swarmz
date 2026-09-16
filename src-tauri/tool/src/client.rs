@@ -34,6 +34,18 @@ impl HolderClient {
         on_output: impl Fn(Vec<u8>, bool) + Send + 'static,
         on_exit: impl FnOnce(Option<i32>) + Send + 'static,
     ) -> Result<HolderClient, String> {
+        HolderClient::connect_with(socket, hello, |_| {}, on_output, on_exit)
+    }
+
+    /// `connect`, with `on_welcome` called on this thread with the holder's `Welcome` before the
+    /// replay reaches `on_output` (a viewer needs the replay's size before it parses the replay).
+    pub fn connect_with(
+        socket: &Path,
+        hello: &Hello,
+        on_welcome: impl FnOnce(&Welcome),
+        on_output: impl Fn(Vec<u8>, bool) + Send + 'static,
+        on_exit: impl FnOnce(Option<i32>) + Send + 'static,
+    ) -> Result<HolderClient, String> {
         let stream = UnixStream::connect(socket).map_err(|e| format!("could not reach the session at {}: {e}", socket.display()))?;
         let mut w = stream.try_clone().map_err(|e| e.to_string())?;
         w.write_all(&encode(Kind::Hello, &json(hello))).map_err(|e| e.to_string())?;
@@ -52,6 +64,7 @@ impl HolderClient {
                 welcome.v, PROTOCOL_VERSION
             ));
         }
+        on_welcome(&welcome);
         // The holder always sends the Replay frame immediately after Welcome, even when there is
         // no history yet, so it is already sitting in the socket buffer by the time we get here.
         // Read it synchronously and hand it to `on_output` before returning: callers rely on a
@@ -242,6 +255,33 @@ mod tests {
         c.write(b"exit 3\n").unwrap();
         assert_eq!(erx.recv_timeout(Duration::from_secs(5)).unwrap(), Some(3));
         assert_eq!(h.join().unwrap().unwrap(), Some(3));
+    }
+
+    #[test]
+    fn the_welcome_and_its_size_arrive_before_the_replay() {
+        let (_d, sock, h) = start("welcome");
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (w, o) = (seen.clone(), seen.clone());
+        let first = HolderClient::connect(&sock, &hello(), |_, _| {}, |_| {}).unwrap();
+        first.resize(120, 40).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let sizeless = Hello { v: PROTOCOL_VERSION, cols: 0, rows: 0, viewer: "window".into() };
+        let c = HolderClient::connect_with(
+            &sock,
+            &sizeless,
+            move |welcome| w.lock().unwrap().push(format!("welcome {}x{}", welcome.cols, welcome.rows)),
+            move |_, replay| {
+                if replay {
+                    o.lock().unwrap().push("replay".into());
+                }
+            },
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec!["welcome 120x40".to_string(), "replay".to_string()]);
+        assert_eq!((c.welcome().cols, c.welcome().rows), (120, 40));
+        c.terminate().unwrap();
+        assert!(h.join().unwrap().is_ok());
     }
 
     #[test]
