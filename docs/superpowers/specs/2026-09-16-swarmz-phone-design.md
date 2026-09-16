@@ -4,7 +4,7 @@ Date: 2026-09-16
 Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented
 Amends: `2026-09-10-swarmz-design.md` §3.1 (the swarmz window no longer owns
 PTYs); `2026-09-15-agent-state-hooks-design.md` §2.1 (status colours), §3.2
-(hook events gain `PermissionRequest`); `2026-09-15-tile-folder-and-session-history-design.md`
+(hook events gain `PermissionRequest` and a synchronous `PostToolUse`); `2026-09-15-tile-folder-and-session-history-design.md`
 §3.2 (remote folders are read from the remote holder, so a bare `cd` is
 tracked).
 
@@ -118,9 +118,13 @@ time; the holder never blocks on a slow viewer (per-viewer queue capped at
 ### 3.4 Screen model
 
 The holder feeds all output through a VT parser (`vt100` crate) at the size
-currently applied, keeping 5 000 lines of scrollback. `ScreenReply` is
-`{cols, rows, cursor, lines}`: `cursor` is `[line, col]` (an index into
+currently applied, keeping 2 000 lines of scrollback. `ScreenReply` is
+`{cols, rows, cursor, lines, visibleStart}`: `cursor` is `[line, col]` (an index into
 `lines`) or `null` when the cursor's row is not among the returned lines;
+`visibleStart` is the index in `lines` of the first row of the visible screen
+(0 when the visible screen starts above the lines returned; trailing blank
+rows below the cursor are trimmed, so a cleared screen can leave it past the
+last scrollback line); older holders omit it;
 `lines` is `[[{text, fg, bg, bold, inverse}]]`, spans with colours as
 `#rrggbb` or a palette index, `bold` and `inverse` present only when true
 (`inverse` is set only for reverse video on otherwise-default colours — a
@@ -135,7 +139,8 @@ what remains, then append `lines`; sent with empty `lines` when only the
 cursor moved), `{"type":"ping"}` every 25 s, or `{"type":"exit"}` once,
 when the session really ended (a holder that merely stops answering — up
 to 5 missed reads — fails the command instead, since silence alone is not
-proof the session is gone).
+proof the session is gone). With `--follow`, `--lines` is at most 1000
+(`usage` above it); a one-off read may ask for up to 5000.
 
 ### 3.5 Size
 
@@ -258,7 +263,13 @@ old app and die with it, as today. From that launch on, every tile is held.
 Every command prints one JSON document (or, with `--follow`, one per line),
 each carrying `"v": 1`. Failures exit non-zero with
 `{"v":1,"error":"…","code":"…"}` on stdout. `swarmz version` prints
-`{v, tool, protocol}`.
+`{v, tool, protocol, build}`. The documents below are shown without their
+`v`; each command's reply is the object shown. A command that reads the
+screen (`output`, `pending`, `answer`) on a holder whose metadata has no
+`build` (it predates `Screen`) fails with code `old_session` ("restart this
+tile to use it from the phone") without asking it anything; `send`, `key`,
+`info` and `close` still work there, and `ls`/`watch` report such a tile from
+the hook log alone.
 
 ### 4.1 Commands
 
@@ -266,24 +277,24 @@ each carrying `"v": 1`. Failures exit non-zero with
 |---------|--------|
 | `hold <tile> …` | §3.1 |
 | `attach <tile> …` | raw bridge (§3.6); never used by the phone |
-| `info <tile>` | `{cwd, foregroundBusy, foregroundCommand, running}` |
+| `info <tile>` | `{running, cwd, foregroundBusy, foregroundCommand, bracketedPaste}` (`{running:false}` when not running; `bracketedPaste` is null from older holders) |
 | `close <tile>` | ends the tile's holder (`Terminate`) and waits up to 5 s: `{closed}`, false when none was running |
 | `version` | `{v, tool, protocol, build}` |
-| `machines` | `[{name, alias, color, online, self}]` from `workspace.json` machines and `tailscale status` (with `TERM` set) |
-| `ls` | tiles homed on this Mac: `[{id, name, cwd, kind: "claude"\|"shell", running, exitCode, status, needs, since, lastEvent, mode, lastMessage, turnEndedAt, sessionId, summary}]` |
-| `watch` | stream: a full `ls` snapshot first, then `{type:"tile", tile:{…}}` on every change, `{type:"gone", id}` when a tile is closed, and `{type:"ping"}` every 25 s; re-folds the hook log only when `events.log`'s or `events.log.1`'s size or mtime changes, and keeps the rows it had — rather than reporting every tile gone — when `workspace.json` cannot be read |
-| `sessions` | every session under `~/.swarmz/sessions`, running or not: `[{id, name, running, pid, startedAt, exitedAt, exitCode, known}]`, where `known` means the id is in `workspace.json` |
-| `prune` | removes the files of sessions that are not running and whose files are all older than 7 days; `{removed}` |
-| `transcript <tile> [--before <id>] [--after <id>] [--limit 50] [--follow]` | normalised messages (§4.3) |
+| `machines` | `{machines:[{name, alias, color, online, self}]}`: this Mac first, then by name; the `workspace.json` machines, this Mac, and the Macs (`OS` macOS) online on the tailnet from `tailscale status` (with `TERM` set; not asked when `SWARMZ_MACHINE` names this Mac) |
+| `ls` | `{tiles:[…]}`, the tiles homed on this Mac: `{id, name, cwd, kind: "claude"\|"shell", running, exitCode, status, needs, since, lastEvent, mode, lastMessage, turnEndedAt, sessionId, summary, machine}` (`machine` is this Mac's name) |
+| `watch` | stream: `{type:"snapshot", tiles:[…]}` first, then `{type:"tile", tile:{…}}` on every change, `{type:"gone", id}` when a tile is closed, and `{type:"ping"}` every 25 s; re-folds the hook log only when `events.log`'s or `events.log.1`'s size or mtime changes, re-reads a transcript's last message only when its size or mtime changes, and keeps the rows it had — rather than reporting every tile gone — when `workspace.json` cannot be read |
+| `sessions` | `{sessions:[{id, name, running, pid, startedAt, exitedAt, exitCode, known}]}`: every session under `~/.swarmz/sessions` with files other than its lock, running or not, where `known` means the id is in `workspace.json`; fails (`failed`) when `workspace.json` exists but cannot be read |
+| `prune` | removes the files of sessions that are not running and whose files are all older than 7 days, never a `.lock` file (a start may hold it); `{removed}` |
+| `transcript <tile> [--before <id>] [--after <id>] [--limit 50] [--follow]` | `{messages:[…], hasMore}`, normalised messages (§4.3) |
 | `image <tile> <imageId>` | `{mime, base64}` |
-| `output <tile> [--lines 200] [--follow]` | styled lines from `Screen` (§3.4); `--follow` emits replaced and appended lines |
-| `send <tile> [--] <text>` | types the text as a bracketed paste, then Enter as a separate write 50 ms later; everything after a lone `--` is text, never an option, so a command that itself starts with `--` can be sent; the pasted text keeps only newline, tab and printable characters, so it can never end the paste early or smuggle escape sequences of its own |
-| `key <tile> <name>` | one of `esc`, `ctrl-c`, `tab`, `shift-tab`, `up`, `down`, `enter` |
-| `pending <tile>` | `{tool, summary, options:[{n, label}]}` or `null` (§4.4) |
-| `answer <tile> <yes\|always\|no\|deny\|n> [--summary <text>]` | selects that option if the same question is still pending (§4.4); otherwise `{ignored:true, reason}`. With `--summary`, the answer applies only if the pending question's summary still equals it (the value may itself start with `--`); notification actions pass it |
+| `output <tile> [--lines 200] [--follow]` | `{cols, rows, cursor, lines}`, styled lines from `Screen` (§3.4); `--follow` emits replaced and appended lines |
+| `send <tile> [--] <text>` | `{sent:true}`; asks the holder's `Info` first and types the text as a bracketed paste when the program on screen has turned bracketed paste on (or the holder cannot say), else as plain text, then Enter as a separate write 50 ms later; everything after a lone `--` is text, never an option, so a command that itself starts with `--` can be sent; the pasted text keeps only newline, tab and printable characters, so it can never end the paste early or smuggle escape sequences of its own |
+| `key <tile> <name>` | `{sent:true}`; one of `esc`, `ctrl-c`, `tab`, `shift-tab`, `up`, `down`, `enter` |
+| `pending <tile>` | `{pending:{tool, summary, options:[{n, label}]}}` or `{pending:null}` (§4.4) |
+| `answer <tile> <yes\|always\|no\|deny\|n> [--summary <text>]` | selects that option if the same question is still showing (§4.4): `{answered:true, option:{n, label}}` (`option` is null for `deny`); otherwise `{ignored:true, reason}`; an answer the dialog has no option for fails with `no_option`. With `--summary`, the answer applies only if the pending question's summary still equals it (the value may itself start with `--`); notification actions pass it |
 | `folders [<path>]` | `{path, parent, dirs}` (same rules as the desktop folder picker); a path containing a `.` or `..` segment is refused |
-| `new --folder <dir> [--skip-permissions] [--name <name>]` | the new tile, §4.5 |
-| `restart <tile>` | holds a fresh session for a tile that is not running and types its startup step (Claude tiles resume their session); refuses (`running`) a tile that is already running, including one another `hold`/`restart` started concurrently; returns the tile |
+| `new --folder <dir> [--skip-permissions] [--name <name>]` | `{tile:{…}}`, the new tile's `ls` row, §4.5 |
+| `restart <tile>` | holds a fresh session for a tile that is not running and types its startup step (Claude tiles resume their session); refuses (`running`) a tile that is already running, including one another `hold`/`restart` started concurrently; returns `{tile:{…}}` |
 | `phone add --name <device> --key <pubkey>` / `phone ls` / `phone revoke <device>` | §7.2 |
 
 ### 4.2 Status
@@ -307,10 +318,23 @@ It adds:
   `"permission"`, else `null`.
 
 `PostToolUse` (§4.4) folds as "blocked → working" and is ignored otherwise,
-the same as any other event that does not change the status. `ls` also
-clears a tile's `permission` block, independently of the hook log, when the
-holder's screen no longer shows a dialog for it — the user may have
-answered on the Mac itself, and nothing else would tell the phone.
+the same as any other event that does not change the status.
+
+**The screen decides permission state.** Hooks can land out of order (an
+earlier tool's `PostToolUse` after the next `PermissionRequest`), a
+subagent's permission request is never logged (the hook script drops
+`agent_id` events), and the user may answer on the Mac itself. So for a
+running tile whose holder supports `Screen`, `ls`/`watch` ask the holder for
+its visible rows only (the size it reports on connecting) and:
+
+- a live dialog (§4.4) on the visible screen → `status: "blocked"`,
+  `needs: "permission"`, `summary` = the dialog's summary; the hook event's
+  tool name is kept only when its summary equals the dialog's, else the
+  dialog's heading is the tool;
+- no live dialog while the fold says blocked with `needs: "permission"` →
+  `status: "idle"`, `needs: null`, `summary: null`;
+- question-type blocks (`idle_prompt` and the other blocking notifications)
+  stay as the fold says, as does everything when the holder does not answer.
 
 A shared fixture file, `tests/fixtures/agent-status.json` (event sequences
 and expected states), is run by both the TypeScript and Rust test suites so
@@ -349,21 +373,24 @@ guessed at):
 ### 4.4 Permission questions
 
 - The hook set gains `PermissionRequest` (async, 5 s timeout) and
-  `PostToolUse` (§4.2): a `PermissionRequest` leaves a tile `blocked` until
+  `PostToolUse` (§4.2; synchronous, 5 s timeout, so it is always logged
+  before Claude moves on to the next request): a `PermissionRequest` leaves a tile `blocked` until
   the next event, and nothing else fires when the user answers, so
   `PostToolUse` gives the fold a "the turn moved on" signal even when no
   question was ever asked. The hook script version becomes 2 and installs
   update it on every Mac; version 2 also rotates `events.log` to
   `events.log.1` at 2 MiB. `PostToolUse`'s logged input is reduced to
-  `{"session_id":"…"}` before it is written — tool inputs and results can be
+  `{"session_id":"…"}` (the first `"session_id"` in the payload, the
+  event's own) before it is written — tool inputs and results can be
   large — so it carries no `tool_name`/`tool_input` for the fold to read.
   `PermissionRequest`'s event carries `tool_name` and `tool_input`; the tool
   derives `summary` (`Bash` → the command, `Edit`/`Write`/`MultiEdit` → the
   file path, `NotebookEdit` → the notebook path, `WebFetch` → the URL,
   others → the tool name).
-- `pending` reads the dialog from the holder's screen model, and only when
-  it is actually showing now: its footer line must be within the screen's
-  last `rows` lines, with nothing but blank lines after it (a dialog that
+- `pending` reads the dialog from the holder's screen model (the visible
+  rows only), and only when it is actually showing now: its footer line must
+  be at or below `visibleStart` (§3.4; older holders: within the last `rows`
+  lines), with nothing but blank lines after it (a dialog that
   has scrolled into history, or that output has been printed below, is not
   pending). Verified against Claude Code 2.1.273 (spike, 2026-09-16), the
   dialog is: a heading (for example "Bash command"), the command or target,
@@ -371,24 +398,26 @@ guessed at):
   footer line starting "Esc to cancel". An option is a line matching
   `^\s*[❯>]?\s*(\d+)\.\s+(.+)$`; indented lines after it, up to the next
   option or the footer, are continuations of its label (long labels wrap).
-  The heading and command line give `summary` when the hook event has not
-  arrived yet. If no footer is on screen, `pending` returns `null`.
+  `summary` is always the screen's (the command or target line, else the
+  heading); `tool` is the hook event's tool name when that event's summary
+  equals the screen's, else the heading (§4.2). If no footer is on screen,
+  `pending` returns `null`.
 - Option numbers are not fixed (the spike showed "No" as option 3, after a
   wrapped "Yes, and always allow …"). `answer` therefore takes an option
   label (`yes`, `always`, `no`) or a number, resolves it against the options
   currently on screen, checks the same dialog is still showing, and sends
   that digit. `answer <tile> deny` sends Esc, which always cancels the
-  request; notification **Deny** actions use it. `answer` returns
-  `{ignored:true, reason}`, never an error, in three cases: `"no question is
-  showing"` (nothing is pending), `"a different question is showing"` (the
-  dialog changed under it, or `--summary` no longer matches), and,
-  whenever the tile has any hook events at all, `"Claude is not waiting for
-  an answer"` unless the fold says otherwise (`needs` set) — a dialog that
-  merely looks live on screen cannot be answered on that alone. `--summary
-  <text>` (which may itself start with `--`) makes the answer apply only
-  when the pending question's summary still equals it, so a stale phone
-  screen can never answer the wrong question; notification actions always
-  pass it.
+  request; notification **Deny** actions use it. Like `ls`, `answer` trusts
+  the screen, not the hook log: it requires a live dialog and returns
+  `{ignored:true, reason}`, never an error, in two cases: `"no question is
+  showing"` (no live dialog) and `"a different question is showing"`
+  (`--summary` does not equal the summary on screen). `--summary <text>`
+  (which may itself start with `--`) makes the answer apply only when the
+  summary on screen equals it — the hook event's summary is never compared —
+  so a stale phone screen or a notification for another question can never
+  answer the wrong one; notification actions always pass it. When
+  resolving `always`, an option reading "don’t ask" (curly apostrophe)
+  counts the same as "don't ask".
 
 ### 4.5 New sessions
 
@@ -410,7 +439,22 @@ guessed at):
    `claude.started = false`, and writes atomically.
 
 A failure at step 3 ends the session step 2 started rather than leaving an
-unrecorded holder running. A running swarmz app notices the change through
+unrecorded holder running.
+
+4. hands the recorded def to a detached helper, `swarmz __keep-def <id>`
+   (own session, stdio to `/dev/null`, every inherited descriptor
+   close-on-exec, as for holders), through
+   `~/.swarmz/sessions/<id>.def.json` (mode 0600, with this Mac's name; the
+   helper removes it when it exits). For 30 s the helper checks
+   `workspace.json` once a second: while the tile's session is running and
+   the def is missing (an app saved an older copy over the file), it adds the
+   def back from a fresh read — under a free name, with `origin` = this Mac
+   and a `sync.revision` bump — and it stops early once the session has
+   ended. It never writes over a file it cannot read. `__keep-def` is not
+   allowed through the ssh gate.
+
+Tool commands that only read `workspace.json` never move an invalid file
+aside (they report it); only `new` and the helper, which write it, do. A running swarmz app notices the change through
 its existing external-change check, adopts it and pushes it to peers.
 `restart` (§4.1) refuses a tile whose session is already running, including
 one another `new`/`hold`/`restart` started concurrently, so two starts for
@@ -430,9 +474,12 @@ the same tile never race.
 
 Phone keys are installed with a forced command (§7.2). `swarmz ssh-gate`
 reads `SSH_ORIGINAL_COMMAND`, splits it with POSIX shell-word rules, requires
-the first word to be `swarmz` or the tool's absolute path and the second to
-be one of the §4.1 subcommands except `attach`, `hold`, `phone add`,
-`sessions` and `prune`, then execs the tool with those arguments. Anything
+the first word to be `swarmz`, the literal word `~/.swarmz/bin/swarmz` (what
+the fan-out sends; never expanded) or the tool's absolute path, and the
+second to be one of the §4.1 subcommands except `attach`, `hold`,
+`phone add`, `sessions` and `prune` (internal subcommands such as `__holder`
+and `__keep-def` are never allowed), then execs the tool with those
+arguments. The gate itself never asks Tailscale for this Mac's name. Anything
 else exits 126 with an error; every refusal exits 126 with code `denied`,
 including one raised by argument parsing itself, so a phone key's forced
 command never leaks an internal error code in its place. Unquoted newlines
@@ -445,11 +492,14 @@ this affects an ordinary command.
 
 - **Outside-sessions notice.** The sidebar polls the same session rows as
   `sessions` (§4.1) and flags ids that are running, not `known`, not open as
-  a tile here, and started more than a minute ago (fresh enough that a
-  session `new`/`restart` is still setting up is never flagged). When any
-  are found it shows "N sessions running outside this workspace" with a
-  **Close them** button; confirming ends every flagged session (best effort,
-  the first failure shown as an error) and refreshes the list.
+  a tile here, and started more than two minutes ago (fresh enough that a
+  session `new`/`restart` is still setting up, or whose def the keep-def
+  helper is still guarding, is never flagged). When any are found it shows
+  "N sessions running outside this workspace" with a **Close them** button;
+  confirming refreshes the list first and ends only the flagged sessions that
+  are still outside (best effort, the first failure shown as an error), then
+  refreshes the list again. When `workspace.json` cannot be read, no session
+  is reported as outside (fail closed).
 - **Phones list.** A 📱 toggle in the sidebar header opens a panel listing
   this Mac's paired phones (`phone ls`, §4.1): each device name with the
   last 8 characters of its key, and a **Revoke** button. Revoking removes
@@ -461,8 +511,8 @@ this affects an ordinary command.
 ## 5. Shared rules
 
 - Tile ids, session ids and folder paths passed on a command line are
-  validated by the tool (UUID shape, absolute path without control
-  characters); text for `send` is passed as one argument and never
+  validated by the tool (tile ids `[A-Za-z0-9-]{1,64}`, session ids UUID
+  shape, absolute paths without control characters); text for `send` is passed as one argument and never
   interpreted by a shell on the Mac beyond ssh's own word splitting, which
   the phone guards by single-quoting every argument.
 - The tool never deletes user files; `Terminate` only signals the shell's
@@ -603,10 +653,12 @@ off, notification kinds, dictation language, revoke this phone.
    `~/.swarmz/bin/swarmz phone add --name <device> --key <pubkey>`. The
    password is not stored.
 4. `phone add` appends
-   `command="$HOME/.swarmz/bin/swarmz ssh-gate",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty <pubkey> swarmz-phone:<device>`
+   `command="$HOME/.swarmz/bin/swarmz ssh-gate",from="100.64.0.0/10,fd7a:115c:a1e0::/48",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty <pubkey> swarmz-phone:<device>`
    to `~/.ssh/authorized_keys` (creating it with mode 0600) unless present,
-   then runs the same `phone add` on every Mac in `machines` it can reach over
-   its existing ssh, and prints which Macs accepted it.
+   then runs the same `phone add` on every other Mac it can reach over
+   its existing ssh — the Macs in `machines` plus the Macs online on the
+   tailnet — and prints which Macs accepted it. `from=` admits only tailnet
+   addresses.
 5. The phone learns the other Macs from `machines` and connects with its key.
 
 A device name is letters, digits, single inner spaces (never leading,
@@ -619,14 +671,23 @@ being missing (permission denied, say) is never treated as "no keys, start
 fresh": nothing is rewritten. `phone ls` and `phone revoke` only ever act on
 fully gated lines — the exact options prefix above, an `ssh-ed25519` key and
 a `swarmz-phone:<device>` tag — so a look-alike line missing the options
-prefix is listed by neither and removed by neither.
+prefix is listed by neither and removed by neither. Lines written before
+`from=` was added (the same prefix without it) are still listed and revoked,
+and adding the same key again replaces such a line with a current one.
+
+The gate narrows what a phone key can reach, but it is not a sandbox: `send`
+types into a tile's shell, so a phone key can still run commands as the user
+through any tile at a shell prompt. The key is only as safe as the phone
+that holds it.
 
 Keys do not expire. `phone revoke <device>` (and a "Phones" list in swarmz
 settings) removes the line on every reachable Mac. Pairing requires swarmz to
 have run once on the first Mac (so the tool is installed).
 
-`phone add`/`phone revoke`'s fan-out to the other Macs in `machines` runs,
-for each, `ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlPath=~/.swarmz/ssh/%C -o ControlMaster=no -- <user>@<machine> …`
+`phone add`/`phone revoke`'s fan-out to the other Macs (those in `machines`,
+plus the Macs online on the tailnet, which use the default username unless
+`machines` configures one) runs,
+for each, `ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlPath=~/.swarmz/ssh/%C -o ControlMaster=no -- <user>@<machine> ~/.swarmz/bin/swarmz …`
 on its own thread, so the whole fan-out takes about as long as one ssh call
 (15 s) rather than their sum; a configured or default username that does
 not match `^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$` is skipped rather than used.
