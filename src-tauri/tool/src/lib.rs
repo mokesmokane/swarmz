@@ -4,6 +4,7 @@ pub mod client;
 pub mod dialog;
 pub mod hold;
 pub mod input;
+pub mod newtile;
 pub mod paths;
 pub mod proc;
 pub mod proto;
