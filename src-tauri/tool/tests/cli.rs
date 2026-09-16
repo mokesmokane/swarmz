@@ -415,6 +415,7 @@ fn attach_bridges_a_terminal_and_reattaches_after_a_drop() {
     h.track(&paths.socket.to_string_lossy());
     let (mut child, out, mut w) = run_attach(&h.path, "t7");
     assert!(wait_out(&out, "\x1b]1337;swarmz-attach;new=1\x07"), "first attach must say new=1");
+    assert!(wait_out(&out, swarmz_tool::attach::REPLAY_END_MARKER), "a new session's (empty) replay is marked too");
     std::io::Write::write_all(&mut w, b"echo bridged-$((2+3))\r").unwrap();
     assert!(wait_out(&out, "bridged-5"));
     // Simulate the ssh connection dropping.
@@ -426,6 +427,23 @@ fn attach_bridges_a_terminal_and_reattaches_after_a_drop() {
     let (mut child2, out2, mut w2) = run_attach(&h.path, "t7");
     assert!(wait_out(&out2, "\x1b]1337;swarmz-attach;new=0\x07"), "reattach must say new=0");
     assert!(wait_out(&out2, "bridged-5"), "reattach must replay the history");
+    assert!(wait_out(&out2, swarmz_tool::attach::REPLAY_END_MARKER), "reattach must mark the end of the replay");
+    {
+        let text = String::from_utf8_lossy(&out2.lock().unwrap()).into_owned();
+        let attach_at = text.find("\x1b]1337;swarmz-attach;new=0\x07").unwrap();
+        let replay_at = text.find("\x1b[!p").expect("the replay prefix");
+        let history_at = text.find("bridged-5").unwrap();
+        let end_at = text.find(swarmz_tool::attach::REPLAY_END_MARKER).unwrap();
+        assert!(attach_at < replay_at && replay_at < history_at && history_at < end_at, "order was wrong: {text:?}");
+        assert_eq!(text.matches(swarmz_tool::attach::REPLAY_END_MARKER).count(), 1);
+    }
+    std::io::Write::write_all(&mut w2, b"echo live-$((3+4))\r").unwrap();
+    assert!(wait_out(&out2, "live-7"));
+    {
+        let text = String::from_utf8_lossy(&out2.lock().unwrap()).into_owned();
+        let end_at = text.find(swarmz_tool::attach::REPLAY_END_MARKER).unwrap();
+        assert!(text.rfind("live-7").unwrap() > end_at, "live output must follow the end marker");
+    }
     std::io::Write::write_all(&mut w2, b"exit 4\r").unwrap();
     let status = child2.wait().unwrap();
     assert_eq!(status.exit_code(), 4);

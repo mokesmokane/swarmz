@@ -9,6 +9,11 @@ use std::time::Duration;
 
 pub const ATTACH_MARKER_PREFIX: &str = "\x1b]1337;swarmz-attach;new=";
 
+/// Written right after the replay (under the same stdout lock and flush), so a viewer knows
+/// exactly where replayed history ends and live output begins. The holder always sends one replay,
+/// even an empty one, so every attach writes this once, before any live byte.
+pub const REPLAY_END_MARKER: &str = "\x1b]1337;swarmz-replay-end\x07";
+
 pub fn marker(new: bool) -> String {
     format!("{ATTACH_MARKER_PREFIX}{}\x07", if new { 1 } else { 0 })
 }
@@ -86,12 +91,16 @@ pub fn attach(exe: &Path, dir: &Path, mut req: HoldRequest) -> Result<i32, CliEr
     let client = HolderClient::connect(
         Path::new(&held.socket),
         &hello,
-        move |bytes, _replay| {
+        move |bytes, replay| {
             let Ok(mut o) = stdout.lock() else { return };
             // A write or flush failure (e.g. EPIPE, the other end of the ssh pipe has gone away)
             // ends the bridge exactly like stdin closing: detach and leave the session running,
             // rather than surfacing it as the shell having exited.
-            if o.write_all(&bytes).is_err() || o.flush().is_err() {
+            let mut ok = o.write_all(&bytes).is_ok();
+            if ok && replay {
+                ok = o.write_all(REPLAY_END_MARKER.as_bytes()).is_ok();
+            }
+            if !ok || o.flush().is_err() {
                 let _ = output_done.send(Done::OutputClosed);
             }
         },
