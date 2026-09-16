@@ -70,6 +70,18 @@ pub fn tile_rows_with_folds(
     live_cwd: &dyn Fn(&str) -> Option<String>,
     dialog_open: &dyn Fn(&str) -> Option<bool>,
 ) -> Vec<TileRow> {
+    try_tile_rows_with_folds(home, self_machine, folds, live_cwd, dialog_open).unwrap_or_default()
+}
+
+/// `tile_rows_with_folds`, but None when the workspace file exists and cannot be read (a poller
+/// keeps what it had instead of reporting every tile gone). No file at all is `Some(vec![])`.
+pub fn try_tile_rows_with_folds(
+    home: &Path,
+    self_machine: Option<&str>,
+    folds: &HashMap<String, Fold>,
+    live_cwd: &dyn Fn(&str) -> Option<String>,
+    dialog_open: &dyn Fn(&str) -> Option<bool>,
+) -> Option<Vec<TileRow>> {
     let dir = sessions_dir_in(home);
     let running = |id: &str| session_paths(&dir, id).ok().and_then(|p| live_session(&p)).is_some();
     rows_from(home, self_machine, folds, live_cwd, dialog_open, &running)
@@ -83,7 +95,7 @@ pub fn tile_rows_with(
     dialog_open: &dyn Fn(&str) -> Option<bool>,
     running: &dyn Fn(&str) -> bool,
 ) -> Vec<TileRow> {
-    rows_from(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog_open, running)
+    rows_from(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog_open, running).unwrap_or_default()
 }
 
 fn rows_from(
@@ -93,10 +105,14 @@ fn rows_from(
     live_cwd: &dyn Fn(&str) -> Option<String>,
     dialog_open: &dyn Fn(&str) -> Option<bool>,
     running: &dyn Fn(&str) -> bool,
-) -> Vec<TileRow> {
-    let Ok(Some(ws)) = load_from(&workspace_path(home)) else { return vec![] };
+) -> Option<Vec<TileRow>> {
+    let ws = match load_from(&workspace_path(home)) {
+        Ok(Some(ws)) => ws,
+        Ok(None) => return Some(vec![]),
+        Err(_) => return None,
+    };
     let dir = sessions_dir_in(home);
-    homed_defs(&ws, self_machine)
+    let rows = homed_defs(&ws, self_machine)
         .into_iter()
         .map(|def| {
             let is_running = running(&def.id);
@@ -138,7 +154,8 @@ fn rows_from(
                 name: def.name,
             }
         })
-        .collect()
+        .collect();
+    Some(rows)
 }
 
 /// What `watch` prints for a change from `prev` to `next`: a `tile` event per new or changed
@@ -349,6 +366,22 @@ mod tests {
         // The file-reading wrapper still folds the log.
         let rows = tile_rows(&h, Some("mini"), &|_| None, &|_| None);
         assert_eq!(rows.iter().find(|r| r.id == "c1").unwrap().mode.as_deref(), Some("plan"));
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn an_unreadable_workspace_is_none_and_a_missing_one_is_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        let h = home("unreadable");
+        let none = HashMap::new();
+        assert_eq!(try_tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None), Some(vec![]));
+        write_workspace(&h);
+        let file = h.join(".swarmz/workspace.json");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = try_tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(unreadable, None);
+        assert_eq!(tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None).len(), 2);
         let _ = std::fs::remove_dir_all(&h);
     }
 

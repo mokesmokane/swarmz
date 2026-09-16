@@ -9,7 +9,7 @@ use crate::proto::{Hello, PROTOCOL_VERSION};
 use crate::screen::line_text;
 use crate::server::TOOL_VIEWER;
 use crate::agent::{fold_log, read_log, Fold};
-use crate::tiles::{homed_defs, prune as prune_sessions, session_rows, tile_rows, tile_rows_with_folds, watch_events, TileRow};
+use crate::tiles::{homed_defs, prune as prune_sessions, session_rows, tile_rows, try_tile_rows_with_folds, watch_events, TileRow};
 use crate::util::{new_uuid, now_iso_ms, valid_abs_path};
 use crate::workspace::{load_from, save_to, ClaudeConfig, TerminalDef, Workspace};
 use serde_json::{json, Map, Value};
@@ -152,7 +152,9 @@ pub fn watch(env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
     let mut log = LogCache::default();
     loop {
         let folds = log.folds(&env.home);
-        let now = tile_rows_with_folds(&env.home, env.machine.as_deref(), folds, &cwd, &|id| dialog_open(env, id));
+        // An unreadable workspace keeps the rows we had rather than reporting every tile gone.
+        let now = try_tile_rows_with_folds(&env.home, env.machine.as_deref(), folds, &cwd, &|id| dialog_open(env, id))
+            .unwrap_or_else(|| prev.values().cloned().collect());
         let events = if first { vec![json!({"v": 1, "type": "snapshot", "tiles": now})] } else { watch_events(&prev, &now) };
         for e in &events {
             if !emit(out, e) {
@@ -221,30 +223,61 @@ fn check_folder(folder: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-fn hold_and_type(env: &Env, tile: &str, name: &str, cwd: &str, line: Option<&str>) -> Result<(), CliError> {
-    let req = HoldRequest { tile: tile.to_string(), name: name.to_string(), cwd: cwd.to_string(), cols: 80, rows: 24, env: vec![], require_cwd: true };
-    hold(&env.exe, &env.sessions(), &req)?;
-    if let Some(line) = line {
-        connect_tool(env, tile)?.write(format!("{line}\r").as_bytes()).map_err(failed)?;
+/// Best effort: ends a session this command started and could not finish setting up.
+fn end_session(env: &Env, tile: &str) {
+    if let Ok(client) = connect_tool(env, tile) {
+        let _ = client.terminate();
     }
-    Ok(())
+}
+
+/// Holds the tile and types `line` into it. Returns false, typing nothing, when the session was
+/// already running (another start got there first). A session this call started is ended again
+/// if the line cannot be typed.
+fn hold_and_type(env: &Env, tile: &str, name: &str, cwd: &str, line: Option<&str>) -> Result<bool, CliError> {
+    let req = HoldRequest { tile: tile.to_string(), name: name.to_string(), cwd: cwd.to_string(), cols: 80, rows: 24, env: vec![], require_cwd: true };
+    if hold(&env.exe, &env.sessions(), &req)?.existed {
+        return Ok(false);
+    }
+    if let Some(line) = line {
+        let typed = connect_tool(env, tile).and_then(|c| c.write(format!("{line}\r").as_bytes()).map_err(failed));
+        if let Err(e) = typed {
+            end_session(env, tile);
+            return Err(e);
+        }
+    }
+    Ok(true)
+}
+
+fn names(ws: &Workspace) -> Vec<String> {
+    ws.terminals.iter().map(|t| t.name.clone()).collect()
 }
 
 pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&str>) -> Result<Value, CliError> {
     check_folder(folder)?;
     let machine = env.machine.clone().ok_or_else(|| CliError::new("no_machine", "this Mac's name is unknown (is Tailscale running?)"))?;
-    let mut ws = env.workspace()?.unwrap_or_else(empty_workspace);
-    let taken: Vec<String> = ws.terminals.iter().map(|t| t.name.clone()).collect();
     let base = name.map(str::to_string).unwrap_or_else(|| Path::new(folder).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-    let name = unique_name(&base, &taken);
+    // A tentative name for the session; the def takes a name checked against the file as it is
+    // when the tile is recorded.
+    let tentative = unique_name(&base, &names(&env.workspace()?.unwrap_or_else(empty_workspace)));
     let id = new_uuid();
     let claude = ClaudeConfig { enabled: true, session_id: new_uuid(), skip_permissions, started: false };
     // Held and typed before the workspace names the tile: an app that adopts it then finds the
     // session running and never types a second Claude line.
-    hold_and_type(env, &id, &name, folder, Some(&claude_line(&claude)))?;
-    let def = TerminalDef { id: id.clone(), name, cwd: folder.to_string(), ssh: None, claude: Some(claude), command: None, extra: Map::new() };
-    add_def(&mut ws, def, &machine, &now_iso_ms());
-    save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
+    if !hold_and_type(env, &id, &tentative, folder, Some(&claude_line(&claude)))? {
+        return Err(failed(format!("a session for the new tile {id} was already running")));
+    }
+    // Reloaded just before saving, so changes made while the session started are kept.
+    let recorded = env.workspace().and_then(|ws| {
+        let mut ws = ws.unwrap_or_else(empty_workspace);
+        let name = unique_name(&base, &names(&ws));
+        let def = TerminalDef { id: id.clone(), name, cwd: folder.to_string(), ssh: None, claude: Some(claude), command: None, extra: Map::new() };
+        add_def(&mut ws, def, &machine, &now_iso_ms());
+        save_to(&workspace_file(&env.home), &ws).map_err(failed)
+    });
+    if let Err(e) = recorded {
+        end_session(env, &id);
+        return Err(e);
+    }
     row(env, &id)
 }
 
@@ -262,6 +295,8 @@ pub fn restart(env: &Env, tile: &str) -> Result<Value, CliError> {
     if let Some(c) = def.claude.as_mut() {
         c.started = started;
     }
-    hold_and_type(env, tile, &def.name, &def.cwd, startup_line(&def).as_deref())?;
+    if !hold_and_type(env, tile, &def.name, &def.cwd, startup_line(&def).as_deref())? {
+        return Err(CliError::new("running", format!("{} is already running", def.name)));
+    }
     row(env, tile)
 }

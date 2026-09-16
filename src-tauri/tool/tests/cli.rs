@@ -65,10 +65,8 @@ fn tool_env(home: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, serde_jso
     let seq = SEQ.fetch_add(1, Ordering::SeqCst);
     let out_path = std::env::temp_dir().join(format!("szc-out-{}-{seq}.json", std::process::id()));
     let stdout = std::fs::File::create(&out_path).unwrap();
-    let status = Command::new(EXE)
+    let status = tool_command(home)
         .args(args)
-        .env("HOME", home)
-        .env("SWARMZ_HOLDER_SHELL", "/bin/sh")
         .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(stdout)
@@ -79,6 +77,50 @@ fn tool_env(home: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, serde_jso
     let _ = std::fs::remove_file(&out_path);
     let v = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status.code().unwrap_or(-1), v)
+}
+
+/// A PATH without the developer's own tools: a session that types a Claude line must never start
+/// the real Claude Code installed on this Mac.
+const SAFE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+/// The tool with this test's HOME, a plain `/bin/sh` for holders, and `SAFE_PATH`.
+fn tool_command(home: &Path) -> Command {
+    let mut cmd = Command::new(EXE);
+    cmd.env("HOME", home).env("SWARMZ_HOLDER_SHELL", "/bin/sh").env("PATH", SAFE_PATH);
+    cmd
+}
+
+/// A spawned long-running tool process, killed and reaped when the test ends, pass or fail.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// `KillOnDrop` for a tool process on a pty.
+struct PtyChild(Box<dyn portable_pty::Child + Send + Sync>);
+
+impl std::ops::Deref for PtyChild {
+    type Target = Box<dyn portable_pty::Child + Send + Sync>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for PtyChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for PtyChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 fn end(socket: &str) {
@@ -270,6 +312,7 @@ fn the_holder_outlives_the_process_that_started_it() {
         .arg(&script)
         .env("HOME", &h.path)
         .env("SWARMZ_HOLDER_SHELL", "/bin/sh")
+        .env("PATH", SAFE_PATH)
         .status()
         .unwrap();
     assert!(status.success());
@@ -492,14 +535,15 @@ fn the_holder_marks_a_leaked_pipe_fd_close_on_exec() {
 fn run_attach(
     h: &PathBuf,
     tile: &str,
-) -> (Box<dyn portable_pty::Child + Send + Sync>, std::sync::Arc<std::sync::Mutex<Vec<u8>>>, Box<dyn std::io::Write + Send>) {
+) -> (PtyChild, std::sync::Arc<std::sync::Mutex<Vec<u8>>>, Box<dyn std::io::Write + Send>) {
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
     let pair = native_pty_system().openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
     let mut cmd = CommandBuilder::new(EXE);
     cmd.args(["attach", tile, "--cwd", &h.to_string_lossy(), "--name", tile]);
     cmd.env("HOME", h);
     cmd.env("SWARMZ_HOLDER_SHELL", "/bin/sh");
-    let child = pair.slave.spawn_command(cmd).unwrap();
+    cmd.env("PATH", SAFE_PATH);
+    let child = PtyChild(pair.slave.spawn_command(cmd).unwrap());
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().unwrap();
     let writer = pair.master.take_writer().unwrap();
@@ -607,10 +651,6 @@ fn write_ws(home: &Path, terminals: serde_json::Value, machines: serde_json::Val
 
 const MINI: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini")];
 
-/// `MINI` with a PATH that holds no `claude`: a tile that types a Claude line must not start the
-/// real Claude Code installed on this Mac.
-const MINI_NO_CLAUDE: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")];
-
 fn wait_until(mut f: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(8);
     while Instant::now() < deadline {
@@ -660,13 +700,20 @@ fn new_tiles_are_held_typed_and_recorded_and_restart_brings_them_back() {
     let folder = proj.to_string_lossy().into_owned();
     write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
 
-    let (code, v) = tool_env(&h.path, &["new", "--folder", &folder, "--skip-permissions"], MINI_NO_CLAUDE);
+    // Tracks a new tile's session before anything can fail, so a failing test still ends it.
+    let track = |v: &serde_json::Value| {
+        let id = v["tile"]["id"].as_str().unwrap_or_default().to_string();
+        if let Ok(p) = swarmz_tool::paths::session_paths(&h.path.join(".swarmz/sessions"), &id) {
+            h.track(p.socket.to_str().unwrap());
+        }
+        id
+    };
+    let (code, v) = tool_env(&h.path, &["new", "--folder", &folder, "--skip-permissions"], MINI);
+    let id = track(&v);
     assert_eq!(code, 0, "{v}");
     let tile = &v["tile"];
-    let id = tile["id"].as_str().unwrap().to_string();
     assert_eq!((tile["name"].as_str(), tile["kind"].as_str(), tile["running"].as_bool()), (Some("proj"), Some("claude"), Some(true)));
     let paths = swarmz_tool::paths::session_paths(&h.path.join(".swarmz/sessions"), &id).unwrap();
-    h.track(paths.socket.to_str().unwrap());
 
     let ws: serde_json::Value = serde_json::from_slice(&std::fs::read(h.path.join(".swarmz/workspace.json")).unwrap()).unwrap();
     assert_eq!(ws["sync"]["revision"], 5);
@@ -686,29 +733,29 @@ fn new_tiles_are_held_typed_and_recorded_and_restart_brings_them_back() {
     assert!(wait_until(|| joined().contains(&want)), "{}", joined());
 
     // A second tile in the same folder gets the next name.
-    let (_, v2) = tool_env(&h.path, &["new", "--folder", &folder], MINI_NO_CLAUDE);
+    let (code, v2) = tool_env(&h.path, &["new", "--folder", &folder], MINI);
+    track(&v2);
+    assert_eq!(code, 0, "{v2}");
     assert_eq!(v2["tile"]["name"], "proj-2");
-    let id2 = v2["tile"]["id"].as_str().unwrap().to_string();
-    h.track(swarmz_tool::paths::session_paths(&h.path.join(".swarmz/sessions"), &id2).unwrap().socket.to_str().unwrap());
 
     // Restart refuses a running tile, and brings a closed one back.
-    let (code, r) = tool_env(&h.path, &["restart", &id], MINI_NO_CLAUDE);
+    let (code, r) = tool_env(&h.path, &["restart", &id], MINI);
     assert_eq!((code, r["code"].as_str()), (1, Some("running")));
-    let (_, closed) = tool_env(&h.path, &["close", &id], MINI_NO_CLAUDE);
+    let (_, closed) = tool_env(&h.path, &["close", &id], MINI);
     assert_eq!(closed["closed"], true);
-    let (code, r) = tool_env(&h.path, &["restart", &id], MINI_NO_CLAUDE);
+    let (code, r) = tool_env(&h.path, &["restart", &id], MINI);
     assert_eq!(code, 0, "{r}");
     assert_eq!(r["tile"]["running"], true);
     h.track(paths.socket.to_str().unwrap());
-    let (code, r) = tool_env(&h.path, &["restart", "not-a-tile"], MINI_NO_CLAUDE);
+    let (code, r) = tool_env(&h.path, &["restart", "not-a-tile"], MINI);
     assert_eq!((code, r["code"].as_str()), (1, Some("unknown")));
 
     // Folder checks and a missing machine name.
-    let (code, bad) = tool_env(&h.path, &["new", "--folder", "relative"], MINI_NO_CLAUDE);
+    let (code, bad) = tool_env(&h.path, &["new", "--folder", "relative"], MINI);
     assert_eq!((code, bad["code"].as_str()), (1, Some("invalid")));
-    let (code, bad) = tool_env(&h.path, &["new", "--folder", "/definitely/not/here"], MINI_NO_CLAUDE);
+    let (code, bad) = tool_env(&h.path, &["new", "--folder", "/definitely/not/here"], MINI);
     assert_eq!((code, bad["code"].as_str()), (1, Some("cwd_missing")));
-    let (code, bad) = tool_env(&h.path, &["new", "--folder", &folder], &[("SWARMZ_MACHINE", ""), ("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")]);
+    let (code, bad) = tool_env(&h.path, &["new", "--folder", &folder], &[("SWARMZ_MACHINE", "")]);
     assert_eq!((code, bad["code"].as_str()), (1, Some("no_machine")));
 }
 
@@ -739,24 +786,32 @@ fn watch_streams_a_snapshot_then_changes() {
     let cwd = h.path.to_string_lossy().into_owned();
     write_ws(&h.path, serde_json::json!([{"id": "w1", "name": "one", "cwd": cwd, "origin": "mini"}]), serde_json::json!({}));
     let out_path = h.path.join("watch.out");
-    let mut child = Command::new(EXE)
-        .arg("watch")
-        .env("HOME", &h.path)
-        .env("SWARMZ_MACHINE", "mini")
-        .stdin(Stdio::null())
-        .stdout(std::fs::File::create(&out_path).unwrap())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let _child = KillOnDrop(
+        tool_command(&h.path)
+            .arg("watch")
+            .env("SWARMZ_MACHINE", "mini")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&out_path).unwrap())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     let read = || std::fs::read_to_string(&out_path).unwrap_or_default();
     assert!(wait_until(|| read().contains("\"snapshot\"")), "{}", read());
     let (_, held) = tool_env(&h.path, &["hold", "w1", "--cwd", &cwd, "--name", "one"], MINI);
     h.track(held["socket"].as_str().unwrap());
     assert!(wait_until(|| read().lines().any(|l| l.contains("\"type\":\"tile\"") && l.contains("\"running\":true"))), "{}", read());
+    // An unreadable workspace keeps the tiles watch already reported.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let file = h.path.join(".swarmz/workspace.json");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::thread::sleep(Duration::from_millis(2500));
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!read().contains("\"type\":\"gone\""), "{}", read());
+    }
     write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
     assert!(wait_until(|| read().contains("\"type\":\"gone\"")), "{}", read());
-    let _ = child.kill();
-    let _ = child.wait();
     for line in read().lines() {
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
         assert_eq!(v["v"], 1);
