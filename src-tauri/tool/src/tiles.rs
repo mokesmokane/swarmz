@@ -2,6 +2,7 @@
 //! files behind them (`sessions`, `prune`).
 
 use crate::agent::{fold_log, read_log, Fold, Needs, Status};
+use crate::dialog::Dialog;
 use crate::paths::{live_session, read_meta, session_paths, sessions_dir_in, socket_live};
 use crate::transcript::{guess_path, last_assistant_text};
 use crate::workspace::{load_from, TerminalDef, Workspace};
@@ -56,9 +57,9 @@ pub fn tile_rows(
     home: &Path,
     self_machine: Option<&str>,
     live_cwd: &dyn Fn(&str) -> Option<String>,
-    dialog_open: &dyn Fn(&str) -> Option<bool>,
+    dialog: &dyn Fn(&str) -> Option<Option<Dialog>>,
 ) -> Vec<TileRow> {
-    tile_rows_with_folds(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog_open)
+    tile_rows_with_folds(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog)
 }
 
 /// `tile_rows` with the hook log already folded, so a caller that polls (`watch`) folds the log
@@ -68,9 +69,9 @@ pub fn tile_rows_with_folds(
     self_machine: Option<&str>,
     folds: &HashMap<String, Fold>,
     live_cwd: &dyn Fn(&str) -> Option<String>,
-    dialog_open: &dyn Fn(&str) -> Option<bool>,
+    dialog: &dyn Fn(&str) -> Option<Option<Dialog>>,
 ) -> Vec<TileRow> {
-    try_tile_rows_with_folds(home, self_machine, folds, live_cwd, dialog_open).unwrap_or_default()
+    try_tile_rows_with_folds(home, self_machine, folds, live_cwd, dialog).unwrap_or_default()
 }
 
 /// `tile_rows_with_folds`, but None when the workspace file exists and cannot be read (a poller
@@ -80,11 +81,11 @@ pub fn try_tile_rows_with_folds(
     self_machine: Option<&str>,
     folds: &HashMap<String, Fold>,
     live_cwd: &dyn Fn(&str) -> Option<String>,
-    dialog_open: &dyn Fn(&str) -> Option<bool>,
+    dialog: &dyn Fn(&str) -> Option<Option<Dialog>>,
 ) -> Option<Vec<TileRow>> {
     let dir = sessions_dir_in(home);
     let running = |id: &str| session_paths(&dir, id).ok().and_then(|p| live_session(&p)).is_some();
-    rows_from(home, self_machine, folds, live_cwd, dialog_open, &running)
+    rows_from(home, self_machine, folds, live_cwd, dialog, &running)
 }
 
 /// `tile_rows` with the liveness check supplied (tests use it without real holders).
@@ -92,10 +93,10 @@ pub fn tile_rows_with(
     home: &Path,
     self_machine: Option<&str>,
     live_cwd: &dyn Fn(&str) -> Option<String>,
-    dialog_open: &dyn Fn(&str) -> Option<bool>,
+    dialog: &dyn Fn(&str) -> Option<Option<Dialog>>,
     running: &dyn Fn(&str) -> bool,
 ) -> Vec<TileRow> {
-    rows_from(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog_open, running).unwrap_or_default()
+    rows_from(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog, running).unwrap_or_default()
 }
 
 fn rows_from(
@@ -103,7 +104,7 @@ fn rows_from(
     self_machine: Option<&str>,
     folds: &HashMap<String, Fold>,
     live_cwd: &dyn Fn(&str) -> Option<String>,
-    dialog_open: &dyn Fn(&str) -> Option<bool>,
+    dialog: &dyn Fn(&str) -> Option<Option<Dialog>>,
     running: &dyn Fn(&str) -> bool,
 ) -> Option<Vec<TileRow>> {
     let ws = match load_from(&workspace_path(home)) {
@@ -124,12 +125,11 @@ fn rows_from(
                 fold.needs = None;
                 fold.summary = None;
                 fold.tool = None;
-            } else if fold.needs == Some(Needs::Permission) && dialog_open(&def.id) == Some(false) {
-                // Answered on the Mac (or elsewhere) and no tool has reported back yet.
-                fold.status = Status::Working;
-                fold.needs = None;
-                fold.summary = None;
-                fold.tool = None;
+            } else if meta.as_ref().is_some_and(|m| m.build.is_some()) {
+                // A holder that predates Screen (no `build`) keeps the fold as it is.
+                if let Some(shown) = dialog(&def.id) {
+                    apply_screen(&mut fold, shown.as_ref());
+                }
             }
             let transcript = fold.transcript_path.clone().map(PathBuf::from).or_else(|| {
                 claude.and_then(|c| guess_path(home, &def.cwd, fold.session_id.as_deref().unwrap_or(&c.session_id)))
@@ -156,6 +156,31 @@ fn rows_from(
         })
         .collect();
     Some(rows)
+}
+
+/// The screen decides permission state (spec §4.2): a live dialog means Claude is blocked on a
+/// permission, whatever the hook log says (hooks run asynchronously and can land out of order, and
+/// subagents' requests are never logged); no dialog ends a permission block the log still shows.
+/// The summary is always the dialog's; the hook's tool name is kept only when the hook describes
+/// the same question. Question-type blocks are left as the log says.
+pub fn apply_screen(fold: &mut Fold, shown: Option<&Dialog>) {
+    match shown {
+        Some(d) => {
+            let summary = d.summary();
+            let same = fold.needs == Some(Needs::Permission) && fold.summary.as_deref() == Some(summary.as_str());
+            fold.tool = Some(fold.tool.take().filter(|_| same).unwrap_or_else(|| d.heading.clone()));
+            fold.summary = Some(summary);
+            fold.status = Status::Blocked;
+            fold.needs = Some(Needs::Permission);
+        }
+        None if fold.status == Status::Blocked && fold.needs == Some(Needs::Permission) => {
+            fold.status = Status::Idle;
+            fold.needs = None;
+            fold.summary = None;
+            fold.tool = None;
+        }
+        None => {}
+    }
 }
 
 /// What `watch` prints for a change from `prev` to `next`: a `tile` event per new or changed
@@ -329,24 +354,127 @@ mod tests {
         let _ = std::fs::remove_dir_all(&h);
     }
 
+    fn dialog(summary: &str) -> Dialog {
+        Dialog { heading: "Bash command".into(), target: Some(summary.into()), description: None, options: vec![] }
+    }
+
+    /// Session metadata for `id`; `build` None is a holder that predates Screen.
+    fn write_meta_for(h: &Path, id: &str, build: Option<u64>) {
+        let mut m = json!({"v": 1, "pid": 999999, "shellPid": null, "cwd": "/p", "name": id, "startedAt": "t"});
+        if let Some(b) = build {
+            m["build"] = json!(b);
+        }
+        std::fs::write(h.join(format!(".swarmz/sessions/{id}.json")), m.to_string()).unwrap();
+    }
+
+    fn write_log(h: &Path, lines: &[String]) {
+        std::fs::write(h.join(".swarmz/agents/events.log"), lines.join("\n") + "\n").unwrap();
+    }
+
+    fn status_of(rows: &[TileRow], id: &str) -> (Value, Value, Value) {
+        let v = serde_json::to_value(rows.iter().find(|r| r.id == id).unwrap()).unwrap();
+        (v["status"].clone(), v["needs"].clone(), v["summary"].clone())
+    }
+
+    fn permission(ts: &str, command: &str) -> String {
+        format!("{ts}\tc1\tPermissionRequest\t{}", json!({"session_id": "s", "tool_name": "Bash", "tool_input": {"command": command}}))
+    }
+
     #[test]
-    fn a_running_tile_uses_live_cwd_and_a_closed_dialog_ends_the_block() {
+    fn a_running_tile_uses_live_cwd_and_the_screen_decides_the_block() {
         let h = home("live");
         write_workspace(&h);
-        let log = [
-            format!("1\tc1\tSessionStart\t{}", json!({"session_id": "s"})),
-            format!("2\tc1\tPermissionRequest\t{}", json!({"session_id": "s", "tool_name": "Bash", "tool_input": {"command": "npm test"}})),
-        ];
-        std::fs::write(h.join(".swarmz/agents/events.log"), log.join("\n")).unwrap();
-        let rows = tile_rows_with(&h, Some("mini"), &|id| Some(format!("/live/{id}")), &|_| Some(true), &|id| id == "c1");
+        write_meta_for(&h, "c1", Some(1));
+        write_log(&h, &[format!("1\tc1\tSessionStart\t{}", json!({"session_id": "s"})), permission("2", "npm test")]);
+        let rows = tile_rows_with(&h, Some("mini"), &|id| Some(format!("/live/{id}")), &|_| Some(Some(dialog("npm test"))), &|id| id == "c1");
         let c1 = rows.iter().find(|r| r.id == "c1").unwrap();
         assert!(c1.running);
         assert_eq!(c1.cwd, "/live/c1");
-        let v = serde_json::to_value(c1).unwrap();
-        assert_eq!((v["status"].as_str(), v["needs"].as_str(), v["summary"].as_str()), (Some("blocked"), Some("permission"), Some("npm test")));
-        let rows = tile_rows_with(&h, Some("mini"), &|_| None, &|_| Some(false), &|id| id == "c1");
-        let v = serde_json::to_value(rows.iter().find(|r| r.id == "c1").unwrap()).unwrap();
-        assert_eq!((v["status"].as_str(), v["needs"].as_str(), v["summary"].as_str()), (Some("working"), None, None));
+        assert_eq!(status_of(&rows, "c1"), (json!("blocked"), json!("permission"), json!("npm test")));
+        // (b) The dialog has gone while the log still says blocked: idle, nothing needed.
+        let rows = tile_rows_with(&h, Some("mini"), &|_| None, &|_| Some(None), &|id| id == "c1");
+        assert_eq!(status_of(&rows, "c1"), (json!("idle"), Value::Null, Value::Null));
+        // The screen did not answer: the log stands.
+        let rows = tile_rows_with(&h, Some("mini"), &|_| None, &|_| None, &|id| id == "c1");
+        assert_eq!(status_of(&rows, "c1").0, json!("blocked"));
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn a_tool_result_logged_after_the_request_never_hides_a_live_dialog() {
+        let h = home("late-post");
+        write_workspace(&h);
+        write_meta_for(&h, "c1", Some(1));
+        // (a) The hooks are asynchronous: the previous tool's PostToolUse lands after the
+        // PermissionRequest for the next one, so the log alone reads "working".
+        let post = format!("3\tc1\tPostToolUse\t{}", json!({"session_id": "s"}));
+        write_log(&h, &[format!("1\tc1\tUserPromptSubmit\t{}", json!({"session_id": "s"})), permission("2", "npm test"), post]);
+        let shown = |_: &str| Some(Some(dialog("npm test")));
+        let rows = tile_rows_with(&h, Some("mini"), &|_| None, &shown, &|id| id == "c1");
+        assert_eq!(status_of(&rows, "c1"), (json!("blocked"), json!("permission"), json!("npm test")));
+        // A subagent's dialog, never logged at all, blocks the same way.
+        write_log(&h, &[format!("1\tc1\tUserPromptSubmit\t{}", json!({"session_id": "s"}))]);
+        let rows = tile_rows_with(&h, Some("mini"), &|_| None, &shown, &|id| id == "c1");
+        assert_eq!(status_of(&rows, "c1").0, json!("blocked"));
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn the_summary_is_the_screens_when_the_hook_describes_another_question() {
+        let h = home("other-summary");
+        write_workspace(&h);
+        write_meta_for(&h, "c1", Some(1));
+        write_log(&h, &[permission("1", "rm -rf build")]);
+        let rows = tile_rows_with(&h, Some("mini"), &|_| None, &|_| Some(Some(dialog("npm test"))), &|id| id == "c1");
+        assert_eq!(status_of(&rows, "c1"), (json!("blocked"), json!("permission"), json!("npm test")));
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn the_hook_tool_is_kept_only_for_the_question_it_describes() {
+        let hooked = || Fold { status: Status::Blocked, needs: Some(Needs::Permission), summary: Some("npm test".into()), tool: Some("Bash".into()), ..Fold::default() };
+        let mut f = hooked();
+        apply_screen(&mut f, Some(&dialog("npm test")));
+        assert_eq!((f.tool.as_deref(), f.summary.as_deref()), (Some("Bash"), Some("npm test")));
+        let mut f = hooked();
+        apply_screen(&mut f, Some(&dialog("rm -rf build")));
+        assert_eq!((f.tool.as_deref(), f.summary.as_deref()), (Some("Bash command"), Some("rm -rf build")));
+        let mut f = Fold { status: Status::Working, ..Fold::default() };
+        apply_screen(&mut f, Some(&dialog("npm test")));
+        assert_eq!((f.status, f.needs, f.tool.as_deref()), (Status::Blocked, Some(Needs::Permission), Some("Bash command")));
+        let mut f = hooked();
+        apply_screen(&mut f, None);
+        assert_eq!((f.status, f.needs, f.summary, f.tool), (Status::Idle, None, None, None));
+        let mut working = Fold { status: Status::Working, ..Fold::default() };
+        apply_screen(&mut working, None);
+        assert_eq!(working.status, Status::Working);
+    }
+
+    #[test]
+    fn question_blocks_stay_as_the_log_says() {
+        let h = home("question");
+        write_workspace(&h);
+        write_meta_for(&h, "c1", Some(1));
+        write_log(&h, &[format!("1\tc1\tNotification\t{}", json!({"session_id": "s", "notification_type": "idle_prompt"}))]);
+        let rows = tile_rows_with(&h, Some("mini"), &|_| None, &|_| Some(None), &|id| id == "c1");
+        assert_eq!(status_of(&rows, "c1").0, json!("blocked"));
+        assert_eq!(status_of(&rows, "c1").1, json!("question"));
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn an_old_holder_is_never_asked_for_its_screen() {
+        let h = home("old-holder");
+        write_workspace(&h);
+        write_meta_for(&h, "c1", None);
+        write_log(&h, &[permission("1", "npm test")]);
+        let asked = std::cell::Cell::new(false);
+        let rows = tile_rows_with(&h, Some("mini"), &|_| None, &|_| {
+            asked.set(true);
+            Some(None)
+        }, &|id| id == "c1");
+        assert!(!asked.get());
+        assert_eq!(status_of(&rows, "c1").0, json!("blocked"));
         let _ = std::fs::remove_dir_all(&h);
     }
 

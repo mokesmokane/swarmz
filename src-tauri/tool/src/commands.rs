@@ -7,7 +7,7 @@ use crate::paths::{live_session, pid_alive, read_meta, session_paths, sessions_d
 use crate::proto::{Hello, PROTOCOL_VERSION};
 use crate::screen::line_text;
 use crate::server::TOOL_VIEWER;
-use crate::agent::{fold_log, read_log, Fold, Needs};
+use crate::agent::{fold_log, read_log, Fold};
 use crate::dialog::{live_dialog, resolve, Answer, Dialog};
 use crate::gate::{check, split_words};
 use crate::input::{key_bytes, paste_bytes};
@@ -15,7 +15,7 @@ use crate::phone::{add_key, authorized_keys, list_keys, machine_hosts, revoke, v
 use crate::proc::run_with_timeout;
 use crate::screen::{diff_lines, LinesUpdate};
 use crate::transcript::{after, guess_path, image as transcript_image, page, Change, Normaliser};
-use crate::tiles::{homed_defs, prune as prune_sessions, session_rows, tile_rows, try_tile_rows_with_folds, watch_events, TileRow};
+use crate::tiles::{apply_screen, homed_defs, prune as prune_sessions, session_rows, tile_rows, try_tile_rows_with_folds, watch_events, TileRow};
 use crate::util::{new_uuid, now_iso_ms, sh_quote, valid_abs_path};
 use crate::workspace::{load_from, save_to, ClaudeConfig, TerminalDef, Workspace};
 use serde_json::{json, Map, Value};
@@ -82,14 +82,25 @@ pub fn tile_arg(s: &str) -> Result<String, CliError> {
 
 /// A question-only connection to a running tile.
 pub fn connect_tool(env: &Env, tile: &str) -> Result<HolderClient, CliError> {
-    connect_tool_with_exit(env, tile, |_| {})
+    connect_tool_with_exit(env, tile, false, |_| {})
 }
 
+/// `connect_tool` for a command that reads the screen: a holder that predates `Screen` (its
+/// metadata has no `build`) is refused with `old_session` before anything is sent to it.
+fn connect_screen(env: &Env, tile: &str) -> Result<HolderClient, CliError> {
+    connect_tool_with_exit(env, tile, true, |_| {})
+}
+
+pub const OLD_SESSION: &str = "restart this tile to use it from the phone";
+
 /// `connect_tool`, with `on_exit` called when the session ends or the connection drops.
-fn connect_tool_with_exit(env: &Env, tile: &str, on_exit: impl FnOnce(Option<i32>) + Send + 'static) -> Result<HolderClient, CliError> {
+fn connect_tool_with_exit(env: &Env, tile: &str, need_screen: bool, on_exit: impl FnOnce(Option<i32>) + Send + 'static) -> Result<HolderClient, CliError> {
     let paths = session_paths(&env.sessions(), tile).map_err(|e| CliError::new("invalid", e))?;
-    if live_session(&paths).is_none() {
+    let Some(meta) = live_session(&paths) else {
         return Err(CliError::new("not_running", format!("{tile} is not running")));
+    };
+    if need_screen && meta.build.is_none() {
+        return Err(CliError::new("old_session", OLD_SESSION));
     }
     let hello = Hello { v: PROTOCOL_VERSION, cols: 0, rows: 0, viewer: TOOL_VIEWER.into() };
     HolderClient::connect(&paths.socket, &hello, |_, _| {}, on_exit).map_err(failed)
@@ -99,16 +110,20 @@ pub fn screen_texts(client: &HolderClient, lines: usize) -> Option<Vec<String>> 
     client.screen(lines, Duration::from_secs(3)).map(|s| s.lines.iter().map(line_text).collect())
 }
 
-/// The permission dialog the session is showing now, if any; None when it did not answer.
+/// The permission dialog on the session's visible screen now, if any; None when it did not
+/// answer. Only the visible rows are asked for (the size the holder reported on connecting).
 fn screen_dialog(client: &HolderClient) -> Option<Option<Dialog>> {
-    let snap = client.screen(200, Duration::from_secs(3))?;
+    let rows = client.welcome().rows as usize;
+    let snap = client.screen(if rows == 0 { 200 } else { rows }, Duration::from_secs(3))?;
     let texts: Vec<String> = snap.lines.iter().map(line_text).collect();
-    Some(live_dialog(&texts, snap.rows as usize))
+    // A holder that predates `visibleStart`: the last `rows` lines are the screen.
+    let start = snap.visible_start.unwrap_or_else(|| texts.len().saturating_sub(snap.rows as usize));
+    Some(live_dialog(&texts, start))
 }
 
-fn dialog_open(env: &Env, tile: &str) -> Option<bool> {
-    let client = connect_tool(env, tile).ok()?;
-    Some(screen_dialog(&client)?.is_some())
+/// The dialog a tile shows, for its row; None when it could not be asked.
+fn dialog_for(env: &Env, tile: &str) -> Option<Option<Dialog>> {
+    screen_dialog(&connect_tool(env, tile).ok()?)
 }
 
 fn live_cwd(env: &Env, tile: &str) -> Option<String> {
@@ -116,7 +131,7 @@ fn live_cwd(env: &Env, tile: &str) -> Option<String> {
 }
 
 fn rows(env: &Env) -> Vec<TileRow> {
-    tile_rows(&env.home, env.machine.as_deref(), &|id| live_cwd(env, id), &|id| dialog_open(env, id))
+    tile_rows(&env.home, env.machine.as_deref(), &|id| live_cwd(env, id), &|id| dialog_for(env, id))
 }
 
 pub fn row(env: &Env, tile: &str) -> Result<Value, CliError> {
@@ -179,7 +194,7 @@ pub fn watch(env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
     loop {
         let folds = log.folds(&env.home);
         // An unreadable workspace keeps the rows we had rather than reporting every tile gone.
-        let now = try_tile_rows_with_folds(&env.home, env.machine.as_deref(), folds, &cwd, &|id| dialog_open(env, id))
+        let now = try_tile_rows_with_folds(&env.home, env.machine.as_deref(), folds, &cwd, &|id| dialog_for(env, id))
             .unwrap_or_else(|| prev.values().cloned().collect());
         let events = if first { vec![json!({"v": 1, "type": "snapshot", "tiles": now})] } else { watch_events(&prev, &now) };
         for e in &events {
@@ -381,26 +396,22 @@ struct Question {
     dialog: Dialog,
     tool: String,
     summary: String,
-    /// False when the hook log has events for the tile and none says Claude is waiting.
-    awaited: bool,
 }
 
-/// The dialog on screen with its tool and summary (the hook event's when it describes this
-/// block, else what the screen shows).
+/// The dialog on the visible screen, with its summary (always the screen's) and tool (the hook
+/// event's when it describes this same question, else the dialog's heading).
 fn current_question(env: &Env, c: &HolderClient, tile: &str) -> Result<Option<Question>, CliError> {
     let d = screen_dialog(c).ok_or_else(|| failed("the session did not answer"))?;
     let Some(d) = d else { return Ok(None) };
-    let fold = fold_for(env, tile);
-    let awaited = fold.as_ref().is_none_or(|f| f.needs.is_some());
-    let fold = fold.unwrap_or_default();
-    let from_hook = fold.needs == Some(Needs::Permission);
-    let tool = fold.tool.filter(|_| from_hook).unwrap_or_else(|| d.heading.clone());
-    let summary = fold.summary.filter(|_| from_hook).unwrap_or_else(|| d.summary());
-    Ok(Some(Question { dialog: d, tool, summary, awaited }))
+    let mut fold = fold_for(env, tile).unwrap_or_default();
+    apply_screen(&mut fold, Some(&d));
+    let tool = fold.tool.unwrap_or_else(|| d.heading.clone());
+    let summary = fold.summary.unwrap_or_else(|| d.summary());
+    Ok(Some(Question { dialog: d, tool, summary }))
 }
 
 pub fn pending(env: &Env, tile: &str) -> Result<Value, CliError> {
-    let c = connect_tool(env, tile)?;
+    let c = connect_screen(env, tile)?;
     Ok(match current_question(env, &c, tile)? {
         None => json!({"v": 1, "pending": null}),
         Some(q) => json!({"v": 1, "pending": {"tool": q.tool, "summary": q.summary, "options": q.dialog.options}}),
@@ -412,13 +423,10 @@ pub fn answer(env: &Env, tile: &str, choice: &str, expect_summary: Option<&str>)
     if !known {
         return Err(CliError::new("usage", format!("unknown answer {choice:?}: use yes, always, no, deny or an option number")));
     }
-    let c = connect_tool(env, tile)?;
+    let c = connect_screen(env, tile)?;
     let Some(q) = current_question(env, &c, tile)? else {
         return Ok(json!({"v": 1, "ignored": true, "reason": "no question is showing"}));
     };
-    if !q.awaited {
-        return Ok(json!({"v": 1, "ignored": true, "reason": "Claude is not waiting for an answer"}));
-    }
     if expect_summary.is_some_and(|s| s != q.summary) {
         return Ok(json!({"v": 1, "ignored": true, "reason": "a different question is showing"}));
     }
@@ -437,7 +445,7 @@ pub fn output(env: &Env, tile: &str, lines: usize, follow: bool, out: &mut dyn W
         let ended = ended.clone();
         move |_| ended.store(true, Ordering::SeqCst)
     };
-    let c = connect_tool_with_exit(env, tile, on_exit)?;
+    let c = connect_tool_with_exit(env, tile, true, on_exit)?;
     let snap = c.screen(lines, Duration::from_secs(3)).ok_or_else(|| failed("the session did not answer"))?;
     let first = json!({"v": 1, "cols": snap.cols, "rows": snap.rows, "cursor": snap.cursor, "lines": snap.lines});
     if !emit(out, &first) || !follow {
@@ -724,6 +732,30 @@ mod tests {
         let meta = Meta { v: 1, pid, shell_pid: None, cwd: "/".into(), name: "t".into(), started_at: "s".into(), exited_at: None, exit_code: None, cwd_fallback: false, build: None };
         write_meta(&path, &meta).unwrap();
         path
+    }
+
+    #[test]
+    fn screen_commands_refuse_a_holder_that_predates_screen() {
+        let home = PathBuf::from(format!("/tmp/szc-{}-commands-old", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let dir = sessions_dir_in(&home);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = session_paths(&dir, "old1").unwrap();
+        // A live session (our own pid, a listening socket) whose metadata has no build. The
+        // listener never answers, so a command that sent it anything would wait and fail.
+        let _listener = std::os::unix::net::UnixListener::bind(&paths.socket).unwrap();
+        let meta = Meta { v: 1, pid: std::process::id(), shell_pid: None, cwd: "/".into(), name: "old1".into(), started_at: "s".into(), exited_at: None, exit_code: None, cwd_fallback: false, build: None };
+        write_meta(&paths.meta, &meta).unwrap();
+        let env = Env { home: home.clone(), exe: PathBuf::from("/nonexistent"), machine: Some("mini".into()) };
+        let started = Instant::now();
+        let code = |r: Result<Value, CliError>| r.map_err(|e| (e.code, e.message)).unwrap_err();
+        assert_eq!(code(pending(&env, "old1")), ("old_session", OLD_SESSION.to_string()));
+        assert_eq!(code(answer(&env, "old1", "yes", None)).0, "old_session");
+        let mut out = Vec::new();
+        assert_eq!(output(&env, "old1", 20, false, &mut out).unwrap_err().code, "old_session");
+        assert!(out.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(2), "a screen request was sent");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

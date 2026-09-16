@@ -93,12 +93,12 @@ pub fn parse_dialog(lines: &[String]) -> Option<Dialog> {
     Some(Dialog { heading, target, description, options })
 }
 
-/// The dialog Claude is showing now: its footer is on the screen (within the last `rows` lines)
-/// with nothing but blank lines below it. A dialog in scrollback, or quoted in output that has
-/// more below it, is not one.
-pub fn live_dialog(lines: &[String], rows: usize) -> Option<Dialog> {
+/// The dialog Claude is showing now: its footer is on the visible screen (at or below
+/// `visible_start`, the index of the first visible row in `lines`) with nothing but blank lines
+/// below it. A dialog in scrollback, or quoted in output that has more below it, is not one.
+pub fn live_dialog(lines: &[String], visible_start: usize) -> Option<Dialog> {
     let footer = lines.iter().rposition(|l| clean(l).starts_with("Esc to cancel"))?;
-    if footer < lines.len().saturating_sub(rows) || lines[footer + 1..].iter().any(|l| !clean(l).is_empty()) {
+    if footer < visible_start || lines[footer + 1..].iter().any(|l| !clean(l).is_empty()) {
         return None;
     }
     parse_dialog(lines)
@@ -106,7 +106,7 @@ pub fn live_dialog(lines: &[String], rows: usize) -> Option<Dialog> {
 
 pub fn resolve(choice: &str, d: &Dialog) -> Result<Answer, String> {
     let lower = |o: &Opt| o.label.to_lowercase();
-    let always = |l: &str| l.contains("always") || l.contains("don't ask") || l.contains("allow all");
+    let always = |l: &str| l.contains("always") || l.contains("don't ask") || l.contains("don\u{2019}t ask") || l.contains("allow all");
     let found = match choice {
         "deny" => return Ok(Answer::Esc),
         "yes" => d.options.iter().find(|o| lower(o).starts_with("yes") && !always(&lower(o))),
@@ -197,22 +197,38 @@ mod tests {
     }
 
     #[test]
-    fn only_a_dialog_at_the_bottom_of_the_screen_is_live() {
-        let rows = 24;
-        assert!(live_dialog(&real(), rows).is_some());
+    fn only_a_dialog_on_the_visible_screen_is_live() {
+        assert!(live_dialog(&real(), 0).is_some());
         let mut blank_below = real();
         blank_below.extend(["".to_string(), "   ".to_string()]);
-        assert!(live_dialog(&blank_below, rows).is_some());
+        assert!(live_dialog(&blank_below, 0).is_some());
+        // Some scrollback above the visible rows still lets the dialog's top be read.
+        assert_eq!(live_dialog(&real(), 3).map(|d| d.summary()).as_deref(), Some("mkdir -p probe-dir-xyz"));
         // Output below the footer: the dialog was quoted or has been answered.
         let mut more = real();
         more.push("$ ls".to_string());
         assert!(parse_dialog(&more).is_some());
-        assert!(live_dialog(&more, rows).is_none());
+        assert!(live_dialog(&more, 0).is_none());
         // Scrolled off the screen, even with only blank lines below.
         let mut scrolled = real();
-        scrolled.extend(std::iter::repeat_n(String::new(), rows));
-        assert!(live_dialog(&scrolled, rows).is_none());
-        assert!(live_dialog(&[], rows).is_none());
+        let n = scrolled.len();
+        scrolled.extend(std::iter::repeat_n(String::new(), 24));
+        assert!(live_dialog(&scrolled, n).is_none());
+        // A blank visible screen (its rows trimmed away) never lets a footer in scrollback count.
+        assert!(live_dialog(&real(), real().len()).is_none());
+        assert!(live_dialog(&[], 0).is_none());
+    }
+
+    #[test]
+    fn a_curly_apostrophe_counts_as_dont_ask() {
+        let d = Dialog {
+            heading: "h".into(),
+            target: None,
+            description: None,
+            options: vec![Opt { n: 1, label: "Yes".into() }, Opt { n: 2, label: "Yes, and don\u{2019}t ask again for npm commands".into() }, Opt { n: 3, label: "No".into() }],
+        };
+        assert!(matches!(resolve("always", &d), Ok(Answer::Option(Opt { n: 2, .. }))));
+        assert!(matches!(resolve("yes", &d), Ok(Answer::Option(Opt { n: 1, .. }))));
     }
 
     #[test]

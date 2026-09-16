@@ -951,22 +951,51 @@ fn a_dialog_that_is_not_live_is_never_answered() {
     assert!(p["pending"].is_null(), "{p}");
     ignored("scrolled");
 
-    // Live on screen, but the hook log says Claude is working, not waiting.
+    // Live on screen: the screen decides, whatever order the hooks were logged in. The previous
+    // tool's PostToolUse landed after this PermissionRequest, and the request logged describes
+    // another question than the one showing.
+    let cwd = h.path.to_string_lossy().into_owned();
+    write_ws(&h.path, serde_json::json!([{"id": "q1", "name": "q1", "cwd": cwd, "origin": "mini"}]), serde_json::json!({}));
     std::fs::create_dir_all(h.path.join(".swarmz/agents")).unwrap();
-    std::fs::write(h.path.join(".swarmz/agents/events.log"), "2026-09-16T10:00:00Z\tq1\tUserPromptSubmit\t{}\n").unwrap();
+    let log = [
+        "2026-09-16T10:00:00Z\tq1\tUserPromptSubmit\t{}".to_string(),
+        format!("2026-09-16T10:00:01Z\tq1\tPermissionRequest\t{}", serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf build"}})),
+        "2026-09-16T10:00:02Z\tq1\tPostToolUse\t{}".to_string(),
+    ];
+    std::fs::write(h.path.join(".swarmz/agents/events.log"), log.join("\n") + "\n").unwrap();
     let script = h.path.join("dialog.sh");
     std::fs::write(&script, DIALOG_SH).unwrap();
     c.write(format!("clear; sh '{}'\n", script.display()).as_bytes()).unwrap();
     assert!(wait_until(|| !tool_env(&h.path, &["pending", "q1"], MINI).1["pending"].is_null()));
-    let (_, v) = tool_env(&h.path, &["answer", "q1", "yes"], MINI);
-    assert_eq!((v["ignored"].as_bool(), v["reason"].as_str()), (Some(true), Some("Claude is not waiting for an answer")), "{v}");
-    // Once a permission request is logged, the same dialog is answered.
-    let mut f = std::fs::OpenOptions::new().append(true).open(h.path.join(".swarmz/agents/events.log")).unwrap();
-    use std::io::Write as _;
-    writeln!(f, "2026-09-16T10:00:01Z\tq1\tPermissionRequest\t{}", serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "npm test"}})).unwrap();
-    let (code, v) = tool_env(&h.path, &["answer", "q1", "yes"], MINI);
+    let (_, p) = tool_env(&h.path, &["pending", "q1"], MINI);
+    assert_eq!((p["pending"]["tool"].as_str(), p["pending"]["summary"].as_str()), (Some("Bash command"), Some("npm test")), "{p}");
+    let (_, rows) = tool_env(&h.path, &["ls"], MINI);
+    let row = &rows["tiles"][0];
+    assert_eq!((row["status"].as_str(), row["needs"].as_str(), row["summary"].as_str()), (Some("blocked"), Some("permission"), Some("npm test")), "{rows}");
+    // A notification for the logged question never answers the one on screen.
+    let (_, v) = tool_env(&h.path, &["answer", "q1", "yes", "--summary", "rm -rf build"], MINI);
+    assert_eq!((v["ignored"].as_bool(), v["reason"].as_str()), (Some(true), Some("a different question is showing")), "{v}");
+    let (code, v) = tool_env(&h.path, &["answer", "q1", "yes", "--summary", "npm test"], MINI);
     assert_eq!((code, v["answered"].as_bool()), (0, Some(true)), "{v}");
     assert!(wait_until(|| screen_has(&c, "chose:1")));
+}
+
+#[test]
+fn a_session_the_log_never_mentions_is_answered_from_its_screen() {
+    let h = home("unlogged-dialog");
+    let socket = held(&h, "u1");
+    let script = h.path.join("dialog.sh");
+    std::fs::write(&script, DIALOG_SH).unwrap();
+    // The log has events for the tile, none about this dialog (a subagent's request is never
+    // logged): the dialog on screen is still pending and can be answered.
+    std::fs::create_dir_all(h.path.join(".swarmz/agents")).unwrap();
+    std::fs::write(h.path.join(".swarmz/agents/events.log"), "2026-09-16T10:00:00Z\tu1\tUserPromptSubmit\t{}\n").unwrap();
+    let c = tool_client(&socket);
+    c.write(format!("sh '{}'\n", script.display()).as_bytes()).unwrap();
+    assert!(wait_until(|| !tool_env(&h.path, &["pending", "u1"], MINI).1["pending"].is_null()));
+    let (code, v) = tool_env(&h.path, &["answer", "u1", "no"], MINI);
+    assert_eq!((code, v["option"]["n"].as_u64()), (0, Some(3)), "{v}");
+    assert!(wait_until(|| screen_has(&c, "chose:3")));
 }
 
 #[test]

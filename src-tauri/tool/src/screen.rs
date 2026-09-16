@@ -37,6 +37,10 @@ pub struct Snapshot {
     /// (index into `lines`, column); `None` when the cursor's row is not among `lines`.
     pub cursor: Option<(usize, u16)>,
     pub lines: Vec<Line>,
+    /// Index into `lines` of the first row of the visible screen (0 when the visible screen
+    /// starts above the lines returned). None from a holder that predates it.
+    #[serde(rename = "visibleStart", default, skip_serializing_if = "Option::is_none")]
+    pub visible_start: Option<usize>,
 }
 
 fn color(c: vt100::Color) -> Option<Color> {
@@ -119,7 +123,7 @@ pub fn snapshot(parser: &mut vt100::Parser, max_lines: usize) -> Snapshot {
     let start = lines.len().saturating_sub(max_lines);
     let lines = lines.split_off(start);
     let cursor = (visible_start + cur_row as usize).checked_sub(start).map(|l| (l, cur_col));
-    Snapshot { cols, rows, cursor, lines }
+    Snapshot { cols, rows, cursor, lines, visible_start: Some(visible_start.saturating_sub(start)) }
 }
 
 /// `snap` serialised to at most `max_bytes` (when it can be), dropping its oldest lines as
@@ -133,6 +137,7 @@ pub fn fit_snapshot(mut snap: Snapshot, max_bytes: usize) -> Vec<u8> {
         let drop = (snap.lines.len() / 2).max(1);
         snap.lines.drain(..drop);
         snap.cursor = snap.cursor.and_then(|(l, c)| l.checked_sub(drop).map(|l| (l, c)));
+        snap.visible_start = snap.visible_start.map(|v| v.saturating_sub(drop));
     }
 }
 
@@ -190,6 +195,25 @@ mod tests {
         assert_eq!(text_lines(&s), vec!["one", "two", "$"]);
         assert_eq!((s.cols, s.rows), (20, 5));
         assert_eq!(s.cursor, Some((2, 2)));
+        assert_eq!(s.visible_start, Some(0));
+    }
+
+    #[test]
+    fn the_visible_start_marks_where_the_screen_begins() {
+        let mut p = vt100::Parser::new(3, 20, SCROLLBACK);
+        p.process(b"l0\r\nl1\r\nl2\r\nl3\r\nl4");
+        let s = snapshot(&mut p, 100);
+        assert_eq!(text_lines(&s), vec!["l0", "l1", "l2", "l3", "l4"]);
+        assert_eq!(s.visible_start, Some(2));
+        // Cut inside the visible rows: they start at the top of what is returned.
+        assert_eq!(snapshot(&mut p, 2).visible_start, Some(0));
+        // A cleared screen trims to the cursor's row; everything above it is scrollback.
+        p.process(b"\x1b[2J\x1b[H");
+        let cleared = snapshot(&mut p, 3);
+        assert_eq!(cleared.visible_start, Some(2), "{:?}", text_lines(&cleared));
+        // A reply from an older holder has no visible start.
+        let old: Snapshot = serde_json::from_str(r#"{"cols":80,"rows":24,"cursor":null,"lines":[]}"#).unwrap();
+        assert_eq!(old.visible_start, None);
     }
 
     #[test]
