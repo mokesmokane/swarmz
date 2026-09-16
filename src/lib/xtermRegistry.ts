@@ -18,9 +18,19 @@ export const SHIFT_ENTER_SEQUENCE = "\n";
 
 export const IMAGE_PASTE_KEY = "\x16";
 
-/** Fallback for a remote tool that never writes the replay-end marker: the longest a rejoined
- * session's output is treated as replay. */
+/** Fallback for a remote tool that never writes the replay-end marker (no `end=1` in its attach
+ * marker): the longest a rejoined session's output is treated as replay. */
 export const REMOTE_REPLAY_MAX_MS = 10_000;
+/** Safety cap for a tool that promised the end marker (`end=1`), should it never arrive. */
+export const REMOTE_REPLAY_MARKED_MAX_MS = 60_000;
+
+/** The fields of a `swarmz-attach` OSC 1337 payload (`swarmz-attach;new=<0|1>[;key=value]...`),
+ * or null for any other payload. Unknown fields are ignored. */
+export function parseAttachMarker(data: string): { isNew: boolean; endMarker: boolean } | null {
+  const [tag, first, ...rest] = data.split(";");
+  if (tag !== "swarmz-attach" || (first !== "new=0" && first !== "new=1")) return null;
+  return { isNew: first === "new=1", endMarker: rest.includes("end=1") };
+}
 
 /** What the remote `swarmz attach` writes right after the replay (`REPLAY_END_MARKER` in the
  * tool's attach.rs), before any live byte. */
@@ -84,9 +94,12 @@ interface Entry {
   replaying: boolean;
   /** Set from a remote `swarmz attach` marker for a rejoined session until xterm parses the
    * tool's replay-end marker (the replay arrives as ordinary `pty:data`). Suppresses the same side
-   * effects as `replaying`. Fallbacks, for a tool without the end marker only: the first user
-   * input, or `REMOTE_REPLAY_MAX_MS`. */
+   * effects as `replaying`. A tool that promised the end marker (`end=1`) is only capped at
+   * `REMOTE_REPLAY_MARKED_MAX_MS`; an older one also ends at the first user input or after
+   * `REMOTE_REPLAY_MAX_MS`. */
   remoteReplay: boolean;
+  /** The current remote replay's tool promised the end marker. */
+  remoteReplayMarked: boolean;
   remoteMaxTimer: ReturnType<typeof setTimeout> | null;
   /** Set by the OSC 1337 handlers while xterm parses a chunk that starts or ends a remote replay,
    * and read (then cleared) by that chunk's write callback. */
@@ -182,17 +195,24 @@ async function sendImageOrForward(id: string, host: string): Promise<void> {
 
 function endRemoteReplay(entry: Entry): void {
   entry.remoteReplay = false;
+  entry.remoteReplayMarked = false;
   if (entry.remoteMaxTimer) clearTimeout(entry.remoteMaxTimer);
   entry.remoteMaxTimer = null;
 }
 
-function startRemoteReplay(id: string, entry: Entry): void {
+function startRemoteReplay(id: string, entry: Entry, marked: boolean): void {
   if (!useStore.getState().settings[id]?.ssh?.host) return;
   entry.replayBoundary = true;
   entry.tail = "";
   if (entry.remoteMaxTimer) clearTimeout(entry.remoteMaxTimer);
   entry.remoteReplay = true;
-  entry.remoteMaxTimer = setTimeout(() => endRemoteReplay(entry), REMOTE_REPLAY_MAX_MS);
+  entry.remoteReplayMarked = marked;
+  entry.remoteMaxTimer = setTimeout(() => endRemoteReplay(entry), marked ? REMOTE_REPLAY_MARKED_MAX_MS : REMOTE_REPLAY_MAX_MS);
+}
+
+/** Fallback for an older tool: user input means its replay is on screen. */
+function userInput(entry: Entry): void {
+  if (entry.remoteReplay && !entry.remoteReplayMarked) endRemoteReplay(entry);
 }
 
 /** The resume-failure scan, run once xterm has parsed `bytes` so the replay state is exact. */
@@ -255,6 +275,7 @@ function createEntry(id: string): Entry {
     tail: "",
     replaying: false,
     remoteReplay: false,
+    remoteReplayMarked: false,
     remoteMaxTimer: null,
     replayBoundary: false,
     remotePolling: false,
@@ -263,7 +284,7 @@ function createEntry(id: string): Entry {
   term.onData((data) => {
     // Fallback for a tool without the end marker: input from the user (keys, pastes, mouse
     // reports) means the replay is on screen.
-    if (entry.remoteReplay) endRemoteReplay(entry);
+    userInput(entry);
     const host = data === IMAGE_PASTE_KEY ? connectedSshHost(id) : null;
     // Writes to an already-exited pane are expected to fail; ignore.
     if (host) void sendImageOrForward(id, host);
@@ -276,7 +297,7 @@ function createEntry(id: string): Entry {
   term.attachCustomKeyEventHandler((e) => {
     if (e.key !== "Enter" || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return true;
     if (e.type === "keydown") {
-      if (entry.remoteReplay) endRemoteReplay(entry);
+      userInput(entry);
       void ipc.writeTerminal(id, SHIFT_ENTER_SEQUENCE).catch(() => {});
       scheduleEnterPoll(id, entry);
     }
@@ -314,11 +335,11 @@ function createEntry(id: string): Entry {
       }
       return true;
     }
-    const m = /^swarmz-attach;new=([01])$/.exec(data);
+    const m = parseAttachMarker(data);
     if (!m) return false;
     if (entry.replaying) return true;
-    if (m[1] === "0") startRemoteReplay(id, entry);
-    void useStore.getState().remoteAttached(id, m[1] === "1");
+    if (!m.isNew) startRemoteReplay(id, entry, m.endMarker);
+    void useStore.getState().remoteAttached(id, m.isNew);
     return true;
   });
 

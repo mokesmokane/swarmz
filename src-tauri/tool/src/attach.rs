@@ -14,8 +14,11 @@ pub const ATTACH_MARKER_PREFIX: &str = "\x1b]1337;swarmz-attach;new=";
 /// even an empty one, so every attach writes this once, before any live byte.
 pub const REPLAY_END_MARKER: &str = "\x1b]1337;swarmz-replay-end\x07";
 
+/// The attach marker: `new=` says whether the session was just started, and `end=1` promises
+/// that `REPLAY_END_MARKER` follows the replay, so a viewer can rely on it instead of guessing.
+/// Viewers ignore fields they do not know.
 pub fn marker(new: bool) -> String {
-    format!("{ATTACH_MARKER_PREFIX}{}\x07", if new { 1 } else { 0 })
+    format!("{ATTACH_MARKER_PREFIX}{};end=1\x07", if new { 1 } else { 0 })
 }
 
 struct RawMode(Option<libc::termios>);
@@ -158,5 +161,17 @@ pub fn attach(exe: &Path, dir: &Path, mut req: HoldRequest) -> Result<i32, CliEr
             client.detach();
             Ok(0)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marker_announces_the_end_marker() {
+        assert_eq!(marker(true), "\x1b]1337;swarmz-attach;new=1;end=1\x07");
+        assert_eq!(marker(false), "\x1b]1337;swarmz-attach;new=0;end=1\x07");
+        assert!(marker(false).starts_with(ATTACH_MARKER_PREFIX));
     }
 }

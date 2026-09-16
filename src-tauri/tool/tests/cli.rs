@@ -414,7 +414,7 @@ fn attach_bridges_a_terminal_and_reattaches_after_a_drop() {
     let paths = swarmz_tool::paths::session_paths(&swarmz_tool::paths::sessions_dir_in(&h.path), "t7").unwrap();
     h.track(&paths.socket.to_string_lossy());
     let (mut child, out, mut w) = run_attach(&h.path, "t7");
-    assert!(wait_out(&out, "\x1b]1337;swarmz-attach;new=1\x07"), "first attach must say new=1");
+    assert!(wait_out(&out, "\x1b]1337;swarmz-attach;new=1;end=1\x07"), "first attach must say new=1");
     assert!(wait_out(&out, swarmz_tool::attach::REPLAY_END_MARKER), "a new session's (empty) replay is marked too");
     std::io::Write::write_all(&mut w, b"echo bridged-$((2+3))\r").unwrap();
     assert!(wait_out(&out, "bridged-5"));
@@ -425,12 +425,12 @@ fn attach_bridges_a_terminal_and_reattaches_after_a_drop() {
     let (_, info) = tool(&h.path, &["info", "t7"]);
     assert_eq!(info["running"], true, "the session must survive the bridge going away");
     let (mut child2, out2, mut w2) = run_attach(&h.path, "t7");
-    assert!(wait_out(&out2, "\x1b]1337;swarmz-attach;new=0\x07"), "reattach must say new=0");
+    assert!(wait_out(&out2, "\x1b]1337;swarmz-attach;new=0;end=1\x07"), "reattach must say new=0");
     assert!(wait_out(&out2, "bridged-5"), "reattach must replay the history");
     assert!(wait_out(&out2, swarmz_tool::attach::REPLAY_END_MARKER), "reattach must mark the end of the replay");
     {
         let text = String::from_utf8_lossy(&out2.lock().unwrap()).into_owned();
-        let attach_at = text.find("\x1b]1337;swarmz-attach;new=0\x07").unwrap();
+        let attach_at = text.find("\x1b]1337;swarmz-attach;new=0;end=1\x07").unwrap();
         let replay_at = text.find("\x1b[!p").expect("the replay prefix");
         let history_at = text.find("bridged-5").unwrap();
         let end_at = text.find(swarmz_tool::attach::REPLAY_END_MARKER).unwrap();
@@ -455,7 +455,7 @@ fn attach_reports_a_nonzero_exit_when_the_holder_vanishes() {
     let paths = swarmz_tool::paths::session_paths(&swarmz_tool::paths::sessions_dir_in(&h.path), "t9").unwrap();
     h.track(&paths.socket.to_string_lossy());
     let (mut child, out, _w) = run_attach(&h.path, "t9");
-    assert!(wait_out(&out, "\x1b]1337;swarmz-attach;new=1\x07"), "first attach must say new=1");
+    assert!(wait_out(&out, "\x1b]1337;swarmz-attach;new=1;end=1\x07"), "first attach must say new=1");
 
     // Kill the holder itself (not the shell inside it, and not the attach process): the session's
     // own metadata carries its pid.

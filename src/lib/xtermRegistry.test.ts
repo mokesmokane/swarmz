@@ -93,6 +93,7 @@ import {
   CWD_POLL_AFTER_ENTER_MS,
   CWD_POLL_INTERVAL_MS,
   IMAGE_PASTE_KEY,
+  REMOTE_REPLAY_MARKED_MAX_MS,
   REMOTE_REPLAY_MAX_MS,
   REPLAY_END_MARKER,
   SHIFT_ENTER_SEQUENCE,
@@ -100,6 +101,7 @@ import {
   decodeOsc52,
   decodeOsc7,
   dispose,
+  parseAttachMarker,
   prepare,
 } from "./xtermRegistry";
 
@@ -745,7 +747,10 @@ describe("a rejoined remote session's replay", () => {
     for (let m = re.exec(text); m; m = re.exec(text)) t.oscHandlers[Number(m[1])]?.(m[2]);
     last(t.writes)?.done?.();
   };
-  const ATTACH0 = "\x1b]1337;swarmz-attach;new=0\x07";
+  /** The attach marker of the current tool, which promises the end marker. */
+  const ATTACH0 = "\x1b]1337;swarmz-attach;new=0;end=1\x07";
+  /** The attach marker of an older tool, without the promise. */
+  const ATTACH0_OLD = "\x1b]1337;swarmz-attach;new=0\x07";
   const osc52 = (s: string) => `\x1b]52;c;${btoa(s)}\x07`;
 
   it("suppresses OSC 52 and OSC 7 exactly until the replay-end marker, however long the gap", async () => {
@@ -779,9 +784,43 @@ describe("a rejoined remote session's replay", () => {
     expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
   });
 
-  it("falls back to ending at user input for a tool without the end marker", async () => {
+  it("with end=1, typing during the replay does not end it; only the end marker does", async () => {
+    const t = await setup();
+    feed(t, ATTACH0 + "\x1b[!pold");
+    t.dataHandler("x");
+    t.keyHandler({ key: "Enter", shiftKey: true, ctrlKey: false, altKey: false, metaKey: false, type: "keydown" } as KeyboardEvent);
+    feed(t, osc52("old copy") + "\x1b]7;file:///old\x07");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(writeText).not.toHaveBeenCalled();
+    expect(setTerminalCwd).not.toHaveBeenCalled();
+    feed(t, REPLAY_END_MARKER + osc52("live copy"));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("live copy"));
+    expect(writeText).toHaveBeenCalledTimes(1);
+  });
+
+  it("with end=1, only the long safety cap ends a replay whose end marker never comes", async () => {
+    vi.useFakeTimers();
     const t = await setup();
     feed(t, ATTACH0);
+    await vi.advanceTimersByTimeAsync(REMOTE_REPLAY_MARKED_MAX_MS - 1);
+    t.oscHandlers[7]("file:///old");
+    expect(setTerminalCwd).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    t.oscHandlers[7]("file:///live");
+    expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
+  });
+
+  it("an older tool's marker (no end=1) still parses and its replay also honours the end marker", async () => {
+    const t = await setup();
+    feed(t, ATTACH0_OLD + "\x1b[!p" + osc52("old copy") + REPLAY_END_MARKER + osc52("live copy"));
+    expect(remoteAttached).toHaveBeenCalledWith("rr", false);
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("live copy"));
+    expect(writeText).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to ending at user input for a tool without the end marker", async () => {
+    const t = await setup();
+    feed(t, ATTACH0_OLD);
     t.oscHandlers[52](`c;${btoa("old copy")}`);
     t.dataHandler("x");
     t.oscHandlers[52](`c;${btoa("live copy")}`);
@@ -791,7 +830,7 @@ describe("a rejoined remote session's replay", () => {
 
   it("Shift+Enter also ends the replay (fallback)", async () => {
     const t = await setup();
-    feed(t, ATTACH0);
+    feed(t, ATTACH0_OLD);
     t.keyHandler({ key: "Enter", shiftKey: true, ctrlKey: false, altKey: false, metaKey: false, type: "keydown" } as KeyboardEvent);
     t.oscHandlers[7]("file:///live");
     expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
@@ -800,7 +839,7 @@ describe("a rejoined remote session's replay", () => {
   it("falls back to the cap however busy the output stays", async () => {
     vi.useFakeTimers();
     const t = await setup();
-    feed(t, ATTACH0);
+    feed(t, ATTACH0_OLD);
     for (let elapsed = 0; elapsed < REMOTE_REPLAY_MAX_MS; elapsed += 200) {
       feed(t, "busy\x1b]7;file:///old\x07");
       await vi.advanceTimersByTimeAsync(200);
@@ -867,5 +906,21 @@ describe("a rejoined remote session's replay", () => {
     t.oscHandlers[1337]("swarmz-attach;new=0");
     t.oscHandlers[7]("file:///live");
     expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
+  });
+});
+
+describe("parseAttachMarker", () => {
+  it("reads the current and the older form and ignores unknown fields", () => {
+    expect(parseAttachMarker("swarmz-attach;new=0;end=1")).toEqual({ isNew: false, endMarker: true });
+    expect(parseAttachMarker("swarmz-attach;new=1;end=1")).toEqual({ isNew: true, endMarker: true });
+    expect(parseAttachMarker("swarmz-attach;new=0")).toEqual({ isNew: false, endMarker: false });
+    expect(parseAttachMarker("swarmz-attach;new=1")).toEqual({ isNew: true, endMarker: false });
+    expect(parseAttachMarker("swarmz-attach;new=0;v=9;end=1;x")).toEqual({ isNew: false, endMarker: true });
+    expect(parseAttachMarker("swarmz-attach;new=0;end=0")).toEqual({ isNew: false, endMarker: false });
+  });
+  it("rejects anything else", () => {
+    for (const d of ["swarmz-attach", "swarmz-attach;new=2", "swarmz-attach;end=1;new=0", "swarmz-replay-end", "File=inline=1:abc", "swarmz-attach;new=01", ""]) {
+      expect(parseAttachMarker(d)).toBeNull();
+    }
   });
 });
