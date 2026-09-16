@@ -75,11 +75,14 @@ crate as the app (a second `[[bin]]`), bundled with swarmz and installed at
   session started the holder) unless given with `--env`.
 - It listens on `~/.swarmz/sessions/<tile>.sock` (directory mode 0700,
   socket 0600) and writes `~/.swarmz/sessions/<tile>.json`
-  `{v, pid, shellPid, cwd, name, startedAt}`.
+  `{v, pid, shellPid, cwd, name, startedAt, build, screen}` (`screen: true`
+  says the holder answers `Screen`; §4).
 - When the shell exits: broadcast `Exit(code)` to viewers, record the code in
   the metadata file (`exitedAt`, `exitCode`), remove the socket, exit.
-- `Terminate` from a viewer (tile closed in swarmz) sends SIGHUP to the
-  shell's process group, then SIGKILL after 3 s.
+- `Terminate` from a viewer (tile closed in swarmz) first records
+  `terminatingAt` in the metadata file, then sends SIGHUP to the shell's
+  process group, then SIGKILL after 3 s. The session still counts as running
+  until the shell has exited.
 - Sessions do not survive a reboot. A metadata file whose `pid` is not
   running, or a socket that refuses connections, is stale: `hold` removes it
   and starts fresh.
@@ -265,9 +268,11 @@ each carrying `"v": 1`. Failures exit non-zero with
 `{"v":1,"error":"…","code":"…"}` on stdout. `swarmz version` prints
 `{v, tool, protocol, build}`. The documents below are shown without their
 `v`; each command's reply is the object shown. A command that reads the
-screen (`output`, `pending`, `answer`) on a holder whose metadata has no
-`build` (it predates `Screen`) fails with code `old_session` ("restart this
-tile to use it from the phone") without asking it anything; `send`, `key`,
+screen (`output`, `pending`, `answer`) on a holder whose metadata does not
+carry `"screen": true` fails with code `old_session` ("restart this tile to
+use it from the phone") without asking it anything. Holders that answer
+`Screen` write that capability; older ones (including ones that already
+write `build`) silently ignore `Screen` frames, so `build` is not a test; `send`, `key`,
 `info` and `close` still work there, and `ls`/`watch` report such a tile from
 the hook log alone.
 
@@ -332,7 +337,9 @@ its visible rows only (the size it reports on connecting) and:
   tool name is kept only when its summary equals the dialog's, else the
   dialog's heading is the tool;
 - no live dialog while the fold says blocked with `needs: "permission"` →
-  `status: "idle"`, `needs: null`, `summary: null`;
+  `needs: null`, `summary: null`, and `status: "working"` when the visible
+  screen shows Claude's spinner hint "esc to interrupt" (any case: an
+  approved tool is still running), else `status: "idle"`;
 - question-type blocks (`idle_prompt` and the other blocking notifications)
   stay as the fold says, as does everything when the holder does not answer.
 
@@ -450,7 +457,14 @@ unrecorded holder running.
    the def is missing (an app saved an older copy over the file), it adds the
    def back from a fresh read — under a free name, with `origin` = this Mac
    and a `sync.revision` bump — and it stops early once the session has
-   ended. It never writes over a file it cannot read. `__keep-def` is not
+   ended or is being ended. It re-adds only when the file looks like an
+   older copy: its `sync.revision` is at most the one `new` wrote, or this
+   Mac wrote it (a newer file from another Mac that lacks the tile removed
+   it on purpose). This Mac's app always ends a tile's session before it
+   saves the workspace without the tile, and the holder marks its metadata
+   `terminatingAt` the moment it receives `Terminate` (before the shell has
+   exited, which can take up to 3 s), so the helper stops before that save
+   lands. It never writes over a file it cannot read. `__keep-def` is not
    allowed through the ssh gate.
 
 Tool commands that only read `workspace.json` never move an invalid file
