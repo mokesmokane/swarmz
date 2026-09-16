@@ -71,7 +71,6 @@ function Row({ id }: { id: string }) {
   const [historyOpen, setHistoryOpen] = useState(false);
 
   if (!t) return null;
-  const exited = t.exited !== null;
 
   const commit = async () => {
     const err = await renameTerminal(id, draft);
@@ -107,8 +106,8 @@ function Row({ id }: { id: string }) {
       }
     >
       {(() => {
-        const dot = dotPresentation(exited, agent, color);
-        const title = dot.title ? `${dot.title} · ${relativeTime(agent!.since)}` : undefined;
+        const dot = dotPresentation(t.exited, agent, color);
+        const title = dot.title && agent && t.exited === null ? `${dot.title} · ${relativeTime(agent.since)}` : dot.title;
         return (
           <span
             data-testid={`agent-dot-${id}`}

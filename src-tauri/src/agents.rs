@@ -7,15 +7,17 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-pub const HOOK_VERSION: u32 = 1;
+pub const HOOK_VERSION: u32 = 2;
 
-pub const HOOK_EVENTS: [&str; 6] = ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "Notification", "SessionEnd"];
+pub const HOOK_EVENTS: [&str; 8] = [
+    "SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "Notification", "SessionEnd", "PermissionRequest", "PostToolUse",
+];
 
 pub const SCRIPT_MARKER: &str = ".swarmz/hooks/claude.sh";
 
 pub const HOOK_SCRIPT: &str = r#"#!/bin/sh
 # installed by swarmz; reinstalling overwrites this file.
-# SWARMZ_HOOK_VERSION=1
+# SWARMZ_HOOK_VERSION=2
 set -u
 id="${SWARMZ_TERMINAL_ID:-}"
 [ -n "$id" ] || exit 0
@@ -23,10 +25,15 @@ event="${1:-}"
 [ -n "$event" ] || exit 0
 input=$(cat 2>/dev/null | tr -d '\n\r')
 case "$input" in *'"agent_id"'*) exit 0 ;; esac
+if [ "$event" = "PostToolUse" ]; then
+  # Only which session moved on matters; tool inputs and results can be large.
+  sid=$(printf '%s' "$input" | sed -n 's/^.*"session_id" *: *"\([^"]*\)".*$/\1/p' | tr -cd 'A-Za-z0-9-')
+  input="{\"session_id\":\"$sid\"}"
+fi
 dir="$HOME/.swarmz/agents"
 mkdir -p "$dir" 2>/dev/null || exit 0
 log="$dir/events.log"
-if [ -f "$log" ] && [ "$(wc -c < "$log" | tr -d ' ')" -gt 524288 ]; then
+if [ -f "$log" ] && [ "$(wc -c < "$log" | tr -d ' ')" -gt 2097152 ]; then
   mv -f "$log" "$log.1" 2>/dev/null
 fi
 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -461,7 +468,8 @@ mod tests {
     }
 
     #[test]
-    fn install_into_empty_settings_adds_six_events() {
+    fn install_into_empty_settings_adds_every_event() {
+        assert_eq!(HOOK_EVENTS.len(), 8);
         let (out, changed) = install_hooks(None).unwrap();
         assert!(changed);
         let hooks = hooks_of(&out);
@@ -478,6 +486,37 @@ mod tests {
                 assert_eq!(entry["async"], true);
             }
         }
+    }
+
+    #[test]
+    fn script_reduces_post_tool_use_to_the_session_id() {
+        let dir = std::env::temp_dir().join(format!("swarmz-hook-test4-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("claude.sh");
+        std::fs::write(&script, HOOK_SCRIPT).unwrap();
+        let run = |event: &str, input: &str| {
+            let mut child = std::process::Command::new("sh")
+                .arg(&script)
+                .arg(event)
+                .env("HOME", &dir)
+                .env("SWARMZ_TERMINAL_ID", "t-1")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            {
+                use std::io::Write;
+                child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+            }
+            assert!(child.wait().unwrap().success());
+        };
+        run("PostToolUse", r#"{"session_id":"5e2b-1","tool_name":"Write","tool_input":{"file_path":"/a","content":"lots\nof\ttext \"quoted\""},"tool_response":{"ok":true}}"#);
+        run("PermissionRequest", r#"{"session_id":"5e2b-1","tool_name":"Bash","tool_input":{"command":"npm test"}}"#);
+        let log = std::fs::read_to_string(dir.join(".swarmz/agents/events.log")).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].split('\t').nth(3), Some(r#"{"session_id":"5e2b-1"}"#));
+        assert!(lines[1].contains(r#""command":"npm test""#));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

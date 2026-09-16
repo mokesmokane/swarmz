@@ -74,12 +74,12 @@ describe("tab dot", () => {
     useStore.setState({ agentState: { [ID]: { status: "working", sessionId: "s", since: "t", lastEvent: "UserPromptSubmit", unseen: false } } });
     render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
     const dot = screen.getByTestId(`tab-dot-${ID}`);
-    expect(dot.className).toContain("bg-amber-400");
+    expect(dot.style.backgroundColor).toBe("rgb(37, 191, 53)");
     expect(dot.className).not.toContain("ring-2");
     expect(dot.title).toBe("working · UserPromptSubmit");
   });
 
-  it("keeps exited grey even with agent state", () => {
+  it("keeps a clean exit grey even with agent state", () => {
     useStore.setState({
       terminals: { [ID]: { id: ID, name: "desk", cwd: "/home/me", exited: 0, error: null } },
       agentState: { [ID]: { status: "idle", sessionId: "s", since: "t", lastEvent: "Stop", unseen: true } },

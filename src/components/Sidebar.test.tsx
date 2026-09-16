@@ -153,7 +153,7 @@ describe("agent status dot", () => {
     });
     render(<Sidebar />);
     const dot = screen.getByTestId(`agent-dot-${ID}`);
-    expect(dot.className).toContain("bg-red-500");
+    expect(dot.style.backgroundColor).toBe("rgb(255, 178, 27)");
     expect(dot.className).toContain("ring-2");
     expect(dot.title).toContain("blocked");
     expect(dot.title).toContain("Notification");
@@ -161,6 +161,10 @@ describe("agent status dot", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     act(() => {
       useStore.setState({ terminals: { [ID]: { ...useStore.getState().terminals[ID], exited: 1 } } });
+    });
+    expect(screen.getByTestId(`agent-dot-${ID}`).style.backgroundColor).toBe("rgb(255, 3, 3)");
+    act(() => {
+      useStore.setState({ terminals: { [ID]: { ...useStore.getState().terminals[ID], exited: 0 } } });
     });
     expect(screen.getByTestId(`agent-dot-${ID}`).className).toContain("bg-neutral-600");
   });

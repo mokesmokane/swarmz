@@ -25,10 +25,10 @@ const ZONES: { side: Side; className: string }[] = [
 ];
 
 /** Reads this one tab's colour without re-rendering the whole tab strip on every colour change. */
-function TabDot({ id, exited }: { id: string; exited: boolean }) {
+function TabDot({ id, exitCode }: { id: string; exitCode: number | null }) {
   const color = useStore((s) => terminalColor(s, id));
   const agent = useStore((s) => s.agentState[id]);
-  const dot = dotPresentation(exited, agent, color);
+  const dot = dotPresentation(exitCode, agent, color);
   return (
     <span
       data-testid={`tab-dot-${id}`}
@@ -133,7 +133,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
                 active ? "bg-[#0f1115] text-neutral-100" : "text-neutral-400 hover:bg-neutral-800"
               }`}
             >
-              <TabDot id={id} exited={t?.exited !== null && t?.exited !== undefined} />
+              <TabDot id={id} exitCode={t?.exited ?? null} />
               <span className="max-w-[160px] truncate">{t?.name ?? id}</span>
               <button
                 className="ml-1 rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"
