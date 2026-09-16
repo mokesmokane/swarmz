@@ -18,6 +18,14 @@ export const SHIFT_ENTER_SEQUENCE = "\n";
 
 export const IMAGE_PASTE_KEY = "\x16";
 
+/** How long a rejoined remote session's output must stay quiet before its replay counts as done. */
+export const REMOTE_REPLAY_QUIET_MS = 400;
+/** The longest a rejoined remote session's output is treated as replay, however busy it stays. */
+export const REMOTE_REPLAY_MAX_MS = 10_000;
+
+/** The marker the remote `swarmz attach` writes before its replay, for a rejoined session. */
+const REATTACH_MARKER = "\x1b]1337;swarmz-attach;new=0";
+
 /** Largest OSC 52 payload honoured (base64 chars); anything bigger is dropped, not truncated. */
 export const OSC52_MAX_CHARS = 1_000_000;
 
@@ -74,6 +82,16 @@ interface Entry {
    * come from live output (OSC 52 clipboard writes, OSC 7 cwd updates, the resume-failure scan)
    * are suppressed. */
   replaying: boolean;
+  /** Set from a remote `swarmz attach` marker for a rejoined session until its replay is judged
+   * done: the replay arrives as ordinary `pty:data` with no end marker, so it ends at the first
+   * user input, once xterm has parsed everything it was given and no more output came for
+   * `REMOTE_REPLAY_QUIET_MS`, or after `REMOTE_REPLAY_MAX_MS`. Suppresses the same side effects as
+   * `replaying`. */
+  remoteReplay: boolean;
+  /** Live output chunks handed to xterm and not parsed yet. */
+  pendingWrites: number;
+  remoteQuietTimer: ReturnType<typeof setTimeout> | null;
+  remoteMaxTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const entries = new Map<string, Entry>();
@@ -83,7 +101,27 @@ function localTileAlive(id: string): boolean {
   return !!s.terminals[id] && s.terminals[id].exited === null && !s.settings[id]?.ssh;
 }
 
+/** The host whose swarmz tool can report this tile's remote folder, or null. */
+function remoteInfoHost(id: string): string | null {
+  const s = useStore.getState();
+  const host = s.settings[id]?.ssh?.host?.trim();
+  if (!host || s.sshConnected[id] !== true || s.toolReady[host] !== true) return null;
+  return s.terminals[id] && s.terminals[id].exited === null ? host : null;
+}
+
+async function pollRemoteCwd(id: string, host: string): Promise<void> {
+  try {
+    const info = await ipc.remoteTileInfo(host, id);
+    // setTerminalCwd re-checks that the tile is still a connected ssh tile.
+    if (info.running && info.cwd) await useStore.getState().setTerminalCwd(id, info.cwd, "remote");
+  } catch {
+    // ssh down or the tool failed; the next poll will try again
+  }
+}
+
 async function pollCwd(id: string): Promise<void> {
+  const remoteHost = remoteInfoHost(id);
+  if (remoteHost) return pollRemoteCwd(id, remoteHost);
   if (!localTileAlive(id)) return;
   try {
     const cwd = await ipc.terminalCwd(id);
@@ -137,6 +175,32 @@ async function sendImageOrForward(id: string, host: string): Promise<void> {
   }
 }
 
+function endRemoteReplay(entry: Entry): void {
+  entry.remoteReplay = false;
+  if (entry.remoteQuietTimer) clearTimeout(entry.remoteQuietTimer);
+  if (entry.remoteMaxTimer) clearTimeout(entry.remoteMaxTimer);
+  entry.remoteQuietTimer = null;
+  entry.remoteMaxTimer = null;
+}
+
+/** (Re)starts the quiet period, which only runs while xterm has nothing left to parse. */
+function armRemoteQuiet(entry: Entry): void {
+  if (entry.remoteQuietTimer) clearTimeout(entry.remoteQuietTimer);
+  entry.remoteQuietTimer = null;
+  if (!entry.remoteReplay || entry.pendingWrites > 0) return;
+  entry.remoteQuietTimer = setTimeout(() => endRemoteReplay(entry), REMOTE_REPLAY_QUIET_MS);
+}
+
+function startRemoteReplay(id: string, entry: Entry): void {
+  if (!useStore.getState().settings[id]?.ssh?.host) return;
+  if (!entry.remoteReplay) {
+    entry.remoteReplay = true;
+    entry.remoteMaxTimer = setTimeout(() => endRemoteReplay(entry), REMOTE_REPLAY_MAX_MS);
+  }
+  entry.tail = "";
+  armRemoteQuiet(entry);
+}
+
 function createEntry(id: string): Entry {
   const term = new Terminal({
     cursorBlink: true,
@@ -166,9 +230,15 @@ function createEntry(id: string): Entry {
     pollTimer: null,
     tail: "",
     replaying: false,
+    remoteReplay: false,
+    pendingWrites: 0,
+    remoteQuietTimer: null,
+    remoteMaxTimer: null,
   };
 
   term.onData((data) => {
+    // Input from the user (keys, pastes, mouse reports) means the replay is on screen.
+    if (entry.remoteReplay) endRemoteReplay(entry);
     const host = data === IMAGE_PASTE_KEY ? connectedSshHost(id) : null;
     // Writes to an already-exited pane are expected to fail; ignore.
     if (host) void sendImageOrForward(id, host);
@@ -181,6 +251,7 @@ function createEntry(id: string): Entry {
   term.attachCustomKeyEventHandler((e) => {
     if (e.key !== "Enter" || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return true;
     if (e.type === "keydown") {
+      if (entry.remoteReplay) endRemoteReplay(entry);
       void ipc.writeTerminal(id, SHIFT_ENTER_SEQUENCE).catch(() => {});
       scheduleEnterPoll(id, entry);
     }
@@ -192,7 +263,7 @@ function createEntry(id: string): Entry {
   // Programs in the terminal (Claude Code among them) copy their own selections by sending the
   // text base64-encoded in OSC 52; real terminals put it on the clipboard, xterm.js ignores it.
   term.parser.registerOscHandler(52, (data) => {
-    if (entry.replaying) return true;
+    if (entry.replaying || entry.remoteReplay) return true;
     const text = decodeOsc52(data);
     if (text !== null) {
       writeText(text)
@@ -202,9 +273,19 @@ function createEntry(id: string): Entry {
     return true;
   });
   term.parser.registerOscHandler(7, (data) => {
-    if (entry.replaying) return true;
+    if (entry.replaying || entry.remoteReplay) return true;
     const path = decodeOsc7(data);
     if (path) void useStore.getState().setTerminalCwd(id, path, "osc7");
+    return true;
+  });
+  // The remote `swarmz attach` announces itself before its replay. Markers inside a local replay
+  // are history, not a connection happening now.
+  term.parser.registerOscHandler(1337, (data) => {
+    const m = /^swarmz-attach;new=([01])$/.exec(data);
+    if (!m) return false;
+    if (entry.replaying) return true;
+    if (m[1] === "0") startRemoteReplay(id, entry);
+    void useStore.getState().remoteAttached(id, m[1] === "1");
     return true;
   });
 
@@ -222,14 +303,30 @@ function createEntry(id: string): Entry {
       }
     }),
     ipc.onData(id, (bytes) => {
-      term.write(bytes);
-      if (entry.replaying) return;
+      entry.pendingWrites += 1;
+      if (entry.remoteReplay) armRemoteQuiet(entry);
+      try {
+        term.write(bytes, () => {
+          entry.pendingWrites -= 1;
+          armRemoteQuiet(entry);
+        });
+      } catch {
+        entry.pendingWrites -= 1;
+      }
+      if (entry.replaying || entry.remoteReplay) return;
       const watch = useStore.getState().resumeWatch[id];
       if (!watch) {
         entry.tail = "";
         return;
       }
-      entry.tail = (entry.tail + new TextDecoder().decode(bytes)).slice(-400);
+      const text = new TextDecoder().decode(bytes);
+      // xterm parses (and so runs the OSC 1337 handler) after this scan, so a marker in this very
+      // chunk has to be caught here or its replay would be scanned as live output.
+      if (text.includes(REATTACH_MARKER)) {
+        startRemoteReplay(id, entry);
+        if (entry.remoteReplay) return;
+      }
+      entry.tail = (entry.tail + text).slice(-400);
       if (entry.tail.includes(`No conversation found with session ID ${watch.sessionId}`)) {
         entry.tail = "";
         useStore.getState().noteResumeFailure(id, watch.sessionId);
@@ -311,6 +408,7 @@ export function dispose(id: string): void {
   if (entry.onMouseUp) entry.term.element?.removeEventListener("mouseup", entry.onMouseUp);
   if (entry.enterTimer) clearTimeout(entry.enterTimer);
   if (entry.pollTimer) clearInterval(entry.pollTimer);
+  endRemoteReplay(entry);
   entry.term.dispose();
   entries.delete(id);
 }

@@ -80,6 +80,7 @@ vi.mock("./ipc", () => ({
     terminalCwd: vi.fn(async () => null),
     setTerminalCwd: vi.fn(async (id: string, cwd: string) => ({ id, name: "x", cwd, exited: null, error: null })),
     pasteImageToRemote: vi.fn(async () => null as string | null),
+    remoteTileInfo: vi.fn(async () => ({ running: false }) as { running: boolean; cwd?: string | null }),
   },
 }));
 
@@ -88,7 +89,19 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn(async 
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useStore } from "../store";
 import { ipc } from "./ipc";
-import { CWD_POLL_AFTER_ENTER_MS, CWD_POLL_INTERVAL_MS, IMAGE_PASTE_KEY, SHIFT_ENTER_SEQUENCE, attach, decodeOsc52, decodeOsc7, dispose, prepare } from "./xtermRegistry";
+import {
+  CWD_POLL_AFTER_ENTER_MS,
+  CWD_POLL_INTERVAL_MS,
+  IMAGE_PASTE_KEY,
+  REMOTE_REPLAY_MAX_MS,
+  REMOTE_REPLAY_QUIET_MS,
+  SHIFT_ENTER_SEQUENCE,
+  attach,
+  decodeOsc52,
+  decodeOsc7,
+  dispose,
+  prepare,
+} from "./xtermRegistry";
 
 function info(id: string, name = id): TerminalInfo {
   return { id, name, cwd: "/tmp/x", exited: null, error: null };
@@ -595,5 +608,218 @@ describe("replayed output", () => {
     osc7("file:///new/path");
     await vi.waitFor(() => expect(ipc.setTerminalCwd).toHaveBeenCalledWith("rp2", "/new/path"));
     dispose("rp2");
+  });
+});
+
+describe("attach marker and remote folders", () => {
+  const originals = { remoteAttached: useStore.getState().remoteAttached, setTerminalCwd: useStore.getState().setTerminalCwd };
+  beforeEach(() => {
+    useStore.setState({
+      terminals: { ra: { id: "ra", name: "ra", cwd: "/home/me", exited: null, error: null } },
+      order: ["ra"],
+      settings: { ra: { ssh: { host: "me@box", cwd: "/p" }, claude: null, command: null, extra: {} } },
+      sshConnected: { ra: true },
+      toolReady: { "me@box": true },
+    });
+  });
+  afterEach(() => {
+    dispose("ra");
+    useStore.setState(originals);
+  });
+
+  it("passes the marker to the store and ignores it during replay", async () => {
+    const remoteAttached = vi.fn(async () => {});
+    useStore.setState({ remoteAttached });
+    const { term } = attach("ra", document.createElement("div"));
+    await prepare("ra");
+    const osc = (term as unknown as { oscHandlers: Record<number, (d: string) => boolean> }).oscHandlers[1337];
+    expect(osc("swarmz-attach;new=1")).toBe(true);
+    expect(remoteAttached).toHaveBeenCalledWith("ra", true);
+    replayCallbacks.ra(new TextEncoder().encode("x"));
+    osc("swarmz-attach;new=1");
+    expect(remoteAttached).toHaveBeenCalledTimes(1);
+    expect(osc("something-else")).toBe(false);
+  });
+
+  it("polls the remote tool for a connected ssh tile's folder", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(ipc.remoteTileInfo).mockResolvedValue({ running: true, cwd: "/p/sub" });
+      const setTerminalCwd = vi.fn(async () => {});
+      useStore.setState({ setTerminalCwd });
+      attach("ra", document.createElement("div"));
+      await vi.advanceTimersByTimeAsync(CWD_POLL_INTERVAL_MS);
+      expect(ipc.remoteTileInfo).toHaveBeenCalledWith("me@box", "ra");
+      expect(setTerminalCwd).toHaveBeenCalledWith("ra", "/p/sub", "remote");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("polls the remote folder shortly after Enter, and never for a tile without the tool or connection", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(ipc.remoteTileInfo).mockReset().mockResolvedValue({ running: true, cwd: "/p/after" });
+      vi.mocked(ipc.terminalCwd).mockClear();
+      const setTerminalCwd = vi.fn(async () => {});
+      useStore.setState({ setTerminalCwd });
+      const { term } = attach("ra", document.createElement("div"));
+      const t = term as unknown as { dataHandler: (d: string) => void };
+      t.dataHandler("cd after\r");
+      await vi.advanceTimersByTimeAsync(CWD_POLL_AFTER_ENTER_MS);
+      expect(setTerminalCwd).toHaveBeenCalledWith("ra", "/p/after", "remote");
+      expect(ipc.terminalCwd).not.toHaveBeenCalled();
+
+      vi.mocked(ipc.remoteTileInfo).mockClear();
+      setTerminalCwd.mockClear();
+      useStore.setState({ toolReady: { "me@box": false } });
+      t.dataHandler("\r");
+      await vi.advanceTimersByTimeAsync(CWD_POLL_AFTER_ENTER_MS);
+      useStore.setState({ toolReady: { "me@box": true }, sshConnected: {} });
+      t.dataHandler("\r");
+      await vi.advanceTimersByTimeAsync(CWD_POLL_AFTER_ENTER_MS);
+      vi.mocked(ipc.remoteTileInfo).mockResolvedValue({ running: false, cwd: "/p/other" });
+      useStore.setState({ sshConnected: { ra: true } });
+      t.dataHandler("\r");
+      await vi.advanceTimersByTimeAsync(CWD_POLL_AFTER_ENTER_MS);
+      vi.mocked(ipc.remoteTileInfo).mockRejectedValue("tool error");
+      t.dataHandler("\r");
+      await vi.advanceTimersByTimeAsync(CWD_POLL_AFTER_ENTER_MS);
+      expect(ipc.remoteTileInfo).toHaveBeenCalledTimes(2);
+      expect(setTerminalCwd).not.toHaveBeenCalled();
+      expect(ipc.terminalCwd).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("a rejoined remote session's replay", () => {
+  const originals = { remoteAttached: useStore.getState().remoteAttached, setTerminalCwd: useStore.getState().setTerminalCwd, noteResumeFailure: useStore.getState().noteResumeFailure };
+  const enc = (t: string) => new TextEncoder().encode(t);
+  const last = <T,>(a: T[]): T | undefined => a[a.length - 1];
+  type Fake = {
+    oscHandlers: Record<number, (d: string) => boolean>;
+    writes: Array<{ data: unknown; done?: () => void }>;
+    dataHandler: (d: string) => void;
+    keyHandler: (e: KeyboardEvent) => boolean;
+  };
+  const remoteAttached = vi.fn(async () => {});
+  const setTerminalCwd = vi.fn(async () => {});
+  beforeEach(() => {
+    remoteAttached.mockClear();
+    setTerminalCwd.mockClear();
+    vi.mocked(writeText).mockClear();
+    useStore.setState({
+      terminals: { rr: { id: "rr", name: "rr", cwd: "/home/me", exited: null, error: null } },
+      order: ["rr"],
+      settings: { rr: { ssh: { host: "me@box", cwd: "/p" }, claude: null, command: null, extra: {} } },
+      sshConnected: { rr: true },
+      toolReady: {},
+      resumeWatch: {},
+      remoteAttached,
+      setTerminalCwd,
+    });
+  });
+  afterEach(() => {
+    dispose("rr");
+    vi.useRealTimers();
+    useStore.setState({ ...originals, resumeWatch: {} });
+  });
+  const setup = async () => {
+    const { term } = attach("rr", document.createElement("div"));
+    await prepare("rr");
+    return term as unknown as Fake;
+  };
+
+  it("ignores OSC 52 and OSC 7 after a new=0 marker until the user types", async () => {
+    vi.useFakeTimers();
+    const t = await setup();
+    t.oscHandlers[1337]("swarmz-attach;new=0");
+    expect(remoteAttached).toHaveBeenCalledWith("rr", false);
+    t.oscHandlers[52](`c;${btoa("old copy")}`);
+    t.oscHandlers[7]("file:///old");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(writeText).not.toHaveBeenCalled();
+    expect(setTerminalCwd).not.toHaveBeenCalled();
+    t.dataHandler("x");
+    t.oscHandlers[52](`c;${btoa("live copy")}`);
+    t.oscHandlers[7]("file:///live");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(writeText).toHaveBeenCalledWith("live copy");
+    expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
+  });
+
+  it("Shift+Enter also ends the replay", async () => {
+    const t = await setup();
+    t.oscHandlers[1337]("swarmz-attach;new=0");
+    t.keyHandler({ key: "Enter", shiftKey: true, ctrlKey: false, altKey: false, metaKey: false, type: "keydown" } as KeyboardEvent);
+    t.oscHandlers[7]("file:///live");
+    expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
+  });
+
+  it("ends once xterm has parsed everything and the output stayed quiet", async () => {
+    vi.useFakeTimers();
+    const t = await setup();
+    dataCallbacks.rr(enc("\x1b]1337;swarmz-attach;new=0\x07"));
+    t.oscHandlers[1337]("swarmz-attach;new=0");
+    dataCallbacks.rr(enc("more replay"));
+    // Chunks still waiting in xterm keep the replay going however long they take.
+    await vi.advanceTimersByTimeAsync(REMOTE_REPLAY_QUIET_MS * 3);
+    t.writes[t.writes.length - 2]?.done?.();
+    await vi.advanceTimersByTimeAsync(REMOTE_REPLAY_QUIET_MS * 3);
+    t.oscHandlers[7]("file:///old");
+    expect(setTerminalCwd).not.toHaveBeenCalled();
+    last(t.writes)?.done?.();
+    await vi.advanceTimersByTimeAsync(REMOTE_REPLAY_QUIET_MS - 50);
+    // New output restarts the quiet period.
+    dataCallbacks.rr(enc("still replay"));
+    last(t.writes)?.done?.();
+    await vi.advanceTimersByTimeAsync(REMOTE_REPLAY_QUIET_MS - 50);
+    t.oscHandlers[7]("file:///old");
+    expect(setTerminalCwd).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(50);
+    t.oscHandlers[7]("file:///live");
+    expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
+    expect(setTerminalCwd).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends after the cap however busy the output stays", async () => {
+    vi.useFakeTimers();
+    const t = await setup();
+    t.oscHandlers[1337]("swarmz-attach;new=0");
+    for (let elapsed = 0; elapsed < REMOTE_REPLAY_MAX_MS; elapsed += 200) {
+      dataCallbacks.rr(enc("busy"));
+      last(t.writes)?.done?.();
+      t.oscHandlers[7]("file:///old");
+      await vi.advanceTimersByTimeAsync(200);
+    }
+    expect(setTerminalCwd).not.toHaveBeenCalled();
+    t.oscHandlers[7]("file:///live");
+    expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
+  });
+
+  it("a new=1 marker does not suppress anything (the typed startup line's output is live)", async () => {
+    const t = await setup();
+    t.oscHandlers[1337]("swarmz-attach;new=1");
+    t.oscHandlers[7]("file:///live");
+    expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
+  });
+
+  it("a replayed resume failure after the marker, even in the same chunk, is not reported", async () => {
+    const noteResumeFailure = vi.fn();
+    useStore.setState({ noteResumeFailure, resumeWatch: { rr: { sessionId: "abc", until: Date.now() + 10_000 } } });
+    await setup();
+    dataCallbacks.rr(enc("\x1b]1337;swarmz-attach;new=0\x07\x1b[!pNo conversation found with session ID abc"));
+    dataCallbacks.rr(enc("No conversation found with session ID abc"));
+    expect(noteResumeFailure).not.toHaveBeenCalled();
+  });
+
+  it("a marker in a local tile suppresses nothing", async () => {
+    useStore.setState({ settings: { rr: { ssh: null, claude: null, command: null, extra: {} } } });
+    const t = await setup();
+    t.oscHandlers[1337]("swarmz-attach;new=0");
+    t.oscHandlers[7]("file:///live");
+    expect(setTerminalCwd).toHaveBeenCalledWith("rr", "/live", "osc7");
   });
 });

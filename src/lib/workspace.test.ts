@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { addTab, splitWith, type GroupNode, type SplitNode } from "./layout";
 import {
   EMPTY_SETTINGS,
+  SSH_OPTS,
+  attachLine,
   bumpSync,
   claudeLine,
   hostLabel,
@@ -575,5 +577,41 @@ describe("sessions in the workspace file", () => {
   it("omits the key when there are no sessions", () => {
     const ws = toWorkspace({ order: ["a"], terminals: { a: { id: "a", name: "A", cwd: "/p" } }, settings: { a: EMPTY_SETTINGS }, layout: null, machines: {} });
     expect("sessions" in ws.terminals[0]).toBe(false);
+  });
+});
+
+describe("attach mode", () => {
+  it("builds an ssh line that runs the remote swarmz attach with quoted arguments", () => {
+    expect(attachLine("me@box", "t-1", "/Volumes/My Disk/proj", "loop'back")).toBe(
+      `ssh ${SSH_OPTS} me@box ` + shellQuote(`~/.swarmz/bin/swarmz attach t-1 --cwd ${shellQuote("/Volumes/My Disk/proj")} --name ${shellQuote("loop'back")}`),
+    );
+    expect(attachLine("me@box", "t-1", null, "n")).toBe(`ssh ${SSH_OPTS} me@box ` + shellQuote(`~/.swarmz/bin/swarmz attach t-1 --name ${shellQuote("n")}`));
+  });
+  it("uses the attach line as the local step when asked", () => {
+    const s = { ssh: { host: "me@box", cwd: "/p" }, claude, command: null };
+    const steps = startupSteps(s, "t-1", { attach: true, name: "tile" });
+    expect(steps[0]).toEqual({ via: "local", line: attachLine("me@box", "t-1", "/p", "tile") });
+    expect(steps[1].via).toBe("remote");
+    expect(startupSteps(s, "t-1")[0].line).toBe(sshLine("me@box"));
+  });
+  it("leaves the tilde unquoted for the remote shell and survives a hostile cwd and name", () => {
+    const line = attachLine("me@box", "t-1", "/x'; rm -rf ~; '", "$(boom)");
+    // The local shell sees one quoted word; unquoting it gives the remote command line.
+    const remote = line.slice(`ssh ${SSH_OPTS} me@box `.length);
+    expect(remote.startsWith("'~/.swarmz/bin/swarmz attach t-1 ")).toBe(true);
+    const unquoted = remote.slice(1, -1).replace(/'\\''/g, "'");
+    expect(unquoted).toBe(`~/.swarmz/bin/swarmz attach t-1 --cwd ${shellQuote("/x'; rm -rf ~; '")} --name ${shellQuote("$(boom)")}`);
+  });
+  it("falls back to plain ssh for an unsafe tile id and drops a cwd with control characters", () => {
+    const s = { ssh: { host: "me@box", cwd: "/p" }, claude: null, command: null };
+    expect(startupSteps(s, "bad id;x", { attach: true })[0].line).toBe(sshLine("me@box"));
+    expect(startupSteps(s, undefined, { attach: true })[0].line).toBe(sshLine("me@box"));
+    const bad = { ssh: { host: "me@box", cwd: "/p\x1b]52;c;x\x07" }, claude: null, command: null };
+    expect(startupSteps(bad, "t-1", { attach: true, name: "n" })[0].line).toBe(attachLine("me@box", "t-1", null, "n"));
+  });
+  it("defaults the holder name to the tile id and keeps a command tile local", () => {
+    const s = { ssh: { host: "me@box", cwd: null }, claude: null, command: null };
+    expect(startupSteps(s, "t-1", { attach: true })[0].line).toBe(attachLine("me@box", "t-1", null, "t-1"));
+    expect(startupSteps({ ...s, command: "htop" }, "t-1", { attach: true })).toEqual([{ via: "local", line: "htop" }]);
   });
 });

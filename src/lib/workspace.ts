@@ -86,6 +86,26 @@ export function sshLine(host: string): string {
   return `ssh ${SSH_OPTS} ${host}`;
 }
 
+const REMOTE_TOOL = "~/.swarmz/bin/swarmz";
+
+/** The ssh line for a tile that attaches to its session holder on `host`. The remote command is
+ * one word for the local shell (quoted once) and is parsed again by the remote shell (arguments
+ * quoted again); the leading `~` is left for the remote shell to expand. Callers pass a host that
+ * passed `validateHost` and a tile id that passed `isSafeSessionId`. */
+export function attachLine(host: string, tileId: string, cwd: string | null | undefined, name: string): string {
+  const parts = [REMOTE_TOOL, "attach", tileId];
+  if (cwd) parts.push("--cwd", shellQuote(cwd));
+  parts.push("--name", shellQuote(name));
+  return `ssh ${SSH_OPTS} ${host} ${shellQuote(parts.join(" "))}`;
+}
+
+export interface StartupOpts {
+  /** Connect by attaching to the tile's session holder on the remote (`attachLine`). */
+  attach?: boolean;
+  /** The tile's name, passed to the remote holder; defaults to the tile id. */
+  name?: string;
+}
+
 export function validHost(s: TerminalSettings): string | null {
   const raw = s.ssh?.host?.trim();
   return raw && validateHost(raw) === null ? raw : null;
@@ -95,14 +115,17 @@ export function startupIsSsh(s: TerminalSettings): boolean {
   return trimmedCommand(s) === null && validHost(s) !== null;
 }
 
-export function startupSteps(s: TerminalSettings, terminalId?: string): Step[] {
+export function startupSteps(s: TerminalSettings, terminalId?: string, opts: StartupOpts = {}): Step[] {
   const command = trimmedCommand(s);
   if (command) return [{ via: "local", line: command }];
   const claudeConfig = safeClaude(s);
   const claude = claudeConfig ? claudeLine(claudeConfig) : null;
   const host = validHost(s);
   if (host) {
-    const steps: Step[] = [{ via: "local", line: sshLine(host) }];
+    const attach = opts.attach && terminalId && isSafeSessionId(terminalId);
+    const cwd = s.ssh?.cwd && isSafeRemotePath(s.ssh.cwd) ? s.ssh.cwd : null;
+    const first = attach ? attachLine(host, terminalId, cwd, opts.name ?? terminalId) : sshLine(host);
+    const steps: Step[] = [{ via: "local", line: first }];
     // The remote shell does not inherit our env, so the tile id is exported there first (a UUID,
     // so no quoting): the hook script then reports any Claude in that shell, including one the
     // user starts by hand later, not just the one swarmz launches now.
@@ -119,8 +142,8 @@ export function startupSteps(s: TerminalSettings, terminalId?: string): Step[] {
 }
 
 /** Display form of the startup steps, or null when there are none. */
-export function startupLine(s: TerminalSettings, terminalId?: string): string | null {
-  const steps = startupSteps(s, terminalId);
+export function startupLine(s: TerminalSettings, terminalId?: string, opts: StartupOpts = {}): string | null {
+  const steps = startupSteps(s, terminalId, opts);
   return steps.length ? steps.map((st) => st.line).join(" ⏎ ") : null;
 }
 

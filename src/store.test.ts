@@ -101,6 +101,7 @@ beforeEach(async () => {
     persistenceReady: true,
     sshConnected: {},
     sshConnecting: {},
+    toolReady: {},
     machines: {},
     tailscale: null,
     tailscaleError: null,
@@ -135,6 +136,8 @@ beforeEach(async () => {
   vi.mocked(ipc.agentsInstallLocal).mockReset().mockResolvedValue(false);
   vi.mocked(ipc.agentsInstallRemote).mockReset().mockResolvedValue(false);
   vi.mocked(ipc.agentsWatch).mockReset().mockResolvedValue(1);
+  vi.mocked(ipc.toolRemoteReady).mockReset().mockResolvedValue(false);
+  vi.mocked(ipc.remoteTileInfo).mockReset().mockResolvedValue({ running: false });
   __setLaunchedAt("2026-09-15T09:00:00Z");
   // Resetting the store above replaces `order`, which fires the store's watcher subscription:
   // let that call finish, then drop what it did so every test starts with no watcher at all.
@@ -2493,5 +2496,183 @@ describe("reattaching to running sessions", () => {
     await vi.waitFor(() => expect(useStore.getState().sshConnected.r1).toBe(true));
     expect(useStore.getState().startupPending.r1).toBe(false);
     expect(ipc.writeTerminal).not.toHaveBeenCalled();
+  });
+});
+
+describe("remote attach", () => {
+  const sshTile = async () => {
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: { skipPermissions: false } });
+    __stopAllPolling();
+    return id;
+  };
+
+  it("types the attach line when the remote tool is ready", async () => {
+    vi.mocked(ipc.writeTerminal).mockClear();
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: { skipPermissions: false } });
+    __stopAllPolling();
+    expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toContain("~/.swarmz/bin/swarmz attach");
+    expect(useStore.getState().toolReady["me@box"]).toBe(true);
+    void id;
+  });
+
+  it("falls back to the plain ssh line when the remote tool is not ready", async () => {
+    vi.mocked(ipc.writeTerminal).mockClear();
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(false);
+    await sshTile();
+    expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toMatch(/^ssh -t .*me@box\r$/);
+  });
+
+  it("falls back to the plain ssh line when checking the remote tool fails, and asks only once per host", async () => {
+    vi.mocked(ipc.writeTerminal).mockClear();
+    vi.mocked(ipc.toolRemoteReady).mockRejectedValue("ssh: connect to host box: Operation timed out");
+    await sshTile();
+    expect(vi.mocked(ipc.writeTerminal).mock.calls[0][1]).toMatch(/^ssh -t .*me@box\r$/);
+    expect(useStore.getState().toolReady["me@box"]).toBe(false);
+    await sshTile();
+    expect(ipc.toolRemoteReady).toHaveBeenCalledTimes(1);
+  });
+
+  it("a new remote session gets the startup step; an existing one is only marked connected", async () => {
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    const id = await sshTile();
+    useStore.setState((s) => ({ sshConnecting: { ...s.sshConnecting, [id]: true } }));
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().remoteAttached(id, true);
+    expect(useStore.getState().sshConnected[id]).toBe(true);
+    expect(vi.mocked(ipc.writeTerminal).mock.calls.some((c) => String(c[1]).includes("claude --session-id"))).toBe(true);
+
+    const other = await sshTile();
+    useStore.setState((s) => ({ sshConnecting: { ...s.sshConnecting, [other]: true } }));
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().remoteAttached(other, false);
+    expect(useStore.getState().sshConnected[other]).toBe(true);
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  it("a marker for a tile that is not connecting never types anything", async () => {
+    const id = await sshTile();
+    useStore.setState((s) => ({ sshConnecting: { ...s.sshConnecting, [id]: false } }));
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().remoteAttached(id, true);
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+    expect(useStore.getState().sshConnected[id]).toBe(true);
+  });
+
+  it("a marker printed in a local tile is ignored", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/x");
+    await useStore.getState().remoteAttached(id, true);
+    expect(useStore.getState().sshConnected[id]).toBeUndefined();
+  });
+
+  it("in attach mode the poller never types the remote step", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      vi.mocked(ipc.writeTerminal).mockClear();
+      await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: { skipPermissions: false } });
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 6 + SSH_SETTLE_MS);
+      expect(vi.mocked(ipc.writeTerminal).mock.calls.some((c) => String(c[1]).includes("claude --session-id"))).toBe(false);
+    } finally {
+      __stopAllPolling();
+      vi.useRealTimers();
+    }
+  });
+
+  it("in attach mode the poller never types the remote step once ssh comes up", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+      vi.mocked(ipc.writeTerminal).mockClear();
+      const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: { skipPermissions: false } });
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 6 + SSH_SETTLE_MS);
+      expect(vi.mocked(ipc.writeTerminal).mock.calls).toHaveLength(1);
+      expect(useStore.getState().sshConnecting[id]).toBe(true);
+    } finally {
+      __stopAllPolling();
+      vi.useRealTimers();
+    }
+  });
+
+  it("in attach mode the marker, not the poller, connects the tile and stops the poller", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+      const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: { skipPermissions: false } });
+      expect(vi.mocked(ipc.writeTerminal).mock.lastCall?.[1]).toContain("~/.swarmz/bin/swarmz attach");
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 3);
+      expect(ipc.sshCheck).toHaveBeenCalled();
+      expect(useStore.getState().sshConnecting[id]).toBe(true);
+      expect(useStore.getState().sshConnected[id]).toBeUndefined();
+      const p = useStore.getState().remoteAttached(id, true);
+      await vi.advanceTimersByTimeAsync(SSH_SETTLE_MS);
+      await p;
+      expect(useStore.getState().sshConnected[id]).toBe(true);
+      expect(useStore.getState().sshConnecting[id]).toBeUndefined();
+      expect(vi.mocked(ipc.writeTerminal).mock.calls.filter((c) => String(c[1]).includes("claude --session-id"))).toHaveLength(1);
+      vi.mocked(ipc.sshCheck).mockClear();
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 4);
+      expect(ipc.sshCheck).not.toHaveBeenCalled();
+    } finally {
+      __stopAllPolling();
+      vi.useRealTimers();
+    }
+  });
+
+  it("in attach mode a remote tool that exits without a marker ends in the exit note", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+      const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p", claude: { skipPermissions: false } });
+      vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 2);
+      expect(useStore.getState().sshConnecting[id]).toBe(true);
+      vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+      await vi.advanceTimersByTimeAsync(SSH_POLL_MS * 3);
+      expect(useStore.getState().sshConnecting[id]).toBeUndefined();
+      expect(useStore.getState().startupPending[id]).toBe(true);
+      expect(useStore.getState().startupNotes[id]).toMatch(/ssh exited/);
+    } finally {
+      __stopAllPolling();
+      vi.useRealTimers();
+    }
+  });
+
+  it("Run on an attached tile whose ssh is already live only marks it connected", async () => {
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    const id = await sshTile();
+    useStore.setState((s) => ({ sshConnecting: omitKey(s.sshConnecting, id) }));
+    vi.mocked(ipc.sshCheck).mockResolvedValue(true);
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    vi.mocked(ipc.writeTerminal).mockClear();
+    await useStore.getState().runStartup(id);
+    expect(useStore.getState().sshConnected[id]).toBe(true);
+    expect(ipc.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  it("records the tool as ready once the agent hooks are installed on a connected host", async () => {
+    const id = await sshTile();
+    expect(useStore.getState().toolReady["me@box"]).toBe(false);
+    vi.mocked(ipc.toolRemoteReady).mockResolvedValue(true);
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    await vi.waitFor(() => expect(useStore.getState().toolReady["me@box"]).toBe(true));
+  });
+
+  it("setTerminalCwd accepts remote folder reports for connected ssh tiles only", async () => {
+    const id = await sshTile();
+    await useStore.getState().setTerminalCwd(id, "/p/deeper", "remote");
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p");
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    await useStore.getState().setTerminalCwd(id, "/p/deeper", "remote");
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p/deeper");
   });
 });

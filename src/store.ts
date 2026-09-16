@@ -265,6 +265,9 @@ export interface WorkbenchState {
   persistenceReady: boolean;
   sshConnected: Record<string, boolean>;
   sshConnecting: Record<string, boolean>;
+  /** Per ssh host: whether its swarmz tool speaks our protocol, so its tiles attach to a session
+   * holder there (`swarmz attach`). Absent means not asked yet; false falls back to plain ssh. */
+  toolReady: Record<string, boolean>;
   machines: Machines;
   tailscale: TailscaleStatus | null;
   tailscaleError: string | null;
@@ -312,6 +315,9 @@ export interface WorkbenchState {
   updateSettings(id: string, patch: Partial<TerminalSettings>): void;
   runStartup(id: string): Promise<void>;
   runRemoteStep(id: string): Promise<void>;
+  /** The remote `swarmz attach` reported it is bridging this tile (`isNew`: it started the
+   * session rather than rejoining one). */
+  remoteAttached(id: string, isNew: boolean): Promise<void>;
   cancelConnecting(id: string): void;
   chooseRemoteDir(id: string, path: string): Promise<void>;
   skipStartup(id: string): void;
@@ -322,7 +328,7 @@ export interface WorkbenchState {
   setWindowFocused(focused: boolean): void;
   flashCopied(id: string): void;
   flashPasted(id: string): void;
-  setTerminalCwd(id: string, cwd: string, source: "poll" | "osc7" | "hook"): Promise<void>;
+  setTerminalCwd(id: string, cwd: string, source: "poll" | "osc7" | "hook" | "remote"): Promise<void>;
   selectSession(id: string, sessionId: string, opts: { connect: boolean }): Promise<void>;
   watchResume(id: string, sessionId: string): void;
   noteResumeFailure(id: string, sessionId: string): void;
@@ -681,7 +687,29 @@ async function tileLive(id: string, host: string): Promise<boolean> {
   return (await safeSshCheck(host)) && (await safeForegroundBusy(id));
 }
 
-const pollers = new Map<string, { timer: ReturnType<typeof setInterval>; started: number; busy: boolean; staleForeground: number }>();
+/** Whether this ssh tile connects by attaching to a session holder on its host. */
+function attachModeFor(id: string): boolean {
+  const s = useStore.getState();
+  const host = s.settings[id]?.ssh?.host?.trim();
+  return !!host && s.toolReady[host] === true;
+}
+
+/** Asks `host` once whether its swarmz tool is usable (installing it when needed) and records the
+ * answer; a failure records false, so the tile falls back to plain ssh. */
+async function checkToolReady(host: string): Promise<void> {
+  let ok = false;
+  try {
+    ok = await ipc.toolRemoteReady(host);
+  } catch {
+    ok = false;
+  }
+  useStore.setState((st) => ({ toolReady: { ...st.toolReady, [host]: ok === true } }));
+}
+
+const pollers = new Map<
+  string,
+  { timer: ReturnType<typeof setInterval>; started: number; busy: boolean; staleForeground: number; attach: boolean }
+>();
 
 function stopPolling(id: string) {
   const p = pollers.get(id);
@@ -695,10 +723,10 @@ export function __stopAllPolling() {
   for (const id of Array.from(pollers.keys())) stopPolling(id);
 }
 
-function startPolling(id: string, host: string) {
+function startPolling(id: string, host: string, attach = false) {
   stopPolling(id);
   useStore.setState((s) => ({ sshConnecting: { ...s.sshConnecting, [id]: true }, sshConnected: omit(s.sshConnected, id) }));
-  const entry = { timer: setInterval(() => void tick(), SSH_POLL_MS), started: Date.now(), busy: false, staleForeground: 0 };
+  const entry = { timer: setInterval(() => void tick(), SSH_POLL_MS), started: Date.now(), busy: false, staleForeground: 0, attach };
   pollers.set(id, entry);
 
   async function tick() {
@@ -749,6 +777,11 @@ function startPolling(id: string, host: string) {
       return;
     }
     entry.staleForeground = 0;
+    // In attach mode the remote `swarmz attach` marker (`remoteAttached`) marks the tile connected
+    // and decides whether to type the remote step, and it stops this poller. Until then keep
+    // polling without typing, so a tool that fails (ssh exits) or never answers still ends in the
+    // exit and timeout notes above instead of a tile stuck connecting.
+    if (entry.attach) return;
     stopPolling(id);
     useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true }, sshConnecting: omit(s.sshConnecting, id) }));
     await new Promise((r) => setTimeout(r, SSH_SETTLE_MS));
@@ -783,6 +816,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   persistenceReady: false,
   sshConnected: {},
   sshConnecting: {},
+  toolReady: {},
   machines: {},
   tailscale: null,
   tailscaleError: null,
@@ -1209,13 +1243,22 @@ export const useStore = create<WorkbenchState>((set) => ({
     const s = useStore.getState();
     if (s.sshConnecting[id]) return;
     const settings = s.settings[id] ?? EMPTY_SETTINGS;
-    const steps = startupSteps(settings, id);
-    if (steps.length === 0) return;
+    if (startupSteps(settings, id).length === 0) return;
     const isSsh = startupIsSsh(settings);
     const host = settings.ssh?.host?.trim();
+    if (isSsh && host && useStore.getState().toolReady[host] === undefined) {
+      await checkToolReady(host);
+      if (!useStore.getState().terminals[id]) return;
+    }
+    const attach = isSsh && attachModeFor(id);
+    const cur = useStore.getState();
+    const steps = startupSteps(cur.settings[id] ?? settings, id, { attach, name: cur.terminals[id]?.name });
+    if (steps.length === 0) return;
     if (isSsh && host && (await tileLive(id, host))) {
       // This tile's ssh is already live (e.g. Run was clicked again right after connecting,
-      // before the bar updated): don't retype the ssh line, just proceed to the remote step.
+      // before the bar updated): don't retype the ssh line, just proceed to the remote step —
+      // unless the tile is attached, where the session may already be running Claude and the
+      // attach marker alone decides whether the remote step is typed.
       if (!useStore.getState().terminals[id]) return;
       set((st) => ({
         sshConnected: { ...st.sshConnected, [id]: true },
@@ -1223,7 +1266,7 @@ export const useStore = create<WorkbenchState>((set) => ({
         startupPending: { ...st.startupPending, [id]: false },
         startupNotes: omit(st.startupNotes, id),
       }));
-      await useStore.getState().runRemoteStep(id);
+      if (!attach) await useStore.getState().runRemoteStep(id);
       return;
     }
     await ipc.writeTerminal(id, steps[0].line + "\r");
@@ -1236,13 +1279,15 @@ export const useStore = create<WorkbenchState>((set) => ({
         startupNotes: omit(st.startupNotes, id),
       };
     });
-    if (isSsh && host) startPolling(id, host);
+    if (isSsh && host) startPolling(id, host, attach);
   },
 
   async runRemoteStep(id) {
     const s = useStore.getState();
     if (!s.sshConnected[id] || !s.terminals[id]) return;
-    const remote = startupSteps(s.settings[id] ?? EMPTY_SETTINGS, id).find((st) => st.via === "remote");
+    const remote = startupSteps(s.settings[id] ?? EMPTY_SETTINGS, id, { attach: attachModeFor(id), name: s.terminals[id].name }).find(
+      (st) => st.via === "remote",
+    );
     if (!remote) return;
     const host = s.settings[id]?.ssh?.host?.trim();
     if (!host || !(await tileLive(id, host))) {
@@ -1259,6 +1304,27 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (!st.terminals[id]) return {};
       return { startupPending: { ...st.startupPending, [id]: false } };
     });
+  },
+
+  async remoteAttached(id, isNew) {
+    const s = useStore.getState();
+    // Any program's output can carry the marker, so it only ever counts for an ssh tile, and it
+    // only types anything for a tile this app is connecting right now.
+    if (!s.terminals[id] || !s.settings[id]?.ssh?.host?.trim()) return;
+    const wasConnecting = s.sshConnecting[id] === true;
+    stopPolling(id);
+    set((st) => ({
+      sshConnected: { ...st.sshConnected, [id]: true },
+      sshConnecting: omit(st.sshConnecting, id),
+      startupPending: { ...st.startupPending, [id]: false },
+      startupNotes: omit(st.startupNotes, id),
+    }));
+    // A rejoined session keeps whatever it was running; only a session the holder just started
+    // needs the `cd` / Claude line.
+    if (isNew && wasConnecting) {
+      await new Promise((r) => setTimeout(r, SSH_SETTLE_MS));
+      await useStore.getState().runRemoteStep(id);
+    }
   },
 
   cancelConnecting(id) {
@@ -1421,7 +1487,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     // break Connect. Hook events are already matched to the host they came from (§4).
     if (settings.foreign || settings.ssh) {
       if (source === "poll") return;
-      if (source === "osc7" && s.sshConnected[id] !== true) return;
+      if ((source === "osc7" || source === "remote") && s.sshConnected[id] !== true) return;
     }
     if (settings.foreign) {
       if (settings.foreign.cwd === cwd) return;
@@ -1572,6 +1638,9 @@ export const useStore = create<WorkbenchState>((set) => ({
         try {
           await ipc.agentsInstallRemote(host);
           clearAgentNotes(host, AGENT_INSTALL_NOTE);
+          // The tile is connected now, so the shared ssh socket is up: a host whose tool could
+          // not be checked before connecting (password login) is checked again for later tiles.
+          await checkToolReady(host);
         } catch (e) {
           agentWatch.installed.delete(host);
           const machine = (id ? s.settings[id]?.ssh?.machine : null) ?? hostLabel(host);
