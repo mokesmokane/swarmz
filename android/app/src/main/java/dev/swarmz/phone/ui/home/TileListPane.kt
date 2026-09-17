@@ -24,9 +24,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
-import dev.swarmz.phone.state.Need
 import dev.swarmz.phone.state.TileKey
 import dev.swarmz.phone.state.dotOf
+import dev.swarmz.phone.state.needOf
 import dev.swarmz.phone.state.relativeTime
 import dev.swarmz.phone.state.subLine
 import dev.swarmz.phone.ui.HomeUi
@@ -55,7 +55,7 @@ fun TileListPane(ui: HomeUi, selected: TileKey?, onOpen: (TileKey) -> Unit, onNe
                     }
                 }
                 items(section.rows, key = { (if (section.needsYou) "n-" else "m-") + it.key.mac + "/" + it.key.id }) { view ->
-                    val need = if (section.needsYou) (if (view.row.needs == "permission") Need.Permission else if (view.row.needs == "question") Need.Question else Need.Finished) else null
+                    val need = needOf(view.row, ui.seen[view.key])
                     val isSelected = view.key == selected
                     Row(
                         Modifier

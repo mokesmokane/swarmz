@@ -275,7 +275,8 @@ class Repository(
     fun openOutput(key: TileKey): OutputSession =
         OutputSession(scope, link(key.mac), key.id).also { register(it.job, it::end) }
 
-    fun markSeen(key: TileKey) {
-        scope.launch { settings.markSeen(key, now()) }
+    /** Records that the user has looked at [key], at [at] or else now. */
+    fun markSeen(key: TileKey, at: Instant? = null) {
+        scope.launch { settings.markSeen(key, at ?: now()) }
     }
 }

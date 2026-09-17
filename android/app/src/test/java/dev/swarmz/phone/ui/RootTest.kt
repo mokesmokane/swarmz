@@ -1,6 +1,8 @@
 package dev.swarmz.phone.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -20,6 +22,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -60,6 +63,7 @@ class RootTest {
         val vm = vm(paired = true)
         compose.setContent { SwarmzRoot(vm) }
         compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("docs") > 0 }
+        assertTrue("a resumed activity counts as visible", vm.visible.value)
         compose.onNodeWithText("Nothing needs you").assertIsDisplayed()
         compose.onNodeWithText("docs").performClick()
         compose.onNodeWithText("Nothing needs you").assertDoesNotExist()
@@ -73,8 +77,11 @@ class RootTest {
         compose.setContent { SwarmzRoot(vm) }
         compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("docs") > 0 }
         compose.onNodeWithText("Tiles").assertIsDisplayed()
-        compose.onNodeWithText("docs").performClick()
+        // With no tile open, home sits beside the list, so "docs" shows in both; the list comes first.
+        compose.onNodeWithText("Nothing needs you").assertIsDisplayed()
+        compose.onAllNodes(hasText("docs")).onFirst().performClick()
         compose.onNodeWithText("Tiles").assertIsDisplayed()
+        compose.onNodeWithText("Nothing needs you").assertDoesNotExist()
         compose.onNodeWithText("Message docs…").assertIsDisplayed()
     }
 }
