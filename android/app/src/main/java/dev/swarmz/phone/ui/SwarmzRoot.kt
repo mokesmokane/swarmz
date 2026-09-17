@@ -98,7 +98,7 @@ fun SwarmzRoot(vm: AppViewModel) {
         Box(Modifier.fillMaxSize().background(Sw.Background).safeDrawingPadding()) {
             if (paired == null) {
                 val ui by vm.pairingUi.collectAsStateWithLifecycle()
-                PairingScreen(ui, defaultDeviceName(Build.MODEL ?: "phone"), vm::pair)
+                PairingScreen(ui, defaultDeviceName(Build.MODEL ?: "phone"), vm::pair, pins = vm.settings)
             } else {
                 CompositionLocalProvider(LocalMic provides mic) {
                     Box(Modifier.fillMaxSize()) {
@@ -227,6 +227,7 @@ private fun Screen(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boole
                 initialUser = route.user ?: "",
                 askDevice = false,
                 onCancel = { vm.back() },
+                pins = vm.settings,
             )
         }
         Route.NewSession -> NewSessionScreen(vm.newSessionModel(), home.macs, onStarted = vm::open, onBack = if (showBack) ({ vm.back() }) else null)

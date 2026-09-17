@@ -1,7 +1,7 @@
 # swarmz on the phone: session holder, Mac tool, Android app, alerts
 
 Date: 2026-09-16
-Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented; sub-project 3 (phone app) implemented; amended after acceptance on the Fold (2026-09-17): the phone pairs each Mac itself (§7.2), and a Claude tile can switch to its live screen, with tappable links on it (§6.6)
+Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented; sub-project 3 (phone app) implemented; amended after acceptance on the Fold (2026-09-17): the phone pairs each Mac itself (§7.2), and a Claude tile can switch to its live screen, with tappable links on it (§6.6), and pairing can start from a QR code the Mac shows (§7.2)
 Amends: `2026-09-10-swarmz-design.md` §3.1 (the swarmz window no longer owns
 PTYs); `2026-09-15-agent-state-hooks-design.md` §2.1 (status colours), §3.2
 (hook events gain `PermissionRequest` and a synchronous `PostToolUse`); `2026-09-15-tile-folder-and-session-history-design.md`
@@ -732,6 +732,32 @@ the results merge, and pairing another Mac disturbs no existing link.
 `phone revoke` runs on every pairing in parallel, each with its own 60 s
 timeout; a partial revoke says where it worked ("Revoked on mini-3; couldn't
 reach mini-2") and still offers to forget the pairings on the phone only.
+
+Pairing can start from a QR code instead of the keyboard. swarmz's Phones
+panel has a **Link a device** button, which shows the code for
+`swarmz://pair?host=<magicdns-name>&user=<unix-user>&fp=<SHA256:…>&…&v=1`,
+with the Mac's name and username in plain text underneath. The values come
+from `swarmz host-keys` (§4.1) and every one of them is percent-encoded;
+every host key the Mac offers goes in as its own `fp`, since which key type
+sshj negotiates is not known in advance. Nothing in the code is secret — ssh
+host keys are public and world-readable — so a photograph of it gives nobody
+access, and step 2's password is still required.
+
+The phone's **Scan QR** reads the code with the camera (CameraX frames
+decoded by ZXing, so no network and no Google Play services), fills in the
+name and username and leaves the password field focused. It accepts only the
+`swarmz` scheme with the `pair` host or path, holds the name and username to
+the same regexes pairing already applies (and the name to being a real
+hostname label by label, so `..`, however encoded, is refused), ignores a `v`
+it does not know, and refuses anything else with "That isn't a swarmz pairing
+code". The fingerprints are pinned under `<host>:22` before the first
+connection, so that connection is verified rather than trusted on first use.
+A pin is one fingerprint or several separated by spaces, and any one of them
+verifies. A Mac already pinned to a key none of the scanned ones match is
+reported as a host key change and nothing is overwritten; one that is already
+pinned to a key in the code is left exactly as it is, since the code is not
+authenticated and widening its pin would let a code shown by someone else add
+a key of their own.
 
 A device name is letters, digits, single inner spaces (never leading,
 trailing or doubled), `.`, `_` and `-`, up to 40 characters. Adding a key

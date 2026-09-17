@@ -110,6 +110,17 @@ Tailscale name, for example `mini` or `mini.tailnet.ts.net`); the password is ne
 else. The phone runs `swarmz phone add` there and it fans out to every other Mac it can already
 reach.
 
+**Scan QR** fills the name and username in instead of typing them. In swarmz on the Mac, open the
+Phones panel and press **Link a device**: the code it shows carries that Mac's Tailscale name, its
+login user and the `SHA256:` fingerprints of its ssh host keys. Nothing in the code is secret — host
+keys are public — so a photograph of it gives nobody access, and the Mac's password is still needed
+once. Scanning pins those host keys before the phone ever connects, so its first connection to that
+Mac is checked rather than trusting whichever key answers. A code for a Mac this phone already
+trusts a different key for is reported as a host key change and pins nothing. Scanning asks for the
+camera the first time; refusing it only means typing the name and username by hand. The scanner is
+ZXing, decoding frames from CameraX on the phone, so it needs no network and no Google Play
+services.
+
 ## What each screen does
 
 - **Home** (folded width): what needs you first — permission questions and finished turns as

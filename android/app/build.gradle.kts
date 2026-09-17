@@ -84,6 +84,11 @@ dependencies {
     implementation(libs.bcprov)
     implementation(libs.bcpkix)
     implementation(libs.markdown.m3)
+    implementation(libs.camera.core)
+    implementation(libs.camera.camera2)
+    implementation(libs.camera.lifecycle)
+    implementation(libs.camera.compose)
+    implementation(libs.zxing.core)
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)

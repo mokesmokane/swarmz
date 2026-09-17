@@ -53,8 +53,9 @@ suspend fun resolvesToTailscale(host: String): Boolean = withContext(Dispatchers
 
 class PairingError(message: String) : Exception(message)
 
-private val HOST = Regex("^[A-Za-z0-9.-]{1,253}$")
-private val USER = Regex("^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$")
+/** Shared with [parsePairQr], which holds a scanned code to the same rules before it fills the form. */
+internal val HOST = Regex("^[A-Za-z0-9.-]{1,253}$")
+internal val USER = Regex("^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$")
 
 /**
  * Logs in to a Mac once with the user's password, installs the phone's public key there, then
