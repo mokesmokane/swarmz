@@ -10,12 +10,15 @@ import java.util.concurrent.ConcurrentHashMap
 interface HostKeyPins {
     fun get(id: String): String?
     fun put(id: String, fingerprint: String)
+    /** Every id with a pin, so one stored under an older spelling of a Mac can be found and moved. */
+    fun ids(): Set<String>
 }
 
 class MemoryPins : HostKeyPins {
     private val map = ConcurrentHashMap<String, String>()
     override fun get(id: String) = map[id]
     override fun put(id: String, fingerprint: String) { map[id] = fingerprint }
+    override fun ids(): Set<String> = map.keys.toSet()
 }
 
 fun fingerprint(key: PublicKey): String {
@@ -34,6 +37,37 @@ class HostKeyChanged(val host: String, val pinned: String, val offered: String) 
  */
 internal fun pinnedSet(value: String?): Set<String> =
     value?.split(' ')?.filterTo(LinkedHashSet()) { it.isNotEmpty() } ?: emptySet()
+
+/** An address is only ever itself; a name is also its short MagicDNS form (`studio.tail.ts.net` is `studio`). */
+private fun isAddress(host: String) = host.contains(':') || host.isNotEmpty() && host.all { it.isDigit() || it == '.' }
+
+/**
+ * The id a Mac's pin is stored under. The rest of the app treats `mini` and `mini.tailnet.ts.net`
+ * as one Mac (`sameMac`), so its pin is keyed the same way: on the lowercased short name, or on a
+ * literal address unchanged. Keying on whatever was typed would let pairing by one spelling and
+ * scanning the other pin the same Mac twice, and a real host key change would then go unreported.
+ */
+fun pinId(host: String, port: Int = 22): String =
+    if (isAddress(host)) "$host:$port" else "${host.substringBefore('.').lowercase()}:$port"
+
+/**
+ * [pinId], having first moved any pin an older build left under another spelling of the same Mac
+ * onto it. Where several spellings are pinned they merge: each was already trusted for this Mac
+ * under a name the app treats as the same one, so accepting any of them is exactly what those
+ * spellings accepted between them, and no more. A pin already at the normalised id is never
+ * replaced -- it is the one the phone is verifying against -- and the old entries are simply left
+ * where they are, unread from now on.
+ */
+fun pinIdFor(pins: HostKeyPins, host: String, port: Int = 22): String {
+    val id = pinId(host, port)
+    if (pins.get(id) != null) return id
+    val suffix = ":$port"
+    val merged = pins.ids()
+        .filter { it != id && it.endsWith(suffix) && pinId(it.dropLast(suffix.length), port) == id }
+        .flatMapTo(LinkedHashSet()) { pinnedSet(pins.get(it)) }
+    if (merged.isNotEmpty()) pins.put(id, merged.joinToString(" "))
+    return id
+}
 
 /** Trust on first use, then insist on one of the keys pinned for that Mac. */
 internal class PinningVerifier(private val pins: HostKeyPins, private val id: String) : HostKeyVerifier {
@@ -68,7 +102,7 @@ internal class PinningVerifier(private val pins: HostKeyPins, private val id: St
  */
 fun pinScannedKeys(pins: HostKeyPins, host: String, fingerprints: List<String>, port: Int = 22) {
     if (fingerprints.isEmpty()) return
-    val id = "$host:$port"
+    val id = pinIdFor(pins, host, port)
     val pinned = pinnedSet(pins.get(id))
     if (pinned.isEmpty()) {
         pins.put(id, fingerprints.joinToString(" "))

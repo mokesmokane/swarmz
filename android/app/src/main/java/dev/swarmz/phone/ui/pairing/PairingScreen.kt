@@ -34,6 +34,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import dev.swarmz.phone.data.sameMac
 import dev.swarmz.phone.pairing.CameraQrScanner
 import dev.swarmz.phone.pairing.QrScanSheet
 import dev.swarmz.phone.pairing.parsePairQr
@@ -63,8 +64,8 @@ fun PairingScreen(
     initialUser: String = "",
     askDevice: Boolean = true,
     onCancel: (() -> Unit)? = null,
-    /** Where a scanned code's host keys are pinned; without it a scan only fills the form in. */
-    pins: HostKeyPins? = null,
+    /** Where a scanned code's host keys are pinned. */
+    pins: HostKeyPins,
     scanSheet: QrScanSheet = { onResult, onScanCancel -> CameraQrScanner(onResult, onScanCancel) },
 ) {
     var host by rememberSaveable(initialHost) { mutableStateOf(initialHost) }
@@ -140,18 +141,23 @@ fun PairingScreen(
                 scanSheet(
                     { text ->
                         val code = parsePairQr(text)
-                        if (code == null) {
-                            scanError = "That isn't a swarmz pairing code"
-                        } else {
-                            host = code.host
-                            user = code.user
-                            scanError = try {
-                                pins?.let { pinScannedKeys(it, code.host, code.fingerprints) }
-                                null
-                            } catch (_: HostKeyChanged) {
-                                "${code.host} showed a different host key than the one this phone trusts. Pair it again only if you know why it changed."
+                        // Add mode names the Mac being paired: a code for a different one is said
+                        // out loud rather than quietly swapping which Mac this screen is about.
+                        val wrongMac = code != null && initialHost.isNotBlank() && !sameMac(initialHost, code.host)
+                        when {
+                            code == null -> scanError = "That isn't a swarmz pairing code"
+                            wrongMac -> scanError = "That code is for ${code.host}, not $initialHost."
+                            else -> {
+                                host = code.host
+                                user = code.user
+                                scanError = try {
+                                    pinScannedKeys(pins, code.host, code.fingerprints)
+                                    null
+                                } catch (_: HostKeyChanged) {
+                                    "${code.host} showed a different host key than the one this phone trusts. Pair it again only if you know why it changed."
+                                }
+                                scanned++
                             }
-                            scanned++
                         }
                         scanning = false
                     },

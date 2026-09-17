@@ -32,13 +32,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
-import com.google.zxing.DecodeHintType
-import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import com.google.zxing.qrcode.QRCodeReader
 import dev.swarmz.phone.ui.components.QuietButton
 import dev.swarmz.phone.ui.theme.Sw
 import java.util.concurrent.Executors
@@ -72,6 +71,14 @@ fun CameraQrScanner(onResult: (String) -> Unit, onCancel: () -> Unit) {
         refused = !allowed
     }
     LaunchedEffect(Unit) { if (!granted) ask.launch(Manifest.permission.CAMERA) }
+    // Allowing the camera in Settings and coming back starts the scanner, without cancelling first.
+    LifecycleResumeEffect(Unit) {
+        if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            granted = true
+            refused = false
+        }
+        onPauseOrDispose {}
+    }
 
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Scan the code on your Mac", style = MaterialTheme.typography.titleMedium)
@@ -100,6 +107,8 @@ private fun CameraFrames(onResult: (String) -> Unit) {
     // must not be filled in twice.
     val found = remember { MutableStateFlow<String?>(null) }
     val frames = remember { Executors.newSingleThreadExecutor() }
+    // One reader for the whole scan, used only on the analyser thread.
+    val reader = remember { QrFrames() }
     DisposableEffect(frames) { onDispose { frames.shutdown() } }
 
     LaunchedEffect(Unit) { current(found.filterNotNull().first()) }
@@ -107,7 +116,7 @@ private fun CameraFrames(onResult: (String) -> Unit) {
     LaunchedEffect(Unit) {
         val preview = Preview.Builder().build().apply { setSurfaceProvider { request -> surfaceRequest = request } }
         val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
-        analysis.setAnalyzer(frames) { image -> readFrame(image)?.let { found.compareAndSet(null, it) } }
+        analysis.setAnalyzer(frames) { image -> reader.readFrame(image)?.let { found.compareAndSet(null, it) } }
         val provider = try {
             ProcessCameraProvider.awaitInstance(context)
         } catch (e: CancellationException) {
@@ -128,27 +137,41 @@ private fun CameraFrames(onResult: (String) -> Unit) {
     surfaceRequest?.let { CameraXViewfinder(it, modifier = Modifier.fillMaxSize()) }
 }
 
-/** The code in one camera frame, closing the frame whatever happens. */
-private fun readFrame(image: ImageProxy): String? = image.use {
-    val plane = it.planes.firstOrNull() ?: return@use null
-    val buffer = plane.buffer
-    val luminance = ByteArray(buffer.remaining())
-    buffer.get(luminance)
-    decodeQr(luminance, plane.rowStride, it.width, it.height)
-}
-
 /**
- * The QR code in a frame's luminance plane (a camera's Y plane: 0 is black), or null when there is
- * none. [rowStride] is how many bytes a row takes, which the hardware may pad out beyond [width].
+ * ZXing's reader keeps state between calls and must be reset between frames, and it is not thread
+ * safe: one of these per scanner, used only on the analyser thread.
  */
-internal fun decodeQr(luminance: ByteArray, rowStride: Int, width: Int, height: Int): String? {
-    val usable = minOf(width, rowStride)
-    if (usable < 1 || height < 1 || luminance.size < rowStride * height) return null
-    val source = PlanarYUVLuminanceSource(luminance, rowStride, height, 0, 0, usable, height, false)
-    val reader = MultiFormatReader().apply {
-        setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)))
+internal class QrFrames {
+    private val reader = QRCodeReader()
+
+    /** The code in one camera frame, closing the frame whatever happens. */
+    fun readFrame(image: ImageProxy): String? = image.use {
+        val plane = it.planes.firstOrNull() ?: return@use null
+        val buffer = plane.buffer
+        val luminance = ByteArray(buffer.remaining())
+        buffer.get(luminance)
+        decode(luminance, plane.rowStride, it.width, it.height)
     }
-    // A QR code's own finder patterns say which way up it is, so the frame's rotation is not
-    // applied; a frame with no code in it, or one too blurred to read, simply throws.
-    return runCatching { reader.decode(BinaryBitmap(HybridBinarizer(source))).text }.getOrNull()
+
+    /**
+     * The QR code in a frame's luminance plane (a camera's Y plane: 0 is black), or null when
+     * there is none. [rowStride] is how many bytes a row takes, which the hardware may pad out
+     * beyond [width]; the last row usually is not padded, so the plane holds
+     * `rowStride * (height - 1) + width` bytes rather than `rowStride * height`.
+     */
+    fun decode(luminance: ByteArray, rowStride: Int, width: Int, height: Int): String? {
+        val usable = minOf(width, rowStride)
+        // Exactly what PlanarYUVLuminanceSource reads: full rows, then `usable` bytes of the last.
+        if (usable < 1 || height < 1 || luminance.size < rowStride * (height - 1) + usable) return null
+        val source = PlanarYUVLuminanceSource(luminance, rowStride, height, 0, 0, usable, height, false)
+        // A QR code's own finder patterns say which way up it is, so the frame's rotation is not
+        // applied; a frame with no code in it, or one too blurred to read, simply throws.
+        return try {
+            reader.decode(BinaryBitmap(HybridBinarizer(source))).text
+        } catch (_: Exception) {
+            null
+        } finally {
+            reader.reset()
+        }
+    }
 }

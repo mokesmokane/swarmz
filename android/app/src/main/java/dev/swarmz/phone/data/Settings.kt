@@ -106,6 +106,7 @@ class MemorySettings : SettingsStore {
     private val pins = ConcurrentHashMap<String, String>()
     override fun get(id: String) = pins[id]
     override fun put(id: String, fingerprint: String) { pins[id] = fingerprint }
+    override fun ids(): Set<String> = pins.keys.toSet()
     override suspend fun setPaired(p: Paired?) = set(listOfNotNull(p))
     override suspend fun addPairing(p: Paired) = set(all.value.withPairing(p))
     override suspend fun setMacs(list: List<KnownMac>) {
@@ -205,6 +206,8 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
     override suspend fun loadMacs(): List<KnownMac> = readMacs(store.data.first())
 
     override fun get(id: String): String? = pinCache[id]
+
+    override fun ids(): Set<String> = pinCache.keys.toSet()
 
     override fun put(id: String, fingerprint: String) {
         pinCache[id] = fingerprint

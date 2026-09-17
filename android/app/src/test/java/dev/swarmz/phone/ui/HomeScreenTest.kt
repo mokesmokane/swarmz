@@ -20,6 +20,7 @@ import dev.swarmz.phone.state.homeModel
 import dev.swarmz.phone.state.tileListSections
 import dev.swarmz.phone.ui.home.HomeScreen
 import dev.swarmz.phone.ui.home.TileListPane
+import dev.swarmz.phone.ssh.MemoryPins
 import dev.swarmz.phone.ui.pairing.PairingScreen
 import dev.swarmz.phone.ui.pairing.defaultDeviceName
 import dev.swarmz.phone.ui.theme.SwarmzTheme
@@ -120,6 +121,7 @@ class HomeScreenTest {
                     PairingUi(error = "Can't reach mini. Is Tailscale connected?"),
                     defaultDevice = "",
                     onPair = { host, user, password, device -> paired = listOf(host, user, String(password), device) },
+                    pins = MemoryPins(),
                 )
             }
         }

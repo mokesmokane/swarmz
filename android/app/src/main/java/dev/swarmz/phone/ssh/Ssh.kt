@@ -47,7 +47,7 @@ interface SshConnector {
 class SshjConnector(private val pins: HostKeyPins) : SshConnector {
     /** Every path that does not hand the connection back closes it, including cancellation after a successful login. */
     override suspend fun connect(host: String, port: Int, auth: Auth): SshConnection {
-        val verifier = PinningVerifier(pins, "$host:$port")
+        val verifier = PinningVerifier(pins, pinIdFor(pins, host, port))
         // KEEP_ALIVE (not DefaultConfig's HEARTBEAT) disconnects after 5 unanswered keep-alives.
         val client = SSHClient(DefaultConfig().apply { keepAliveProvider = KeepAliveProvider.KEEP_ALIVE })
         try {

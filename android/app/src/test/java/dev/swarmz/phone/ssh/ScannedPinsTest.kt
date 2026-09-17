@@ -3,6 +3,7 @@ package dev.swarmz.phone.ssh
 import dev.swarmz.phone.installBouncyCastle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -84,5 +85,70 @@ class ScannedPinsTest {
         val pins = MemoryPins()
         pinScannedKeys(pins, "mini", emptyList())
         assertNull(pins.get("mini:22"))
+    }
+
+    @Test
+    fun oneMacHasOnePinWhateverSpellingItIsReachedBy() {
+        // The app treats `mini` and `mini.tailnet.ts.net` as one Mac, so its pin is keyed on the
+        // short name: pairing by one spelling and scanning the other must not pin twice.
+        assertEquals(pinId("mini"), pinId("Mini.tailnet.ts.net"))
+        assertEquals("mini:22", pinId("MINI"))
+        assertEquals("mini:2222", pinId("mini.tailnet.ts.net", 2222))
+        // A literal address is only ever itself.
+        assertEquals("100.64.1.2:22", pinId("100.64.1.2"))
+        assertNotEquals(pinId("100.64.1.2"), pinId("100.64.1.3"))
+        assertEquals("fd7a:115c::1:22", pinId("fd7a:115c::1"))
+
+        val pins = MemoryPins()
+        pinScannedKeys(pins, "mini", listOf(fingerprint(keyOf(0))))
+        val long = pinIdFor(pins, "mini.tailnet.ts.net", 22)
+        assertTrue(PinningVerifier(pins, long).verify("mini.tailnet.ts.net", 22, keyOf(0)))
+        assertFalse(PinningVerifier(pins, long).verify("mini.tailnet.ts.net", 22, keyOf(4)))
+    }
+
+    @Test
+    fun aPinWrittenUnderAnotherSpellingMovesToTheNormalisedId() {
+        val pins = MemoryPins()
+        pins.put("mini.tailnet.ts.net:22", fingerprint(keyOf(0)))
+        assertEquals("mini:22", pinIdFor(pins, "mini", 22))
+        assertEquals(fingerprint(keyOf(0)), pins.get("mini:22"))
+        assertTrue(PinningVerifier(pins, "mini:22").verify("mini", 22, keyOf(0)))
+        // A pin for another port, or another Mac, is left where it is.
+        assertNull(pins.get("mini:2222"))
+    }
+
+    @Test
+    fun aScanAfterPairingByTheLongNameIsStillAHostKeyChange() {
+        val pins = MemoryPins()
+        pins.put("mini.tailnet.ts.net:22", fingerprint(keyOf(0)))
+        try {
+            pinScannedKeys(pins, "mini", listOf(fingerprint(keyOf(4))))
+            fail("expected HostKeyChanged")
+        } catch (e: HostKeyChanged) {
+            assertEquals(fingerprint(keyOf(0)), e.pinned)
+        }
+        assertEquals(fingerprint(keyOf(0)), pins.get("mini:22"))
+    }
+
+    @Test
+    fun pinsLeftUnderSeveralSpellingsMergeRatherThanOneWinning() {
+        val pins = MemoryPins()
+        pins.put("mini.tailnet.ts.net:22", fingerprint(keyOf(0)))
+        pins.put("MINI.other.ts.net:22", fingerprint(keyOf(4)))
+        pins.put("mini:2222", fingerprint(keyOf(9)))
+        pinIdFor(pins, "mini", 22)
+        // Each was already trusted for this Mac under a name the app treats as the same one, so
+        // merging them is what those spellings already accepted between them -- and no more.
+        assertEquals(setOf(fingerprint(keyOf(0)), fingerprint(keyOf(4))), pinnedSet(pins.get("mini:22")))
+        assertEquals(fingerprint(keyOf(9)), pins.get("mini:2222"))
+    }
+
+    @Test
+    fun aNormalisedPinIsNeverReplacedByAnOlderSpellings() {
+        val pins = MemoryPins()
+        pins.put("mini:22", fingerprint(keyOf(0)))
+        pins.put("mini.tailnet.ts.net:22", fingerprint(keyOf(4)))
+        pinIdFor(pins, "mini.tailnet.ts.net", 22)
+        assertEquals(fingerprint(keyOf(0)), pins.get("mini:22"))
     }
 }
