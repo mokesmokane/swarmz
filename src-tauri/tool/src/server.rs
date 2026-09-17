@@ -76,12 +76,28 @@ fn fmt_size(size: Option<(u16, u16)>) -> String {
     }
 }
 
+/// A viewer's label as one safe log field: the label comes from its `Hello`, so it is cut short
+/// and stripped of anything that could forge a line of its own.
+fn log_label(label: &str) -> String {
+    let safe: String = label
+        .bytes()
+        .take(32)
+        .map(|b| if b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-' { b as char } else { '_' })
+        .collect();
+    if safe.is_empty() {
+        "-".into()
+    } else {
+        safe
+    }
+}
+
 /// One line per size decision, for `SWARMZ_SIZE_LOG`. `asked` is the size of the viewer that
 /// caused the decision, `owner` the viewer whose size now applies.
 fn size_log_line(at: &str, cause: SizeCause, who: u64, label: &str, asked: Option<(u16, u16)>, owner: Option<u64>, applied: (u16, u16), changed: bool) -> String {
     format!(
         "{at} {cause} viewer={who} label={label} asked={asked} owner={owner} applied={applied} {verdict}\n",
         cause = cause.as_str(),
+        label = log_label(label),
         asked = fmt_size(asked),
         owner = owner.map(|o| o.to_string()).unwrap_or_else(|| "-".into()),
         applied = fmt_size(Some(applied)),
@@ -96,10 +112,13 @@ fn size_log_now() -> String {
     format!("{}.{:03}Z", format_iso(d.as_secs() as i64).trim_end_matches('Z'), d.subsec_millis())
 }
 
-/// The size diagnostic's file, from `SWARMZ_SIZE_LOG`. Unset or empty means no log. It is read
-/// once, when the holder starts: every holder is its own process, started per tile.
-fn size_log_path(var: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    var.filter(|v| !v.is_empty()).map(PathBuf::from)
+/// Opens the size diagnostic's file, from `SWARMZ_SIZE_LOG`. Unset, empty, or a path that cannot
+/// be opened means no log. It is read and opened once, when the holder starts (every holder is
+/// its own process, started per tile), so that logging a decision is one write and never an
+/// `open` while the viewers lock is held.
+fn open_size_log(var: Option<std::ffi::OsString>) -> Option<Mutex<std::fs::File>> {
+    let path = var.filter(|v| !v.is_empty())?;
+    std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(Mutex::new)
 }
 
 /// Whether a `Data` payload is only terminal reports — things the emulator sends by itself, with
@@ -108,6 +127,10 @@ fn size_log_path(var: Option<std::ffi::OsString>) -> Option<PathBuf> {
 /// focus would otherwise trade the session's size back and forth. Anything else, including a
 /// partial or malformed sequence, counts as user input: failing towards "the user typed" is the
 /// safer default. Every byte still reaches the program either way; only ownership is decided here.
+///
+/// `ESC [ … R` is a cursor-position reply and a modified F3 (xterm.js sends `CSI 1;2R` for
+/// shift-F3), so those key presses do not claim the size. That is the one key the rule costs, and
+/// anything typed after it claims the size as usual.
 fn is_report_only(payload: &[u8]) -> bool {
     let mut i = 0;
     while i < payload.len() {
@@ -127,8 +150,8 @@ fn report_len(b: &[u8]) -> Option<usize> {
     match b[2] {
         // Focus in and focus out.
         b'I' | b'O' => return Some(3),
-        // X10 mouse report: three bytes of button and position follow, any value at all.
-        b'M' => return (b.len() >= 6).then_some(6),
+        // X10 mouse report: three printable bytes of button and position follow.
+        b'M' => return (b.len() >= 6 && b[3..6].iter().all(|c| *c >= 0x20)).then_some(6),
         _ => {}
     }
     // A parameterised report: SGR mouse (`ESC [ < … M|m`), cursor position (`ESC [ … R`), device
@@ -168,8 +191,9 @@ struct Shared {
     cap: usize,
     /// The session's metadata file, marked when a `Terminate` arrives.
     meta_path: PathBuf,
-    /// Where to append the size diagnostic, from `SWARMZ_SIZE_LOG` at startup; `None` is off.
-    size_log: Option<PathBuf>,
+    /// The size diagnostic's file, opened at startup from `SWARMZ_SIZE_LOG`; `None` is off. Its
+    /// lock is a leaf: it is taken last, and only to write one line.
+    size_log: Option<Mutex<std::fs::File>>,
 }
 
 impl Shared {
@@ -227,7 +251,7 @@ impl Shared {
     /// the variable was unset, and a write that fails is ignored: this is a diagnostic, never a
     /// dependency.
     fn log_size(&self, cause: SizeCause, who: u64, viewers: &[Viewer], owner: Option<u64>, applied: (u16, u16), changed: bool) {
-        let Some(path) = self.size_log.as_ref() else {
+        let Some(file) = self.size_log.as_ref() else {
             return;
         };
         let v = viewers.iter().find(|v| v.id == who);
@@ -241,7 +265,7 @@ impl Shared {
             applied,
             changed,
         );
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut f) = file.lock() {
             let _ = f.write_all(line.as_bytes());
         }
     }
@@ -279,11 +303,12 @@ impl Shared {
         let mut vs = self.viewers.lock().unwrap();
         let applied = *self.applied.lock().unwrap();
         let mut owns = false;
-        if typed {
-            if let Some(v) = vs.iter_mut().find(|v| v.id == id && v.label != TOOL_VIEWER) {
+        if let Some(v) = vs.iter_mut().find(|v| v.id == id && v.label != TOOL_VIEWER) {
+            // A viewer that never said its size types at the size already applied (§3.5). Its
+            // `spoke_at` stays 0, so a size it never asked for cannot be picked as a fallback.
+            v.size.get_or_insert(applied);
+            if typed {
                 v.spoke_at = self.clock.fetch_add(1, Ordering::SeqCst);
-                // A viewer that never said its size types at the size already applied.
-                v.size.get_or_insert(applied);
                 owns = true;
             }
         }
@@ -344,7 +369,7 @@ pub fn run_holder(cfg: HolderConfig) -> Result<Option<i32>, String> {
         next_id: AtomicU64::new(1),
         cap: cfg.viewer_queue_cap,
         meta_path: paths.meta.clone(),
-        size_log: size_log_path(std::env::var_os("SWARMZ_SIZE_LOG")),
+        size_log: open_size_log(std::env::var_os("SWARMZ_SIZE_LOG")),
     });
 
     let (exit_tx, exit_rx) = mpsc::channel::<Option<i32>>();
@@ -703,7 +728,7 @@ mod tests {
         /// The same fixture with the size diagnostic on, as `SWARMZ_SIZE_LOG` turns it on.
         fn logging_to(cols: u16, rows: u16, log: &std::path::Path) -> SizeFixture {
             let mut f = SizeFixture::new(cols, rows);
-            Arc::get_mut(&mut f.sh).unwrap().size_log = size_log_path(Some(log.as_os_str().to_owned()));
+            Arc::get_mut(&mut f.sh).unwrap().size_log = open_size_log(Some(log.as_os_str().to_owned()));
             f
         }
 
@@ -751,6 +776,10 @@ mod tests {
 
         fn applied(&self) -> (u16, u16) {
             *self.sh.applied.lock().unwrap()
+        }
+
+        fn size_of(&self, id: u64) -> Option<(u16, u16)> {
+            self.sh.viewers.lock().unwrap().iter().find(|v| v.id == id).and_then(|v| v.size)
         }
 
         /// The screen model's size, as (cols, rows).
@@ -843,6 +872,21 @@ mod tests {
     }
 
     #[test]
+    fn a_sizeless_viewer_adopts_the_applied_size_on_any_data() {
+        let mut f = SizeFixture::new(80, 24);
+        let a = f.join("window", 89, 128);
+        let b = f.join("window", 0, 0);
+        assert_eq!(f.size_of(b), None);
+        f.reports(b, b"\x1b[I");
+        assert_eq!(f.size_of(b), Some((89, 128)), "a Data frame of any kind adopts the applied size");
+        assert_eq!(f.applied(), (89, 128));
+        f.leave(a);
+        assert_eq!(f.applied(), (89, 128), "a size it never asked for must not be applied for it");
+        f.types(b);
+        assert_eq!(f.applied(), (89, 128), "and typing at it changes nothing");
+    }
+
+    #[test]
     fn report_only_payloads_are_told_from_typing() {
         // Terminal reports, which the emulator sends by itself.
         for r in [
@@ -856,6 +900,9 @@ mod tests {
             b"\x1b[?62;1;6c",
             b"\x1b[>0;95;0c",
             b"\x1b[?50n",
+            // Known and accepted: a cursor-position reply cannot be told from a modified F3,
+            // so shift-F3 does not claim the size.
+            b"\x1b[1;2R",
         ] {
             assert!(is_report_only(r), "report: {:?}", String::from_utf8_lossy(r));
         }
@@ -877,6 +924,8 @@ mod tests {
             b"\x1b[",
             b"\x1b[<0;40;12",
             b"\x1b[M!",
+            // An X10 mouse report's three bytes are printable; control bytes are not one.
+            b"\x1b[M\x01\x02\x03",
             b"\x1b[999",
             b"\x1b[;R\x1b",
         ] {
@@ -898,6 +947,13 @@ mod tests {
             size_log_line("2026-09-17T14:53:32Z", SizeCause::Hello, 5, "window", Some((55, 70)), Some(4), (89, 128), false),
             "2026-09-17T14:53:32Z hello viewer=5 label=window asked=55x70 owner=4 applied=89x128 kept\n"
         );
+        // A label comes from the viewer's Hello: it cannot forge a line or run away with one.
+        assert_eq!(log_label("window"), "window");
+        assert_eq!(log_label("phone-1.2_x"), "phone-1.2_x");
+        assert_eq!(log_label("win\ndow evil=1"), "win_dow_evil_1");
+        assert_eq!(log_label(&"x".repeat(64)), "x".repeat(32));
+        assert_eq!(log_label(""), "-");
+        assert!(size_log_line("t", SizeCause::Data, 1, "a\nb", None, None, (1, 1), false).lines().count() == 1);
         assert_eq!(
             size_log_line("2026-09-17T14:53:33Z", SizeCause::Leave, 4, "-", None, None, (89, 128), false),
             "2026-09-17T14:53:33Z leave viewer=4 label=- asked=- owner=- applied=89x128 kept\n"
@@ -910,9 +966,8 @@ mod tests {
 
     #[test]
     fn the_size_log_records_every_decision_and_only_when_asked_for() {
-        assert_eq!(size_log_path(None), None, "unset: no log");
-        assert_eq!(size_log_path(Some(std::ffi::OsString::new())), None, "empty: no log");
-        assert_eq!(size_log_path(Some("/tmp/sz.log".into())), Some(PathBuf::from("/tmp/sz.log")));
+        assert!(open_size_log(None).is_none(), "unset: no log");
+        assert!(open_size_log(Some(std::ffi::OsString::new())).is_none(), "empty: no log");
 
         let dir = PathBuf::from(format!("/tmp/szs-{}-sizelog", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -939,8 +994,10 @@ mod tests {
         assert!(text.contains("data viewer=2 label=window asked=55x71 owner=2 applied=55x71 changed"), "{text}");
         assert!(text.lines().last().unwrap().contains("leave viewer=1 label=- asked=- owner=2 applied=55x71 kept"), "{text}");
 
-        // A path that cannot be written is ignored, not fatal.
-        let mut bad = SizeFixture::logging_to(80, 24, &dir.join("nope").join("size.log"));
+        // A path that cannot be opened is ignored, not fatal: the holder runs without a log.
+        let unopenable = dir.join("nope").join("size.log");
+        assert!(open_size_log(Some(unopenable.as_os_str().to_owned())).is_none());
+        let mut bad = SizeFixture::logging_to(80, 24, &unopenable);
         bad.join("window", 90, 20);
         let _ = std::fs::remove_dir_all(&dir);
     }
