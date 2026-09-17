@@ -104,12 +104,21 @@ class TileController(
     private val scope = CoroutineScope(parent.coroutineContext + job)
 
     val draft: MutableState<TextFieldValue> = mutableStateOf(TextFieldValue(""))
+
+    /** Where the conversation is scrolled to. */
     val listState = LazyListState()
+
+    /**
+     * Where the screen body is scrolled to. Separate from [listState] because the two lists have nothing in
+     * common: a conversation index carried into the screen would stop it following its newest lines, and a screen
+     * index carried back would scroll the conversation into paging in its whole history.
+     */
+    val screenListState = LazyListState()
 
     /**
      * Whether a Claude tile shows its live screen instead of the conversation: the way to reach anything Claude
      * draws on the terminal but never writes to the transcript (`/login`, `/model`, `/cost`, its banners). It lives
-     * here, not in the composition, so folding keeps it, as it keeps the draft and the list position.
+     * here, not in the composition, so folding keeps it, as it keeps the draft and the list positions.
      */
     val screenMode: MutableState<Boolean> = mutableStateOf(false)
 
@@ -152,6 +161,9 @@ class TileController(
     val outgoing: StateFlow<List<Outgoing>> = _outgoing.asStateFlow()
     private val _notice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = _notice.asStateFlow()
+    private val _noticeRound = MutableStateFlow(0)
+    /** Bumped by every notice, so the same text twice in a row still re-arms the screen's dismissal timer. */
+    val noticeRound: StateFlow<Int> = _noticeRound.asStateFlow()
     private val _images = MutableStateFlow<Map<String, ImageBitmap?>>(emptyMap())
     val images: StateFlow<Map<String, ImageBitmap?>> = _images.asStateFlow()
     private val loadingImages = mutableSetOf<String>()
@@ -249,7 +261,8 @@ class TileController(
 
     /**
      * Switches a Claude tile between its conversation and its live screen. The transcript session stays open either
-     * way, so coming back keeps its position and any older pages; only the output session comes and goes.
+     * way, and the two bodies scroll independently ([listState] and [screenListState]), so coming back keeps the
+     * conversation's position and any older pages; only the output session comes and goes.
      */
     fun toggleScreen() {
         if (isShell) return
@@ -318,7 +331,7 @@ class TileController(
     private val isShell get() = row.value?.kind == "shell"
 
     private fun fail(e: Exception, prefix: String = "") {
-        _notice.value = prefix + (e.message ?: "something went wrong")
+        notify(prefix + (e.message ?: "something went wrong"))
     }
 
     fun send() {
@@ -460,9 +473,10 @@ class TileController(
         }
     }
 
-    /** Shows a one-off line under the body, the way a failed action does. */
+    /** Shows a one-off line under the body, the way a failed action does. Saying the same thing twice shows twice. */
     fun notify(text: String) {
         _notice.value = text
+        _noticeRound.value++
     }
 
     fun dismissNotice() {

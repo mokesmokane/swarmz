@@ -43,6 +43,7 @@ import dev.swarmz.phone.proto.TileRow
 import dev.swarmz.phone.ui.theme.MonoBody
 import dev.swarmz.phone.ui.theme.MonoSmall
 import dev.swarmz.phone.ui.theme.Sw
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /** Punctuation that ends a sentence far more often than it ends a URL, so a trailing run of it is not part of one. */
@@ -117,7 +118,11 @@ internal fun openLink(context: Context, url: String): Boolean {
     val uri = Uri.parse(url)
     if (uri.scheme?.lowercase() !in setOf("http", "https")) return false
     return try {
-        context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, uri)
+                .addCategory(Intent.CATEGORY_BROWSABLE)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
         true
     } catch (_: Exception) {
         false
@@ -149,6 +154,9 @@ internal fun ShellLines(
         if (listState.firstVisibleItemIndex <= 1) listState.scrollToItem(0)
     }
     var tapped by remember { mutableStateOf<String?>(null) }
+    // Held here, not in LinkMenu: dismissing the menu takes its composable, and with it any scope of its own,
+    // out of the composition before a Copy launched from it could run.
+    val scope = rememberCoroutineScope()
     LazyColumn(
         modifier.horizontalScroll(rememberScrollState()),
         state = listState,
@@ -161,7 +169,7 @@ internal fun ShellLines(
             Text(line.annotated { tapped = it }, style = MonoBody, softWrap = false)
         }
     }
-    tapped?.let { url -> LinkMenu(url, onNotice) { tapped = null } }
+    tapped?.let { url -> LinkMenu(url, scope, onNotice) { tapped = null } }
 }
 
 /**
@@ -169,10 +177,9 @@ internal fun ShellLines(
  * the flow this exists for: open it in a browser, or copy it somewhere else.
  */
 @Composable
-private fun LinkMenu(url: String, onNotice: (String) -> Unit, onDismiss: () -> Unit) {
+private fun LinkMenu(url: String, scope: CoroutineScope, onNotice: (String) -> Unit, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(url, style = MonoSmall, maxLines = 4) },
@@ -198,7 +205,7 @@ private fun LinkMenu(url: String, onNotice: (String) -> Unit, onDismiss: () -> U
 fun ShellBody(c: TileController, row: TileRow, modifier: Modifier) {
     val screen by c.screen.collectAsStateWithLifecycle()
     val exit = if (screen.exited || !row.running) exitLine(row.exitCode) else null
-    ShellLines(screen.lines, screen.dropped, exit, c.listState, modifier, c::notify)
+    ShellLines(screen.lines, screen.dropped, exit, c.screenListState, modifier, c::notify)
 }
 
 @Composable

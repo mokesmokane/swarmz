@@ -54,6 +54,7 @@ fun TileScreen(c: TileController, unfolded: Boolean, onBack: (() -> Unit)?, now:
     val lastSeen by c.lastSeen.collectAsStateWithLifecycle()
     val pending by c.pending.collectAsStateWithLifecycle()
     val notice by c.notice.collectAsStateWithLifecycle()
+    val noticeRound by c.noticeRound.collectAsStateWithLifecycle()
     val streamError by c.streamError.collectAsStateWithLifecycle()
     var clock by remember { mutableStateOf(now()) }
     val r = row
@@ -107,7 +108,8 @@ fun TileScreen(c: TileController, unfolded: Boolean, onBack: (() -> Unit)?, now:
         }
         notice?.let {
             Text(it, color = Sw.ErrorLine, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth())
-            LaunchedEffect(it) {
+            // Keyed on the round, not the text: the same notice twice in a row must restart the 5 s timer.
+            LaunchedEffect(noticeRound) {
                 delay(5_000)
                 c.dismissNotice()
             }

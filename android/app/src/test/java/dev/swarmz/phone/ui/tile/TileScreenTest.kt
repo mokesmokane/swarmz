@@ -3,6 +3,7 @@ package dev.swarmz.phone.ui.tile
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onFirst
@@ -10,6 +11,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import dev.swarmz.phone.data.HostConnector
 import dev.swarmz.phone.data.MemorySettings
@@ -29,6 +31,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -46,7 +49,7 @@ class TileScreenTest {
 
     private lateinit var conn: FakeConn
 
-    private fun controller(tile: String, row: String): TileController {
+    private fun controller(tile: String, row: String, messages: String? = null): TileController {
         installBouncyCastle()
         conn = FakeConn { cmd ->
             when (cmd) {
@@ -61,14 +64,16 @@ class TileScreenTest {
         runBlocking {
             conn.stream(Cmd.watch()).send("""{"tiles":[$row],"type":"snapshot","v":1}""")
             conn.stream(Cmd.transcript("t1", follow = true)).send(
-                """{"hasMore":false,"messages":[{"id":"u","role":"user","text":"fix the build"},""" +
+                messages ?: """{"hasMore":false,"messages":[{"id":"u","role":"user","text":"fix the build"},""" +
                     """{"id":"a","role":"assistant","text":"Done. Run:\n```\nnpm test\n```","tools":[{"name":"Bash","summary":"npm run build","ok":true}]}],"v":1}""",
             )
             conn.stream(Cmd.output("s1", lines = 300, follow = true)).send(
                 """{"cols":80,"rows":24,"lines":[[{"text":"$ ls"}],[{"text":"file.txt"}]],"v":1}""",
             )
+            // A full window of history, so the screen only shows its newest lines when it is pinned to the bottom.
+            val filler = (0 until 58).joinToString(",") { """[{"text":"screen-fill-$it"}]""" }
             conn.stream(Cmd.output("t1", lines = 300, follow = true)).send(
-                """{"cols":80,"rows":24,"lines":[[{"text":"Select login method:"}],[{"text":"1. Claude account"}]],"v":1}""",
+                """{"cols":80,"rows":24,"lines":[$filler,[{"text":"Select login method:"}],[{"text":"1. Claude account"}]],"v":1}""",
             )
         }
         val settings = MemorySettings().also { it.paired.value = Paired("mini", "me", "Fold") }
@@ -176,6 +181,26 @@ class TileScreenTest {
         compose.waitForIdle()
         compose.onNodeWithText("Select login method:").assertIsDisplayed()
         compose.onNodeWithContentDescription("Conversation").assertIsDisplayed()
+    }
+
+    @Test
+    fun theScreenFollowsEvenWhenTheConversationWasScrolledUp() {
+        // A conversation long enough to scroll back through.
+        val many = (0 until 40).joinToString(",") { """{"id":"m$it","role":"assistant","text":"message $it"}""" }
+        val c = controller("t1", permissionRow, """{"hasMore":false,"messages":[$many],"v":1}""")
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("message 39")).fetchSemanticsNodes().isNotEmpty() }
+        // Scroll the conversation back through its history, so its index is well above the bottom.
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(20)
+        compose.waitForIdle()
+        val at = c.listState.firstVisibleItemIndex
+        assertTrue("the conversation really did scroll back (was $at)", at > 1)
+        compose.onNodeWithContentDescription("Screen").performClick()
+        // The screen has its own list state, so it still shows the newest lines rather than the conversation's index.
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("1. Claude account")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("1. Claude account").assertIsDisplayed()
+        compose.onNodeWithText("Select login method:").assertIsDisplayed()
+        assertEquals("and the conversation keeps the position it was left at", at, c.listState.firstVisibleItemIndex)
     }
 
     @Test

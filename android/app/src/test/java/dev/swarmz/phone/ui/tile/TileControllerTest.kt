@@ -497,6 +497,28 @@ class TileControllerTest {
     }
 
     @Test
+    fun closingInScreenModeClosesBothSessions() = runTest {
+        val (repo, conn) = setup()
+        conn.stream(Cmd.watch()).send(snapshot(null))
+        runCurrent()
+        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
+        runCurrent()
+        c.toggleScreen()
+        runCurrent()
+        val tr = Cmd.transcript("t1", follow = true)
+        val out = Cmd.output("t1", lines = 300, follow = true)
+        assertEquals(1, conn.ran.count { it == tr })
+        assertEquals(1, conn.ran.count { it == out })
+        c.close()
+        runCurrent()
+        // Neither stream is followed again: both sessions, and the controller's scope, are gone.
+        conn.stream(Cmd.watch()).send(snapshot(null).replace("idle", "working"))
+        runCurrent()
+        assertEquals(1, conn.ran.count { it == tr })
+        assertEquals(1, conn.ran.count { it == out })
+    }
+
+    @Test
     fun aShellTileIgnoresTheScreenToggle() = runTest {
         val (repo, conn) = setup()
         conn.stream(Cmd.watch()).send(snapshot(null))

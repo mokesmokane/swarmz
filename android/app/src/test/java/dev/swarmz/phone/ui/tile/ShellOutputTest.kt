@@ -1,5 +1,6 @@
 package dev.swarmz.phone.ui.tile
 
+import android.content.Intent
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.getValue
@@ -20,10 +21,15 @@ import dev.swarmz.phone.ui.theme.Sw
 import dev.swarmz.phone.ui.theme.SwarmzTheme
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -116,6 +122,20 @@ class ShellOutputTest {
         // Known limitation: the terminal wraps a long URL, and the two halves are never joined.
         assertEquals(listOf("https://claude.ai/oauth/auth"), found("https://claude.ai/oauth/auth"))
         assertEquals(emptyList<String>(), found("orize?code=1"))
+    }
+
+    @Test
+    fun onlyHttpAndHttpsAreEverOpened() {
+        val context = RuntimeEnvironment.getApplication()
+        assertFalse(openLink(context, "javascript:alert(1)"))
+        assertFalse(openLink(context, "file:///etc/passwd"))
+        assertFalse(openLink(context, "intent://x#Intent;end"))
+        assertNull("a refused scheme never reaches startActivity", shadowOf(context).nextStartedActivity)
+        assertTrue(openLink(context, "https://claude.ai/oauth"))
+        val started = shadowOf(context).nextStartedActivity
+        assertEquals(Intent.ACTION_VIEW, started.action)
+        assertEquals("https://claude.ai/oauth", started.data.toString())
+        assertTrue("a browser is what should answer", started.hasCategory(Intent.CATEGORY_BROWSABLE))
     }
 
     @OptIn(ExperimentalComposeUiApi::class)
