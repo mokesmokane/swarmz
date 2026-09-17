@@ -72,7 +72,10 @@ crate as the app (a second `[[bin]]`), bundled with swarmz and installed at
   `TERM=xterm-256color`, `COLORTERM=truecolor`, `SWARMZ_TERMINAL_ID`,
   `SWARMZ_TERMINAL_NAME` and any `--env`. `SSH_AUTH_SOCK`, `SSH_TTY`,
   `SSH_CONNECTION` and `SSH_CLIENT` are removed (they describe whichever ssh
-  session started the holder) unless given with `--env`.
+  session started the holder), as are `CLAUDECODE`, `CLAUDE_PID`,
+  `CLAUDE_EFFORT` and every variable whose name starts with `CLAUDE_CODE_`
+  (a tool run from inside a Claude Code session should not hand its own
+  session's identity to the new tile), unless given with `--env`.
 - It listens on `~/.swarmz/sessions/<tile>.sock` (directory mode 0700,
   socket 0600) and writes `~/.swarmz/sessions/<tile>.json`
   `{v, pid, shellPid, cwd, name, startedAt, build, screen}` (`screen: true`

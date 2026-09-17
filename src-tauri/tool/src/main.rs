@@ -12,9 +12,11 @@ use swarmz_tool::server::{run_holder, HolderConfig, TOOL_VIEWER, VIEWER_QUEUE_CA
 /// How long `close` waits for the session to end: above the holder's 3 s SIGHUP-to-SIGKILL grace.
 const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
-/// Variables that describe the connection that started the holder (an ssh session, usually long
-/// gone by the time the shell uses them), never the shell's own.
-const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT"];
+/// Variables that describe the connection or process that started the holder -- an ssh session
+/// usually long gone by the time the shell uses them, or the Claude Code session this tool was
+/// run from -- never the shell's own. Every variable whose name starts with `CLAUDE_CODE_` is
+/// removed too (see `__holder` below).
+const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT", "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT"];
 
 /// The most lines `output --follow` watches.
 const MAX_FOLLOW_LINES: usize = 1000;
@@ -225,6 +227,10 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             // Nothing else runs yet in this process, and the shell's environment is built from
             // ours; `--env` values are added on top afterwards, so they still apply.
             for k in STALE_ENV {
+                std::env::remove_var(k);
+            }
+            let claude_code_env: Vec<String> = std::env::vars().map(|(k, _)| k).filter(|k| k.starts_with("CLAUDE_CODE_")).collect();
+            for k in claude_code_env {
                 std::env::remove_var(k);
             }
             let (program, args) = holder_program();

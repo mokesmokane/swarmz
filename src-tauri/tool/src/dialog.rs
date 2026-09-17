@@ -33,6 +33,12 @@ fn clean(line: &str) -> &str {
     line.trim().trim_matches('│').trim()
 }
 
+/// How many columns a header line is indented, ignoring a leading box border.
+fn indent(line: &str) -> usize {
+    let s = line.strip_prefix('│').unwrap_or(line);
+    s.len() - s.trim_start_matches(' ').len()
+}
+
 /// `^\s*[❯>]?\s*(\d+)\.\s+(.+)$`
 fn option_line(line: &str) -> Option<Opt> {
     let t = clean(line);
@@ -83,13 +89,27 @@ pub fn parse_dialog(lines: &[String]) -> Option<Dialog> {
     }
     // The question is the nearest non-empty line above the options.
     let question = (start..first_opt).rev().find(|&i| !clean(&lines[i]).is_empty())?;
-    let mut header: Vec<String> = lines[start..question].iter().map(|l| clean(l).to_string()).filter(|l| !l.is_empty()).collect();
-    if rule.is_none() && header.len() > 3 {
-        header.drain(..header.len() - 3);
-    }
-    let heading = header.first()?.clone();
-    let target = header.get(1).cloned();
-    let description = if header.len() == 3 { header.last().cloned() } else { None };
+    // Non-empty header lines with their indentation (a "Tip: …" line sits at the same indent as
+    // the heading and must not be mistaken for the target; see `heading_indent` below).
+    let header: Vec<(usize, String)> = lines[start..question].iter().filter(|l| !clean(l).is_empty()).map(|l| (indent(l), clean(l).to_string())).collect();
+    let (heading_indent, heading) = header.first().cloned()?;
+    // The target and description are the header lines indented deeper than the heading -- this
+    // skips a "Tip: …" line, which sits at the heading's own indent.
+    let deeper: Vec<&String> = header[1..].iter().filter(|(i, _)| *i > heading_indent).map(|(_, t)| t).collect();
+    let (target, description) = if !deeper.is_empty() {
+        (Some(deeper[0].clone()), deeper.get(1).map(|s| (*s).clone()))
+    } else {
+        // No line is indented deeper than the heading: fall back to treating the header as a
+        // flat list, as when there is no rule and only the last few lines above the question
+        // count.
+        let mut flat: Vec<String> = header.iter().map(|(_, t)| t.clone()).collect();
+        if rule.is_none() && flat.len() > 3 {
+            flat.drain(..flat.len() - 3);
+        }
+        let target = flat.get(1).cloned();
+        let description = if flat.len() == 3 { flat.last().cloned() } else { None };
+        (target, description)
+    };
     Some(Dialog { heading, target, description, options })
 }
 
@@ -181,6 +201,49 @@ mod tests {
             (2, "Yes, and always allow access to /private/tmp/claude-501/-Users-mokes-projects-swarmz/20a24a27-ac03-47da-82eb-e75fbb0dce9f/scratchpad/spike2dir from this project")
         );
         assert_eq!(opts[2], (3, "No"));
+    }
+
+    /// Claude Code 2.1.274's dialog with a "Tip: …" line at the heading's own indent, wrapped
+    /// onto a second line, above the target and description (indented deeper).
+    fn real_with_tip() -> Vec<String> {
+        [
+            "─────────────────────────────",
+            " Bash command",
+            " Tip: auto mode handles these prompts for you — choose \"switch to auto mode\"",
+            " below",
+            "",
+            "   mkdir -p /tmp/swarmz-phone-test",
+            "   Create the phone test directory",
+            "",
+            " Do you want to proceed?",
+            " ❯ 1. Yes",
+            "   2. Yes, and always allow access to /tmp from this project",
+            "   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+            "   4. No",
+            "",
+            " Esc to cancel · Tab to amend",
+            "",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    #[test]
+    fn a_tip_line_does_not_become_the_target() {
+        let d = parse_dialog(&real_with_tip()).expect("a dialog");
+        assert_eq!(d.heading, "Bash command");
+        assert_eq!(d.target.as_deref(), Some("mkdir -p /tmp/swarmz-phone-test"));
+        assert_eq!(d.description.as_deref(), Some("Create the phone test directory"));
+        assert_eq!(d.options.len(), 4);
+        let pick = |s: &str| match resolve(s, &d) {
+            Ok(Answer::Option(o)) => Some(o.n),
+            Ok(Answer::Esc) => Some(0),
+            Err(_) => None,
+        };
+        assert_eq!(pick("yes"), Some(1));
+        assert_eq!(pick("always"), Some(2));
+        assert_eq!(pick("no"), Some(4));
     }
 
     #[test]

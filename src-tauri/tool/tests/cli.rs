@@ -226,6 +226,30 @@ fn the_holder_runs_from_root_and_its_shell_drops_stale_ssh_variables() {
 }
 
 #[test]
+fn the_holder_drops_claude_codes_own_environment() {
+    let h = home("holder-claude-env");
+    let cwd = h.path.to_string_lossy().into_owned();
+    let (code, a) = tool_env(
+        &h.path,
+        &["hold", "t14", "--cwd", &cwd, "--name", "fourteen"],
+        &[("CLAUDE_CODE_CHILD_SESSION", "1"), ("CLAUDECODE", "1"), ("CLAUDE_PID", "5")],
+    );
+    assert_eq!(code, 0, "{a}");
+    h.track(a["socket"].as_str().unwrap());
+
+    let out = Arc::new(Mutex::new(Vec::new()));
+    let o = out.clone();
+    let hello = Hello { v: PROTOCOL_VERSION, cols: 80, rows: 24, viewer: "window".into() };
+    let c = HolderClient::connect(Path::new(a["socket"].as_str().unwrap()), &hello, move |b, _| o.lock().unwrap().extend(b), |_| {}).unwrap();
+    c.write(b"echo \"claude=[$CLAUDE_CODE_CHILD_SESSION][$CLAUDECODE][$CLAUDE_PID]\"\n").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !String::from_utf8_lossy(&out.lock().unwrap()).contains("claude=[][][]") {
+        assert!(Instant::now() < deadline, "Claude Code's own variables reached the shell: {}", String::from_utf8_lossy(&out.lock().unwrap()));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn attach_refuses_to_attach_the_tile_it_runs_in() {
     let h = home("attach-self");
     let cwd = h.path.to_string_lossy().into_owned();
