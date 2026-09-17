@@ -170,8 +170,8 @@ class Repository(
     private val labels = MutableStateFlow<Map<String, String>>(emptyMap())
     /** The user each link logs in with, so a pairing change can tell which links need restarting. */
     private val linkUsers = mutableMapOf<String, String>()
-    /** One discovery round per paired Mac, with the link it follows. */
-    private val discoveries = mutableMapOf<String, Pair<MacLink, Job>>()
+    /** One discovery round per paired Mac, with the link it follows. Internal so tests can see it start and stop. */
+    internal val discoveries = mutableMapOf<String, Pair<MacLink, Job>>()
     /** Held while the link map is rebuilt, so a discovery round and a pairing change cannot cross. */
     private val linkChanges = kotlinx.coroutines.sync.Mutex()
     private val started = AtomicBoolean(false)
@@ -199,13 +199,21 @@ class Repository(
     /**
      * What Home shows above the cards. A Mac with no pairing of its own that refuses the key is left out: it has
      * never had this phone's key, and [pairHints] offers to pair it instead.
+     *
+     * A *paired* Mac that refuses the key gets its own wording here: [LinkState.Blocked.reason] is written for the
+     * Settings row, where the control it points at ("Pair it again below") is on the same screen, and Home has no
+     * such control.
      */
     val banners: StateFlow<List<Banner>> = combine(snapshots, labels, settings.pairings) { snaps, names, pairings ->
         snaps.mapNotNull { s ->
             val label = names[s.link.mac] ?: s.link.mac
             when (val st = s.state) {
                 is LinkState.TooOld -> Banner(s.link.mac, "Update swarmz on $label")
-                is LinkState.Blocked -> if (st.keyRejected && !isPaired(s.link.mac, pairings)) null else Banner(s.link.mac, st.reason)
+                is LinkState.Blocked -> when {
+                    !st.keyRejected -> Banner(s.link.mac, st.reason)
+                    !isPaired(s.link.mac, pairings) -> null
+                    else -> Banner(s.link.mac, "$label refused this phone's key. Pair it again in Settings.")
+                }
                 else -> null
             }
         }
@@ -359,7 +367,9 @@ class Repository(
             for (m in list.filter { !it.isSelf }) {
                 val existing = next.keys.firstOrNull { sameMac(it, m.name) }
                 val mac = existing ?: m.name
-                // What we already call it wins: two paired Macs can disagree, and the label must not flip each round.
+                // What we already call it wins: two paired Macs can disagree, and the label must not flip each
+                // round. That holds for a Mac that has never been paired too: it keeps the label first seen for
+                // it, because preferring the known label is exactly what stops two rounds flipping a name.
                 names[mac] = labels.value[mac] ?: m.alias ?: m.name
                 // No user at all means the pairing went while this round ran; that reset stops the link anyway.
                 val user = userFor(mac, pairings)

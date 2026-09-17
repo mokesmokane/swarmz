@@ -405,13 +405,43 @@ class RepositoryTest {
         assertTrue((repo.macStates.value["studio"] as LinkState.Blocked).keyRejected)
         assertEquals(emptyList<Banner>(), repo.banners.value)
 
-        // The paired Mac refusing the key still is one.
+        // The paired Mac refusing the key still is one, with Home's own wording: MacLink's reason points at the
+        // "Pair it again below" control, which only exists on Settings.
         val refused = repo(paired("mini"), object : SshConnector {
             override suspend fun connect(host: String, port: Int, auth: Auth): SshConnection = throw AuthRejected(host)
         })
         refused.start()
         runCurrent()
-        assertEquals(listOf("mini"), refused.banners.value.map { it.mac })
+        assertEquals(
+            listOf(Banner("mini", "mini refused this phone's key. Pair it again in Settings.")),
+            refused.banners.value,
+        )
+        assertEquals(
+            "and the Settings row keeps its own",
+            "mini refused this phone's key. Pair it again below.",
+            (refused.macStates.value["mini"] as LinkState.Blocked).reason,
+        )
+    }
+
+    @Test
+    fun aMacThatLeavesThePairingsLosesItsDiscoveryRound() = runTest {
+        val mini = FakeConn { if (it == Cmd.machines()) machines(self("mini"), other("studio", "Studio")) else VERSION_OK }
+        val studio = FakeConn { if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
+        val connector = HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)), "studio" to ArrayDeque(listOf(studio))))
+        val settings = paired("mini")
+        settings.addPairing(Paired("studio", "me", "Fold"))
+        val repo = repo(settings, connector)
+        repo.start()
+        runCurrent()
+        assertEquals(setOf("mini", "studio"), repo.discoveries.keys)
+        assertTrue(Cmd.machines() in studio.ran)
+        val round = repo.discoveries.getValue("studio").second
+        // studio is unpaired: its round is cancelled and forgotten, and mini's is untouched.
+        settings.setPaired(Paired("mini", "me", "Fold"))
+        runCurrent()
+        assertEquals(setOf("mini"), repo.discoveries.keys)
+        assertTrue("its round is cancelled, not left running", !round.isActive)
+        assertTrue(repo.discoveries.getValue("mini").second.isActive)
     }
 
     private fun machines(vararg entries: String) = """{"machines":[${entries.joinToString(",")}],"v":1}"""
