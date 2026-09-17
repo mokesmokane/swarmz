@@ -6,8 +6,14 @@ import dev.swarmz.phone.installBouncyCastle
 import dev.swarmz.phone.keys.Ed25519
 import dev.swarmz.phone.keys.PhoneKey
 import dev.swarmz.phone.proto.Cmd
+import dev.swarmz.phone.ssh.CUT
 import dev.swarmz.phone.ssh.FakeMac
 import dev.swarmz.phone.ssh.SshjConnector
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -17,6 +23,8 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class PairingTest {
     @get:Rule val tmp = TemporaryFolder()
@@ -88,5 +96,46 @@ class PairingTest {
             .startsWith("The key was added, but logging in with it failed: "))
         assertNull(settings.paired.value)
         assertEquals("Can't reach 127.0.0.1. Is Tailscale connected?", message { pairing(port = 1).pair("127.0.0.1", "me", "pw".toCharArray(), "Fold") })
+    }
+
+    @Test
+    fun explainsAHostKeyChange() = runBlocking {
+        settings.put("127.0.0.1:${mac.port}", "SHA256:not-the-real-key")
+        assertEquals(
+            "127.0.0.1 presented a different host key than before.",
+            message { pairing().pair("127.0.0.1", "me", "pw".toCharArray(), "Fold") },
+        )
+    }
+
+    @Test
+    fun cancellingDuringKeyLoginDoesNotBecomeAPairingError() = runBlocking {
+        val started = CountDownLatch(1)
+        mac.handler = { command, out, stopped ->
+            val version = """{"build":1,"protocol":$protocol,"tool":"0.1.0","v":1}""" + "\n"
+            when {
+                command == "${Cmd.TOOL_PATH} 'version'" -> { out.write(version.toByteArray()); 0 }
+                command.startsWith("${Cmd.TOOL_PATH} 'phone' 'add'") -> {
+                    mac.allowedKeys += key.openSsh
+                    out.write(("""{"added":true,"machines":[{"machine":"studio","ok":true}],"v":1}""" + "\n").toByteArray())
+                    0
+                }
+                // The key-login check's own `Cmd.version()` call: hang until the test cancels pair().
+                command == Cmd.version() -> {
+                    started.countDown()
+                    while (!stopped()) Thread.sleep(10)
+                    CUT
+                }
+                else -> 127
+            }
+        }
+        val pw = "pw".toCharArray()
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val result = scope.async { pairing().pair("127.0.0.1", "me", pw, "Fold") }
+        assertTrue(started.await(5, TimeUnit.SECONDS))
+        result.cancel()
+        val outcome = runCatching { result.await() }
+        assertTrue(outcome.exceptionOrNull() is CancellationException)
+        assertNull(settings.paired.value)
+        assertTrue(pw.all { it == Char.MIN_VALUE })
     }
 }

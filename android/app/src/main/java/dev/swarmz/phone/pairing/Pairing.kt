@@ -17,6 +17,7 @@ import dev.swarmz.phone.ssh.HostKeyChanged
 import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.ssh.SshConnector
 import dev.swarmz.phone.ssh.Unreachable
+import kotlinx.coroutines.CancellationException
 
 data class PairResult(val others: List<MachineResult>)
 class PairingError(message: String) : Exception(message)
@@ -42,9 +43,18 @@ class Pairing(
             if (!USER.matches(user)) throw PairingError("That username can't be used.")
             val key = keys()
             val reply = passwordSession(host, user, password).use { conn ->
+                // This one-off session has no phone key yet, so it can't go through the ssh-gate
+                // (which only accepts key logins); it runs the tool by its absolute path instead,
+                // the same way `Cmd.phoneAdd` does. Once the key is installed, the login check
+                // below reuses `Cmd.version()`, which does go through the gate.
                 val v = conn.exec("${Cmd.TOOL_PATH} ${Cmd.quote("version")}")
-                val version = runCatching { ToolJson.decode<Version>(v.stdout) }.getOrNull()
-                    ?: throw PairingError("swarmz isn't installed on $host yet. Open swarmz on that Mac once, then try again.")
+                val version = try {
+                    ToolJson.decode<Version>(v.stdout)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                } ?: throw PairingError("swarmz isn't installed on $host yet. Open swarmz on that Mac once, then try again.")
                 if (version.protocol < APP_PROTOCOL) throw PairingError("Update swarmz on $host first.")
                 try {
                     ToolJson.decode<PhoneAddReply>(conn.exec(Cmd.phoneAdd(device, key.openSsh)).stdout)
@@ -56,6 +66,8 @@ class Pairing(
                 connector.connect(host, port, Auth.Key(user, key)).use { conn ->
                     ToolJson.decode<Version>(conn.exec(Cmd.version()).stdout)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 throw PairingError("The key was added, but logging in with it failed: ${e.message}")
             }
