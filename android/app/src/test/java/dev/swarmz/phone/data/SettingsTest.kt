@@ -1,0 +1,46 @@
+package dev.swarmz.phone.data
+
+import androidx.test.core.app.ApplicationProvider
+import dev.swarmz.phone.state.TileKey
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import java.time.Instant
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
+class SettingsTest {
+    @Test
+    fun valuesPersistAcrossInstances() = runBlocking {
+        val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val scope1 = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val a = DataStoreSettings(ctx, scope1)
+        a.setPaired(Paired("mini", "me", "Fold"))
+        a.markSeen(TileKey("mini", "t1"), Instant.ofEpochSecond(100))
+        a.put("mini:22", "SHA256:abc")
+        a.setDictationLanguage("en-GB")
+        a.setBackgroundWatch(false)
+        a.flushPins()
+        scope1.cancel()
+        val scope2 = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val b = DataStoreSettings(ctx, scope2)
+        assertEquals(Paired("mini", "me", "Fold"), b.paired.first { it != null })
+        assertEquals(Instant.ofEpochSecond(100), b.seen.first { it.isNotEmpty() }[TileKey("mini", "t1")])
+        assertEquals("SHA256:abc", b.get("mini:22"))
+        assertEquals("en-GB", b.dictationLanguage.first { it != null })
+        assertEquals(false, b.backgroundWatch.first { !it })
+        b.forgetPairing()
+        assertNull(b.paired.first { it == null })
+        assertNull(b.get("mini:22"))
+        scope2.cancel()
+    }
+}

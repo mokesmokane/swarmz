@@ -1,0 +1,172 @@
+package dev.swarmz.phone.data
+
+import android.content.Context
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import dev.swarmz.phone.ssh.HostKeyPins
+import dev.swarmz.phone.state.TileKey
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
+
+@Serializable data class Paired(val host: String, val user: String, val device: String)
+@Serializable data class KnownMac(val name: String, val label: String, val lastSeen: Long? = null)
+
+val DEFAULT_NOTIFY = setOf("permission", "question", "finished")
+
+interface SettingsStore : HostKeyPins {
+    val paired: StateFlow<Paired?>
+    val macs: StateFlow<List<KnownMac>>
+    val seen: StateFlow<Map<TileKey, Instant>>
+    val dictationLanguage: StateFlow<String?>
+    val backgroundWatch: StateFlow<Boolean>
+    val notifyKinds: StateFlow<Set<String>>
+    suspend fun setPaired(p: Paired?)
+    suspend fun setMacs(list: List<KnownMac>)
+    suspend fun markSeen(key: TileKey, at: Instant)
+    suspend fun setDictationLanguage(tag: String?)
+    suspend fun setBackgroundWatch(on: Boolean)
+    suspend fun setNotifyKinds(kinds: Set<String>)
+    suspend fun forgetPairing()
+}
+
+class MemorySettings : SettingsStore {
+    override val paired = MutableStateFlow<Paired?>(null)
+    override val macs = MutableStateFlow<List<KnownMac>>(emptyList())
+    override val seen = MutableStateFlow<Map<TileKey, Instant>>(emptyMap())
+    override val dictationLanguage = MutableStateFlow<String?>(null)
+    override val backgroundWatch = MutableStateFlow(true)
+    override val notifyKinds = MutableStateFlow(DEFAULT_NOTIFY)
+    private val pins = ConcurrentHashMap<String, String>()
+    override fun get(id: String) = pins[id]
+    override fun put(id: String, fingerprint: String) { pins[id] = fingerprint }
+    override suspend fun setPaired(p: Paired?) { paired.value = p }
+    override suspend fun setMacs(list: List<KnownMac>) { macs.value = list }
+    override suspend fun markSeen(key: TileKey, at: Instant) { seen.update { it + (key to at) } }
+    override suspend fun setDictationLanguage(tag: String?) { dictationLanguage.value = tag }
+    override suspend fun setBackgroundWatch(on: Boolean) { backgroundWatch.value = on }
+    override suspend fun setNotifyKinds(kinds: Set<String>) { notifyKinds.value = kinds }
+    override suspend fun forgetPairing() {
+        paired.value = null
+        macs.value = emptyList()
+        seen.value = emptyMap()
+        pins.clear()
+    }
+}
+
+private val Context.swarmzStore by preferencesDataStore(name = "swarmz_settings")
+
+private object K {
+    val paired = stringPreferencesKey("paired")
+    val macs = stringPreferencesKey("macs")
+    val seen = stringPreferencesKey("seen")
+    val pins = stringPreferencesKey("pins")
+    val language = stringPreferencesKey("dictation_language")
+    val background = booleanPreferencesKey("background_watch")
+    val notify = stringSetPreferencesKey("notify_kinds")
+}
+
+private fun seenKey(key: TileKey) = "${key.mac}|${key.id}"
+
+private fun parseSeenKey(s: String): TileKey {
+    val (mac, id) = s.split('|', limit = 2)
+    return TileKey(mac, id)
+}
+
+class DataStoreSettings(context: Context, private val scope: CoroutineScope) : SettingsStore {
+    private val store = context.applicationContext.swarmzStore
+    private val json = Json { ignoreUnknownKeys = true }
+    private val pinCache = ConcurrentHashMap<String, String>()
+    private val pinWrites = Mutex()
+
+    init {
+        val saved = runBlocking { store.data.first()[K.pins] }
+        if (saved != null) pinCache.putAll(json.decodeFromString<Map<String, String>>(saved))
+    }
+
+    private fun <T> field(read: (Preferences) -> T, initial: T): StateFlow<T> =
+        store.data.map(read).stateIn(scope, SharingStarted.Eagerly, initial)
+
+    override val paired = field({ p -> p[K.paired]?.let { json.decodeFromString<Paired>(it) } }, null)
+    override val macs = field({ p -> p[K.macs]?.let { json.decodeFromString<List<KnownMac>>(it) } ?: emptyList() }, emptyList())
+    override val seen = field({ p ->
+        (p[K.seen]?.let { json.decodeFromString<Map<String, Long>>(it) } ?: emptyMap())
+            .entries.associate { (k, v) -> parseSeenKey(k) to Instant.ofEpochMilli(v) }
+    }, emptyMap())
+    override val dictationLanguage = field({ p -> p[K.language] }, null)
+    override val backgroundWatch = field({ p -> p[K.background] ?: true }, true)
+    override val notifyKinds = field({ p -> p[K.notify] ?: DEFAULT_NOTIFY }, DEFAULT_NOTIFY)
+
+    override fun get(id: String): String? = pinCache[id]
+
+    override fun put(id: String, fingerprint: String) {
+        pinCache[id] = fingerprint
+        scope.launch { flushPins() }
+    }
+
+    suspend fun flushPins() {
+        pinWrites.withLock {
+            val snapshot = json.encodeToString(pinCache.toMap())
+            store.edit { it[K.pins] = snapshot }
+        }
+    }
+
+    override suspend fun setPaired(p: Paired?) {
+        store.edit { if (p == null) it.remove(K.paired) else it[K.paired] = json.encodeToString(p) }
+    }
+
+    override suspend fun setMacs(list: List<KnownMac>) {
+        store.edit { it[K.macs] = json.encodeToString(list) }
+    }
+
+    override suspend fun markSeen(key: TileKey, at: Instant) {
+        store.edit { p ->
+            val current = p[K.seen]?.let { json.decodeFromString<Map<String, Long>>(it) } ?: emptyMap()
+            p[K.seen] = json.encodeToString(current + (seenKey(key) to at.toEpochMilli()))
+        }
+    }
+
+    override suspend fun setDictationLanguage(tag: String?) {
+        store.edit { if (tag == null) it.remove(K.language) else it[K.language] = tag }
+    }
+
+    override suspend fun setBackgroundWatch(on: Boolean) {
+        store.edit { it[K.background] = on }
+    }
+
+    override suspend fun setNotifyKinds(kinds: Set<String>) {
+        store.edit { it[K.notify] = kinds }
+    }
+
+    override suspend fun forgetPairing() {
+        // Under the pin lock, so a flush that already took its snapshot cannot write the old pins back afterwards.
+        pinWrites.withLock {
+            pinCache.clear()
+            store.edit {
+                it.remove(K.paired)
+                it.remove(K.macs)
+                it.remove(K.seen)
+                it.remove(K.pins)
+            }
+        }
+    }
+}
