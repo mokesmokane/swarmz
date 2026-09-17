@@ -12,8 +12,10 @@ enum class SendState { Sending, Sent, Failed }
 data class Outgoing(val id: Long, val text: String, val state: SendState, val after: String? = null)
 
 /**
- * Drops each `Sent` entry whose echo has arrived: a user message with the same trimmed text after the entry's
- * [Outgoing.after] (or among the last 10 messages when that id is unknown). Each message echoes one entry.
+ * Drops each `Sent` entry that can never stick: its echo has arrived (a user message with the same trimmed text
+ * after the entry's [Outgoing.after], or among the last 10 messages when that id is unknown - each message echoes
+ * one entry), or the turn has moved on without it (a newer message exists past that point but none of them is this
+ * entry's text). `Sending` and `Failed` entries are untouched; their timeout lives in [TileController].
  */
 fun reconcile(outgoing: List<Outgoing>, messages: List<Message>): List<Outgoing> {
     val used = mutableSetOf<Int>()
@@ -24,9 +26,14 @@ fun reconcile(outgoing: List<Outgoing>, messages: List<Message>): List<Outgoing>
         val text = o.text.trim()
         val hit = (from until messages.size).firstOrNull { i ->
             i !in used && messages[i].role == "user" && messages[i].text.trim() == text
-        } ?: return@filterNot false
-        used += hit
-        true
+        }
+        if (hit != null) {
+            used += hit
+            return@filterNot true
+        }
+        // The turn moved on without echoing it: an unclaimed later message exists, but none of them is this one.
+        // A message already claimed by another entry's echo (two identical sends) does not count.
+        (from until messages.size).any { it !in used }
     }
 }
 

@@ -59,6 +59,9 @@ internal fun pendingRetryMs(attempt: Int): Long = minOf(ASK_RETRY_MAX_MS, ASK_RE
 /** The long side images are decoded down to (at most a power of two above it). */
 internal const val IMAGE_TARGET_PX = 1024
 
+/** A `Sent` entry can never stick: it is dropped this long after sending even if no echo (or non-echo) arrives. */
+internal const val SENT_TIMEOUT_MS = 20_000L
+
 /** The largest power-of-two sample size that keeps the long side at or above [target]. */
 internal fun sampleSize(width: Int, height: Int, target: Int = IMAGE_TARGET_PX): Int {
     val long = maxOf(width, height)
@@ -275,22 +278,28 @@ class TileController(
         val text = draft.value.text.trim()
         if (text.isEmpty()) return
         draft.value = TextFieldValue("")
-        if (isShell) {
-            scope.launch {
-                try {
-                    repo.send(key, text)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    if (draft.value.text.isEmpty()) draft.value = TextFieldValue(text, TextRange(text.length))
-                    fail(e, "Couldn't send: ")
-                }
-            }
+        // A slash command is a command, not a message: Claude never writes it to the transcript, so it would
+        // never be reconciled away. Send it the way a shell send works instead.
+        if (isShell || text.startsWith("/")) {
+            sendPlain(text)
             return
         }
         val entry = Outgoing(ids.incrementAndGet(), text, SendState.Sending, after = transcript.value.lastId)
         _outgoing.update { it + entry }
         deliver(entry)
+    }
+
+    private fun sendPlain(text: String) {
+        scope.launch {
+            try {
+                repo.send(key, text)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (draft.value.text.isEmpty()) draft.value = TextFieldValue(text, TextRange(text.length))
+                fail(e, "Couldn't send: ")
+            }
+        }
     }
 
     private fun deliver(entry: Outgoing) {
@@ -304,6 +313,15 @@ class TileController(
                 SendState.Failed
             }
             _outgoing.update { list -> reconcile(list.map { if (it.id == entry.id) it.copy(state = state) else it }, transcript.value.messages) }
+            if (state == SendState.Sent) expireSent(entry.id)
+        }
+    }
+
+    /** A `Sent` entry can never stick: drop it if it is still `Sent` and unreconciled after [SENT_TIMEOUT_MS]. */
+    private fun expireSent(id: Long) {
+        scope.launch {
+            delay(SENT_TIMEOUT_MS)
+            _outgoing.update { list -> list.filterNot { it.id == id && it.state == SendState.Sent } }
         }
     }
 

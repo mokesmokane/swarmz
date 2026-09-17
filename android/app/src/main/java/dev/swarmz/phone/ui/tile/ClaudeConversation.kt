@@ -36,7 +36,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import android.content.ClipData
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.ClipEntry
@@ -97,7 +99,7 @@ fun ClaudeConversation(
 }
 
 @Composable
-private fun StatusLine(text: String) {
+internal fun StatusLine(text: String) {
     var on by remember { mutableStateOf(true) }
     val lifecycle = LocalLifecycleOwner.current
     LaunchedEffect(lifecycle) {
@@ -111,7 +113,9 @@ private fun StatusLine(text: String) {
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(text, style = MonoSmall)
-        Text(if (on) " ▍" else "  ", style = MonoSmall)
+        // The cursor's text never changes, only its alpha: swapping it for "  " measured taller in the fallback
+        // font that draws the block character, so the line's height (and every message above it) jumped on blink.
+        Text(" ▍", style = MonoSmall, modifier = Modifier.alpha(if (on) 1f else 0f).testTag("statusCursor"))
     }
 }
 

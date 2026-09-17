@@ -106,6 +106,95 @@ class TileControllerTest {
     }
 
     @Test
+    fun aSlashCommandSendsWithNoOutgoingBubble() = runTest {
+        val (repo, conn) = setup()
+        conn.stream(Cmd.watch()).send(snapshot(null))
+        runCurrent()
+        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
+        runCurrent()
+        c.draft.value = TextFieldValue("/login")
+        c.send()
+        runCurrent()
+        assertEquals("", c.draft.value.text)
+        assertTrue(Cmd.send("t1", "/login") in conn.ran)
+        assertTrue("a slash command never gets a bubble stuck at the bottom", c.outgoing.value.isEmpty())
+        // A failed slash command restores the draft, the way a shell send does.
+        sendFails = true
+        c.draft.value = TextFieldValue("/login")
+        c.send()
+        runCurrent()
+        assertEquals("/login", c.draft.value.text)
+        assertEquals("Couldn't send: api is not running", c.notice.value)
+        assertTrue(c.outgoing.value.isEmpty())
+        c.close()
+    }
+
+    @Test
+    fun aSentEntryDisappearsAfterTheTimeout() = runTest {
+        val (repo, conn) = setup()
+        conn.stream(Cmd.watch()).send(snapshot(null))
+        runCurrent()
+        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
+        runCurrent()
+        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
+        runCurrent()
+        c.draft.value = TextFieldValue("run the tests")
+        c.send()
+        runCurrent()
+        assertEquals(SendState.Sent, c.outgoing.value.single().state)
+        advanceTimeBy(SENT_TIMEOUT_MS - 100)
+        runCurrent()
+        assertEquals("still shown just before the timeout", 1, c.outgoing.value.size)
+        advanceTimeBy(200)
+        runCurrent()
+        assertTrue("a Sent entry can never stick, even with no echo at all", c.outgoing.value.isEmpty())
+        c.close()
+    }
+
+    @Test
+    fun aSentEntryDisappearsWhenLaterMessagesArriveWithoutIt() = runTest {
+        val (repo, conn) = setup()
+        conn.stream(Cmd.watch()).send(snapshot(null))
+        runCurrent()
+        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
+        runCurrent()
+        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
+        runCurrent()
+        c.draft.value = TextFieldValue("run the tests")
+        c.send()
+        runCurrent()
+        assertEquals(SendState.Sent, c.outgoing.value.single().state)
+        // The turn moved on: a later message shows up, but it is not this entry's echo.
+        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"message":{"id":"u1","role":"user","text":"something else"},"type":"message","v":1}""")
+        runCurrent()
+        assertTrue("the turn moved on without echoing it", c.outgoing.value.isEmpty())
+        c.close()
+    }
+
+    @Test
+    fun aFailedEntrySurvivesTheTimeoutAndLaterMessages() = runTest {
+        val (repo, conn) = setup()
+        conn.stream(Cmd.watch()).send(snapshot(null))
+        runCurrent()
+        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
+        runCurrent()
+        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
+        runCurrent()
+        sendFails = true
+        c.draft.value = TextFieldValue("run the tests")
+        c.send()
+        runCurrent()
+        assertEquals(SendState.Failed, c.outgoing.value.single().state)
+        advanceTimeBy(SENT_TIMEOUT_MS + 1_000)
+        runCurrent()
+        assertEquals("a Failed entry never expires", SendState.Failed, c.outgoing.value.single().state)
+        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"message":{"id":"u1","role":"user","text":"something else"},"type":"message","v":1}""")
+        runCurrent()
+        assertEquals("a Failed entry is untouched by later messages too", SendState.Failed, c.outgoing.value.single().state)
+        c.close()
+    }
+
+    @Test
     fun permissionQuestionsAreFetchedAndAnsweredByNumber() = runTest {
         val (repo, conn) = setup()
         conn.stream(Cmd.watch()).send(snapshot("permission"))
