@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { homeDir } from "@tauri-apps/api/path";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { ipc, type TerminalInfo, type TailscaleStatus } from "./lib/ipc";
+import { ipc, updater, type TerminalInfo, type TailscaleStatus } from "./lib/ipc";
 import {
   addTab,
   allGroups,
@@ -303,6 +303,47 @@ export interface SshTerminalOptions {
   machine?: string | null;
 }
 
+/**
+ * The desktop updater's state machine. `idle` is both "not asked yet" and "nothing to install";
+ * a check that found something goes `checking` -> `available`, installing goes `available` ->
+ * `downloading` -> `ready` (and then relaunches). Every failure lands in `failed` with the
+ * reason and the version still set, so the notice stays and offers a retry: a broken endpoint,
+ * a refused download or a relaunch that will not happen must never stop the app being used.
+ */
+export type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "ready" | "failed";
+
+export interface UpdateState {
+  status: UpdateStatus;
+  /** The offered version, kept through `failed` so a retry knows what it is retrying. */
+  version: string | null;
+  notes: string | null;
+  error: string | null;
+  downloaded: number;
+  contentLength: number | null;
+  /** Whether the last check was asked for by hand, so an empty result is worth reporting. */
+  manual: boolean;
+  checkedAt: string | null;
+  /** The user pressed Later: the notice hides until a different version turns up. */
+  dismissed: boolean;
+}
+
+export const EMPTY_UPDATE: UpdateState = {
+  status: "idle",
+  version: null,
+  notes: null,
+  error: null,
+  downloaded: 0,
+  contentLength: null,
+  manual: false,
+  checkedAt: null,
+  dismissed: false,
+};
+
+/** Tauri rejects with a bare string as often as with an Error; both must read the same. */
+function errText(e: unknown): string {
+  return typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
+}
+
 export interface WorkbenchState {
   terminals: Record<string, TerminalInfo>;
   order: string[];
@@ -349,6 +390,7 @@ export interface WorkbenchState {
   resumeWatch: Record<string, { sessionId: string; until: number }>;
   /** Ids of running sessions on this Mac that are not in the workspace and have no open tile. */
   outsideSessions: string[];
+  update: UpdateState;
 
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
   createSshTerminal(opts: SshTerminalOptions, placement?: Placement): Promise<string>;
@@ -395,6 +437,11 @@ export interface WorkbenchState {
   installAgentHooks(): Promise<void>;
   ensureAgentWatchers(): Promise<void>;
   agentWatchEnded(payload: { host: string | null; gen: number }): Promise<void>;
+  /** Asks the endpoint once; never rejects. `manual` makes an empty answer worth showing. */
+  checkForUpdates(opts?: { manual?: boolean }): Promise<void>;
+  /** Downloads, installs and relaunches the offered update; never rejects. */
+  installUpdate(): Promise<void>;
+  dismissUpdate(): void;
 }
 
 /**
@@ -1258,6 +1305,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   pastedAt: {},
   resumeWatch: {},
   outsideSessions: [],
+  update: EMPTY_UPDATE,
 
   async createTerminal(cwd, placement) {
     const id = crypto.randomUUID();
@@ -2128,6 +2176,74 @@ export const useStore = create<WorkbenchState>((set) => ({
     if (lived > (agentWatch.delay.get(host) ?? 0)) agentWatchSurvived(host);
     if (host !== null && !(await agentTilesStillLive(host))) return;
     if (wantedAgentHosts(useStore.getState()).has(host)) scheduleAgentRewatch(host);
+  },
+
+  async checkForUpdates(opts) {
+    const manual = opts?.manual === true;
+    const { status, version: known } = useStore.getState().update;
+    // A check in flight, a download running, or an update already staged on disk: asking again
+    // would either duplicate the request or throw away a package we have already paid for.
+    if (status === "checking" || status === "downloading" || status === "ready") return;
+    set((s) => ({ update: { ...s.update, status: "checking", error: null, manual } }));
+    let found: Awaited<ReturnType<typeof updater.check>>;
+    try {
+      found = await updater.check();
+    } catch (e) {
+      const msg = errText(e);
+      console.warn("swarmz: update check failed:", msg);
+      set((s) => ({ update: { ...s.update, status: "failed", error: msg, checkedAt: new Date().toISOString() } }));
+      return;
+    }
+    const checkedAt = new Date().toISOString();
+    if (!found) {
+      set((s) => ({ update: { ...EMPTY_UPDATE, manual: s.update.manual, checkedAt } }));
+      return;
+    }
+    set((s) => ({
+      update: {
+        ...s.update,
+        status: "available",
+        version: found.version,
+        notes: found.notes,
+        error: null,
+        downloaded: 0,
+        contentLength: null,
+        checkedAt,
+        // A version we have not already been told about is worth showing again.
+        dismissed: s.update.dismissed && found.version === known,
+      },
+    }));
+  },
+
+  async installUpdate() {
+    const { status, version } = useStore.getState().update;
+    if (!version) return;
+    if (status !== "available" && status !== "failed") return;
+    set((s) => ({ update: { ...s.update, status: "downloading", error: null, downloaded: 0, contentLength: null } }));
+    try {
+      await updater.install((p) =>
+        set((s) => (s.update.status === "downloading" ? { update: { ...s.update, ...p } } : {})),
+      );
+    } catch (e) {
+      const msg = errText(e);
+      console.warn("swarmz: update download failed:", msg);
+      set((s) => ({ update: { ...s.update, status: "failed", error: msg } }));
+      return;
+    }
+    set((s) => ({ update: { ...s.update, status: "ready", error: null } }));
+    try {
+      await updater.relaunch();
+    } catch (e) {
+      // The new version is installed either way; the user restarting by hand gets it, and the
+      // holders keep every session alive meanwhile.
+      const msg = errText(e);
+      console.warn("swarmz: relaunch failed:", msg);
+      set((s) => ({ update: { ...s.update, error: msg } }));
+    }
+  },
+
+  dismissUpdate() {
+    set((s) => ({ update: { ...s.update, dismissed: true, manual: false } }));
   },
 }));
 

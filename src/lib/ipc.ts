@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import type { Workspace } from "./workspace";
 import type { AgentEvent } from "./agentState";
 
@@ -158,4 +160,52 @@ export const ipc = {
     listen<AgentEventPayload>("agent:event", (e) => cb(e.payload)),
   onAgentWatchEnded: (cb: (p: { host: string | null; gen: number }) => void): Promise<UnlistenFn> =>
     listen<{ host: string | null; gen: number }>("agent:watch-ended", (e) => cb(e.payload)),
+};
+
+/** An update the endpoint offers, flattened out of the plugin's `Update` handle. */
+export interface UpdateInfo {
+  version: string;
+  currentVersion: string;
+  notes: string | null;
+  date: string | null;
+}
+
+export interface DownloadProgress {
+  downloaded: number;
+  /** Bytes the server promised, or null when it did not say. */
+  contentLength: number | null;
+}
+
+/**
+ * The updater, wrapped the way `ipc` wraps `invoke`: the store only ever sees plain data, so the
+ * plugin's `Update` resource (which cannot be serialised or reconstructed) stays in this module
+ * and the state machine is testable with a mock of this file. Closing the previous handle is
+ * best effort — a leaked resource must never fail a check.
+ */
+let pendingUpdate: Update | null = null;
+
+export const updater = {
+  async check(): Promise<UpdateInfo | null> {
+    const previous = pendingUpdate;
+    pendingUpdate = null;
+    if (previous) await previous.close().catch(() => {});
+    const found = await check();
+    pendingUpdate = found;
+    return found
+      ? { version: found.version, currentVersion: found.currentVersion, notes: found.body ?? null, date: found.date ?? null }
+      : null;
+  },
+  /** Downloads and installs the update found by the last `check`. */
+  async install(onProgress?: (p: DownloadProgress) => void): Promise<void> {
+    const update = pendingUpdate;
+    if (!update) throw new Error("no update to install");
+    let downloaded = 0;
+    let contentLength: number | null = null;
+    await update.downloadAndInstall((e) => {
+      if (e.event === "Started") contentLength = e.data.contentLength ?? null;
+      else if (e.event === "Progress") downloaded += e.data.chunkLength;
+      onProgress?.({ downloaded, contentLength });
+    });
+  },
+  relaunch: () => relaunch(),
 };

@@ -6,6 +6,7 @@ import { NewRemoteTerminal } from "./NewRemoteTerminal";
 import { dotPresentation } from "../lib/agentState";
 import { SessionHistory } from "./SessionHistory";
 import { PhonesPanel } from "./PhonesPanel";
+import { UpdateNotice, UpdateVersionLine } from "./UpdateNotice";
 
 function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? p;
@@ -292,6 +293,7 @@ export function Sidebar() {
         </div>
       </div>
       <SyncLine />
+      <UpdateNotice />
       {phonesOpen && <PhonesPanel onClose={() => setPhonesOpen(false)} />}
       {menu === "open" && (
         <div className="flex gap-1 border-b border-neutral-800 p-2 text-xs">
@@ -330,6 +332,7 @@ export function Sidebar() {
         ))}
         {order.length === 0 && <div className="px-2 py-4 text-xs text-neutral-500">No terminals</div>}
       </div>
+      <UpdateVersionLine />
     </aside>
   );
 }

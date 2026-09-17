@@ -28,6 +28,12 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 swarmz-tool = { path = "tool" }
 libc = "0.2"
 
+# The updater and process plugins are desktop-only; gate them the way the Tauri docs do so a
+# mobile target would still resolve.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
 [profile.release]
 codegen-units = 1
 lto = true

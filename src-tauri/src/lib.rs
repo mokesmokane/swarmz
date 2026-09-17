@@ -14,9 +14,19 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_clipboard_manager::init());
+    // The updater checks a signed `latest.json` on the GitHub release and installs over the
+    // running app; the process plugin only relaunches afterwards. Both are desktop-only.
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_process::init());
+    }
+    builder
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::create_terminal,
