@@ -6,8 +6,23 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// Release signing: locally from ~/.swarmz-android/signing.properties (outside the repo), in CI
+// from environment variables the workflow fills from repository secrets. The local file always
+// wins when it has the value, so nothing about a developer machine changes.
 val signingFile = File(System.getProperty("user.home"), ".swarmz-android/signing.properties")
 val signing = Properties().apply { if (signingFile.exists()) signingFile.inputStream().use(::load) }
+
+fun signingValue(key: String, env: String): String? =
+    (signing.getProperty(key) ?: System.getenv(env))?.takeIf { it.isNotBlank() }
+
+val storeFilePath = signingValue("storeFile", "ANDROID_KEYSTORE_FILE")
+val storePasswordValue = signingValue("storePassword", "ANDROID_KEYSTORE_PASSWORD")
+val keyAliasValue = signingValue("keyAlias", "ANDROID_KEY_ALIAS")
+val keyPasswordValue = signingValue("keyPassword", "ANDROID_KEY_PASSWORD")
+// Without all four the release build stays unsigned rather than failing: `assembleDebug` and the
+// unit tests must keep working on a machine that has no key at all.
+val canSignRelease =
+    storeFilePath != null && storePasswordValue != null && keyAliasValue != null && keyPasswordValue != null
 
 android {
     namespace = "dev.swarmz.phone"
@@ -17,17 +32,17 @@ android {
         applicationId = "dev.swarmz.phone"
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
+        versionCode = 100
         versionName = "0.1.0"
     }
 
     signingConfigs {
-        if (signingFile.exists()) {
+        if (canSignRelease) {
             create("release") {
-                storeFile = File(signing.getProperty("storeFile"))
-                storePassword = signing.getProperty("storePassword")
-                keyAlias = signing.getProperty("keyAlias")
-                keyPassword = signing.getProperty("keyPassword")
+                storeFile = File(storeFilePath!!)
+                storePassword = storePasswordValue
+                keyAlias = keyAliasValue
+                keyPassword = keyPasswordValue
             }
         }
     }
