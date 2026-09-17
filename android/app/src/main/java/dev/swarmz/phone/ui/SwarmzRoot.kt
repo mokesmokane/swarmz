@@ -130,7 +130,9 @@ private fun PairedContent(vm: AppViewModel) {
                     // The drag moves this local copy every frame; only the settled value is written to settings,
                     // and a stored value coming back re-keys it.
                     var dragged by remember(stored) { mutableStateOf(stored.dp) }
-                    val widest = maxOf(LIST_MIN_DP.dp, minOf(LIST_MAX_DP.dp, available - DETAIL_MIN_WIDTH))
+                    // The handle is a row child of its own, so it comes off the list's ceiling too.
+                    val ceiling = available - DETAIL_MIN_WIDTH - HANDLE_WIDTH
+                    val widest = maxOf(LIST_MIN_DP.dp, minOf(LIST_MAX_DP.dp, ceiling))
                     TileListPane(
                         home,
                         selected = (route as? Route.Tile)?.key,
@@ -138,7 +140,7 @@ private fun PairedContent(vm: AppViewModel) {
                         onNew = vm::openNewSession,
                         onSettings = vm::openSettings,
                         onCollapse = { vm.setListCollapsed(true) },
-                        modifier = Modifier.width(dragged.coerceAtMost(available - DETAIL_MIN_WIDTH)),
+                        modifier = Modifier.width(dragged.coerceAtMost(ceiling)),
                     )
                     ResizeHandle(
                         onDrag = { by -> dragged = (dragged + by).coerceIn(LIST_MIN_DP.dp, widest) },
@@ -208,6 +210,8 @@ private fun Screen(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boole
             onDismissHint = vm::dismissPairHint,
         )
         is Route.Tile -> {
+            // While the controller is still loading there is no header, so a collapsed list has nothing to reopen it
+            // for a frame or two. Deliberate: the tile arrives immediately and brings the control with it.
             val c by vm.tile.collectAsStateWithLifecycle()
             c?.let { TileScreen(it, unfolded = !showBack, onBack = if (showBack) ({ vm.back() }) else null, now = vm.now, onShowList = onShowList) }
         }

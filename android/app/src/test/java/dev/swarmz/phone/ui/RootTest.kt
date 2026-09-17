@@ -170,6 +170,24 @@ class RootTest {
     }
 
     @Test
+    @Config(qualifiers = "w700dp-h800dp")
+    fun theListStopsWhereTheDetailPaneStillHasItsFloor() {
+        val vm = vm(paired = true)
+        compose.setContent { SwarmzRoot(vm) }
+        compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("docs") > 0 }
+        compose.onNodeWithContentDescription("Resize the list").performTouchInput {
+            down(center)
+            moveBy(Offset(150f, 0f))
+            moveBy(Offset(150f, 0f))
+            moveBy(Offset(150f, 0f))
+            up()
+        }
+        // The handle is a row child too, so the ceiling is 700 - 320 - 12, not 700 - 320.
+        compose.waitUntil(5_000) { vm.listWidth.value > 260 }
+        assertEquals(368, vm.listWidth.value)
+    }
+
+    @Test
     @Config(qualifiers = "w360dp-h780dp")
     fun foldedHasNoListPaneControls() {
         val vm = vm(paired = true)
