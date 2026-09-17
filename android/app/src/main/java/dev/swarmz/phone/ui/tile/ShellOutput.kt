@@ -50,11 +50,19 @@ fun Line.annotated(): AnnotatedString = buildAnnotatedString {
 
 fun exitLine(code: Int?): String = if (code == null) "[process exited]" else "[process exited with code $code]"
 
-/** The stateless part of [ShellBody]: monospace lines, bottom-aligned, following new output while at the bottom. */
+/**
+ * The stateless part of [ShellBody]: monospace lines, bottom-aligned, following new output while at the bottom.
+ *
+ * [dropped] is the running count of lines dropped from the top (see [dev.swarmz.phone.state.ScreenState.dropped]).
+ * Combined with `lines.size` it both gives each row a stable absolute-line-number key (so a full window's rows
+ * don't all recompose and lose scroll position on every update) and signals the follow effect: once the window is
+ * full, `output --follow` drops and appends the same number of lines each update, so `lines.size` alone never
+ * changes and following would silently stop without it.
+ */
 @Composable
-internal fun ShellLines(lines: List<Line>, exit: String?, listState: LazyListState, modifier: Modifier = Modifier) {
+internal fun ShellLines(lines: List<Line>, dropped: Long, exit: String?, listState: LazyListState, modifier: Modifier = Modifier) {
     // Keep following the newest output while the view is at the bottom.
-    LaunchedEffect(lines.size, exit) {
+    LaunchedEffect(lines.size, dropped, exit) {
         if (listState.firstVisibleItemIndex <= 1) listState.scrollToItem(0)
     }
     LazyColumn(
@@ -65,7 +73,9 @@ internal fun ShellLines(lines: List<Line>, exit: String?, listState: LazyListSta
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         if (exit != null) item(key = "exit") { Text(exit, style = MonoBody.copy(color = Sw.Secondary)) }
-        itemsIndexed(lines.reversed()) { _, line -> Text(line.annotated(), style = MonoBody, softWrap = false) }
+        itemsIndexed(lines.reversed(), key = { j, _ -> dropped + (lines.size - 1 - j) }) { _, line ->
+            Text(line.annotated(), style = MonoBody, softWrap = false)
+        }
     }
 }
 
@@ -73,7 +83,7 @@ internal fun ShellLines(lines: List<Line>, exit: String?, listState: LazyListSta
 fun ShellBody(c: TileController, row: TileRow, modifier: Modifier) {
     val screen by c.screen.collectAsStateWithLifecycle()
     val exit = if (screen.exited || !row.running) exitLine(row.exitCode) else null
-    ShellLines(screen.lines, exit, c.listState, modifier)
+    ShellLines(screen.lines, screen.dropped, exit, c.listState, modifier)
 }
 
 @Composable

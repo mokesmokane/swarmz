@@ -1,6 +1,10 @@
 package dev.swarmz.phone.ui.tile
 
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -42,11 +46,50 @@ class ShellOutputTest {
     }
 
     @Test
+    fun inverseWithOnlyAForegroundUsesItAsTheBackground() {
+        val line = listOf(Span("x", fg = JsonPrimitive("#ff0000"), inverse = true))
+        val style = line.annotated().spanStyles.single().item
+        assertEquals(Sw.Background, style.color)
+        assertEquals(Color(0xFFFF0000), style.background)
+    }
+
+    @Test
+    fun inverseWithOnlyABackgroundUsesItAsTheText() {
+        val line = listOf(Span("x", bg = JsonPrimitive("#00ff00"), inverse = true))
+        val style = line.annotated().spanStyles.single().item
+        assertEquals(Color(0xFF00FF00), style.color)
+        assertEquals(Sw.Body, style.background)
+    }
+
+    @Test
     fun linesRender() {
         compose.setContent {
-            SwarmzTheme { ShellLines(listOf(listOf(Span("$ make")), listOf(Span("done"))), exit = exitLine(0), listState = rememberLazyListState()) }
+            SwarmzTheme {
+                ShellLines(
+                    listOf(listOf(Span("$ make")), listOf(Span("done"))),
+                    dropped = 0,
+                    exit = exitLine(0),
+                    listState = rememberLazyListState(),
+                )
+            }
         }
         compose.onNodeWithText("$ make").assertIsDisplayed()
         compose.onNodeWithText("[process exited with code 0]").assertIsDisplayed()
+    }
+
+    @Test
+    fun followsWhenAFullWindowDropsAndAppends() {
+        var lines by mutableStateOf((0 until 300).map { i -> listOf(Span("line$i")) })
+        var dropped by mutableStateOf(0L)
+        lateinit var listState: LazyListState
+        compose.setContent {
+            listState = rememberLazyListState()
+            SwarmzTheme { ShellLines(lines, dropped, exit = null, listState = listState) }
+        }
+        compose.onNodeWithText("line299").assertIsDisplayed()
+        // A full window: the update drops one line and appends one, so lines.size (300) never changes.
+        lines = lines.drop(1) + listOf(listOf(Span("line300")))
+        dropped += 1
+        compose.onNodeWithText("line300").assertIsDisplayed()
     }
 }
