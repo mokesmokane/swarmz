@@ -68,6 +68,7 @@ fun HomeScreen(
     onReply: (TileKey, String) -> Unit,
     onNew: () -> Unit,
     onSettings: () -> Unit,
+    showActions: Boolean = true,
 ) {
     val needs = ui.model.needs
     val quiet = ui.model.quiet
@@ -86,7 +87,10 @@ fun HomeScreen(
                         )
                         Text("${plural(quiet.size, "other", "others")} running quietly", style = MaterialTheme.typography.bodySmall)
                     }
-                    IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Sw.Secondary) }
+                    // Beside the tile list, which has its own Settings and New session actions, they are left out here.
+                    if (showActions) {
+                        IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Sw.Secondary) }
+                    }
                 }
             }
             items(ui.banners, key = { "banner-" + it.mac }) { b ->
@@ -113,8 +117,10 @@ fun HomeScreen(
                 }
             }
         }
-        Pill(onClick = onNew, filled = true, modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("New session", style = MaterialTheme.typography.titleSmall)
+        if (showActions) {
+            Pill(onClick = onNew, filled = true, modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                Text("New session", style = MaterialTheme.typography.titleSmall)
+            }
         }
     }
 }

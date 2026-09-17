@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.swarmz.phone.state.TileKey
 import dev.swarmz.phone.state.dotOf
@@ -63,6 +64,7 @@ fun TileListPane(ui: HomeUi, selected: TileKey?, onOpen: (TileKey) -> Unit, onNe
                             .padding(horizontal = 8.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(if (isSelected) Sw.Card else Sw.Background)
+                            .testTag("tile-row-${view.key.mac}/${view.key.id}")
                             .clickable { onOpen(view.key) }
                             .padding(horizontal = 8.dp, vertical = 8.dp)
                             .alpha(if (section.dimmed) 0.5f else 1f),

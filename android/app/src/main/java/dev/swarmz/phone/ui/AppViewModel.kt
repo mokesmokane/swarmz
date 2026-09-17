@@ -171,9 +171,11 @@ class AppViewModel(
         repo.markSeen(key, if (mac != null && mac.isAfter(phone)) mac else phone)
     }
 
+    /** The tile no longer needs a permission: drop its fetch state, and any answer's hold, which belonged to the old question. */
     private fun forget(key: TileKey) {
         asked.remove(key)
         fetches.remove(key)?.cancel()
+        holds.remove(key)?.complete()
     }
 
     /**

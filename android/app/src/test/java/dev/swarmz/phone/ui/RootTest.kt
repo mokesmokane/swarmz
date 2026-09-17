@@ -1,8 +1,10 @@
 package dev.swarmz.phone.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
-import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -77,9 +79,11 @@ class RootTest {
         compose.setContent { SwarmzRoot(vm) }
         compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("docs") > 0 }
         compose.onNodeWithText("Tiles").assertIsDisplayed()
-        // With no tile open, home sits beside the list, so "docs" shows in both; the list comes first.
+        // With no tile open, home sits beside the list, without repeating the list's actions.
         compose.onNodeWithText("Nothing needs you").assertIsDisplayed()
-        compose.onAllNodes(hasText("docs")).onFirst().performClick()
+        compose.onAllNodes(hasText("New session") or hasContentDescription("New session")).assertCountEquals(1)
+        compose.onAllNodes(hasContentDescription("Settings")).assertCountEquals(1)
+        compose.onNodeWithTag("tile-row-mini/t3").performClick()
         compose.onNodeWithText("Tiles").assertIsDisplayed()
         compose.onNodeWithText("Nothing needs you").assertDoesNotExist()
         compose.onNodeWithText("Message docs…").assertIsDisplayed()

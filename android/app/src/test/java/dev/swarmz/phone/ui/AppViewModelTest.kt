@@ -218,6 +218,23 @@ class AppViewModelTest {
     }
 
     @Test
+    fun anOldAnswersHoldDoesNotDelayTheNextQuestion() = runTest {
+        // Answered, but the dialog is still up; then the block ends and a new one starts within the 2 s hold.
+        val e = env { answerClearsQuestion = false }
+        e.vm.allowOnce(API)
+        runCurrent()
+        e.push(
+            """{"tiles":[{"cwd":"/p/api","id":"t1","kind":"claude","name":"api","running":true,"status":"working"}],"type":"snapshot","v":1}""",
+        )
+        runCurrent()
+        e.pending = """{"pending":{"tool":"Edit","summary":"edit a.ts","options":[{"n":1,"label":"Yes"}]},"v":1}"""
+        e.push(PERMISSION_SNAPSHOT.replace("2026-09-17T10:00:00Z", "2026-09-17T10:10:30Z"))
+        runCurrent()
+        assertEquals(2, e.conn.ran.count { it == Cmd.pending("t1") })
+        assertEquals("edit a.ts", e.vm.home.value.asks[API]!!.summary)
+    }
+
+    @Test
     fun aSlowFetchForAnOldRowDoesNotOverwriteTheNewOne() = runTest {
         val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
         var calls = 0

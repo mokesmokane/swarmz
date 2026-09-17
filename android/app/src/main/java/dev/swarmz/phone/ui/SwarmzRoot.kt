@@ -77,7 +77,7 @@ private fun PairedContent(vm: AppViewModel) {
 @Composable
 private fun Detail(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boolean) {
     when (route) {
-        // Folded, or unfolded with no tile open (beside the list), so its cards work in both.
+        // Folded, or unfolded with no tile open (beside the list, which then owns Settings and New session).
         Route.Home -> HomeScreen(
             home,
             onOpen = vm::open,
@@ -86,6 +86,7 @@ private fun Detail(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boole
             onReply = vm::reply,
             onNew = vm::openNewSession,
             onSettings = vm::openSettings,
+            showActions = showBack,
         )
         is Route.Tile -> {
             val c by vm.tile.collectAsStateWithLifecycle()
