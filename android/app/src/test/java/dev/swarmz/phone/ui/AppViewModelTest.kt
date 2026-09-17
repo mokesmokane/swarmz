@@ -61,6 +61,8 @@ class AppViewModelTest {
         val ticks = MutableStateFlow(0)
         /** When set, answers `pending` for t1 instead of [pending], and may suspend. */
         var pendingHook: (suspend () -> String)? = null
+        /** When set, `send` fails with this tool error. */
+        var sendError: String? = null
 
         suspend fun push(json: String) = conn.stream(Cmd.watch()).send(json)
     }
@@ -78,7 +80,7 @@ class AppViewModelTest {
                     if (e.answerClearsQuestion) e.pending = NO_QUESTION
                     answer
                 }
-                else -> VERSION_OK
+                else -> if (cmd.startsWith("swarmz 'send'")) e.sendError ?: """{"sent":true,"v":1}""" else VERSION_OK
             }
         }
         val inner = e.conn
@@ -328,5 +330,25 @@ class AppViewModelTest {
         e.vm.reply(TileKey("mini", "t2"), "carry on")
         runCurrent()
         assertTrue(Cmd.send("t2", "carry on") in e.conn.ran)
+    }
+
+    @Test
+    fun aFailedReplyComesBackWithItsError() = runTest {
+        val e = env { sendError = """{"code":"not_running","error":"web is not running","v":1}""" }
+        e.vm.reply(WEB, "carry on")
+        runCurrent()
+        val failed = e.vm.home.value.replyErrors[WEB]!!
+        assertEquals("carry on", failed.text)
+        assertEquals("Couldn't send: web is not running", failed.message)
+        assertFalse(failed.restored)
+        e.vm.replyRestored(WEB)
+        runCurrent()
+        assertTrue(e.vm.home.value.replyErrors[WEB]!!.restored)
+        // Sending again clears the error, and a reply that goes through leaves none.
+        e.sendError = null
+        e.vm.reply(WEB, "carry on")
+        runCurrent()
+        assertFalse(WEB in e.vm.home.value.replyErrors)
+        assertEquals(2, e.conn.ran.count { it == Cmd.send("t2", "carry on") })
     }
 }

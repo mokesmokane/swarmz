@@ -22,12 +22,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.size
@@ -69,6 +71,7 @@ fun HomeScreen(
     onNew: () -> Unit,
     onSettings: () -> Unit,
     showActions: Boolean = true,
+    onReplyRestored: (TileKey) -> Unit = {},
 ) {
     val needs = ui.model.needs
     val quiet = ui.model.quiet
@@ -100,7 +103,7 @@ fun HomeScreen(
                 // homeModel already decided these need you; a row without `needs` is a finished turn.
                 when (view.row.needs) {
                     "permission" -> ui.asks[view.key]?.let { PermissionHomeCard(view, it, onOpen, onAllow, onDeny) }
-                    else -> ReplyCard(view, ui, onOpen, onReply)
+                    else -> ReplyCard(view, ui, onOpen, onReply, onReplyRestored)
                 }
             }
             if (quiet.isNotEmpty()) {
@@ -154,8 +157,16 @@ private fun PermissionHomeCard(view: TileView, ask: Pending, onOpen: (TileKey) -
 }
 
 @Composable
-private fun ReplyCard(view: TileView, ui: HomeUi, onOpen: (TileKey) -> Unit, onReply: (TileKey, String) -> Unit) {
+private fun ReplyCard(view: TileView, ui: HomeUi, onOpen: (TileKey) -> Unit, onReply: (TileKey, String) -> Unit, onRestored: (TileKey) -> Unit) {
     val text = rememberSaveable(view.key.mac, view.key.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    val failed = ui.replyErrors[view.key]
+    LaunchedEffect(failed) {
+        if (failed != null && !failed.restored) {
+            // Put the unsent reply back, unless something new has been typed since.
+            if (text.value.text.isBlank()) text.value = TextFieldValue(failed.text, TextRange(failed.text.length))
+            onRestored(view.key)
+        }
+    }
     val send = {
         if (text.value.text.isNotBlank()) {
             onReply(view.key, text.value.text.trim())
@@ -188,5 +199,6 @@ private fun ReplyCard(view: TileView, ui: HomeUi, onOpen: (TileKey) -> Unit, onR
             )
             LocalMic.current.Content(text, Modifier.size(44.dp).clip(CircleShape).background(Sw.Primary))
         }
+        failed?.let { Text(it.message, style = MaterialTheme.typography.bodySmall, color = Sw.ErrorLine) }
     }
 }

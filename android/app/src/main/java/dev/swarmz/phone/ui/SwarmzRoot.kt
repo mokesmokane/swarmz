@@ -34,6 +34,7 @@ import dev.swarmz.phone.ui.dictation.AndroidRecognizer
 import dev.swarmz.phone.ui.dictation.Dictation
 import dev.swarmz.phone.ui.dictation.DictationMic
 import dev.swarmz.phone.ui.dictation.DictationOverlay
+import dev.swarmz.phone.ui.dictation.onMicPermissionResult
 import dev.swarmz.phone.ui.home.HomeScreen
 import dev.swarmz.phone.ui.home.TileListPane
 import dev.swarmz.phone.ui.newsession.NewSessionScreen
@@ -58,7 +59,9 @@ fun SwarmzRoot(vm: AppViewModel) {
     val currentLanguage by rememberUpdatedState(language)
     val dictation = remember { Dictation(AndroidRecognizer(context.applicationContext), { currentLanguage }) }
     DisposableEffect(dictation) { onDispose { dictation.release() } }
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        onMicPermissionResult(dictation, granted)
+    }
     val mic = remember(dictation) {
         DictationMic(
             dictation,
@@ -123,6 +126,7 @@ private fun Detail(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boole
             onAllow = vm::allowOnce,
             onDeny = vm::deny,
             onReply = vm::reply,
+            onReplyRestored = vm::replyRestored,
             onNew = vm::openNewSession,
             onSettings = vm::openSettings,
             showActions = showBack,

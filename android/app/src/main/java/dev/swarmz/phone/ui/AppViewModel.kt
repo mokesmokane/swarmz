@@ -63,7 +63,11 @@ data class HomeUi(
     val macs: List<MacInfo>,
     val now: Instant,
     val seen: Map<TileKey, Instant> = emptyMap(),
+    val replyErrors: Map<TileKey, ReplyError> = emptyMap(),
 )
+
+/** A Home reply that did not send: its [text] goes back into the card's field once ([restored] after that). */
+data class ReplyError(val text: String, val message: String, val restored: Boolean = false)
 
 data class PairingUi(val busy: Boolean = false, val error: String? = null)
 
@@ -113,6 +117,7 @@ class AppViewModel(
     }
 
     private val asks = MutableStateFlow<Map<TileKey, Pending>>(emptyMap())
+    private val replyErrors = MutableStateFlow<Map<TileKey, ReplyError>>(emptyMap())
 
     /*
      * Plain maps: every reader and writer runs on the view model's scope, whose dispatcher is single-threaded (Main).
@@ -133,9 +138,10 @@ class AppViewModel(
     val home: StateFlow<HomeUi> = combine(
         combine(repo.tiles, repo.seen, repo.macs, repo.banners) { tiles, seen, macs, banners -> Inputs(tiles, seen, macs, banners) },
         asks,
+        replyErrors,
         ticks,
-    ) { i, a, _ ->
-        HomeUi(homeModel(i.tiles, i.seen), tileListSections(i.tiles, i.seen, i.macs), a, i.banners, i.macs, now(), i.seen)
+    ) { i, a, r, _ ->
+        HomeUi(homeModel(i.tiles, i.seen), tileListSections(i.tiles, i.seen, i.macs), a, i.banners, i.macs, now(), i.seen, r)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, HomeUi(HomeModel(emptyList(), emptyList()), emptyList(), emptyMap(), emptyList(), emptyList(), now()))
 
     private data class Inputs(val tiles: List<TileView>, val seen: Map<TileKey, Instant>, val macs: List<MacInfo>, val banners: List<Banner>)
@@ -146,6 +152,8 @@ class AppViewModel(
                 val permission = permissionViews(tiles)
                 val live = permission.map { it.key }.toSet()
                 asks.update { a -> a.filterKeys { it in live } }
+                val present = tiles.map { it.key }.toSet()
+                replyErrors.update { r -> r.filterKeys { it in present } }
                 for (key in (asked.keys + fetches.keys).filter { it !in live }) forget(key)
                 for (view in permission) fetchAsk(view)
             }
@@ -338,11 +346,24 @@ class AppViewModel(
 
     fun deny(key: TileKey) = answer(key, "deny")
 
+    /** Sends a Home reply. A failure comes back on [home] as the card's [ReplyError], with the text to put back. */
     fun reply(key: TileKey, text: String) {
         if (text.isBlank()) return
+        replyErrors.update { it - key }
         viewModelScope.launch {
-            runCatching { repo.send(key, text) }
+            try {
+                repo.send(key, text)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                replyErrors.update { it + (key to ReplyError(text, "Couldn't send: ${e.message ?: "unknown error"}")) }
+            }
         }
+    }
+
+    /** The card has put the failed reply's text back; its error stays shown until the next send. */
+    fun replyRestored(key: TileKey) {
+        replyErrors.update { r -> r[key]?.let { r + (key to it.copy(restored = true)) } ?: r }
     }
 
     fun pair(host: String, user: String, password: CharArray, device: String) {

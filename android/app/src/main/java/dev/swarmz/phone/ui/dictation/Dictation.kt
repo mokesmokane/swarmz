@@ -103,6 +103,13 @@ private const val ERROR_NO_MATCH = 7
 private const val FINAL_TIMEOUT_MS = 3_000L
 private const val MESSAGE_MS = 5_000L
 private const val SILENCE_MS = 5_000L
+const val MIC_PERMISSION_MESSAGE = "Microphone permission is off. Turn it on in Android Settings"
+
+/** What a microphone permission request's answer does: a refusal (the system no longer asks once it is permanent) says where to turn it on. */
+fun onMicPermissionResult(dictation: Dictation, granted: Boolean) {
+    if (!granted) dictation.showMessage(MIC_PERMISSION_MESSAGE)
+}
+
 const val NO_RECOGNIZER_MESSAGE = "Speech recognition isn't available on this phone"
 
 /**
@@ -142,6 +149,9 @@ class Dictation(
     private fun sync() {
         _talk.value = machine.state
     }
+
+    /** Shows [message] for a few seconds. */
+    fun showMessage(message: String) = show(message)
 
     private fun show(message: String) {
         handler.removeCallbacks(clearMessage)

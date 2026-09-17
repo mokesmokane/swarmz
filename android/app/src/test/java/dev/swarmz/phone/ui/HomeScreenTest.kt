@@ -8,6 +8,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.assertTextContains
 import dev.swarmz.phone.proto.Opt
 import dev.swarmz.phone.proto.Pending
 import dev.swarmz.phone.proto.TileRow
@@ -134,5 +135,38 @@ class HomeScreenTest {
     fun defaultDeviceNamesPassValidation() {
         assertEquals("SM-F966U", defaultDeviceName("SM-F966U"))
         assertEquals("Galaxy Z Fold7 5G", defaultDeviceName("Galaxy Z Fold7 (5G)"))
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h780dp")
+    fun aFailedReplyIsPutBackWithItsError() {
+        val web = TileKey("mini", "t2")
+        var restored: TileKey? = null
+        val ui = sampleHome().copy(replyErrors = mapOf(web to ReplyError("ship it", "Couldn't send: web is not running")))
+        compose.setContent {
+            SwarmzTheme {
+                HomeScreen(ui, onOpen = {}, onAllow = {}, onDeny = {}, onReply = { _, _ -> }, onNew = {}, onSettings = {}, onReplyRestored = { restored = it })
+            }
+        }
+        compose.onNodeWithTag("reply-web").assertTextContains("ship it")
+        compose.onNodeWithText("Couldn't send: web is not running").assertIsDisplayed()
+        compose.waitUntil(5_000) { restored == web }
+    }
+
+    @Test
+    fun macsWithTheSameLabelGetTheirOwnSections() {
+        val base = sampleHome()
+        val now = base.now
+        val macs = listOf(MacInfo("mini", "Mac", true, now), MacInfo("studio", "Mac", true, now))
+        val tiles = listOf(
+            TileView(TileKey("mini", "a"), TileRow(id = "a", name = "one", cwd = "/p", kind = "claude", running = true, status = "idle"), "Mac", true),
+            TileView(TileKey("studio", "b"), TileRow(id = "b", name = "two", cwd = "/p", kind = "claude", running = true, status = "idle"), "Mac", true),
+        )
+        val ui = base.copy(model = homeModel(tiles, emptyMap()), sections = tileListSections(tiles, emptyMap(), macs), asks = emptyMap(), macs = macs)
+        compose.setContent {
+            SwarmzTheme { TileListPane(ui, selected = null, onOpen = {}, onNew = {}, onSettings = {}) }
+        }
+        compose.onNodeWithText("one").assertIsDisplayed()
+        compose.onNodeWithText("two").assertIsDisplayed()
     }
 }

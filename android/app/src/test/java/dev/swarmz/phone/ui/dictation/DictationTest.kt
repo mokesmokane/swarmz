@@ -183,4 +183,15 @@ class DictationTest {
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(4))
         assertEquals(Talk.Listening("second", cancelling = false), d.talk.value)
     }
+
+    @Test
+    fun aDeniedMicPermissionSaysWhereToTurnItOn() {
+        onMicPermissionResult(d, granted = true)
+        assertNull(d.message.value)
+        onMicPermissionResult(d, granted = false)
+        assertEquals("Microphone permission is off. Turn it on in Android Settings", d.message.value)
+        assertEquals(MIC_PERMISSION_MESSAGE, d.message.value)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(6))
+        assertNull(d.message.value)
+    }
 }

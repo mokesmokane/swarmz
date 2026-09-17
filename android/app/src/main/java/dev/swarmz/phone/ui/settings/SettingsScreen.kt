@@ -70,7 +70,10 @@ fun SettingsScreen(vm: AppViewModel, onBack: (() -> Unit)?) {
                     val line = when (st) {
                         is LinkState.Online -> "online"
                         is LinkState.TooOld -> "Update swarmz on ${m.label}"
-                        is LinkState.Blocked -> st.reason
+                        // A Mac that was offline at pairing never got the key; only the paired Mac's refusal means pairing again.
+                        is LinkState.Blocked ->
+                            if (st.keyRejected && m.name != paired?.host) "${m.label} doesn't have this phone's key yet (it was offline when you paired)"
+                            else st.reason
                         else -> "offline" + (m.lastSeen?.let { " · last seen ${relativeTime(it, home.now)}" } ?: "")
                     }
                     Text(line, style = MaterialTheme.typography.bodySmall, color = if (st is LinkState.Blocked || st is LinkState.TooOld) Sw.NeedsYou else Sw.Secondary)

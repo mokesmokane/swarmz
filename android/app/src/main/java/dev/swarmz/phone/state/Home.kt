@@ -36,7 +36,10 @@ fun homeModel(tiles: List<TileView>, seen: Map<TileKey, Instant>): HomeModel {
     )
 }
 
-data class ListSection(val title: String, val needsYou: Boolean, val dimmed: Boolean, val lastSeen: Instant?, val rows: List<TileView>)
+/** A tile list section; [mac] is the Mac's name for a per-Mac section (labels need not be unique), null for NEEDS YOU. */
+data class ListSection(val title: String, val needsYou: Boolean, val dimmed: Boolean, val lastSeen: Instant?, val rows: List<TileView>, val mac: String? = null) {
+    val key: String get() = mac?.let { "mac-$it" } ?: "needs"
+}
 
 fun tileListSections(tiles: List<TileView>, seen: Map<TileKey, Instant>, macs: List<MacInfo>): List<ListSection> {
     val (needs, rest) = tiles.partition { needOf(it.row, seen[it.key]) != null }
@@ -45,7 +48,7 @@ fun tileListSections(tiles: List<TileView>, seen: Map<TileKey, Instant>, macs: L
     for (mac in macs) {
         val rows = rest.filter { it.key.mac == mac.name }.sortedBy { it.row.name.lowercase() }
         if (rows.isEmpty()) continue
-        out += ListSection(mac.label.uppercase(), needsYou = false, dimmed = !mac.online, lastSeen = mac.lastSeen, rows = rows)
+        out += ListSection(mac.label.uppercase(), needsYou = false, dimmed = !mac.online, lastSeen = mac.lastSeen, rows = rows, mac = mac.name)
     }
     return out
 }

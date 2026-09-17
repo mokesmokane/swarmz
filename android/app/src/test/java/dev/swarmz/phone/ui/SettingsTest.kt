@@ -91,4 +91,26 @@ class SettingsTest {
         assertNull(settings.paired.value)
         assertEquals(1, forgot)
     }
+
+    @Test
+    fun aMacWithoutThePhonesKeySaysWhy() {
+        installBouncyCastle()
+        val key = PhoneKey(Ed25519.generate())
+        val mini = FakeConn {
+            if (it == Cmd.machines()) """{"machines":[{"name":"mini","self":true},{"name":"studio","alias":"Studio","self":false}],"v":1}""" else VERSION_OK
+        }
+        val connector = object : dev.swarmz.phone.ssh.SshConnector {
+            val inner = HostConnector(mapOf("mini" to ArrayDeque(listOf(mini))))
+            override suspend fun connect(host: String, port: Int, auth: dev.swarmz.phone.ssh.Auth): dev.swarmz.phone.ssh.SshConnection =
+                if (host == "studio") throw dev.swarmz.phone.ssh.AuthRejected(host) else inner.connect(host, port, auth)
+        }
+        val repo = Repository(settings, { key }, connector, scope)
+        repo.start()
+        val vm = AppViewModel(repo, settings, pairing = null, scope = scope)
+        compose.setContent { SwarmzTheme { SettingsScreen(vm, onBack = {}) } }
+        val why = "Studio doesn't have this phone's key yet (it was offline when you paired)"
+        compose.waitUntil(5_000) { exists(why) }
+        compose.onNodeWithText(why).assertIsDisplayed()
+        assertEquals(emptyList<dev.swarmz.phone.data.Banner>(), vm.home.value.banners)
+    }
 }

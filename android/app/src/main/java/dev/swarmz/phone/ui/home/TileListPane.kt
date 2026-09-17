@@ -46,7 +46,7 @@ fun TileListPane(ui: HomeUi, selected: TileKey?, onOpen: (TileKey) -> Unit, onNe
         ui.banners.forEach { b -> Text(b.text, color = Sw.NeedsYou, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
         LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
             ui.sections.forEach { section ->
-                item(key = "section-" + section.title) {
+                item(key = "section-" + section.key) {
                     Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp).alpha(if (section.dimmed) 0.5f else 1f)) {
                         Text(section.title, style = MaterialTheme.typography.labelSmall, color = if (section.needsYou) Sw.NeedsYou else Sw.Secondary)
                         if (section.dimmed && section.lastSeen != null) {
