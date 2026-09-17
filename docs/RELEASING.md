@@ -47,6 +47,16 @@ and — because `bundle.createUpdaterArtifacts` is true — also produces `swarm
 minisign `.sig`, generates `latest.json` and attaches all of it, with the DMG, to the draft
 release.
 
+**The holder binary is signed before it is bundled.** `bundle.macOS.files` copies
+`src-tauri/target/release/swarmz-tool` into the app as `Contents/MacOS/swarmz-tool`, and Tauri
+signs the app and its own executable but not that one. Every Mach-O inside a notarised app needs a
+Developer ID signature, a secure timestamp and the hardened runtime, so `npm run build:tool`
+(`scripts/build-tool.mjs`, which `beforeBuildCommand` runs) signs it itself when
+`APPLE_SIGNING_IDENTITY` is set, and verifies the result with `codesign -dv --verbose=4`, failing
+the build if any of the three is missing. It has to happen there: signing the inner binary after
+Tauri has signed the `.app` would invalidate the outer signature. **Local builds are unchanged** —
+with no `APPLE_SIGNING_IDENTITY` the script just builds and says so.
+
 **Notarisation uses an App Store Connect API key, not an Apple ID.** Apple ID authentication
 returns 401 on this account. `tauri-bundler` tries `APPLE_ID` + `APPLE_PASSWORD` + `APPLE_TEAM_ID`
 *first* and only falls through to the key when that triple is incomplete — and an empty-but-set
@@ -150,6 +160,10 @@ base64 -i ~/.swarmz-android/release.jks | pbcopy
 - **A failed `macos` job can leave an empty draft release behind**, because `tauri-action` creates
   the release before it finishes building. Delete that draft before re-tagging, or the next run
   attaches its artifacts alongside the stale ones.
+- **Anything new inside the bundle must be signed too.** Today `bundle.macOS.files` has exactly
+  one entry and there is no `externalBin` or `resources`, so `swarmz-tool` is the only extra
+  Mach-O. Adding another executable means signing it in `scripts/build-tool.mjs` alongside the
+  tool, or notarisation will reject the release the same way it rejected v0.2.0.
 - **Pre-release tags are not supported.** `v0.3.0-rc1` matches the workflow's `v*` trigger, but
   `npm run version` refuses a pre-release suffix (the Android `versionCode` has nowhere to put it,
   and the updater compares plain versions), so the tag/version guard fails the run and the command

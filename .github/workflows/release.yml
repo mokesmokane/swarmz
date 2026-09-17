@@ -77,6 +77,10 @@ jobs:
           # this step might never reach.
           KEYCHAIN_PATH="$RUNNER_TEMP/swarmz-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          # For `npm run build:tool`, which signs the holder binary before the bundler copies it
+          # into the app. Exported first thing, so a later failure in this step cannot leave it
+          # half set; the cleanup step does not read it.
+          echo "APPLE_SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           echo "::add-mask::$KEYCHAIN_PASSWORD"
           CERT_PATH="$RUNNER_TEMP/developer-id.p12"
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
@@ -125,6 +129,9 @@ jobs:
       # notarize_auth, and an empty-but-set APPLE_ID would match it, so those two variables must
       # not appear here at all. APPLE_API_KEY holds the key *ID*, not the key: the key itself is
       # the file at APPLE_API_KEY_PATH, written above.
+      #
+      # APPLE_SIGNING_IDENTITY also reaches beforeBuildCommand, which is how `npm run build:tool`
+      # knows to sign the holder binary (v0.2.0 was rejected because it was not).
       - name: Build, sign, notarise and draft the release
         id: tauri
         uses: tauri-apps/tauri-action@v1
