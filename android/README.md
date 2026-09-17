@@ -104,9 +104,11 @@ Pairing needs, on the Mac side: the Tailscale app connected (the phone reaches M
 tailnet by MagicDNS name), Remote Login turned on (System Settings > General > Sharing), and
 swarmz run at least once (it installs the `swarmz` tool to `~/.swarmz/bin/swarmz`). On first
 launch the app generates its own Ed25519 key (sealed by an Android Keystore key, never leaves the
-phone) and the Settings screen walks you through entering one Mac's name plus your Mac username
-and password once; the phone runs `swarmz phone add` there and it fans out to every other Mac it
-can already reach.
+phone), and the pairing screen shown on first launch asks for one Mac's name plus your Mac
+username and password, once. The name must resolve to a Tailscale address (use the Mac's
+Tailscale name, for example `mini` or `mini.tailnet.ts.net`); the password is never sent anywhere
+else. The phone runs `swarmz phone add` there and it fans out to every other Mac it can already
+reach.
 
 ## What each screen does
 

@@ -1,7 +1,7 @@
 # swarmz on the phone: session holder, Mac tool, Android app, alerts
 
 Date: 2026-09-16
-Status: approved design; sub-projects 1 (session holder), 2 (Mac tool) and 3 (phone app) implemented
+Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented; sub-project 3 (phone app) implemented; acceptance on the Fold pending
 Amends: `2026-09-10-swarmz-design.md` §3.1 (the swarmz window no longer owns
 PTYs); `2026-09-15-agent-state-hooks-design.md` §2.1 (status colours), §3.2
 (hook events gain `PermissionRequest` and a synchronous `PostToolUse`); `2026-09-15-tile-folder-and-session-history-design.md`
@@ -541,9 +541,10 @@ this affects an ordinary command.
 
 Kotlin, Jetpack Compose, Material 3 with a custom theme, `minSdk 31`,
 `targetSdk 35`. Libraries: sshj (ssh), kotlinx.serialization (JSON),
-material3-adaptive (list–detail layout), a Compose Markdown renderer,
+a Compose Markdown renderer (`multiplatform-markdown-renderer-m3`),
 DataStore (settings), Android Keystore (key protection), Android
-`SpeechRecognizer` (dictation), `compose-markdown` (Markdown rendering). Sideloaded APK.
+`SpeechRecognizer` (dictation). Sideloaded APK. The list–detail layout is a
+plain width check (§6.3), not material3-adaptive.
 
 ### 6.2 Visual language (from the design)
 
@@ -560,9 +561,11 @@ DataStore (settings), Android Keystore (key protection), Android
 
 ### 6.3 Layouts
 
-- **Folded** (compact width): one screen at a time, home or tile.
-- **Unfolded** (expanded width): tile list (312 dp) on the left, the open
-  tile on the right; opening a tile never leaves the list.
+- **Folded** (narrower than 600 dp): one screen at a time, home or tile.
+- **Unfolded** (a width of at least 600 dp): tile list (312 dp) on the left,
+  the open tile on the right; opening a tile never leaves the list. With no
+  tile open, home sits beside the list (without the list's own Settings and
+  New session actions).
 - Folding or unfolding keeps the open tile, the composer text and scroll
   position.
 
@@ -575,7 +578,9 @@ DataStore (settings), Android Keystore (key protection), Android
     "Claude wants to run `<summary>` in <folder>", buttons **Allow once**
     (primary) and **Deny**.
   - Question / finished turn: dot, name, relative time, Claude's last
-    message in quotes, and an inline **Reply** field with a mic.
+    message in quotes, and an inline **Reply** field with a mic. A reply
+    that fails to send is put back in the field, with a short error on the
+    card ("Couldn't send: …").
   - Tapping a card's body opens the tile.
 - **Running**: a wrapping row of pill chips (dot + name) for every other
   tile; tapping opens it.
@@ -665,7 +670,11 @@ off, notification kinds, dictation language, revoke this phone.
    encrypted with a hardware-backed Android Keystore key and never leaves the
    phone.
 2. You enter one Mac's name, your Mac username and password (macOS Remote
-   Login must be on, as it already is for swarmz between Macs).
+   Login must be on, as it already is for swarmz between Macs). Before the
+   password is sent, the name must resolve to Tailscale addresses only
+   (IPv4 100.64.0.0/10, IPv6 fd7a:115c:a1e0::/48); otherwise pairing stops
+   with "<host> isn't a Tailscale address. Use the Mac's Tailscale name (for
+   example mini or mini.tailnet.ts.net)."
 3. The phone logs in with the password once and runs
    `~/.swarmz/bin/swarmz phone add --name <device> --key <pubkey>`. The
    password is not stored.
@@ -749,8 +758,9 @@ reported as a clean, empty fan-out.
   handling, remote folder tracking.
 - **Phone:** unit tests for JSON parsing, needs-you logic, reconnect cursors;
   Compose UI tests for home, tile list, tile screen, composer and dictation
-  overlay at compact and expanded widths, against a fake tool; one emulator
-  end-to-end run against a real Mac.
+  overlay at compact and expanded widths, against a fake tool. The
+  end-to-end run against a real Mac is the acceptance on the Fold below,
+  not an emulator run.
 - **By hand on the Fold:** pair; open a live Claude tile; answer a
   permission from a notification; dictate and send a reply; start a new
   session and see it appear in swarmz; fold and unfold mid-conversation;
