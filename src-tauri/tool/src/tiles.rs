@@ -4,7 +4,7 @@
 use crate::agent::{fold_log, read_log, Fold, Needs, Status};
 use crate::dialog::ScreenView;
 use crate::paths::{live_session, read_meta, session_paths, sessions_dir_in, socket_live};
-use crate::transcript::{guess_path, last_assistant_text};
+use crate::transcript::{continued_in, guess_path, last_assistant_text, resolve_continued, resolve_continued_by};
 use crate::workspace::{read_from, TerminalDef, Workspace};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -72,7 +72,7 @@ pub fn tile_rows_with_folds(
     live_cwd: &dyn Fn(&str) -> Option<String>,
     dialog: &dyn Fn(&str) -> Option<ScreenView>,
 ) -> Vec<TileRow> {
-    try_tile_rows_with_folds(home, self_machine, folds, live_cwd, dialog, &read_last_text).unwrap_or_default()
+    try_tile_rows_with_folds(home, self_machine, folds, live_cwd, dialog, &read_last_text, &resolve_continued).unwrap_or_default()
 }
 
 fn read_last_text(path: &Path) -> Option<String> {
@@ -89,11 +89,26 @@ pub fn stamp(path: &Path) -> Stamp {
     Some((m.len(), m.modified().ok()?))
 }
 
-/// Each transcript's last assistant text, read again only when the file's length or modified
-/// time changes (`watch` asks every second, and transcripts grow large).
+/// Each transcript's last assistant text, and the session it says it continued in, read again
+/// only when the file's length or modified time changes (`watch` asks every second, and
+/// transcripts grow large).
 #[derive(Default)]
 pub struct LastTextCache {
     seen: RefCell<HashMap<PathBuf, (Stamp, Option<String>)>>,
+    continued: RefCell<HashMap<PathBuf, (Stamp, Option<String>)>>,
+}
+
+/// `read` for `path`, from `cache` while the file's stamp is unchanged.
+fn cached(cache: &RefCell<HashMap<PathBuf, (Stamp, Option<String>)>>, path: &Path, read: impl Fn(&Path) -> Option<String>) -> Option<String> {
+    let now = stamp(path);
+    if let Some((at, value)) = cache.borrow().get(path) {
+        if *at == now && now.is_some() {
+            return value.clone();
+        }
+    }
+    let value = read(path);
+    cache.borrow_mut().insert(path.to_path_buf(), (now, value.clone()));
+    value
 }
 
 impl LastTextCache {
@@ -102,15 +117,16 @@ impl LastTextCache {
     }
 
     pub fn get_with(&self, path: &Path, read: impl Fn(&Path) -> Option<String>) -> Option<String> {
-        let now = stamp(path);
-        if let Some((at, text)) = self.seen.borrow().get(path) {
-            if *at == now && now.is_some() {
-                return text.clone();
-            }
-        }
-        let text = read(path);
-        self.seen.borrow_mut().insert(path.to_path_buf(), (now, text.clone()));
-        text
+        cached(&self.seen, path, read)
+    }
+
+    /// `resolve_continued`, reading each file's tail again only when it changes.
+    pub fn resolve(&self, path: &Path) -> (PathBuf, Option<String>) {
+        self.resolve_with(path, continued_in)
+    }
+
+    pub fn resolve_with(&self, path: &Path, read: impl Fn(&Path) -> Option<String>) -> (PathBuf, Option<String>) {
+        resolve_continued_by(path, &|p| cached(&self.continued, p, &read))
     }
 }
 
@@ -123,10 +139,11 @@ pub fn try_tile_rows_with_folds(
     live_cwd: &dyn Fn(&str) -> Option<String>,
     dialog: &dyn Fn(&str) -> Option<ScreenView>,
     last_text: &dyn Fn(&Path) -> Option<String>,
+    resolve: &dyn Fn(&Path) -> (PathBuf, Option<String>),
 ) -> Option<Vec<TileRow>> {
     let dir = sessions_dir_in(home);
     let running = |id: &str| session_paths(&dir, id).ok().and_then(|p| live_session(&p)).is_some();
-    rows_from(home, self_machine, folds, live_cwd, dialog, &running, last_text)
+    rows_from(home, self_machine, folds, live_cwd, dialog, &running, last_text, resolve)
 }
 
 /// `tile_rows` with the liveness check supplied (tests use it without real holders).
@@ -137,7 +154,7 @@ pub fn tile_rows_with(
     dialog: &dyn Fn(&str) -> Option<ScreenView>,
     running: &dyn Fn(&str) -> bool,
 ) -> Vec<TileRow> {
-    rows_from(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog, running, &read_last_text).unwrap_or_default()
+    rows_from(home, self_machine, &fold_log(&read_log(home)), live_cwd, dialog, running, &read_last_text, &resolve_continued).unwrap_or_default()
 }
 
 fn rows_from(
@@ -148,6 +165,7 @@ fn rows_from(
     dialog: &dyn Fn(&str) -> Option<ScreenView>,
     running: &dyn Fn(&str) -> bool,
     last_text: &dyn Fn(&Path) -> Option<String>,
+    resolve: &dyn Fn(&Path) -> (PathBuf, Option<String>),
 ) -> Option<Vec<TileRow>> {
     let ws = match read_from(&workspace_path(home)) {
         Ok(Some(ws)) => ws,
@@ -176,7 +194,16 @@ fn rows_from(
             let transcript = fold.transcript_path.clone().map(PathBuf::from).or_else(|| {
                 claude.and_then(|c| guess_path(home, &def.cwd, fold.session_id.as_deref().unwrap_or(&c.session_id)))
             });
-            let last_message = if claude.is_some() { transcript.as_deref().and_then(last_text) } else { None };
+            // Claude may have moved the conversation on (`continued-in`): the newest file speaks,
+            // under its own session id.
+            let (transcript, moved) = match transcript.filter(|_| claude.is_some()) {
+                Some(p) => {
+                    let (p, moved) = resolve(&p);
+                    (Some(p), moved)
+                }
+                None => (None, None),
+            };
+            let last_message = transcript.as_deref().and_then(last_text);
             TileRow {
                 cwd: if is_running { live_cwd(&def.id).unwrap_or_else(|| def.cwd.clone()) } else { def.cwd.clone() },
                 kind: if claude.is_some() { "claude" } else { "shell" }.to_string(),
@@ -189,7 +216,7 @@ fn rows_from(
                 mode: fold.mode,
                 last_message,
                 turn_ended_at: fold.turn_ended_at,
-                session_id: fold.session_id.or_else(|| claude.map(|c| c.session_id.clone())),
+                session_id: moved.or(fold.session_id).or_else(|| claude.map(|c| c.session_id.clone())),
                 summary: fold.summary,
                 machine: self_machine.map(str::to_string),
                 id: def.id,
@@ -568,11 +595,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let h = home("unreadable");
         let none = HashMap::new();
-        assert_eq!(try_tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None, &read_last_text), Some(vec![]));
+        assert_eq!(try_tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None, &read_last_text, &resolve_continued), Some(vec![]));
         write_workspace(&h);
         let file = h.join(".swarmz/workspace.json");
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let unreadable = try_tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None, &read_last_text);
+        let unreadable = try_tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None, &read_last_text, &resolve_continued);
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(unreadable, None);
         assert_eq!(tile_rows_with_folds(&h, Some("mini"), &none, &|_| None, &|_| None).len(), 2);
@@ -609,6 +636,31 @@ mod tests {
         let gone = h.join("gone.jsonl");
         assert_eq!(cache.get_with(&gone, read), None);
         assert_eq!(cache.get_with(&gone, read), None);
+        assert_eq!(reads.get(), 4);
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn continuations_are_read_again_only_when_a_transcript_changes() {
+        let h = home("continued");
+        let ids = ["11111111-0000-4000-8000-000000000001", "22222222-0000-4000-8000-000000000002", "33333333-0000-4000-8000-000000000003"];
+        let file = |i: usize| h.join(format!("{}.jsonl", ids[i]));
+        let record = |to: &str| format!("{}\n", json!({"type": "continued-in", "continuedInSessionId": to}));
+        std::fs::write(file(0), record(ids[1])).unwrap();
+        std::fs::write(file(1), "{}\n").unwrap();
+        std::fs::write(file(2), "{}\n").unwrap();
+        let reads = std::cell::Cell::new(0);
+        let read = |p: &Path| {
+            reads.set(reads.get() + 1);
+            continued_in(p)
+        };
+        let cache = LastTextCache::default();
+        assert_eq!(cache.resolve_with(&file(0), read), (file(1), Some(ids[1].to_string())));
+        assert_eq!(cache.resolve_with(&file(0), read), (file(1), Some(ids[1].to_string())));
+        assert_eq!(reads.get(), 2);
+        // The new file continues again: only it is read again.
+        std::fs::write(file(1), format!("{{}}\n{}", record(ids[2]))).unwrap();
+        assert_eq!(cache.resolve_with(&file(0), read), (file(2), Some(ids[2].to_string())));
         assert_eq!(reads.get(), 4);
         let _ = std::fs::remove_dir_all(&h);
     }

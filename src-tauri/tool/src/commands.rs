@@ -14,7 +14,7 @@ use crate::input::{key_bytes, send_bytes};
 use crate::phone::{add_key, authorized_keys, list_keys, machine_hosts, revoke, valid_device};
 use crate::proc::run_with_timeout;
 use crate::screen::{diff_lines, LinesUpdate};
-use crate::transcript::{after, guess_path, image as transcript_image, page, Change, Normaliser};
+use crate::transcript::{after, guess_path, image as transcript_image, page, resolve_continued, Change, Normaliser};
 use crate::tiles::{apply_screen, homed_defs, prune as prune_sessions, session_rows, stamp, tile_rows, try_tile_rows_with_folds, watch_events, LastTextCache, Stamp, TileRow};
 use crate::util::{new_uuid, now_iso_ms, sh_quote, valid_abs_path};
 use crate::workspace::{load_from, read_from, save_to, ClaudeConfig, TerminalDef, Workspace};
@@ -203,7 +203,7 @@ pub fn watch(env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
     loop {
         let folds = log.folds(&env.home);
         // An unreadable workspace keeps the rows we had rather than reporting every tile gone.
-        let now = try_tile_rows_with_folds(&env.home, env.machine.as_deref(), folds, &cwd, &|id| dialog_for(env, id), &|p| texts.get(p))
+        let now = try_tile_rows_with_folds(&env.home, env.machine.as_deref(), folds, &cwd, &|id| dialog_for(env, id), &|p| texts.get(p), &|p| texts.resolve(p))
             .unwrap_or_else(|| prev.values().cloned().collect());
         let events = if first { vec![json!({"v": 1, "type": "snapshot", "tiles": now})] } else { watch_events(&prev, &now) };
         for e in &events {
@@ -587,8 +587,15 @@ fn transcript_path(env: &Env, tile: &str) -> Result<(PathBuf, Option<String>), C
     transcript_path_from(env, tile, fold_for(env, tile).unwrap_or_default())
 }
 
-/// `transcript_path` with the tile's fold supplied (a follower keeps the log folded).
+/// `transcript_path` with the tile's fold supplied (a follower keeps the log folded). Either path
+/// is followed through Claude's `continued-in` records, and the session id is then the new file's.
 fn transcript_path_from(env: &Env, tile: &str, fold: Fold) -> Result<(PathBuf, Option<String>), CliError> {
+    let (path, session) = known_transcript_path(env, tile, fold)?;
+    let (path, moved) = resolve_continued(&path);
+    Ok((path, moved.or(session)))
+}
+
+fn known_transcript_path(env: &Env, tile: &str, fold: Fold) -> Result<(PathBuf, Option<String>), CliError> {
     if let Some(p) = fold.transcript_path.clone() {
         return Ok((PathBuf::from(p), fold.session_id));
     }
@@ -645,7 +652,15 @@ pub fn transcript(
     let (_, mut offset) = read_new(&path, 0, &mut n);
     let views = n.views();
     let first = match after_id {
-        Some(id) => json!({"v": 1, "messages": after(&views, id), "hasMore": false}),
+        Some(id) => match after(&views, id) {
+            Some(msgs) => json!({"v": 1, "messages": msgs, "hasMore": false}),
+            // Not in this transcript (another session, or rewritten): the newest page, replacing
+            // whatever the reader has.
+            None => {
+                let (p, more) = page(&views, None, limit);
+                json!({"v": 1, "messages": p, "hasMore": more, "reset": true})
+            }
+        },
         None => {
             let (p, more) = page(&views, before, limit);
             json!({"v": 1, "messages": p, "hasMore": more})

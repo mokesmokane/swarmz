@@ -275,12 +275,10 @@ pub fn page(all: &[MessageView], before: Option<&str>, limit: usize) -> (Vec<Mes
     (all[start..end].to_vec(), start > 0)
 }
 
-/// The message with id `id` (whose tools may have changed) and every newer one.
-pub fn after(all: &[MessageView], id: &str) -> Vec<MessageView> {
-    match all.iter().position(|m| m.id == id) {
-        Some(i) => all[i..].to_vec(),
-        None => all.to_vec(),
-    }
+/// The message with id `id` (whose tools may have changed) and every newer one, or None when no
+/// message has that id.
+pub fn after(all: &[MessageView], id: &str) -> Option<Vec<MessageView>> {
+    all.iter().position(|m| m.id == id).map(|i| all[i..].to_vec())
 }
 
 /// `(mime, base64)` of image `<uuid>-<index>` in the transcript.
@@ -329,6 +327,62 @@ pub fn last_assistant_text(path: &Path, max: usize) -> Option<String> {
         }
     }
     None
+}
+
+/// How much of a transcript's end is read to find a `continued-in` record.
+const CONTINUED_TAIL: u64 = 64 * 1024;
+/// The most `continued-in` records followed from one transcript.
+const CONTINUED_HOPS: usize = 10;
+
+/// The last `CONTINUED_TAIL` bytes of a file.
+fn tail(path: &Path) -> Option<Vec<u8>> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(CONTINUED_TAIL))).ok()?;
+    let mut buf = Vec::new();
+    f.take(CONTINUED_TAIL).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// The session a transcript says it continued in: its last record (a partial line being written
+/// is skipped once) is `continued-in` with a UUID `continuedInSessionId`. Reads only the tail.
+pub fn continued_in(path: &Path) -> Option<String> {
+    let buf = tail(path)?;
+    let text = String::from_utf8_lossy(&buf);
+    let last = text.lines().rev().filter(|l| !l.trim().is_empty()).take(2).find_map(|l| serde_json::from_str::<Value>(l).ok())?;
+    if last["type"].as_str() != Some("continued-in") {
+        return None;
+    }
+    let id = last["continuedInSessionId"].as_str()?;
+    crate::util::valid_uuid(id).then(|| id.to_string())
+}
+
+/// `resolve_continued` with the step supplied (a poller caches `continued_in` per file).
+pub fn resolve_continued_by(path: &Path, next: &dyn Fn(&Path) -> Option<String>) -> (PathBuf, Option<String>) {
+    let mut at = path.to_path_buf();
+    let mut session = None;
+    let mut seen = vec![at.clone()];
+    for _ in 0..CONTINUED_HOPS {
+        let Some(id) = next(&at).filter(|id| crate::util::valid_uuid(id)) else { break };
+        let Some(dir) = at.parent() else { break };
+        let target = dir.join(format!("{id}.jsonl"));
+        if seen.contains(&target) || !target.is_file() {
+            break;
+        }
+        seen.push(target.clone());
+        at = target;
+        session = Some(id);
+    }
+    (at, session)
+}
+
+/// Where a transcript's conversation lives now: Claude can move a conversation into a new session
+/// file in the same folder, ending the old file with a `continued-in` record. Follows those
+/// records (at most ten, stopping on a cycle or a missing file) and returns the final file and,
+/// when it moved, that file's session id (None means the caller's id still holds). The new file is
+/// always a UUID name joined to the same folder, so a record can never lead elsewhere.
+pub fn resolve_continued(path: &Path) -> (PathBuf, Option<String>) {
+    resolve_continued_by(path, &continued_in)
 }
 
 /// Where Claude keeps a session's transcript when no hook event has said: every character of the
@@ -460,8 +514,9 @@ mod tests {
         assert!(!more);
         let (p, _) = page(&all, Some("unknown"), 5);
         assert!(p.is_empty());
-        let a = after(&all, "07");
+        let a = after(&all, "07").unwrap();
         assert_eq!(a.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), vec!["m7", "m8", "m9"]);
+        assert_eq!(after(&all, "unknown"), None);
     }
 
     #[test]
@@ -481,6 +536,106 @@ mod tests {
         assert_eq!(image(&path, "d1-0"), None);
         assert_eq!(image(&path, "zz-1"), None);
         assert_eq!(last_assistant_text(&path, 240).unwrap().chars().count(), 240);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
+    fn chain_dir(tag: &str) -> PathBuf {
+        let dir = PathBuf::from(format!("/tmp/szc-{}-chain-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn continued(old: &str, new: &str) -> String {
+        json!({"type": "continued-in", "timestamp": "2026-09-17T09:00:00Z", "sessionId": old, "continuedInSessionId": new}).to_string()
+    }
+
+    const S1: &str = "11111111-0000-4000-8000-000000000001";
+    const S2: &str = "22222222-0000-4000-8000-000000000002";
+    const S3: &str = "33333333-0000-4000-8000-000000000003";
+
+    fn write_session(dir: &Path, sid: &str, last: Option<String>) -> PathBuf {
+        let path = dir.join(format!("{sid}.jsonl"));
+        let mut lines = vec![user("e1", json!(format!("in {sid}")))];
+        lines.extend(last);
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        path
+    }
+
+    #[test]
+    fn a_session_without_a_continuation_stays_put() {
+        let dir = chain_dir("none");
+        let p = write_session(&dir, S1, None);
+        assert_eq!(resolve_continued(&p), (p.clone(), None));
+        let missing = dir.join(format!("{S3}.jsonl"));
+        assert_eq!(resolve_continued(&missing), (missing.clone(), None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn continuations_are_followed_one_and_two_hops() {
+        let dir = chain_dir("hops");
+        let p1 = write_session(&dir, S1, Some(continued(S1, S2)));
+        let p2 = write_session(&dir, S2, None);
+        assert_eq!(resolve_continued(&p1), (p2.clone(), Some(S2.to_string())));
+        let p2 = write_session(&dir, S2, Some(continued(S2, S3)));
+        let p3 = write_session(&dir, S3, None);
+        assert_eq!(resolve_continued(&p1), (p3.clone(), Some(S3.to_string())));
+        assert_eq!(resolve_continued(&p2), (p3, Some(S3.to_string())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cycle_or_a_long_chain_stops() {
+        let dir = chain_dir("cycle");
+        let p1 = write_session(&dir, S1, Some(continued(S1, S2)));
+        write_session(&dir, S2, Some(continued(S2, S1)));
+        let (end, _) = resolve_continued(&p1);
+        assert!(end == p1 || end == dir.join(format!("{S2}.jsonl")), "{end:?}");
+        let self_loop = write_session(&dir, S3, Some(continued(S3, S3)));
+        assert_eq!(resolve_continued(&self_loop).0, self_loop);
+        // A chain longer than ten hops ends after ten.
+        let ids: Vec<String> = (0..15).map(|i| format!("44444444-0000-4000-8000-{i:012}")).collect();
+        for w in ids.windows(2) {
+            write_session(&dir, &w[0], Some(continued(&w[0], &w[1])));
+        }
+        write_session(&dir, &ids[14], None);
+        let (end, sid) = resolve_continued(&dir.join(format!("{}.jsonl", ids[0])));
+        assert_eq!(end, dir.join(format!("{}.jsonl", ids[10])));
+        assert_eq!(sid.as_deref(), Some(ids[10].as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bad_or_missing_targets_are_not_followed() {
+        let dir = chain_dir("bad");
+        let missing = write_session(&dir, S1, Some(continued(S1, S2)));
+        assert_eq!(resolve_continued(&missing), (missing.clone(), None));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/x.jsonl"), "{}\n").unwrap();
+        std::fs::write(dir.join("not-a-uuid.jsonl"), "{}\n").unwrap();
+        for target in ["not-a-uuid", "sub/x", "../x", &format!("../{S3}")] {
+            let p = write_session(&dir, S3, Some(continued(S3, target)));
+            assert_eq!(resolve_continued(&p), (p.clone(), None), "{target}");
+        }
+        // Only the last record counts.
+        write_session(&dir, S2, None);
+        let p = write_session(&dir, S1, Some(continued(S1, S2) + "\n" + &user("e9", json!("later"))));
+        assert_eq!(resolve_continued(&p), (p.clone(), None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_tail_of_a_huge_file_is_read() {
+        let dir = chain_dir("huge");
+        write_session(&dir, S2, None);
+        let p1 = dir.join(format!("{S1}.jsonl"));
+        // A head far bigger than the tail read, whose one line is cut by it.
+        let head = "x".repeat(8 * 1024 * 1024);
+        std::fs::write(&p1, format!("{{\"type\":\"user\",\"pad\":\"{head}\"}}\n{}\n", continued(S1, S2))).unwrap();
+        assert!(tail(&p1).unwrap().len() as u64 <= CONTINUED_TAIL);
+        assert_eq!(resolve_continued(&p1), (dir.join(format!("{S2}.jsonl")), Some(S2.to_string())));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

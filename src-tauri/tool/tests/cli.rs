@@ -1197,6 +1197,86 @@ fn transcript_pages_follows_and_serves_images() {
 }
 
 #[test]
+fn a_continued_session_is_followed_into_its_new_file() {
+    let h = home("continued");
+    let old = "d2a228c3-0000-4000-8000-000000000001";
+    let new = "fdad389a-0000-4000-8000-000000000002";
+    write_ws(
+        &h.path,
+        serde_json::json!([
+            {"id": "c1", "name": "api", "cwd": "/p", "origin": "mini", "claude": {"enabled": true, "sessionId": old, "skipPermissions": false, "started": true}},
+            {"id": "g1", "name": "guessed", "cwd": "/p", "origin": "mini", "claude": {"enabled": true, "sessionId": old, "skipPermissions": false, "started": true}}
+        ]),
+        serde_json::json!({}),
+    );
+    let user = |uuid: &str, text: &str| serde_json::json!({"type": "user", "uuid": uuid, "timestamp": "t", "message": {"role": "user", "content": text}}).to_string();
+    let asst = |uuid: &str, text: &str| serde_json::json!({"type": "assistant", "uuid": uuid, "timestamp": "t", "message": {"id": uuid, "role": "assistant", "content": [{"type": "text", "text": text}]}}).to_string();
+    let continued = |from: &str, to: &str| serde_json::json!({"type": "continued-in", "timestamp": "t", "sessionId": from, "continuedInSessionId": to}).to_string();
+    // The hook fold (c1) and the guess (g1) both name the old session.
+    let dir = h.path.join(".claude/projects/-p");
+    std::fs::create_dir_all(&dir).unwrap();
+    let old_path = dir.join(format!("{old}.jsonl"));
+    let new_path = dir.join(format!("{new}.jsonl"));
+    std::fs::write(&old_path, [user("o1", "old question"), asst("o2", "old answer"), continued(old, new)].join("\n") + "\n").unwrap();
+    std::fs::write(&new_path, [user("n1", "new question"), asst("n2", "new answer"), user("n3", "and more")].join("\n") + "\n").unwrap();
+    std::fs::create_dir_all(h.path.join(".swarmz/agents")).unwrap();
+    std::fs::write(
+        h.path.join(".swarmz/agents/events.log"),
+        format!("2026-09-16T10:00:00Z\tc1\tSessionStart\t{}\n", serde_json::json!({"session_id": old, "transcript_path": old_path})),
+    )
+    .unwrap();
+
+    for tile in ["c1", "g1"] {
+        let (code, v) = tool_env(&h.path, &["transcript", tile], MINI);
+        assert_eq!(code, 0, "{v}");
+        let texts: Vec<&str> = v["messages"].as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap()).collect();
+        assert_eq!(texts, vec!["new question", "new answer", "and more"], "{tile}");
+        assert!(v.get("reset").is_none(), "{v}");
+    }
+
+    let (code, v) = tool_env(&h.path, &["ls"], MINI);
+    assert_eq!(code, 0, "{v}");
+    for row in v["tiles"].as_array().unwrap() {
+        assert_eq!((row["sessionId"].as_str(), row["lastMessage"].as_str()), (Some(new), Some("new answer")), "{row}");
+    }
+
+    // A known --after id resumes there; an unknown one gives the newest page and says reset.
+    let (_, known) = tool_env(&h.path, &["transcript", "c1", "--after", "n2"], MINI);
+    assert_eq!(known["messages"].as_array().map(Vec::len), Some(2), "{known}");
+    assert!(known.get("reset").is_none(), "{known}");
+    let (code, unknown) = tool_env(&h.path, &["transcript", "c1", "--after", "o2", "--limit", "2"], MINI);
+    assert_eq!(code, 0, "{unknown}");
+    let texts: Vec<&str> = unknown["messages"].as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap()).collect();
+    assert_eq!(texts, vec!["new answer", "and more"]);
+    assert_eq!((unknown["reset"].as_bool(), unknown["hasMore"].as_bool()), (Some(true), Some(true)), "{unknown}");
+
+    // A follower moves on when the new file continues again, announcing the resolved session.
+    let newer = "0badcafe-0000-4000-8000-000000000003";
+    let out_path = h.path.join("t.out");
+    let _child = KillOnDrop(
+        tool_command(&h.path)
+            .args(["transcript", "c1", "--follow"])
+            .env("SWARMZ_MACHINE", "mini")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&out_path).unwrap())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let read = || std::fs::read_to_string(&out_path).unwrap_or_default();
+    assert!(wait_until(|| read().contains("\"messages\"")));
+    std::fs::write(dir.join(format!("{newer}.jsonl")), user("z1", "newest question") + "\n").unwrap();
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new().append(true).open(&new_path).unwrap();
+    writeln!(f, "{}", continued(new, newer)).unwrap();
+    drop(f);
+    assert!(wait_until(|| read().contains("newest question")), "{}", read());
+    let out = read();
+    let session = out.find(&format!("{{\"sessionId\":\"{newer}\",\"type\":\"session\",\"v\":1}}")).expect(&out);
+    assert!(session < out.find("newest question").unwrap(), "{out}");
+}
+
+#[test]
 fn commands_on_a_missing_or_bad_tile_say_so() {
     let h = home("missing");
     for args in [["send", "nope", "hi"].as_slice(), &["pending", "nope"], &["output", "nope"], &["key", "nope", "esc"]] {

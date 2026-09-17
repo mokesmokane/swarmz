@@ -356,7 +356,10 @@ From the session's `transcript_path` (known from `SessionStart`), or, for a
 tile the hook log has never reported one for, a guessed path — and only
 when the tile is one of this Mac's own homed defs and its Claude session id
 is UUID-shaped (an ssh tile's, or another Mac's, transcript is never
-guessed at):
+guessed at). Either path is followed through Claude's `continued-in`
+records (a file whose last record names a UUID session whose file exists in
+the same folder; at most ten hops, stopping on a cycle), so `transcript`,
+`image`, `ls` and `watch` read the newest file and report its session id.
 
 - Kept: user text (including slash commands), assistant text, user images.
 - Tool use and tool results are grouped into `tools: [{name, summary, ok}]`
@@ -370,13 +373,16 @@ guessed at):
 - Paging: newest first with `--before`; `--after <id>` returns that message
   (its `tools` may have changed since) and every newer one, so a `--follow`
   reader that lost its connection resumes from the last id it saw with no
-  gaps or duplicates.
+  gaps or duplicates. An `--after` id that is not in the transcript gives
+  the newest page (as `--limit` alone would) with `"reset": true`, telling
+  the reader to replace what it has.
 - `--follow` streams, after the first page, one line per change:
   `{"type":"message","message":…}` for a new message,
   `{"type":"update","message":…}` when an already-sent message gains tools
   or a tool result (never repeated as a new message), and
   `{"type":"session","sessionId":…}` when the tile's Claude session changes
-  (a fresh transcript path, or the current file rewritten shorter — a
+  (a fresh transcript path, including a `continued-in` move, with the
+  resolved session id; or the current file rewritten shorter — a
   session event is sent then too, before its messages are re-sent). It also
   sends `{"type":"ping"}` every 25 s.
 
