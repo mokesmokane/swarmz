@@ -17,6 +17,7 @@ robolectric = "4.17"
 androidxTestCore = "1.7.0"
 sshd = "2.19.0"
 eddsa = "0.3.0"
+slf4j = "2.0.17"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
@@ -48,6 +49,7 @@ robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "
 androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
 sshd-core = { group = "org.apache.sshd", name = "sshd-core", version.ref = "sshd" }
 eddsa = { group = "net.i2p.crypto", name = "eddsa", version.ref = "eddsa" }
+slf4j-nop = { group = "org.slf4j", name = "slf4j-nop", version.ref = "slf4j" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

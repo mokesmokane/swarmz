@@ -81,4 +81,5 @@ dependencies {
     debugImplementation(libs.compose.ui.test.manifest)
     testImplementation(libs.sshd.core)
     testImplementation(libs.eddsa)
+    testImplementation(libs.slf4j.nop)
 }
