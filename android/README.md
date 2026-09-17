@@ -141,6 +141,14 @@ services.
 - **Settings**: paired and discovered Macs, dictation language, and this phone's key (revoke it
   here, which removes it from every reachable Mac).
 
+## Installing updates
+
+Releases are published on GitHub (`mokesmokane/swarmz`), with the APK attached as
+`swarmz-<version>.apk` and signed by the same key every time. The easy way to keep a phone current
+is [Obtainium](https://github.com/ImranR98/Obtainium): add the app from
+`https://github.com/mokesmokane/swarmz`, and it watches the releases and offers each new APK as an
+in-place upgrade. `docs/RELEASING.md` covers how those releases are made.
+
 ## Out of scope for this build
 
 Background alerts and notifications (a foreground watcher service, permission/question/finished

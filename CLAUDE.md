@@ -88,3 +88,5 @@ A tile's saved folder is live: local tiles ask their holder for the shell's cwd 
 ## Docs and workflow
 
 Design specs live in `docs/superpowers/specs/` and implementation plans in `docs/superpowers/plans/`, dated `YYYY-MM-DD-<topic>.md`. Later specs amend earlier ones and say so in their header; check the newest spec for a feature before changing behaviour. Commit messages follow `type(scope): summary` (e.g. `fix(ui): …`, `feat(core): …`).
+
+`docs/RELEASING.md` is how a release is cut: `npm run version -- <x.y.z>` sets the one version in `package.json`, `src-tauri/tauri.conf.json` and `android/app/build.gradle.kts`, and pushing a `v*` tag makes `.github/workflows/release.yml` build, sign, notarise and draft it. Never build or bundle the desktop app locally; CI does that.

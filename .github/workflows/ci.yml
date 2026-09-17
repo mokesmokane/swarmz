@@ -1,0 +1,48 @@
+name: ci
+
+# Every push and pull request. No signing, no secrets, no macOS runner: this is the cheap gate,
+# and the same `checks` job the release runs first.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  android:
+    name: android unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Unsigned: with no ~/.swarmz-android/signing.properties and no ANDROID_* variables the
+      # build configures without a release signing config, which the unit tests do not need.
+      - run: ./gradlew --no-daemon :app:testDebugUnitTest
+
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-report
+          path: android/app/build/reports/tests/
+          if-no-files-found: ignore

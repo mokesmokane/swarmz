@@ -1,0 +1,168 @@
+name: release
+
+# Cutting a release is pushing a tag: `npm run version -- 0.2.0`, commit, `git tag v0.2.0`,
+# `git push origin v0.2.0`. See docs/RELEASING.md.
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The same gate as every push. Nothing is signed or published until it passes.
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  # Builds, signs, notarises and staples the macOS app, produces the updater artifacts, and
+  # creates the DRAFT release the user writes notes on and publishes. Nothing reaches anyone's
+  # updater until that publish happens: the endpoint reads `releases/latest/download/latest.json`,
+  # and a draft is never "latest".
+  macos:
+    needs: checks
+    # Forks have none of these secrets, and must never try to use them.
+    if: github.repository == 'mokesmokane/swarmz'
+    runs-on: macos-14
+    permissions:
+      contents: write
+    outputs:
+      releaseId: ${{ steps.tauri.outputs.releaseId }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      # A keychain of our own, thrown away in the last step, so nothing is left on the runner and
+      # the login keychain is never touched. Nothing here is echoed; do not add `set -x`.
+      - name: Import the Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/swarmz-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # No auto-lock: a notarised build can take longer than the default five minutes.
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          # Lets codesign use the key without a UI prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          rm -f "$CERT_PATH"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      # Builds the .app and .dmg, signs with the Developer ID, notarises with the App Store
+      # Connect credentials, staples the ticket, and — because bundle.createUpdaterArtifacts is
+      # true — writes swarmz.app.tar.gz and its minisign .sig. uploadUpdaterJson (on by default)
+      # then generates and uploads latest.json pointing at that archive.
+      - name: Build, sign, notarise and draft the release
+        id: tauri
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: swarmz ${{ github.ref_name }}
+          releaseBody: "Write the notes here, then publish. Publishing is what makes the updater offer this version."
+          releaseDraft: true
+          prerelease: false
+          # No --target: `npm run build:tool` puts swarmz-tool in src-tauri/target/release, which
+          # is where bundle.macOS.files looks for it. A cross/universal build would need that
+          # path to follow the triple too.
+          args: ""
+
+      # Runs even when the build failed, so the key never outlives the job.
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+          rm -f "$RUNNER_TEMP/developer-id.p12" || true
+
+  # The phone app, attached to the same draft release. Independent of the desktop build except
+  # for needing the release to exist first.
+  android:
+    needs: [checks, macos]
+    if: github.repository == 'mokesmokane/swarmz'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The runner has no ~/.swarmz-android/signing.properties, so app/build.gradle.kts reads
+      # these four variables instead (the local file still wins when it exists).
+      - name: Write the keystore
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$ANDROID_KEYSTORE" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Test and assemble
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleRelease
+
+      - name: Attach the APK to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          cp "$APK" "$RUNNER_TEMP/swarmz-$VERSION.apk"
+          gh release upload "$TAG" "$RUNNER_TEMP/swarmz-$VERSION.apk" --clobber
+
+      - name: Remove the keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks" || true

@@ -1,0 +1,41 @@
+name: checks
+
+# The one place the frontend and tool checks are defined. `ci.yml` calls it on every push and
+# pull request; `release.yml` calls it before it signs anything, so a tag can never publish a
+# build whose tests were never run.
+on:
+  workflow_call:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      # npm 10.9.x ships an Arborist bug that can make `npm ci` fail on this lockfile (see
+      # CLAUDE.md); npm 11 installs it cleanly.
+      - name: Use npm 11
+        run: npm install -g npm@11
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Only the tool: the `swarmz` app crate links WebKit and the macOS frameworks, so it is
+      # compiled on the macOS runner in `release.yml` and never here. The tool is plain Rust and
+      # is what the holders and the phone run.
+      - name: cargo test (swarmz-tool)
+        run: cargo test --manifest-path src-tauri/Cargo.toml -p swarmz-tool
