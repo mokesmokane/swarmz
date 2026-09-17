@@ -304,6 +304,7 @@ the hook log alone.
 | `new --folder <dir> [--skip-permissions] [--name <name>]` | `{tile:{…}}`, the new tile's `ls` row, §4.5 |
 | `restart <tile>` | holds a fresh session for a tile that is not running and types its startup step (Claude tiles resume their session); refuses (`running`) a tile that is already running, including one another `hold`/`restart` started concurrently; returns `{tile:{…}}` |
 | `phone add --name <device> --key <pubkey>` / `phone ls` / `phone revoke <device>` | §7.2 |
+| `host-keys` | `{v:1, host, user, fingerprints:["SHA256:…"]}` for the pairing QR code (§7.2): this Mac's name, its login user and the `SHA256:` fingerprints of every public host key in `/etc/ssh` (`SWARMZ_SSH_HOST_KEY_DIR` overrides the folder for tests). Not in the gate's allow list — the phone reads the code with its camera |
 
 ### 4.2 Status
 

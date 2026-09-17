@@ -783,6 +783,27 @@ fn fan_out(env: &Env, args: &[&str]) -> Result<Vec<Value>, String> {
     Ok(handles.into_iter().map(|h| h.join().unwrap_or_else(|_| json!({"ok": false, "error": "the ssh thread panicked"}))).collect())
 }
 
+/// This Mac's name, login user and ssh host key fingerprints: everything the pairing QR code
+/// carries (spec §7.2). It holds no secret -- host keys are public and world-readable -- so a
+/// photograph of the code gives nobody access; the password is still needed.
+///
+/// Deliberately out of the ssh gate's allow list: the phone reads the code with its camera and
+/// never runs this.
+pub fn host_keys(env: &Env) -> Result<Value, CliError> {
+    let host = env
+        .machine
+        .clone()
+        .ok_or_else(|| CliError::new("failed", "this Mac's Tailscale name is not known; is Tailscale running?"))?;
+    let user = std::env::var("USER")
+        .ok()
+        .filter(|u| crate::phone::valid_ssh_user(u))
+        .ok_or_else(|| CliError::new("failed", "cannot tell which user is logged in ($USER)"))?;
+    // No host keys (Remote Login never switched on, say) is not an error: the code still saves
+    // the typing, and the phone falls back to trusting the first key it is offered.
+    let fingerprints = crate::hostkeys::fingerprints_in(&crate::hostkeys::host_key_dir());
+    Ok(json!({"v": 1, "host": host, "user": user, "fingerprints": fingerprints}))
+}
+
 pub fn phone_add(env: &Env, device: &str, key: &str, local: bool) -> Result<Value, CliError> {
     let added = add_key(&authorized_keys(&env.home), device, key).map_err(|e| CliError::new("invalid", e))?;
     let machines = if local {

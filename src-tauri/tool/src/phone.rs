@@ -238,7 +238,7 @@ pub fn revoke(path: &Path, device: &str) -> Result<usize, String> {
 
 /// An ssh username: `^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$`. In particular this can never start
 /// with `-`, so it can never be mistaken for an ssh option.
-fn valid_ssh_user(user: &str) -> bool {
+pub fn valid_ssh_user(user: &str) -> bool {
     let bytes = user.as_bytes();
     if bytes.is_empty() || bytes.len() > 32 {
         return false;

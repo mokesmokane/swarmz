@@ -1327,6 +1327,54 @@ fn phone_keys_are_added_listed_and_revoked() {
     assert_eq!((code, bad["code"].as_str()), (1, Some("usage")));
 }
 
+const FIXTURE_ED25519: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPge3R3QFKHxzq6KmYIC6KzYNvdlN93DVMtK561x2P3x root@fixture";
+const FIXTURE_ED25519_FP: &str = "SHA256:r1nwggW9AHsthrbnxzGUx9I3q9Wcckmfv27XgD/hh6U";
+const FIXTURE_RSA: &str = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDsbYhsxRKkYgvHZKeNRhRVvfTfwODNFEaoBlEdeh2GlDKEupN0pfSKwKyj4vQESugdTd9CGG2z6c2Hl/DtS9GyfBQGpuXLkKT6HeM/XBPd7zlHTnPc8O54McBr7cURAH9OcXdTx6sowdybCTkuC8hRpL4LZfnmkhChHdyH4twO9rtGc+nUmWCXnwzkQzM78ToHJRnq5CH5mKgl+j4uktbf+WQbo3iKQTGY2aKzzlRMS/EoabXrnmzVrmDQmZ9wSkRWx0cqIJl9tX7lUvsMFC0pl7JtAb2HJycYN+BziV/hCQKOMLm0klYPMfgaj/N64TCbhQ2YBd5n1Qg/jHRAcLen root@fixture";
+const FIXTURE_RSA_FP: &str = "SHA256:7CQ/ldJqhjJfG5HDFdkweMu4jkmliY+CecbtNbpO8J0";
+
+/// A stand-in for `/etc/ssh`, so the test never reads the real one.
+fn fixture_host_keys(home: &Path) -> String {
+    let dir = home.join("etc-ssh");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ssh_host_ed25519_key.pub"), format!("{FIXTURE_ED25519}\n")).unwrap();
+    std::fs::write(dir.join("ssh_host_rsa_key.pub"), format!("{FIXTURE_RSA}\n")).unwrap();
+    std::fs::write(dir.join("ssh_host_ed25519_key"), "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
+    dir.to_string_lossy().into_owned()
+}
+
+#[test]
+fn host_keys_prints_this_macs_name_user_and_fingerprints() {
+    let h = home("hostkeys");
+    let dir = fixture_host_keys(&h.path);
+    let env = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_SSH_HOST_KEY_DIR", dir.as_str()), ("USER", "me")];
+    let (code, v) = tool_env(&h.path, &["host-keys"], env);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["v"], 1);
+    assert_eq!(v["host"], "mini");
+    assert_eq!(v["user"], "me");
+    let fps: Vec<&str> = v["fingerprints"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert_eq!(fps, vec![FIXTURE_RSA_FP, FIXTURE_ED25519_FP], "{v}");
+
+    // No host keys at all still prints the name and user, so the code is still worth showing.
+    let empty = h.path.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let (code, v) = tool_env(
+        &h.path,
+        &["host-keys"],
+        &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_SSH_HOST_KEY_DIR", empty.to_str().unwrap()), ("USER", "me")],
+    );
+    assert_eq!((code, v["fingerprints"].as_array().map(Vec::len)), (0, Some(0)), "{v}");
+
+    // A name this Mac does not know, and a username that could be mistaken for an ssh option.
+    let (code, v) = tool_env(&h.path, &["host-keys"], &[("SWARMZ_MACHINE", ""), ("SWARMZ_SSH_HOST_KEY_DIR", dir.as_str()), ("USER", "me")]);
+    assert_eq!((code, v["code"].as_str()), (1, Some("failed")), "{v}");
+    let (code, v) = tool_env(&h.path, &["host-keys"], &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_SSH_HOST_KEY_DIR", dir.as_str()), ("USER", "-oProxyCommand=x")]);
+    assert_eq!((code, v["code"].as_str()), (1, Some("failed")), "{v}");
+
+    let (code, v) = tool_env(&h.path, &["host-keys", "extra"], env);
+    assert_eq!((code, v["code"].as_str()), (1, Some("usage")), "{v}");
+}
+
 /// Runs `ssh-gate` with `tool_command`'s HOME/PATH (never the developer's real one), the given
 /// `SSH_ORIGINAL_COMMAND` (or none), and `SWARMZ_MACHINE=mini` so it never asks Tailscale.
 fn gate(home: &Path, original: Option<&str>) -> (i32, serde_json::Value) {
@@ -1366,6 +1414,8 @@ fn the_gate_runs_only_allowed_commands() {
         "swarmz hold t1",
         "swarmz __keep-def t1",
         "swarmz ssh-gate",
+        // The phone reads the QR code with its camera; it never runs this over ssh.
+        "swarmz host-keys",
         "/tmp/swarmz version",
         "~/swarmz version",
         "'~/.swarmz/bin/swarmz ls'",
