@@ -344,12 +344,18 @@ fn tail(path: &Path) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// The session a transcript says it continued in: its last record (a partial line being written
-/// is skipped once) is `continued-in` with a UUID `continuedInSessionId`. Reads only the tail.
+/// The session a transcript says it continued in: its last complete record is `continued-in` with
+/// a UUID `continuedInSessionId`. Reads only the tail. A final line with no newline after it is
+/// half written and skipped; any other line that is not JSON ends the chain, so a record appended
+/// to a resumed old session can never make this flap between two files.
 pub fn continued_in(path: &Path) -> Option<String> {
     let buf = tail(path)?;
     let text = String::from_utf8_lossy(&buf);
-    let last = text.lines().rev().filter(|l| !l.trim().is_empty()).take(2).find_map(|l| serde_json::from_str::<Value>(l).ok())?;
+    let mut lines: Vec<&str> = text.lines().collect();
+    if !buf.ends_with(b"\n") {
+        lines.pop();
+    }
+    let last = serde_json::from_str::<Value>(lines.iter().rev().find(|l| !l.trim().is_empty())?).ok()?;
     if last["type"].as_str() != Some("continued-in") {
         return None;
     }
@@ -539,7 +545,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-
     fn chain_dir(tag: &str) -> PathBuf {
         let dir = PathBuf::from(format!("/tmp/szc-{}-chain-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -591,8 +596,8 @@ mod tests {
         let dir = chain_dir("cycle");
         let p1 = write_session(&dir, S1, Some(continued(S1, S2)));
         write_session(&dir, S2, Some(continued(S2, S1)));
-        let (end, _) = resolve_continued(&p1);
-        assert!(end == p1 || end == dir.join(format!("{S2}.jsonl")), "{end:?}");
+        // A -> B -> A stops at B, the last file the chain had not seen.
+        assert_eq!(resolve_continued(&p1), (dir.join(format!("{S2}.jsonl")), Some(S2.to_string())));
         let self_loop = write_session(&dir, S3, Some(continued(S3, S3)));
         assert_eq!(resolve_continued(&self_loop).0, self_loop);
         // A chain longer than ten hops ends after ten.
@@ -619,6 +624,15 @@ mod tests {
             let p = write_session(&dir, S3, Some(continued(S3, target)));
             assert_eq!(resolve_continued(&p), (p.clone(), None), "{target}");
         }
+        // A complete line that is not JSON ends the chain: only a half-written final record (no
+        // newline after it) is skipped, so a resumed old session cannot flap between files.
+        write_session(&dir, S2, None);
+        let broken = dir.join("broken.jsonl");
+        std::fs::write(&broken, continued(S1, S2) + "\nnot json at all\n").unwrap();
+        assert_eq!(resolve_continued(&broken), (broken.clone(), None));
+        let half = dir.join("half.jsonl");
+        std::fs::write(&half, continued(S1, S2) + "\n{\"type\":\"user\",\"uuid\"").unwrap();
+        assert_eq!(resolve_continued(&half), (dir.join(format!("{S2}.jsonl")), Some(S2.to_string())));
         // Only the last record counts.
         write_session(&dir, S2, None);
         let p = write_session(&dir, S1, Some(continued(S1, S2) + "\n" + &user("e9", json!("later"))));
