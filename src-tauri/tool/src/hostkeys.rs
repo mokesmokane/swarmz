@@ -24,6 +24,11 @@ pub fn host_key_dir() -> PathBuf {
 /// that cannot be read, or a line that is not a public key, is skipped rather than failing the
 /// lot: a Mac with three key types and one odd file still reports three fingerprints. A missing
 /// directory is no keys.
+///
+/// These are the keys macOS generates and keeps in `/etc/ssh`, whatever `sshd_config` says: a
+/// `HostKey` line naming a key elsewhere, or leaving one of these out, is not followed. In
+/// practice sshd offers exactly these, and a fingerprint listed here that it never offers only
+/// means one pin the phone never matches against, while the keys it does offer still verify.
 pub fn fingerprints_in(dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();

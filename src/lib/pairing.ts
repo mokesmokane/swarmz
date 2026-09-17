@@ -23,11 +23,12 @@ export function pairUri({ host, user, fingerprints }: HostKeys): string {
 
 /**
  * `text` as an `<svg>` string, scalable so the box it is put in decides how big it is drawn.
- * Error correction level M: the code is read off a screen at arm's length, not off paper.
+ * Error correction level M: the code is read off a screen at arm's length, not off paper. The
+ * margin is the standard four-module quiet zone, which scanners need to find the code at all.
  */
 export function qrSvg(text: string): string {
   const qr = qrcode(0, "M");
   qr.addData(text);
   qr.make();
-  return qr.createSvgTag({ cellSize: 1, margin: 2, scalable: true });
+  return qr.createSvgTag({ cellSize: 1, margin: 4, scalable: true });
 }
