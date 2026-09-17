@@ -23,10 +23,12 @@ import dev.swarmz.phone.state.tileListSections
 import dev.swarmz.phone.ui.tile.TileController
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -75,6 +77,9 @@ private const val TICK_MS = 30_000L
 private const val ASK_RETRY_MS = 2_000L
 private const val ASK_RETRY_MAX_MS = 30_000L
 
+/** Tool error codes that do not clear by themselves; any other code (e.g. `failed`, a timeout) is retried. */
+private val FINAL_ASK_CODES = setOf("old_session", "not_running", "invalid")
+
 /** 2 s, 4 s, 8 s, 16 s, then 30 s. */
 internal fun askBackoffMs(attempt: Int): Long = min(ASK_RETRY_MAX_MS, ASK_RETRY_MS shl min(attempt, 5))
 
@@ -115,6 +120,13 @@ class AppViewModel(
      */
     private val asked = mutableMapOf<TileKey, String?>()
     private val fetches = mutableMapOf<TileKey, Job>()
+
+    /**
+     * Per tile, a job that completes when fetching may resume after an answer: at once after an ignored or failed
+     * answer, [ASK_RETRY_MS] after a real one (Claude closes its dialog a moment after `answer` returns). A job
+     * rather than a time, so it runs on the same clock as `delay`.
+     */
+    private val holds = mutableMapOf<TileKey, CompletableJob>()
 
     val home: StateFlow<HomeUi> = combine(
         combine(repo.tiles, repo.seen, repo.macs, repo.banners) { tiles, seen, macs, banners -> Inputs(tiles, seen, macs, banners) },
@@ -179,16 +191,24 @@ class AppViewModel(
             val self = coroutineContext.job
             fun current() = fetches[key] === self
             try {
-                if (delayMs > 0) delay(delayMs)
+                // The longer of the requested delay and what is left of an answer's hold.
+                coroutineScope {
+                    if (delayMs > 0) launch { delay(delayMs) }
+                    holds[key]?.join()
+                }
                 var attempt = 0
                 while (true) {
                     val p = try {
                         repo.pending(key)
                     } catch (e: CancellationException) {
                         throw e
-                    } catch (_: ToolFailure) {
-                        if (current()) asks.update { it - key }
-                        return@launch
+                    } catch (e: ToolFailure) {
+                        // A tile that needs a restart (or cannot be asked) stays without a card until its row changes.
+                        if (e.code in FINAL_ASK_CODES) {
+                            if (current()) asks.update { it - key }
+                            return@launch
+                        }
+                        null
                     } catch (_: Exception) {
                         null
                     }
@@ -243,6 +263,8 @@ class AppViewModel(
     private fun answer(key: TileKey, choice: String) {
         val ask = asks.value[key] ?: return
         asks.update { it - key }
+        val hold = Job()
+        holds.put(key, hold)?.complete()
         viewModelScope.launch {
             val answered = try {
                 repo.answer(key, choice, ask.summary).answered
@@ -251,9 +273,12 @@ class AppViewModel(
             } catch (_: Exception) {
                 false
             }
-            // If the tile still needs a permission, ask the screen again. `answer` returns before Claude closes the
-            // dialog, so after a real answer wait a moment; after an ignored or failed one, ask at once.
-            refetch(key, if (answered) ASK_RETRY_MS else 0)
+            // If the tile still needs a permission, ask the screen again: once the hold ends, which is at once after
+            // an ignored or failed answer. A fetch started meanwhile (e.g. by a new `since`) waits for the same hold.
+            refetch(key, 0)
+            if (answered) delay(ASK_RETRY_MS)
+            hold.complete()
+            if (holds[key] === hold) holds.remove(key)
         }
     }
 

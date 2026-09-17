@@ -189,6 +189,35 @@ class AppViewModelTest {
     }
 
     @Test
+    fun aPassingToolFailureIsRetriedAndTheCardAppears() = runTest {
+        val e = env { pending = """{"code":"failed","error":"the session did not answer","v":1}""" }
+        assertFalse(API in e.vm.home.value.asks)
+        e.pending = QUESTION
+        advanceTimeBy(2_001)
+        runCurrent()
+        assertEquals(2, e.conn.ran.count { it == Cmd.pending("t1") })
+        assertEquals("npm test", e.vm.home.value.asks[API]!!.summary)
+    }
+
+    @Test
+    fun aNewSinceDuringThePostAnswerWaitStillWaits() = runTest {
+        // The dialog is still on screen just after `answer` returns, and Claude's late notification bumps `since`.
+        val e = env { answerClearsQuestion = false }
+        e.vm.allowOnce(API)
+        runCurrent()
+        e.push(PERMISSION_SNAPSHOT.replace("2026-09-17T10:00:00Z", "2026-09-17T10:10:00Z"))
+        runCurrent()
+        advanceTimeBy(1_000)
+        assertEquals(1, e.conn.ran.count { it == Cmd.pending("t1") })
+        assertFalse(API in e.vm.home.value.asks)
+        e.pending = NO_QUESTION
+        advanceTimeBy(1_100)
+        runCurrent()
+        assertEquals(2, e.conn.ran.count { it == Cmd.pending("t1") })
+        assertFalse(API in e.vm.home.value.asks)
+    }
+
+    @Test
     fun aSlowFetchForAnOldRowDoesNotOverwriteTheNewOne() = runTest {
         val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
         var calls = 0
