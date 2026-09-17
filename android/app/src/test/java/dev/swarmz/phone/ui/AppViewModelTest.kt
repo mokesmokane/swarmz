@@ -344,11 +344,35 @@ class AppViewModelTest {
         e.vm.replyRestored(WEB)
         runCurrent()
         assertTrue(e.vm.home.value.replyErrors[WEB]!!.restored)
+        // Another tile changing leaves it alone.
+        e.push(PERMISSION_SNAPSHOT.replace("2026-09-17T10:00:00Z", "2026-09-17T10:01:00Z"))
+        runCurrent()
+        assertTrue(WEB in e.vm.home.value.replyErrors)
         // Sending again clears the error, and a reply that goes through leaves none.
         e.sendError = null
         e.vm.reply(WEB, "carry on")
         runCurrent()
         assertFalse(WEB in e.vm.home.value.replyErrors)
         assertEquals(2, e.conn.ran.count { it == Cmd.send("t2", "carry on") })
+    }
+
+    @Test
+    fun aFailedReplyIsDroppedWhenItsTileMovesOn() = runTest {
+        val e = env { sendError = """{"code":"not_running","error":"web is not running","v":1}""" }
+        e.vm.reply(WEB, "carry on")
+        runCurrent()
+        assertTrue(WEB in e.vm.home.value.replyErrors)
+        // web's turn ends again: the failed reply belonged to the previous one.
+        e.push(snapshot("2026-09-17T10:08:00Z"))
+        runCurrent()
+        assertFalse(WEB in e.vm.home.value.replyErrors)
+
+        e.vm.reply(WEB, "again")
+        runCurrent()
+        assertTrue(WEB in e.vm.home.value.replyErrors)
+        // A new `since` counts as moving on too.
+        e.push(snapshot("2026-09-17T10:08:00Z").replace(""""name":"web",""", """"name":"web","since":"2026-09-17T10:09:00Z","""))
+        runCurrent()
+        assertFalse(WEB in e.vm.home.value.replyErrors)
     }
 }

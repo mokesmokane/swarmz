@@ -85,9 +85,44 @@ class PhoneKeyTest {
         assertFalse(first.openSsh == replaced.openSsh)
         assertEquals(replaced.openSsh, PhoneKeyStore(tmp.root, XorVault()).loadOrCreate().openSsh)
 
+        // A damaged public key file reads as missing.
+        tmp.root.resolve("phone_key.pub").writeBytes(byteArrayOf(1, 2, 3))
+        val fromBadPublic = PhoneKeyStore(tmp.root, XorVault()).loadOrCreate()
+        assertFalse(fromBadPublic.openSsh == replaced.openSsh)
+
+        // So does a sealed key that decodes to something that is not a key.
+        tmp.root.resolve("phone_key.sealed").writeBytes(XorVault().seal(byteArrayOf(9, 9, 9)))
+        val fromBadPrivate = PhoneKeyStore(tmp.root, XorVault()).loadOrCreate()
+        assertFalse(fromBadPrivate.openSsh == fromBadPublic.openSsh)
+
         // A cut-off sealed file reads as missing too.
         tmp.root.resolve("phone_key.sealed").writeBytes(ByteArray(0))
         val fresh = PhoneKeyStore(tmp.root, XorVault()).loadOrCreate()
-        assertFalse(fresh.openSsh == replaced.openSsh)
+        assertFalse(fresh.openSsh == fromBadPrivate.openSsh)
+    }
+
+    @Test
+    fun aKeystoreFailureForNowKeepsTheKey() {
+        val first = PhoneKeyStore(tmp.root, XorVault()).loadOrCreate()
+        val sealed = tmp.root.resolve("phone_key.sealed").readBytes()
+        val public = tmp.root.resolve("phone_key.pub").readBytes()
+        for (failure in listOf(
+            java.security.ProviderException("keystore busy"),
+            java.security.KeyStoreException("not ready"),
+            java.io.IOException("read failed"),
+            java.security.InvalidKeyException("for now"),
+        )) {
+            val failing = object : KeyVault by XorVault() {
+                var erased = false
+                override fun open(sealed: ByteArray): ByteArray = throw failure
+                override fun erase() { erased = true }
+            }
+            val thrown = runCatching { PhoneKeyStore(tmp.root, failing).loadOrCreate() }.exceptionOrNull()
+            assertTrue("$failure is rethrown", thrown === failure)
+            assertFalse(failing.erased)
+            assertArrayEquals(sealed, tmp.root.resolve("phone_key.sealed").readBytes())
+            assertArrayEquals(public, tmp.root.resolve("phone_key.pub").readBytes())
+        }
+        assertEquals(first.openSsh, PhoneKeyStore(tmp.root, XorVault()).loadOrCreate().openSsh)
     }
 }

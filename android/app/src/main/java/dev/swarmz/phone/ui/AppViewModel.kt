@@ -135,6 +135,11 @@ class AppViewModel(
      */
     private val holds = mutableMapOf<TileKey, CompletableJob>()
 
+    /** Per failed reply, the tile's turn (`since`, `turnEndedAt`) when it failed. */
+    private val replyTurns = mutableMapOf<TileKey, Pair<String?, String?>>()
+
+    private fun turnOf(view: TileView?): Pair<String?, String?> = view?.row?.since to view?.row?.turnEndedAt
+
     val home: StateFlow<HomeUi> = combine(
         combine(repo.tiles, repo.seen, repo.macs, repo.banners) { tiles, seen, macs, banners -> Inputs(tiles, seen, macs, banners) },
         asks,
@@ -152,8 +157,10 @@ class AppViewModel(
                 val permission = permissionViews(tiles)
                 val live = permission.map { it.key }.toSet()
                 asks.update { a -> a.filterKeys { it in live } }
-                val present = tiles.map { it.key }.toSet()
-                replyErrors.update { r -> r.filterKeys { it in present } }
+                // A failed reply belongs to the turn it answered: it goes when the tile goes or moves on.
+                val turns = tiles.associate { it.key to turnOf(it) }
+                replyErrors.update { r -> r.filterKeys { k -> k in turns && turns[k] == replyTurns[k] } }
+                replyTurns.keys.retainAll(replyErrors.value.keys)
                 for (key in (asked.keys + fetches.keys).filter { it !in live }) forget(key)
                 for (view in permission) fetchAsk(view)
             }
@@ -356,6 +363,7 @@ class AppViewModel(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                replyTurns[key] = turnOf(repo.tiles.value.firstOrNull { it.key == key })
                 replyErrors.update { it + (key to ReplyError(text, "Couldn't send: ${e.message ?: "unknown error"}")) }
             }
         }

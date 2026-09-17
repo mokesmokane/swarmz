@@ -8,10 +8,10 @@ private val DEVICE = Regex("^[A-Za-z0-9._-]+( [A-Za-z0-9._-]+)*$")
 /** Spec §7.2: letters, digits, `.`, `_`, `-`, single inner spaces, up to 40 characters. */
 fun validDevice(name: String): Boolean = name.length in 1..40 && DEVICE.matches(name)
 
-/** The tool's command lines (spec §4.1). Phone keys go through the ssh gate, which splits with POSIX rules. */
 /** `phone add` and `phone revoke` fan out to every other Mac (about 15 s each, in parallel), so they get longer. */
 const val PHONE_KEY_EXEC_MS = 60_000L
 
+/** The tool's command lines (spec §4.1). Phone keys go through the ssh gate, which splits with POSIX rules. */
 object Cmd {
     const val TOOL = "swarmz"
     const val TOOL_PATH = "~/.swarmz/bin/swarmz"

@@ -377,4 +377,20 @@ class MacLinkTest {
         assertEquals(FOLLOW_SLOTS + 1, conn.ran.count { it.startsWith("follow") })
         assertEquals(10, EXEC_SLOTS + FOLLOW_SLOTS + 1)
     }
+
+    @Test
+    fun commandsWaitingForTheLinkHoldNoSlots() = runTest {
+        // Offline for good (the next attempt is far off): slots full of commands that wait a long time for it.
+        val link = link(FakeConnector(Unreachable("mini", Exception("x")), Unreachable("mini", Exception("x"))))
+        link.start()
+        runCurrent()
+        repeat(EXEC_SLOTS) { i -> backgroundScope.launch { runCatching { link.exec("long $i", waitMs = 600_000) } } }
+        runCurrent()
+        // A command with a short wait still gives up on time, rather than queueing behind them.
+        val short = backgroundScope.async { runCatching { link.exec("short", waitMs = 500) } }
+        advanceTimeBy(501)
+        runCurrent()
+        assertTrue(short.isCompleted)
+        assertEquals("mini is offline", short.await().exceptionOrNull()!!.message)
+    }
 }

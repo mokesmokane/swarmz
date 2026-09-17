@@ -27,6 +27,7 @@ import java.net.InetAddress
 import java.net.UnknownHostException
 
 data class PairResult(val others: List<MachineResult>)
+
 /** Tailscale's ranges: IPv4 100.64.0.0/10 (CGNAT) and IPv6 fd7a:115c:a1e0::/48. */
 internal fun isTailscaleAddress(a: InetAddress): Boolean {
     val b = a.address.map { it.toInt() and 0xFF }

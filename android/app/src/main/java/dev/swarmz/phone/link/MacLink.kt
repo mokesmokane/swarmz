@@ -200,8 +200,13 @@ class MacLink(
             ?: throw LinkDown("$mac is offline")
 
     /** Runs [command] once the link is online (waiting up to [waitMs]); [timeoutMs] bounds the command itself. */
-    suspend fun exec(command: String, waitMs: Long = 15_000, timeoutMs: Long = 20_000): String = execSlots.withPermit {
+    suspend fun exec(command: String, waitMs: Long = 15_000, timeoutMs: Long = 20_000): String {
+        // Wait for the link first, so commands waiting for it do not hold slots.
         val conn = online(waitMs)
+        return execSlots.withPermit { run(conn, command, timeoutMs) }
+    }
+
+    private suspend fun run(conn: SshConnection, command: String, timeoutMs: Long): String {
         val result = try {
             conn.exec(command, timeoutMs)
         } catch (e: IOException) {
@@ -213,7 +218,7 @@ class MacLink(
             val detail = result.stderr.lineSequence().firstOrNull { it.isNotBlank() }?.let { ": $it" } ?: ""
             throw LinkDown("swarmz failed on $mac (exit $exit)$detail")
         }
-        result.stdout
+        return result.stdout
     }
 
     /** Runs [command] and decodes its reply, off the main thread: replies such as transcript pages and images are large. */

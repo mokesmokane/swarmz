@@ -365,7 +365,7 @@ class RepositoryTest {
     }
 
     @Test
-    fun discoveryDropsMacsTheMachinesListNoLongerHas() = runTest {
+    fun discoveryKeepsSavedMacsTheMachinesListLeavesOut() = runTest {
         val mini = FakeConn { if (it == Cmd.machines()) """{"machines":[{"name":"mini","self":true}],"v":1}""" else VERSION_OK }
         val studio = FakeConn()
         val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -380,10 +380,15 @@ class RepositoryTest {
         assertEquals(listOf("mini", "studio"), repo.macs.value.map { it.name })
         gate.complete(Unit)
         runCurrent()
-        assertEquals(listOf("mini"), repo.macs.value.map { it.name })
-        assertTrue(studio.closed)
-        assertEquals("Disconnected", out.error.value)
-        assertEquals(listOf(KnownMac("mini", "mini", 0)), settings.macs.value)
+        // `machines` leaves out Macs that are asleep: studio keeps its link, its session, its label and its entry.
+        assertTrue("discovery ran", Cmd.machines() in mini.ran)
+        assertEquals(listOf("mini", "studio"), repo.macs.value.map { it.name })
+        assertEquals("Studio", repo.macs.value.last().label)
+        assertTrue("studio's link stays", !studio.closed)
+        assertNull(out.error.value)
+        assertTrue("studio's session stays", out.job.isActive)
+        assertEquals(listOf(KnownMac("mini", "mini", 0), KnownMac("studio", "Studio", 0)), settings.macs.value)
+        out.close()
     }
 
     @Test

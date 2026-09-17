@@ -214,7 +214,8 @@ class Repository(
 
     /**
      * Links the paired Mac and the Macs saved from earlier rounds ([known]) at once, so they are reachable while the
-     * paired Mac is offline. Discovery then adds new Macs and drops ones the paired Mac no longer lists.
+     * paired Mac is offline. Discovery then adds new Macs; it never removes one, since `machines` leaves out
+     * Macs that are merely asleep.
      */
     private fun pair(p: Paired, known: List<KnownMac>) {
         val primary = newLink(p, p.host)
@@ -244,20 +245,18 @@ class Repository(
             val list = primary.call<MachineList>(Cmd.machines()).machines
             val names = mutableMapOf<String, String>()
             list.firstOrNull { it.isSelf }?.let { names[p.host] = it.alias ?: it.name }
+            // Only adds: `machines` leaves out Macs that are asleep, and those stay (dimmed, with "last seen").
             val next = LinkedHashMap(links.value)
-            val others = list.filter { !it.isSelf }
-            for (m in others) {
+            for (m in list.filter { !it.isSelf }) {
                 names[m.name] = m.alias ?: m.name
                 if (m.name !in next) next[m.name] = newLink(p, m.name)
             }
-            val listed = others.map { it.name }.toSet()
-            val gone = next.keys.filter { it != p.host && it !in listed }
-            for (mac in gone) next.remove(mac)?.stop()
             links.value = next
-            labels.value = names
-            gone.forEach(::endSessions)
+            // A Mac this round did not list keeps the label it had.
+            val merged = labels.value + names
+            labels.value = merged
             val saved = settings.macs.value.associateBy { it.name }
-            settings.setMacs(next.keys.map { mac -> KnownMac(mac, names[mac] ?: mac, next[mac]?.lastSeen?.value ?: saved[mac]?.lastSeen) })
+            settings.setMacs(next.keys.map { mac -> KnownMac(mac, merged[mac] ?: mac, next[mac]?.lastSeen?.value ?: saved[mac]?.lastSeen) })
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
