@@ -4,6 +4,7 @@ import dev.swarmz.phone.proto.Cmd
 import dev.swarmz.phone.proto.ToolFailure
 import dev.swarmz.phone.proto.Version
 import dev.swarmz.phone.ssh.Auth
+import dev.swarmz.phone.ssh.ExecResult
 import dev.swarmz.phone.ssh.HostKeyChanged
 import dev.swarmz.phone.ssh.Unreachable
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -16,7 +17,6 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
-import dev.swarmz.phone.ssh.ExecResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -196,6 +196,29 @@ class MacLinkTest {
         second.stream("cmd-1").send("b")
         second.stream("cmd-1").close()
         assertEquals(listOf("a", "b"), got.await())
+    }
+
+    @Test
+    fun followResumesWhenItsStreamFailsJustBeforeTheWatch() = runTest {
+        val first = FakeConn()
+        first.lineFailures = { cmd -> if (cmd == "cmd-0") java.io.IOException("reset") else null }
+        val second = FakeConn()
+        val link = link(FakeConnector(first, second))
+        link.start()
+        runCurrent()
+        var n = 0
+        val got = async { link.follow { "cmd-${n++}" }.take(1).toList() }
+        runCurrent()
+        // The follow stream has failed while `current` is still the first connection; the watch notices shortly after.
+        advanceTimeBy(500)
+        assertTrue(link.state.value is LinkState.Online)
+        first.stream(Cmd.watch()).close(java.io.IOException("reset"))
+        runCurrent()
+        assertTrue(!got.isCompleted)
+        advanceTimeBy(1_001)
+        runCurrent()
+        second.stream("cmd-1").send("b")
+        assertEquals(listOf("b"), got.await())
     }
 
     @Test

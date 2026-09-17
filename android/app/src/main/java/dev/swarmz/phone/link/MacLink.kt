@@ -12,26 +12,26 @@ import dev.swarmz.phone.ssh.AuthRejected
 import dev.swarmz.phone.ssh.HostKeyChanged
 import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.ssh.SshConnector
+import java.io.IOException
+import kotlin.math.min
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.produceIn
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.produceIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.IOException
-import kotlin.math.min
 
 sealed interface LinkState {
     data object Idle : LinkState
@@ -212,7 +212,10 @@ class MacLink(
             if (error is ToolFailure) throw error
             if (error != null && !dropped) {
                 // The connection may be dropping and the watch not have noticed yet; give it a moment.
-                withTimeoutOrNull(DROP_GRACE_MS) { current.first { it !== conn } } ?: throw error
+                withTimeoutOrNull(DROP_GRACE_MS) {
+                    current.first { it !== conn }
+                    true
+                } ?: throw error
             }
             // Wait until this connection is replaced, then run the command again.
             current.first { it !== conn }
