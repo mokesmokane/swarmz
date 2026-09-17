@@ -10,6 +10,8 @@ import dev.swarmz.phone.keys.PhoneKey
 import dev.swarmz.phone.link.FakeConn
 import dev.swarmz.phone.link.VERSION_OK
 import dev.swarmz.phone.proto.Cmd
+import dev.swarmz.phone.ssh.ExecResult
+import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.state.TileKey
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,6 +59,8 @@ class AppViewModelTest {
         /** The phone's clock. */
         var clock: Instant = Instant.parse("2026-09-17T10:10:00Z")
         val ticks = MutableStateFlow(0)
+        /** When set, answers `pending` for t1 instead of [pending], and may suspend. */
+        var pendingHook: (suspend () -> String)? = null
 
         suspend fun push(json: String) = conn.stream(Cmd.watch()).send(json)
     }
@@ -77,8 +81,17 @@ class AppViewModelTest {
                 else -> VERSION_OK
             }
         }
+        val inner = e.conn
+        val conn = object : SshConnection by inner {
+            override suspend fun exec(command: String, timeoutMs: Long): ExecResult {
+                val hook = e.pendingHook
+                if (hook == null || command != Cmd.pending("t1")) return inner.exec(command, timeoutMs)
+                inner.ran += command
+                return ExecResult(0, hook(), "")
+            }
+        }
         val now = { e.clock }
-        val repo = Repository(e.settings, { key }, HostConnector(mapOf("mini" to ArrayDeque(listOf(e.conn)))), backgroundScope, now)
+        val repo = Repository(e.settings, { key }, HostConnector(mapOf("mini" to ArrayDeque(listOf<SshConnection>(conn)))), backgroundScope, now)
         repo.start()
         e.vm = AppViewModel(repo, e.settings, pairing = null, scope = backgroundScope, now = now, ticks = e.ticks)
         e.vm.setVisible(true)
@@ -124,6 +137,74 @@ class AppViewModelTest {
         assertFalse(API in e.vm.home.value.asks)
         e.pending = QUESTION
         advanceTimeBy(2_001)
+        runCurrent()
+        assertEquals("npm test", e.vm.home.value.asks[API]!!.summary)
+    }
+
+    @Test
+    fun aMissingQuestionIsPolledWithBackoffWhateverTheWatchTraffic() = runTest {
+        val e = env { pending = NO_QUESTION }
+        // 50 s of a busy watch: every second another tile changes while api still says permission.
+        repeat(50) { i ->
+            e.push(snapshot("2026-09-17T10:05:%02dZ".format(i)))
+            advanceTimeBy(1_000)
+        }
+        runCurrent()
+        // Fetched at 0 s, then retried at 2, 6, 14 and 30 s.
+        assertEquals(5, e.conn.ran.count { it == Cmd.pending("t1") })
+        assertEquals(listOf(2_000L, 4_000L, 8_000L, 16_000L, 30_000L, 30_000L), (0..5).map { askBackoffMs(it) })
+    }
+
+    @Test
+    fun anOldSessionIsNotAskedAgainUntilTheRowChanges() = runTest {
+        val e = env { pending = """{"code":"old_session","error":"restart this tile to use it from the phone","v":1}""" }
+        repeat(60) { i ->
+            e.push(snapshot("2026-09-17T10:05:%02dZ".format(i)))
+            advanceTimeBy(1_000)
+        }
+        assertEquals(1, e.conn.ran.count { it == Cmd.pending("t1") })
+        assertFalse(API in e.vm.home.value.asks)
+        e.pending = QUESTION
+        e.push(PERMISSION_SNAPSHOT.replace("2026-09-17T10:00:00Z", "2026-09-17T10:01:00Z"))
+        runCurrent()
+        assertEquals(2, e.conn.ran.count { it == Cmd.pending("t1") })
+        assertEquals("npm test", e.vm.home.value.asks[API]!!.summary)
+    }
+
+    @Test
+    fun aRealAnswerWaitsForTheDialogToCloseBeforeAskingAgain() = runTest {
+        // The dialog is still on screen just after `answer` returns.
+        val e = env { answerClearsQuestion = false }
+        e.vm.allowOnce(API)
+        runCurrent()
+        assertTrue(Cmd.answer("t1", "yes", "npm test") in e.conn.ran)
+        assertEquals(1, e.conn.ran.count { it == Cmd.pending("t1") })
+        assertFalse(API in e.vm.home.value.asks)
+        advanceTimeBy(1_000)
+        e.pending = NO_QUESTION
+        advanceTimeBy(1_100)
+        runCurrent()
+        assertEquals(2, e.conn.ran.count { it == Cmd.pending("t1") })
+        assertFalse(API in e.vm.home.value.asks)
+    }
+
+    @Test
+    fun aSlowFetchForAnOldRowDoesNotOverwriteTheNewOne() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var calls = 0
+        val e = env {
+            pendingHook = {
+                calls++
+                if (calls == 1) {
+                    gate.await()
+                    """{"pending":{"tool":"Bash","summary":"old","options":[{"n":1,"label":"Yes"}]},"v":1}"""
+                } else QUESTION
+            }
+        }
+        e.push(PERMISSION_SNAPSHOT.replace("2026-09-17T10:00:00Z", "2026-09-17T10:01:00Z"))
+        runCurrent()
+        assertEquals("npm test", e.vm.home.value.asks[API]!!.summary)
+        gate.complete(Unit)
         runCurrent()
         assertEquals("npm test", e.vm.home.value.asks[API]!!.summary)
     }

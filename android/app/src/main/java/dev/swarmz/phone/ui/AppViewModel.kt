@@ -9,6 +9,7 @@ import dev.swarmz.phone.data.SettingsStore
 import dev.swarmz.phone.pairing.Pairing
 import dev.swarmz.phone.pairing.PairingError
 import dev.swarmz.phone.proto.Pending
+import dev.swarmz.phone.proto.ToolFailure
 import dev.swarmz.phone.state.HomeModel
 import dev.swarmz.phone.state.ListSection
 import dev.swarmz.phone.state.MacInfo
@@ -22,7 +23,9 @@ import dev.swarmz.phone.state.tileListSections
 import dev.swarmz.phone.ui.tile.TileController
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -35,9 +38,11 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
+import kotlin.math.min
 
 sealed interface Route {
     data object Home : Route
@@ -68,6 +73,10 @@ fun ticker(periodMs: Long): Flow<Unit> = flow {
 
 private const val TICK_MS = 30_000L
 private const val ASK_RETRY_MS = 2_000L
+private const val ASK_RETRY_MAX_MS = 30_000L
+
+/** 2 s, 4 s, 8 s, 16 s, then 30 s. */
+internal fun askBackoffMs(attempt: Int): Long = min(ASK_RETRY_MAX_MS, ASK_RETRY_MS shl min(attempt, 5))
 
 class AppViewModel(
     val repo: Repository,
@@ -98,11 +107,14 @@ class AppViewModel(
 
     private val asks = MutableStateFlow<Map<TileKey, Pending>>(emptyMap())
 
-    /**
-     * The `(tile, since)` pairs whose question has been fetched or is being fetched. A plain set: every
-     * reader and writer runs on the view model's scope, whose dispatcher is single-threaded (Main).
+    /*
+     * Plain maps: every reader and writer runs on the view model's scope, whose dispatcher is single-threaded (Main).
+     *
+     * `asked` holds, per tile, the `since` whose question is fetched, being fetched (with retries) or given up on.
+     * While it matches the row, tiles emissions start nothing. `fetches` holds each tile's one fetch-or-retry job.
      */
-    private val asked = mutableSetOf<Pair<TileKey, String?>>()
+    private val asked = mutableMapOf<TileKey, String?>()
+    private val fetches = mutableMapOf<TileKey, Job>()
 
     val home: StateFlow<HomeUi> = combine(
         combine(repo.tiles, repo.seen, repo.macs, repo.banners) { tiles, seen, macs, banners -> Inputs(tiles, seen, macs, banners) },
@@ -119,9 +131,8 @@ class AppViewModel(
             repo.tiles.collect { tiles ->
                 val permission = permissionViews(tiles)
                 val live = permission.map { it.key }.toSet()
-                val current = permission.map { it.key to it.row.since }.toSet()
                 asks.update { a -> a.filterKeys { it in live } }
-                asked.retainAll(current)
+                for (key in (asked.keys + fetches.keys).filter { it !in live }) forget(key)
                 for (view in permission) fetchAsk(view)
             }
         }
@@ -148,32 +159,60 @@ class AppViewModel(
         repo.markSeen(key, if (mac != null && mac.isAfter(phone)) mac else phone)
     }
 
-    private fun fetchAsk(view: TileView) {
-        val tag = view.key to view.row.since
-        if (!asked.add(tag)) return
-        viewModelScope.launch {
-            val p = try {
-                repo.pending(view.key)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                null
-            }
-            if (p != null) {
-                asks.update { it + (view.key to p) }
-                return@launch
-            }
-            // Nothing to show (yet): the hook log can run ahead of the screen. Not cached; tried again shortly.
-            asks.update { it - view.key }
-            asked.remove(tag)
-            delay(ASK_RETRY_MS)
-            refetch(view.key)
-        }
+    private fun forget(key: TileKey) {
+        asked.remove(key)
+        fetches.remove(key)?.cancel()
     }
 
-    /** Fetches the question again if the tile still needs a permission and nothing is fetching it. */
-    private fun refetch(key: TileKey) {
-        permissionViews(repo.tiles.value).firstOrNull { it.key == key }?.let(::fetchAsk)
+    /**
+     * Fetches [view]'s question unless its `since` is already handled; [force] fetches again anyway. Replaces any
+     * earlier job for the tile. Retries an empty or failed fetch with backoff; a tool error (e.g. `old_session`)
+     * is not retried, and the card stays hidden until `since` changes.
+     */
+    private fun fetchAsk(view: TileView, force: Boolean = false, delayMs: Long = 0) {
+        val key = view.key
+        val since = view.row.since
+        if (!force && key in asked && asked[key] == since) return
+        fetches.remove(key)?.cancel()
+        asked[key] = since
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            val self = coroutineContext.job
+            fun current() = fetches[key] === self
+            try {
+                if (delayMs > 0) delay(delayMs)
+                var attempt = 0
+                while (true) {
+                    val p = try {
+                        repo.pending(key)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: ToolFailure) {
+                        if (current()) asks.update { it - key }
+                        return@launch
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (!current()) return@launch
+                    if (p != null) {
+                        asks.update { it + (key to p) }
+                        return@launch
+                    }
+                    // Nothing to show (yet): the hook log can run ahead of the screen, or the link is down.
+                    asks.update { it - key }
+                    delay(askBackoffMs(attempt++))
+                }
+            } finally {
+                if (current()) fetches.remove(key)
+            }
+        }
+        fetches[key] = job
+        job.start()
+    }
+
+    /** Fetches the question again if the tile still needs a permission. */
+    private fun refetch(key: TileKey, delayMs: Long) {
+        val view = permissionViews(repo.tiles.value).firstOrNull { it.key == key } ?: return
+        fetchAsk(view, force = true, delayMs = delayMs)
     }
 
     fun open(key: TileKey) {
@@ -205,16 +244,16 @@ class AppViewModel(
         val ask = asks.value[key] ?: return
         asks.update { it - key }
         viewModelScope.launch {
-            try {
-                repo.answer(key, choice, ask.summary)
+            val answered = try {
+                repo.answer(key, choice, ask.summary).answered
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                // Handled below like any other outcome.
+                false
             }
-            // Answered, ignored or failed: if the tile still needs a permission, ask the screen again.
-            asked.removeAll { it.first == key }
-            refetch(key)
+            // If the tile still needs a permission, ask the screen again. `answer` returns before Claude closes the
+            // dialog, so after a real answer wait a moment; after an ignored or failed one, ask at once.
+            refetch(key, if (answered) ASK_RETRY_MS else 0)
         }
     }
 
