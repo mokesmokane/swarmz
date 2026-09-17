@@ -164,8 +164,8 @@ class SettingsTest {
     fun memorySettingsMirrorThePairingList() = runBlocking {
         val s = MemorySettings()
         assertEquals(emptyList<Paired>(), s.pairings.value)
-        // Tests set the first pairing directly; the list follows it.
-        s.paired.value = Paired("mini", "me", "Fold")
+        // The first pairing is derived from the list, whichever way the list is written.
+        s.setPaired(Paired("mini", "me", "Fold"))
         assertEquals(listOf(Paired("mini", "me", "Fold")), s.pairings.value)
         s.addPairing(Paired("studio", "ann", "Fold"))
         s.addPairing(Paired("air", "me", "Fold"))
@@ -176,8 +176,9 @@ class SettingsTest {
             s.pairings.value,
         )
         assertEquals(Paired("mini.tail.ts.net", "root", "Fold"), s.paired.value)
-        // The flow emits the list too.
+        // Both flows emit, not just their values.
         assertEquals(3, s.pairings.first().size)
+        assertEquals(Paired("mini.tail.ts.net", "root", "Fold"), s.paired.first())
         s.forgetPairing()
         assertEquals(emptyList<Paired>(), s.pairings.value)
         assertNull(s.paired.value)

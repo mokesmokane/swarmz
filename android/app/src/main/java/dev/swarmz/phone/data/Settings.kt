@@ -13,12 +13,8 @@ import androidx.datastore.preferences.preferencesDataStore
 import dev.swarmz.phone.ssh.HostKeyPins
 import dev.swarmz.phone.state.TileKey
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -77,8 +73,14 @@ interface SettingsStore : HostKeyPins {
 class MemorySettings : SettingsStore {
     private val all = MutableStateFlow<List<Paired>>(emptyList())
     override val pairings: StateFlow<List<Paired>> = all.asStateFlow()
-    /** The first pairing, a view of [pairings]; setting it directly starts the list over, as [setPaired] does. */
-    override val paired: MutableStateFlow<Paired?> = FirstPairing(all)
+    private val first = MutableStateFlow<Paired?>(null)
+    /** The first pairing, derived from [pairings]: every write to the list goes through [set], which keeps it. */
+    override val paired: StateFlow<Paired?> = first.asStateFlow()
+
+    private fun set(list: List<Paired>) {
+        all.value = list
+        first.value = list.firstOrNull()
+    }
     override val macs = MutableStateFlow<List<KnownMac>>(emptyList())
     override val seen = MutableStateFlow<Map<TileKey, Instant>>(emptyMap())
     override val dictationLanguage = MutableStateFlow<String?>(null)
@@ -87,8 +89,8 @@ class MemorySettings : SettingsStore {
     private val pins = ConcurrentHashMap<String, String>()
     override fun get(id: String) = pins[id]
     override fun put(id: String, fingerprint: String) { pins[id] = fingerprint }
-    override suspend fun setPaired(p: Paired?) { all.value = listOfNotNull(p) }
-    override suspend fun addPairing(p: Paired) { all.update { it.withPairing(p) } }
+    override suspend fun setPaired(p: Paired?) = set(listOfNotNull(p))
+    override suspend fun addPairing(p: Paired) = set(all.value.withPairing(p))
     override suspend fun setMacs(list: List<KnownMac>) {
         // A discovery round that finishes after forgetPairing must not bring the Macs back.
         if (paired.value == null) return
@@ -99,38 +101,11 @@ class MemorySettings : SettingsStore {
     override suspend fun setBackgroundWatch(on: Boolean) { backgroundWatch.value = on }
     override suspend fun setNotifyKinds(kinds: Set<String>) { notifyKinds.value = kinds }
     override suspend fun forgetPairing() {
-        all.value = emptyList()
+        set(emptyList())
         macs.value = emptyList()
         seen.value = emptyMap()
         pins.clear()
     }
-}
-
-/** The first entry of [all], as a flow that can be set: a write replaces every pairing, as `setPaired` does. */
-@OptIn(ExperimentalForInheritanceCoroutinesApi::class, ExperimentalCoroutinesApi::class)
-private class FirstPairing(private val all: MutableStateFlow<List<Paired>>) : MutableStateFlow<Paired?> {
-    override var value: Paired?
-        get() = all.value.firstOrNull()
-        set(p) { all.value = listOfNotNull(p) }
-    override val replayCache: List<Paired?> get() = listOf(value)
-    override val subscriptionCount: StateFlow<Int> get() = all.subscriptionCount
-    override suspend fun collect(collector: FlowCollector<Paired?>): Nothing {
-        all.map { it.firstOrNull() }.distinctUntilChanged().collect(collector)
-        error("a state flow never completes")
-    }
-    override suspend fun emit(value: Paired?) { this.value = value }
-    override fun tryEmit(value: Paired?): Boolean {
-        this.value = value
-        return true
-    }
-    override fun compareAndSet(expect: Paired?, update: Paired?): Boolean {
-        while (true) {
-            val current = all.value
-            if (current.firstOrNull() != expect) return false
-            if (all.compareAndSet(current, listOfNotNull(update))) return true
-        }
-    }
-    override fun resetReplayCache() = throw UnsupportedOperationException("a state flow keeps its value")
 }
 
 /** A settings file that no longer parses starts over empty (the phone then asks to pair again) rather than failing every read. */

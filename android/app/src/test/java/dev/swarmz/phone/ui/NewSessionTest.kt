@@ -20,6 +20,7 @@ import dev.swarmz.phone.state.TileKey
 import dev.swarmz.phone.ui.newsession.NewSessionModel
 import dev.swarmz.phone.ui.newsession.NewSessionScreen
 import dev.swarmz.phone.ui.theme.SwarmzTheme
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -60,7 +61,7 @@ class NewSessionTest {
                 else -> VERSION_OK
             }
         }
-        val settings = MemorySettings().also { it.paired.value = Paired("mini", "me", "Fold") }
+        val settings = MemorySettings().also { runBlocking { it.setPaired(Paired("mini", "me", "Fold")) } }
         val repo = Repository(settings, { PhoneKey(Ed25519.generate()) }, HostConnector(mapOf("mini" to ArrayDeque(listOf(conn)))), scope)
         repo.start()
         val model = NewSessionModel(repo, scope)
@@ -99,7 +100,7 @@ class NewSessionTest {
             }
         }
         conn.beforeExec = { if (it == newCmd) gate.await() }
-        val settings = MemorySettings().also { it.paired.value = Paired("mini", "me", "Fold") }
+        val settings = MemorySettings().also { runBlocking { it.setPaired(Paired("mini", "me", "Fold")) } }
         val repo = Repository(settings, { PhoneKey(Ed25519.generate()) }, HostConnector(mapOf("mini" to ArrayDeque(listOf(conn)))), backgroundScope)
         repo.start()
         runCurrent()

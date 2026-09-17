@@ -47,7 +47,7 @@ class RootTest {
         val key = PhoneKey(Ed25519.generate())
         val conn = FakeConn { if (it == Cmd.machines()) """{"machines":[],"v":1}""" else VERSION_OK }
         runBlocking { conn.stream(Cmd.watch()).send(SNAPSHOT) }
-        val settings = MemorySettings().also { if (paired) it.paired.value = Paired("mini", "me", "Fold") }
+        val settings = MemorySettings().also { if (paired) runBlocking { it.setPaired(Paired("mini", "me", "Fold")) } }
         val repo = Repository(settings, { key }, HostConnector(mapOf("mini" to ArrayDeque(listOf(conn)))), scope)
         repo.start()
         return AppViewModel(repo, settings, pairing = null, scope = scope)

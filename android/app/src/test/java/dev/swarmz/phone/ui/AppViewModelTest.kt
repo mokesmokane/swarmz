@@ -13,6 +13,7 @@ import dev.swarmz.phone.proto.Cmd
 import dev.swarmz.phone.ssh.ExecResult
 import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.state.TileKey
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
@@ -51,7 +52,7 @@ class AppViewModelTest {
     private class Env {
         lateinit var vm: AppViewModel
         lateinit var conn: FakeConn
-        val settings = MemorySettings().also { it.paired.value = Paired("mini", "me", "Fold") }
+        val settings = MemorySettings().also { runBlocking { it.setPaired(Paired("mini", "me", "Fold")) } }
         /** What `pending` answers. */
         var pending = QUESTION
         /** When set, answering takes the question off the screen. */

@@ -15,6 +15,7 @@ import dev.swarmz.phone.proto.Key
 import dev.swarmz.phone.proto.Opt
 import dev.swarmz.phone.proto.ToolFailure
 import dev.swarmz.phone.state.TileKey
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import dev.swarmz.phone.link.LinkDown
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -65,7 +66,7 @@ class TileControllerTest {
     private fun TestScope.setup(): Pair<Repository, FakeConn> {
         val conn = FakeConn(::reply)
         conn2 = FakeConn(::reply)
-        settings = MemorySettings().also { it.paired.value = Paired("mini", "me", "Fold") }
+        settings = MemorySettings().also { runBlocking { it.setPaired(Paired("mini", "me", "Fold")) } }
         val repo = Repository(settings, { key }, HostConnector(mapOf("mini" to ArrayDeque(listOf(conn, conn2)))), backgroundScope)
         repo.start()
         runCurrent()
@@ -303,7 +304,7 @@ class TileControllerTest {
         conn.stream(Cmd.transcript("t1", follow = true)).send("""{"hasMore":true,"messages":[{"id":"a0","role":"assistant","text":"earlier"},{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
         runCurrent()
         // Pairing again stops every link and ends its sessions.
-        settings.paired.value = Paired("mini", "me", "Fold 2")
+        settings.setPaired(Paired("mini", "me", "Fold 2"))
         runCurrent()
         assertEquals("Disconnected", c.streamError.value)
         assertEquals(listOf("earlier", "hello"), c.transcript.value.messages.map { it.text })

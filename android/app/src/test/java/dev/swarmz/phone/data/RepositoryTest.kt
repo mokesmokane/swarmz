@@ -13,6 +13,7 @@ import dev.swarmz.phone.ssh.AuthRejected
 import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.ssh.SshConnector
 import dev.swarmz.phone.state.TileKey
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
@@ -64,7 +65,7 @@ class RepositoryTest {
     private fun TestScope.repo(settings: SettingsStore, connector: SshConnector) =
         Repository(settings, { key }, connector, backgroundScope) { Instant.ofEpochMilli(testScheduler.currentTime) }
 
-    private fun paired(host: String) = MemorySettings().also { it.paired.value = Paired(host, "me", "Fold") }
+    private fun paired(host: String) = MemorySettings().also { runBlocking { it.setPaired(Paired(host, "me", "Fold")) } }
 
     @Test
     fun pairedMacAndDiscoveredMacsBothFeedTiles() = runTest {
@@ -286,13 +287,13 @@ class RepositoryTest {
         val mini = FakeConn { if (it == Cmd.machines()) MACHINES else VERSION_OK }
         val studio = FakeConn()
         val connector = HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)), "studio" to ArrayDeque(listOf(studio))))
-        val settings = GatedSettings().also { it.inner.paired.value = Paired("mini", "me", "Fold") }
+        val settings = GatedSettings().also { runBlocking { it.inner.setPaired(Paired("mini", "me", "Fold")) } }
         val repo = repo(settings, connector)
         repo.start()
         runCurrent()
         // The round has added studio and is stuck saving the list.
         assertEquals(2, connector.auths.size)
-        settings.inner.paired.value = Paired("other", "me", "Fold")
+        settings.inner.setPaired(Paired("other", "me", "Fold"))
         runCurrent()
         // The reset waits for the round, so nothing of the new pairing has started yet.
         assertEquals(2, connector.auths.size)

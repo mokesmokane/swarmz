@@ -20,6 +20,7 @@ import dev.swarmz.phone.link.VERSION_OK
 import dev.swarmz.phone.proto.Cmd
 import dev.swarmz.phone.ui.settings.SettingsScreen
 import dev.swarmz.phone.ui.theme.SwarmzTheme
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -41,7 +42,7 @@ private const val REVOKE_FAILED = """{"code":"failed","error":"revoked here; cou
 class SettingsTest {
     @get:Rule val compose = createComposeRule()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val settings = MemorySettings().also { it.paired.value = Paired("mini", "me", "Fold") }
+    private val settings = MemorySettings().also { runBlocking { it.setPaired(Paired("mini", "me", "Fold")) } }
     private var forgot = 0
 
     @After fun tearDown() = scope.cancel()

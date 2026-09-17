@@ -76,7 +76,7 @@ class TileScreenTest {
                 """{"cols":80,"rows":24,"lines":[$filler,[{"text":"Select login method:"}],[{"text":"1. Claude account"}]],"v":1}""",
             )
         }
-        val settings = MemorySettings().also { it.paired.value = Paired("mini", "me", "Fold") }
+        val settings = MemorySettings().also { runBlocking { it.setPaired(Paired("mini", "me", "Fold")) } }
         val repo = Repository(settings, { PhoneKey(Ed25519.generate()) }, HostConnector(mapOf("mini" to ArrayDeque(listOf(conn)))), scope)
         repo.start()
         return TileController(TileKey("mini", tile), repo, scope) { Instant.parse("2026-09-17T10:00:30Z") }
