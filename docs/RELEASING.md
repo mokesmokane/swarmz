@@ -35,7 +35,7 @@ release is invisible to everyone's updater.
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `checks.yml` | called by the other two | `npm ci`, `npm run typecheck`, `npm test`, `cargo test -p swarmz-tool`. The `swarmz` app crate links WebKit and the macOS frameworks, so it is only ever compiled on the macOS runner. |
-| `ci.yml` | every push to `main` and every PR | `checks`, plus the Android unit tests. No secrets, no macOS runner. |
+| `ci.yml` | every push to `main` and every PR | `checks`, plus the Android unit tests. No secrets, no signing. |
 | `release.yml` | a tag matching `v*` | `checks`, then `macos` and `android`. |
 
 `release.yml`'s `macos` job (on `macos-14`, so **Apple Silicon only** — see Limitations) imports
@@ -63,6 +63,12 @@ returns 401 on this account. `tauri-bundler` tries `APPLE_ID` + `APPLE_PASSWORD`
 `APPLE_ID` counts as set — so those two variables must not appear in the workflow at all. They do
 not. Note that the bundler's `APPLE_API_KEY` variable holds the key **ID**; the key itself is the
 file named by `APPLE_API_KEY_PATH`.
+
+Both Android jobs pin the SDK packages they install (`platform-tools`, `platforms;android-36`,
+`build-tools;36.0.0` — the same ones `android/README.md` tells a developer to install). The
+`setup-android` action's default list includes the long-removed `tools` package, which makes
+`sdkmanager` exit 1 before Gradle starts; keep the list explicit, and keep it in step with
+`compileSdk` in `android/app/build.gradle.kts`.
 
 The `android` job waits for that release to exist, writes the keystore from `ANDROID_KEYSTORE` to
 a temporary file, runs `./gradlew :app:testDebugUnitTest :app:assembleRelease` with the passwords
@@ -170,5 +176,14 @@ base64 -i ~/.swarmz-android/release.jks | pbcopy
   it suggests would fail too. Ship pre-releases, if they are ever needed, as ordinary patch
   versions from a branch — or teach `scripts/version.mjs` and the Android `versionCode` about
   suffixes first.
-- **Re-running the workflow on the same tag overwrites the release body.** Anything written in the
-  draft's notes before a re-run is lost, so write them last, once the run has gone green.
+- **Re-running a tag reuses the draft, and mostly does the right thing.** `tauri-action` finds an
+  existing *draft* by tag and uploads into it, deleting any asset whose name it is about to
+  re-upload, and it does **not** touch a draft's name or body (it only updates those on a
+  *published* release), so notes written in the draft survive a re-run. Two things do not:
+  `latest.json`'s `platforms` map is seeded from the copy already attached, so an entry from an
+  earlier run for a platform the new run does not build stays behind; and if the release for that
+  tag has already been **published**, the action refuses outright with "Found release with tag …
+  but it's NOT a draft!". Cleanest is to delete the draft before re-running.
+- **Deleting the draft does not delete the tag.** To re-run a release, delete the draft on GitHub,
+  then `git push --delete origin v<version>` and push the tag again; a tag push is what triggers
+  the workflow, and `concurrency` queues a second run rather than cancelling the first.
