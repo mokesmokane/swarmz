@@ -147,9 +147,17 @@ private class SshjConnection(private val client: SSHClient) : SshConnection {
             throw e
         }
         val stream = cmd.inputStream
+        val cancelled = AtomicBoolean(false)
         thread(name = "ssh-lines", isDaemon = true) {
             try {
                 stream.bufferedReader().useLines { seq -> seq.forEach { trySendBlocking(it).getOrThrow() } }
+                if (!cancelled.get()) {
+                    // EOF alone does not mean the command finished: a channel cut without an exit status is a drop.
+                    runCatching { cmd.join(2, TimeUnit.SECONDS) }
+                    if (cmd.exitStatus == null && !cancelled.get()) {
+                        throw IOException("the stream for $command ended without an exit status")
+                    }
+                }
                 close()
             } catch (e: Throwable) {
                 close(e)
@@ -158,7 +166,10 @@ private class SshjConnection(private val client: SSHClient) : SshConnection {
             }
         }
         // Closing the stream first wakes the reader at once, even on a dead link; the reader then closes the channel.
-        awaitClose { runCatching { stream.close() } }
+        awaitClose {
+            cancelled.set(true)
+            runCatching { stream.close() }
+        }
     }.flowOn(Dispatchers.IO)
 
     override fun close() {

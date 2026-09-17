@@ -55,6 +55,7 @@ class SshTest {
                     while (!stopped()) Thread.sleep(20)
                     0
                 }
+                command == "cut" -> { out.write("x\n".toByteArray()); CUT }
                 command == "hang" -> {
                     while (!stopped()) Thread.sleep(20)
                     0
@@ -150,6 +151,23 @@ class SshTest {
             c.close()
         }
         assertTrue(seen >= 2)
+    }
+
+    @Test
+    fun aChannelClosedWithoutAnExitStatusIsADrop() = runBlocking {
+        SshjConnector(pins).connect("127.0.0.1", mac.port, password).use { c ->
+            val seen = mutableListOf<String>()
+            try {
+                withTimeout(5_000) { c.lines("cut").collect { seen += it } }
+                fail("expected the stream to fail")
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                throw AssertionError("the stream neither failed nor ended", e)
+            } catch (_: java.io.IOException) {
+            }
+            assertEquals(listOf("x"), seen)
+            // A command that exits normally still ends cleanly on the same connection.
+            assertEquals(listOf("one", "two"), withTimeout(5_000) { c.lines("echo").toList() })
+        }
     }
 
     @Test

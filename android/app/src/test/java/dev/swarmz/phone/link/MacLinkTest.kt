@@ -8,12 +8,15 @@ import dev.swarmz.phone.ssh.HostKeyChanged
 import dev.swarmz.phone.ssh.Unreachable
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import dev.swarmz.phone.ssh.ExecResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -152,5 +155,149 @@ class MacLinkTest {
         second.stream("cmd-1").send("b")
         second.stream("cmd-1").send("c")
         assertEquals(listOf("a", "b", "c"), got.await())
+    }
+
+    @Test
+    fun followHandsACollectorItsOwnException() = runTest {
+        val conn = FakeConn()
+        val link = link(FakeConnector(conn))
+        link.start()
+        runCurrent()
+        val thrown = async {
+            try {
+                withTimeout(10_000) { link.follow { "cmd" }.collect { throw IllegalStateException("mine") } }
+                "no error"
+            } catch (e: IllegalStateException) {
+                e.message
+            }
+        }
+        runCurrent()
+        conn.stream("cmd").send("a")
+        assertEquals("mine", thrown.await())
+    }
+
+    @Test
+    fun followTreatsACleanEndOnADroppedConnectionAsADrop() = runTest {
+        val first = FakeConn()
+        val second = FakeConn()
+        val link = link(FakeConnector(first, second))
+        link.start()
+        runCurrent()
+        var n = 0
+        val got = async { link.follow { "cmd-${n++}" }.toList() }
+        runCurrent()
+        first.stream("cmd-0").send("a")
+        runCurrent()
+        // The watch fails first, then the follow stream ends without an error.
+        first.stream(Cmd.watch()).close(java.io.IOException("reset"))
+        first.stream("cmd-0").close()
+        advanceTimeBy(1_001)
+        runCurrent()
+        second.stream("cmd-1").send("b")
+        second.stream("cmd-1").close()
+        assertEquals(listOf("a", "b"), got.await())
+    }
+
+    @Test
+    fun followEndsNormallyWhenTheCommandEnds() = runTest {
+        val conn = FakeConn()
+        val link = link(FakeConnector(conn))
+        link.start()
+        runCurrent()
+        val got = async { link.follow { "cmd" }.toList() }
+        runCurrent()
+        conn.stream("cmd").send("a")
+        conn.stream("cmd").close()
+        assertEquals(listOf("a"), got.await())
+        assertEquals(listOf(Cmd.version(), Cmd.watch(), "cmd"), conn.ran)
+    }
+
+    @Test
+    fun followRethrowsFailuresThatAreNotDrops() = runTest {
+        val conn = FakeConn()
+        conn.lineFailures = { cmd ->
+            when (cmd) {
+                "tool" -> ToolFailure("old_session", "restart")
+                "refused" -> java.io.IOException("session refused")
+                else -> null
+            }
+        }
+        val link = link(FakeConnector(conn))
+        link.start()
+        runCurrent()
+        suspend fun failure(command: () -> String): Throwable? =
+            try {
+                withTimeout(60_000) { link.follow(command).toList() }
+                null
+            } catch (e: Exception) {
+                e
+            }
+        assertEquals("old_session", (failure { "tool" } as ToolFailure).code)
+        assertEquals("session refused", (failure { "refused" } as java.io.IOException).message)
+        assertEquals("no command", (failure { throw IllegalArgumentException("no command") } as IllegalArgumentException).message)
+        assertTrue(link.state.value is LinkState.Online)
+    }
+
+    @Test
+    fun execMapsFailuresToLinkDown() = runTest {
+        val conn = FakeConn()
+        val link = link(FakeConnector(conn))
+        link.start()
+        runCurrent()
+        suspend fun down(result: (String) -> ExecResult): String? {
+            conn.execs = result
+            return try {
+                link.exec("x")
+                null
+            } catch (e: LinkDown) {
+                e.message
+            }
+        }
+        assertEquals("broken pipe", down { throw java.io.IOException("broken pipe") })
+        assertEquals("mini did not answer in time", down { ExecResult(null, "", "") })
+        assertTrue(down { ExecResult(127, "", "zsh: command not found: swarmz") }!!.contains("127"))
+        // A tool error still reaches the caller as its JSON.
+        assertEquals(null, down { ExecResult(1, """{"code":"usage","error":"bad","v":1}""", "") })
+    }
+
+    @Test
+    fun aSilentWatchCountsAsADrop() = runTest {
+        val conn = FakeConn()
+        val link = link(FakeConnector(conn, FakeConn()))
+        link.start()
+        runCurrent()
+        advanceTimeBy(50_000)
+        conn.stream(Cmd.watch()).send("""{"type":"ping","v":1}""")
+        advanceTimeBy(74_000)
+        assertTrue(link.state.value is LinkState.Online)
+        assertTrue(!conn.closed)
+        advanceTimeBy(1_001)
+        assertEquals(LinkState.Offline("mini stopped answering", 126_000), link.state.value)
+        assertTrue(conn.closed)
+    }
+
+    @Test
+    fun retryNowOnlyActsWhenWaiting() = runTest {
+        val conn = FakeConn()
+        val connector = FakeConnector(conn, FakeConn())
+        val link = link(connector)
+        link.start()
+        runCurrent()
+        link.retryNow()
+        runCurrent()
+        conn.stream(Cmd.watch()).close(java.io.IOException("reset"))
+        runCurrent()
+        assertTrue(link.state.value is LinkState.Offline)
+        assertEquals(1, connector.connects)
+        advanceTimeBy(1_001)
+        assertEquals(2, connector.connects)
+    }
+
+    @Test
+    fun anUnreadableVersionSaysSwarmzIsNotAnswering() = runTest {
+        val link = link(FakeConnector(FakeConn { "zsh: command not found: swarmz" }))
+        link.start()
+        runCurrent()
+        assertEquals("swarmz isn't answering on mini", (link.state.value as LinkState.Offline).reason)
     }
 }

@@ -6,6 +6,7 @@ import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.ssh.SshConnector
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.receiveAsFlow
 
 const val VERSION_OK = """{"build":1,"protocol":1,"tool":"0.1.0","v":1}"""
@@ -17,15 +18,22 @@ class FakeConn(
     val streams = mutableMapOf<String, Channel<String>>()
     val ran = mutableListOf<String>()
 
+    /** What `exec` does; replace it to return a given result or throw. */
+    var execs: (String) -> ExecResult = { ExecResult(0, replies(it), "") }
+
+    /** A failure `lines` raises for a command at once, with the connection left open. */
+    var lineFailures: (String) -> Exception? = { null }
+
     fun stream(command: String): Channel<String> = streams.getOrPut(command) { Channel(Channel.UNLIMITED) }
 
     override val isOpen get() = !closed
     override suspend fun exec(command: String, timeoutMs: Long): ExecResult {
         ran += command
-        return ExecResult(0, replies(command), "")
+        return execs(command)
     }
     override fun lines(command: String): Flow<String> {
         ran += command
+        lineFailures(command)?.let { e -> return flow { throw e } }
         return stream(command).receiveAsFlow()
     }
     override fun close() { closed = true }

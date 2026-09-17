@@ -16,7 +16,10 @@ import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.concurrent.thread
 
-/** What a command does: write to [out], return the exit code. Runs on its own thread; [stopped] turns true when the client goes away. */
+/** A handler result that closes the channel without sending an exit status, as a cut link would. */
+const val CUT = -1
+
+/** What a command does: write to [out], return the exit code (or [CUT]). Runs on its own thread; [stopped] turns true when the client goes away. */
 typealias Handler = (command: String, out: OutputStream, stopped: () -> Boolean) -> Int
 
 class FakeMac(hostKeyFile: Path, var handler: Handler) : AutoCloseable {
@@ -68,7 +71,7 @@ class FakeMac(hostKeyFile: Path, var handler: Handler) : AutoCloseable {
                     255
                 }
                 runCatching { out.flush() }
-                exit.onExit(code)
+                if (code == CUT) channel.close(false) else exit.onExit(code)
             }
         }
 
