@@ -10,6 +10,8 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
@@ -72,6 +74,9 @@ class AndroidRecognizer(private val context: Context) : Recognizer {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            // Discourage ending on a pause while the finger is still down (recognizers may ignore these).
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MS)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_MS)
             if (language != null) putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
         }
         r.startListening(intent)
@@ -97,10 +102,15 @@ private const val ERROR_SPEECH_TIMEOUT = 6
 private const val ERROR_NO_MATCH = 7
 private const val FINAL_TIMEOUT_MS = 3_000L
 private const val MESSAGE_MS = 5_000L
+private const val SILENCE_MS = 5_000L
 const val NO_RECOGNIZER_MESSAGE = "Speech recognition isn't available on this phone"
 
 /**
  * Hold-to-talk into a text field. It only ever edits the field: it has no way to send.
+ *
+ * Each [begin] that starts listening returns a hold token; only that gesture may [drag], [end] or
+ * [cancel] it (the no-argument forms act on the latest hold). A press while the previous hold is
+ * still finishing inserts that hold's last partial, cancels its recognition and starts afresh.
  */
 class Dictation(
     private val recognizer: Recognizer,
@@ -120,7 +130,13 @@ class Dictation(
     private var base: TextFieldValue = TextFieldValue("")
     private var lastPartial = ""
     private var session = 0
-    private val timeout = Runnable { complete(lastPartial) }
+    private var hold = 0
+    private val timeout = Runnable {
+        // The recognizer is still busy with this session: stop it before a late result can reach
+        // the next session's listener.
+        recognizer.cancel()
+        complete(lastPartial)
+    }
     private val clearMessage = Runnable { _message.value = null }
 
     private fun sync() {
@@ -133,18 +149,25 @@ class Dictation(
         handler.postDelayed(clearMessage, MESSAGE_MS)
     }
 
-    fun begin(target: MutableState<TextFieldValue>) {
-        if (machine.state != Talk.Idle) return
+    /** Starts a hold on [target]. Returns its token, or null when this press started nothing. */
+    fun begin(target: MutableState<TextFieldValue>): Int? {
+        if (machine.state is Talk.Listening) return null
+        if (machine.state == Talk.Finishing) {
+            handler.removeCallbacks(timeout)
+            recognizer.cancel()
+            complete(lastPartial)
+        }
         handler.removeCallbacks(clearMessage)
         _message.value = null
         if (!recognizer.available()) {
             show(NO_RECOGNIZER_MESSAGE)
-            return
+            return null
         }
         this.target = target
         base = target.value
         lastPartial = ""
         val mine = ++session
+        val token = ++hold
         machine.press()
         sync()
         recognizer.start(language(), object : Recognizer.Listener {
@@ -171,27 +194,41 @@ class Dictation(
                 complete(lastPartial)
             }
         })
+        return token
     }
 
-    fun drag(totalDy: Float) {
+    fun drag(totalDy: Float, token: Int = hold) {
+        if (token != hold) return
         machine.drag(totalDy)
         sync()
     }
 
-    fun end() {
-        if (machine.state !is Talk.Listening) return
+    /** The finger lifted: insert, or cancel when it was past the cancel line. */
+    fun end(token: Int = hold) {
+        if (token != hold || machine.state !is Talk.Listening) return
         if (machine.release()) {
             sync()
             recognizer.stop()
             handler.postDelayed(timeout, FINAL_TIMEOUT_MS)
         } else {
-            session++
-            recognizer.cancel()
-            target?.value = base
-            target = null
-            sync()
-            _level.floatValue = 0f
+            abandon()
         }
+    }
+
+    /** The gesture was taken away (system cancel, mic left composition): restore, never insert. */
+    fun cancel(token: Int = hold) {
+        if (token != hold || machine.state !is Talk.Listening) return
+        machine.finish()
+        abandon()
+    }
+
+    private fun abandon() {
+        session++
+        recognizer.cancel()
+        target?.value = base
+        target = null
+        sync()
+        _level.floatValue = 0f
     }
 
     /** Ends any hold without inserting and frees the recognizer. */
@@ -199,6 +236,7 @@ class Dictation(
         handler.removeCallbacks(timeout)
         handler.removeCallbacks(clearMessage)
         session++
+        hold++
         if (machine.state != Talk.Idle) {
             target?.value = base
             machine.finish()
@@ -221,6 +259,15 @@ class Dictation(
     }
 }
 
+/** Consumes [id]'s events until it lifts or is cancelled. */
+private suspend fun AwaitPointerEventScope.consumeUntilUp(id: PointerId) {
+    while (true) {
+        val change = awaitPointerEvent().changes.firstOrNull { it.id == id } ?: return
+        change.consume()
+        if (!change.pressed) return
+    }
+}
+
 /** The round mic: press and hold to talk, slide up to cancel. */
 class DictationMic(
     private val dictation: Dictation,
@@ -235,25 +282,39 @@ class DictationMic(
                 .pointerInput(target) {
                     awaitEachGesture {
                         val down = awaitFirstDown()
+                        // Every path consumes the whole gesture so a clickable parent never sees a tap.
+                        down.consume()
                         if (!hasPermission()) {
                             requestPermission()
+                            consumeUntilUp(down.id)
                             return@awaitEachGesture
                         }
-                        down.consume()
-                        dictation.begin(target)
-                        // finally: a gesture cancelled mid-hold (the mic leaving composition) still ends.
+                        val token = dictation.begin(target)
+                        if (token == null) {
+                            // Another mic owns the hold (or there is no recognizer): stay out of it.
+                            consumeUntilUp(down.id)
+                            return@awaitEachGesture
+                        }
+                        var finished = false
                         try {
                             var dy = 0f
                             while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    // A release that arrives already consumed is a system cancel.
+                                    if (!change.isConsumed) {
+                                        change.consume()
+                                        finished = true
+                                    }
+                                    break
+                                }
                                 dy += change.positionChange().y
                                 change.consume()
-                                dictation.drag(dy)
-                                if (!change.pressed) break
+                                dictation.drag(dy, token)
                             }
                         } finally {
-                            dictation.end()
+                            // Mic left composition, or the pointer was cancelled: never insert.
+                            if (finished) dictation.end(token) else dictation.cancel(token)
                         }
                     }
                 },

@@ -18,13 +18,19 @@ open class FakeRecognizer : Recognizer {
     var listener: Recognizer.Listener? = null
     var language: String? = "unset"
     val calls = mutableListOf<String>()
+    /** Like SpeechRecognizer: a stopped session that was never cancelled may still deliver a result. */
+    var lateResult: String? = null
+    private var stoppedLive = false
     override fun start(language: String?, listener: Recognizer.Listener) {
         calls += "start"
         this.language = language
         this.listener = listener
+        val late = lateResult
+        if (stoppedLive && late != null) listener.onFinal(late) // the old result reaches the new listener
+        stoppedLive = false
     }
-    override fun stop() { calls += "stop" }
-    override fun cancel() { calls += "cancel" }
+    override fun stop() { calls += "stop"; stoppedLive = true }
+    override fun cancel() { calls += "cancel"; stoppedLive = false }
     override fun release() { calls += "release" }
 }
 
@@ -104,5 +110,77 @@ class DictationTest {
         stale.onFinal("too late")
         assertEquals("please ", field.value.text)
         assertEquals(Talk.Idle, d.talk.value)
+    }
+
+    @Test
+    fun theTimeoutCancelsTheRecognizerSoNoOldResultLeaksIntoTheNextHold() {
+        rec.lateResult = "stale words"
+        d.begin(field)
+        rec.listener!!.onPartial("almost")
+        d.end()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(4))
+        assertEquals(listOf("start", "stop", "cancel"), rec.calls)
+        assertEquals("please almost", field.value.text)
+        d.begin(field)
+        assertEquals(Talk.Listening("", cancelling = false), d.talk.value)
+        assertEquals("please almost", field.value.text)
+        rec.listener!!.onFinal("fresh")
+        assertEquals("please almost fresh", field.value.text)
+    }
+
+    @Test
+    fun speechTimeoutShowsNoMessage() {
+        d.begin(field)
+        rec.listener!!.onPartial("half")
+        rec.listener!!.onError(6)
+        assertNull(d.message.value)
+        assertEquals("please half", field.value.text)
+        assertEquals(Talk.Idle, d.talk.value)
+    }
+
+    @Test
+    fun onlyTheGestureThatStartedAHoldCanMoveOrEndIt() {
+        val first = d.begin(field)
+        val other = mutableStateOf(TextFieldValue("other"))
+        assertNull(d.begin(other))
+        rec.listener!!.onPartial("mine")
+        d.drag(-500f, token = first!! + 1)
+        d.end(token = first + 1)
+        d.cancel(token = first + 1)
+        assertEquals(Talk.Listening("mine", cancelling = false), d.talk.value)
+        assertEquals(listOf("start"), rec.calls)
+        d.end(first)
+        assertEquals(listOf("start", "stop"), rec.calls)
+        assertEquals("other", other.value.text)
+    }
+
+    @Test
+    fun aSystemCancelRestoresTheFieldWithoutInserting() {
+        val token = d.begin(field)!!
+        rec.listener!!.onPartial("never")
+        d.cancel(token)
+        assertEquals(listOf("start", "cancel"), rec.calls)
+        assertEquals("please ", field.value.text)
+        assertEquals(Talk.Idle, d.talk.value)
+        rec.listener!!.onFinal("never mind")
+        assertEquals("please ", field.value.text)
+    }
+
+    @Test
+    fun pressingWhileFinishingInsertsTheLastPartialAndStartsAgain() {
+        d.begin(field)
+        rec.listener!!.onPartial("first")
+        d.end()
+        assertEquals(Talk.Finishing, d.talk.value)
+        val old = rec.listener!!
+        d.begin(field)
+        assertEquals(listOf("start", "stop", "cancel", "start"), rec.calls)
+        assertEquals("please first", field.value.text)
+        assertEquals(Talk.Listening("", cancelling = false), d.talk.value)
+        old.onFinal("first words")
+        rec.listener!!.onPartial("second")
+        assertEquals("please first second", field.value.text)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(4))
+        assertEquals(Talk.Listening("second", cancelling = false), d.talk.value)
     }
 }
