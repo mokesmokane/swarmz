@@ -150,14 +150,28 @@ proof the session is gone). With `--follow`, `--lines` is at most 1000
 
 ### 3.5 Size
 
-- The applied PTY size is the size of the **most recently active viewer**:
-  the last one to send `Data` or `Hello`.
+- The applied PTY size is the size of the **owner**: the viewer that most
+  recently typed. A viewer that is not the owner cannot change the size until
+  it types — its `Hello` and its `Resize` are remembered, and applied only
+  once it owns the size. (Amended 2026-09-17: the size used to follow the most
+  recently active viewer, which let two windows on one tile trade the tile's
+  size back and forth several times a second.)
+- Ownership moves on **user input only**. The emulator also sends `Data` by
+  itself — focus in and out (Claude Code turns focus reporting on), mouse
+  reports, and the replies to cursor-position, device-status and
+  device-attribute queries — and a payload that is only such reports does not
+  take ownership. Every byte still reaches the program; a partial or
+  malformed sequence counts as input.
+- With no owner — a session nobody has typed in yet, or one whose owner has
+  disconnected — the viewer that most recently said a size takes over, and
+  that size applies at once.
 - A `Hello` with a zero size (a swarmz window rejoining a running session
-  before its pane is laid out) does not make the viewer active and applies
-  nothing; its first non-zero `Resize` counts as its `Hello`, and `Data` from
+  before its pane is laid out) applies nothing and cannot make the viewer the
+  owner; its first non-zero `Resize` counts as its `Hello`, and `Data` from
   it adopts the size already applied. A `Resize` with a zero is ignored.
-- When that viewer disconnects, the next most recent viewer's last size
-  applies.
+- Setting `SWARMZ_SIZE_LOG` to a path when a holder starts makes it append one
+  line per size decision (timestamp, viewer, label, the size asked for, the
+  owner, the applied size, and what caused it). Unset, nothing is written.
 - Viewers that never type (the tool, the phone's output stream) send
   `Hello` with their size but a `viewer` label of `tool`; `tool` viewers
   never become the active size.
@@ -816,7 +830,8 @@ reported as a clean, empty fan-out.
 ## 9. Testing
 
 - **Holder (Rust):** start a real shell under a holder; two viewers see the
-  same output; replay after reconnect; size follows the most recent typist;
+  same output; replay after reconnect; the size stays with the viewer that
+  typed last and focus or mouse reports never take it;
   `tool` viewers never set the size; exit code reaches viewers; the holder
   outlives the process that started it (spawn from a child that then exits);
   stale sockets are cleaned; protocol version mismatch closes cleanly.

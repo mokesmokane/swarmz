@@ -1,4 +1,4 @@
-use crate::paths::{build_id, ensure_dir, now_iso, read_meta, session_paths, socket_live, write_meta, Meta};
+use crate::paths::{build_id, ensure_dir, format_iso, now_iso, read_meta, session_paths, socket_live, write_meta, Meta};
 use crate::proto::{encode, json, parse_resize, read_frame, ExitInfo, Hello, Info, Kind, ScreenRequest, Welcome, MAX_FRAME, PROTOCOL_VERSION};
 use crate::pty::{PtySession, SpawnSpec};
 use crate::ring::{Ring, REPLAY_PREFIX, RING_CAP};
@@ -37,20 +37,130 @@ struct Viewer {
     label: String,
     /// `None` until the viewer reports a real size (a `Hello` or `Resize` without zeros) or types.
     size: Option<(u16, u16)>,
-    /// When the viewer last sent a sized `Hello` or `Data` (or the first real `Resize` after a
-    /// sizeless `Hello`); 0 means never, and such a viewer never sets the size.
-    last_active: u64,
+    /// When the viewer last said a size (a sized `Hello`, a real `Resize`, or `Data` adopting the
+    /// applied size); 0 means never, and such a viewer is never picked to own the size.
+    spoke_at: u64,
     tx: mpsc::Sender<Vec<u8>>,
     queued: Arc<AtomicUsize>,
     stream: UnixStream,
 }
 
+/// What made the holder settle the size, for the `SWARMZ_SIZE_LOG` diagnostic.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SizeCause {
+    Hello,
+    /// User input: it takes ownership of the size.
+    Data,
+    /// A frame the emulator sent by itself (focus, mouse, a reply): ownership does not move.
+    Report,
+    Resize,
+    Leave,
+}
+
+impl SizeCause {
+    fn as_str(self) -> &'static str {
+        match self {
+            SizeCause::Hello => "hello",
+            SizeCause::Data => "data",
+            SizeCause::Report => "report",
+            SizeCause::Resize => "resize",
+            SizeCause::Leave => "leave",
+        }
+    }
+}
+
+fn fmt_size(size: Option<(u16, u16)>) -> String {
+    match size {
+        Some((c, r)) => format!("{c}x{r}"),
+        None => "-".into(),
+    }
+}
+
+/// One line per size decision, for `SWARMZ_SIZE_LOG`. `asked` is the size of the viewer that
+/// caused the decision, `owner` the viewer whose size now applies.
+fn size_log_line(at: &str, cause: SizeCause, who: u64, label: &str, asked: Option<(u16, u16)>, owner: Option<u64>, applied: (u16, u16), changed: bool) -> String {
+    format!(
+        "{at} {cause} viewer={who} label={label} asked={asked} owner={owner} applied={applied} {verdict}\n",
+        cause = cause.as_str(),
+        asked = fmt_size(asked),
+        owner = owner.map(|o| o.to_string()).unwrap_or_else(|| "-".into()),
+        applied = fmt_size(Some(applied)),
+        verdict = if changed { "changed" } else { "kept" },
+    )
+}
+
+/// The size log's timestamp, with milliseconds: the flipping this diagnoses can happen several
+/// times a second, and whole seconds would lose the order.
+fn size_log_now() -> String {
+    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    format!("{}.{:03}Z", format_iso(d.as_secs() as i64).trim_end_matches('Z'), d.subsec_millis())
+}
+
+/// The size diagnostic's file, from `SWARMZ_SIZE_LOG`. Unset or empty means no log. It is read
+/// once, when the holder starts: every holder is its own process, started per tile.
+fn size_log_path(var: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    var.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// Whether a `Data` payload is only terminal reports — things the emulator sends by itself, with
+/// nobody typing: focus in/out (Claude Code turns focus reporting on), mouse reports, and the
+/// replies to cursor-position, device-status and device-attribute queries. Two windows trading
+/// focus would otherwise trade the session's size back and forth. Anything else, including a
+/// partial or malformed sequence, counts as user input: failing towards "the user typed" is the
+/// safer default. Every byte still reaches the program either way; only ownership is decided here.
+fn is_report_only(payload: &[u8]) -> bool {
+    let mut i = 0;
+    while i < payload.len() {
+        match report_len(&payload[i..]) {
+            Some(n) => i += n,
+            None => return false,
+        }
+    }
+    true
+}
+
+/// The length of the complete terminal report at the start of `b`, or `None` if there is none.
+fn report_len(b: &[u8]) -> Option<usize> {
+    if b.len() < 3 || b[0] != 0x1b || b[1] != b'[' {
+        return None;
+    }
+    match b[2] {
+        // Focus in and focus out.
+        b'I' | b'O' => return Some(3),
+        // X10 mouse report: three bytes of button and position follow, any value at all.
+        b'M' => return (b.len() >= 6).then_some(6),
+        _ => {}
+    }
+    // A parameterised report: SGR mouse (`ESC [ < … M|m`), cursor position (`ESC [ … R`), device
+    // status (`ESC [ [?] … n`) and device attributes (`ESC [ ?|> … c`).
+    let prefix = matches!(b[2], b'<' | b'?' | b'>').then_some(b[2]);
+    let start = 2 + usize::from(prefix.is_some());
+    let mut i = start;
+    while i < b.len() && (b[i].is_ascii_digit() || b[i] == b';') {
+        i += 1;
+    }
+    if i == start || i >= b.len() {
+        return None;
+    }
+    let ok = match b[i] {
+        b'M' | b'm' => prefix == Some(b'<'),
+        b'R' => prefix.is_none(),
+        b'n' => prefix.is_none() || prefix == Some(b'?'),
+        b'c' => prefix == Some(b'?') || prefix == Some(b'>'),
+        _ => false,
+    };
+    ok.then_some(i + 1)
+}
+
 struct Shared {
-    // Lock order: ring, viewers, applied, screen. The Screen handler takes screen alone and releases it before viewers.
+    // Lock order: ring, viewers, owner, applied, screen. The Screen handler takes screen alone and releases it before viewers.
     ring: Mutex<Ring>,
     viewers: Mutex<Vec<Viewer>>,
     session: OnceLock<Arc<PtySession>>,
     welcome: OnceLock<Welcome>,
+    /// The viewer whose size the session uses: the one that most recently typed, or, until
+    /// anybody has, the one that most recently said a size (§3.5).
+    owner: Mutex<Option<u64>>,
     applied: Mutex<(u16, u16)>,
     screen: Mutex<vt100::Parser>,
     clock: AtomicU64,
@@ -58,6 +168,8 @@ struct Shared {
     cap: usize,
     /// The session's metadata file, marked when a `Terminate` arrives.
     meta_path: PathBuf,
+    /// Where to append the size diagnostic, from `SWARMZ_SIZE_LOG` at startup; `None` is off.
+    size_log: Option<PathBuf>,
 }
 
 impl Shared {
@@ -76,54 +188,123 @@ impl Shared {
         viewers.retain(|v| Shared::enqueue(v, frame.to_vec(), cap));
     }
 
-    /// Applies the size of the most recently active viewer (§3.5). Lock order: viewers, then
-    /// applied.
-    fn apply_active_size(&self, viewers: &[Viewer]) {
-        let Some(size) = viewers
-            .iter()
-            .filter(|v| v.label != TOOL_VIEWER && v.last_active > 0)
-            .filter_map(|v| v.size.map(|s| (v.last_active, s)))
-            .max_by_key(|(at, _)| *at)
-            .map(|(_, s)| s)
-        else {
+    /// Applies the owner's size (§3.5). The owner is the viewer that most recently typed: while it
+    /// is here and has a size, another viewer's `Hello` or `Resize` is remembered but applies
+    /// nothing, so two windows on one tile cannot trade its size back and forth. With no owner —
+    /// a fresh session, or one whose owner has left — the viewer that most recently said a size
+    /// takes over, and its size applies at once. Tool viewers are never owners.
+    /// Lock order: viewers (held by the caller), then owner, then applied, then screen.
+    fn apply_active_size(&self, viewers: &[Viewer], cause: SizeCause, who: u64) {
+        let sized = |v: &&Viewer| v.label != TOOL_VIEWER && v.size.is_some();
+        let mut owner = self.owner.lock().unwrap();
+        let chosen = (*owner)
+            .and_then(|id| viewers.iter().find(|v| v.id == id).filter(sized))
+            .or_else(|| viewers.iter().filter(sized).filter(|v| v.spoke_at > 0).max_by_key(|v| v.spoke_at));
+        let Some((id, size)) = chosen.map(|v| (v.id, v.size.unwrap())) else {
+            // Nobody can set a size yet (only tool viewers, or none at all): keep what is applied.
+            *owner = None;
+            drop(owner);
+            let applied = *self.applied.lock().unwrap();
+            self.log_size(cause, who, viewers, None, applied, false);
             return;
         };
+        *owner = Some(id);
+        drop(owner);
         let mut applied = self.applied.lock().unwrap();
-        if *applied != size {
+        let changed = *applied != size;
+        if changed {
             *applied = size;
             if let Some(s) = self.session.get() {
                 let _ = s.resize(size.0, size.1);
             }
             self.screen.lock().unwrap().screen_mut().set_size(size.1, size.0);
         }
+        drop(applied);
+        self.log_size(cause, who, viewers, Some(id), size, changed);
     }
 
-    fn touch(&self, id: u64) {
-        let mut vs = self.viewers.lock().unwrap();
-        let now = self.clock.fetch_add(1, Ordering::SeqCst);
-        let applied = *self.applied.lock().unwrap();
-        if let Some(v) = vs.iter_mut().find(|v| v.id == id && v.label != TOOL_VIEWER) {
-            v.last_active = now;
-            // A viewer that never said its size types at the size already applied.
-            v.size.get_or_insert(applied);
+    /// Appends one line per size decision to the `SWARMZ_SIZE_LOG` file. Nothing is written when
+    /// the variable was unset, and a write that fails is ignored: this is a diagnostic, never a
+    /// dependency.
+    fn log_size(&self, cause: SizeCause, who: u64, viewers: &[Viewer], owner: Option<u64>, applied: (u16, u16), changed: bool) {
+        let Some(path) = self.size_log.as_ref() else {
+            return;
+        };
+        let v = viewers.iter().find(|v| v.id == who);
+        let line = size_log_line(
+            &size_log_now(),
+            cause,
+            who,
+            v.map(|v| v.label.as_str()).unwrap_or("-"),
+            v.and_then(|v| v.size),
+            owner,
+            applied,
+            changed,
+        );
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = f.write_all(line.as_bytes());
         }
-        self.apply_active_size(&vs);
     }
 
-    /// A viewer's new size. The first real size from a viewer whose `Hello` had none counts as
-    /// that `Hello`, making it the most recently active viewer; zeros are ignored.
+    /// The clock value a joining viewer starts with: a real size counts as having spoken, a
+    /// sizeless `Hello` (or any tool viewer) does not.
+    fn spoke_now(&self, size: Option<(u16, u16)>, is_tool: bool) -> u64 {
+        if size.is_some() && !is_tool {
+            self.clock.fetch_add(1, Ordering::SeqCst)
+        } else {
+            0
+        }
+    }
+
+    /// Adds a viewer that has already been sent its `Welcome` and `Replay`, and settles the size.
+    fn join(&self, viewers: &mut Vec<Viewer>, viewer: Viewer) {
+        let id = viewer.id;
+        viewers.push(viewer);
+        self.apply_active_size(viewers, SizeCause::Hello, id);
+    }
+
+    /// Drops a viewer and settles the size again: if it owned the size, someone else takes over.
+    fn leave(&self, id: u64) {
+        let mut vs = self.viewers.lock().unwrap();
+        vs.retain(|v| v.id != id);
+        self.apply_active_size(&vs, SizeCause::Leave, id);
+    }
+
+    /// A `Data` frame from a viewer. Real input makes that viewer the owner of the size; a frame
+    /// the emulator sent by itself (focus, mouse, a reply to a query) does not, or two windows
+    /// trading focus over one tile would trade its size too. The bytes reach the program either
+    /// way; this only decides ownership.
+    fn touch(&self, id: u64, payload: &[u8]) {
+        let typed = !is_report_only(payload);
+        let mut vs = self.viewers.lock().unwrap();
+        let applied = *self.applied.lock().unwrap();
+        let mut owns = false;
+        if typed {
+            if let Some(v) = vs.iter_mut().find(|v| v.id == id && v.label != TOOL_VIEWER) {
+                v.spoke_at = self.clock.fetch_add(1, Ordering::SeqCst);
+                // A viewer that never said its size types at the size already applied.
+                v.size.get_or_insert(applied);
+                owns = true;
+            }
+        }
+        if owns {
+            *self.owner.lock().unwrap() = Some(id);
+        }
+        self.apply_active_size(&vs, if typed { SizeCause::Data } else { SizeCause::Report }, id);
+    }
+
+    /// A viewer's new size: remembered always, applied only when that viewer owns the size.
+    /// Zeros are ignored.
     fn resize_viewer(&self, id: u64, size: (u16, u16)) {
         if size.0 == 0 || size.1 == 0 {
             return;
         }
         let mut vs = self.viewers.lock().unwrap();
-        if let Some(v) = vs.iter_mut().find(|v| v.id == id) {
+        if let Some(v) = vs.iter_mut().find(|v| v.id == id && v.label != TOOL_VIEWER) {
             v.size = Some(size);
-            if v.last_active == 0 && v.label != TOOL_VIEWER {
-                v.last_active = self.clock.fetch_add(1, Ordering::SeqCst);
-            }
+            v.spoke_at = self.clock.fetch_add(1, Ordering::SeqCst);
         }
-        self.apply_active_size(&vs);
+        self.apply_active_size(&vs, SizeCause::Resize, id);
     }
 
     fn wait_drained(&self, limit: Duration) {
@@ -156,12 +337,14 @@ pub fn run_holder(cfg: HolderConfig) -> Result<Option<i32>, String> {
         viewers: Mutex::new(Vec::new()),
         session: OnceLock::new(),
         welcome: OnceLock::new(),
+        owner: Mutex::new(None),
         applied: Mutex::new((cfg.cols, cfg.rows)),
         screen: Mutex::new(vt100::Parser::new(cfg.rows, cfg.cols, SCROLLBACK)),
         clock: AtomicU64::new(1),
         next_id: AtomicU64::new(1),
         cap: cfg.viewer_queue_cap,
         meta_path: paths.meta.clone(),
+        size_log: size_log_path(std::env::var_os("SWARMZ_SIZE_LOG")),
     });
 
     let (exit_tx, exit_rx) = mpsc::channel::<Option<i32>>();
@@ -286,7 +469,7 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
             id,
             label: hello.viewer.clone(),
             size,
-            last_active: if size.is_some() && !is_tool { shared.clock.fetch_add(1, Ordering::SeqCst) } else { 0 },
+            spoke_at: shared.spoke_now(size, is_tool),
             tx,
             queued,
             stream: vstream,
@@ -303,8 +486,7 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
         };
         Shared::enqueue(&viewer, encode(Kind::Welcome, &json(&welcome)), usize::MAX);
         Shared::enqueue(&viewer, encode(Kind::Replay, &replay), usize::MAX);
-        vs.push(viewer);
-        shared.apply_active_size(&vs);
+        shared.join(&mut vs, viewer);
     }
     if !is_tool {
         if let Some(s) = shared.session.get() {
@@ -319,7 +501,7 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
         };
         match Kind::from_u8(frame.kind) {
             Some(Kind::Data) => {
-                shared.touch(id);
+                shared.touch(id, &frame.payload);
                 if let Some(s) = shared.session.get() {
                     let _ = s.write(&frame.payload);
                 }
@@ -369,9 +551,7 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
         }
     }
 
-    let mut vs = shared.viewers.lock().unwrap();
-    vs.retain(|v| v.id != id);
-    shared.apply_active_size(&vs);
+    shared.leave(id);
 }
 
 #[cfg(test)]
@@ -493,6 +673,293 @@ mod tests {
         }
     }
 
+    /// Drives `Shared`'s size decisions on their own: no shell, no sockets to speak of, so a
+    /// test can say exactly who joined, typed, resized and left, and read the applied size.
+    struct SizeFixture {
+        sh: Arc<Shared>,
+        /// The far ends of each viewer's channel and socket, kept alive for the fixture's life.
+        keep: Vec<(mpsc::Receiver<Vec<u8>>, UnixStream)>,
+    }
+
+    impl SizeFixture {
+        fn new(cols: u16, rows: u16) -> SizeFixture {
+            let sh = Arc::new(Shared {
+                ring: Mutex::new(Ring::new(RING_CAP)),
+                viewers: Mutex::new(Vec::new()),
+                session: OnceLock::new(),
+                welcome: OnceLock::new(),
+                owner: Mutex::new(None),
+                applied: Mutex::new((cols, rows)),
+                screen: Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK)),
+                clock: AtomicU64::new(1),
+                next_id: AtomicU64::new(1),
+                cap: VIEWER_QUEUE_CAP,
+                meta_path: PathBuf::from("/nonexistent/szsize-meta.json"),
+                size_log: None,
+            });
+            SizeFixture { sh, keep: Vec::new() }
+        }
+
+        /// The same fixture with the size diagnostic on, as `SWARMZ_SIZE_LOG` turns it on.
+        fn logging_to(cols: u16, rows: u16, log: &std::path::Path) -> SizeFixture {
+            let mut f = SizeFixture::new(cols, rows);
+            Arc::get_mut(&mut f.sh).unwrap().size_log = size_log_path(Some(log.as_os_str().to_owned()));
+            f
+        }
+
+        /// Mirrors the `Hello` path: zeros mean "no size yet".
+        fn join(&mut self, label: &str, cols: u16, rows: u16) -> u64 {
+            let size = (cols > 0 && rows > 0).then_some((cols, rows));
+            let is_tool = label == TOOL_VIEWER;
+            let id = self.sh.next_id.fetch_add(1, Ordering::SeqCst);
+            let (tx, rx) = mpsc::channel();
+            let (mine, theirs) = UnixStream::pair().unwrap();
+            let viewer = super::Viewer {
+                id,
+                label: label.into(),
+                size,
+                spoke_at: self.sh.spoke_now(size, is_tool),
+                tx,
+                queued: Arc::new(AtomicUsize::new(0)),
+                stream: theirs,
+            };
+            {
+                let mut vs = self.sh.viewers.lock().unwrap();
+                self.sh.join(&mut vs, viewer);
+            }
+            self.keep.push((rx, mine));
+            id
+        }
+
+        fn types(&self, id: u64) {
+            self.sh.touch(id, b"ls\r");
+        }
+
+        /// A `Data` frame the emulator sent by itself.
+        fn reports(&self, id: u64, payload: &[u8]) {
+            assert!(is_report_only(payload), "the fixture's report must read as one");
+            self.sh.touch(id, payload);
+        }
+
+        fn resize(&self, id: u64, cols: u16, rows: u16) {
+            self.sh.resize_viewer(id, (cols, rows));
+        }
+
+        fn leave(&self, id: u64) {
+            self.sh.leave(id);
+        }
+
+        fn applied(&self) -> (u16, u16) {
+            *self.sh.applied.lock().unwrap()
+        }
+
+        /// The screen model's size, as (cols, rows).
+        fn screen_size(&self) -> (u16, u16) {
+            let sh = self.sh.screen.lock().unwrap();
+            let (rows, cols) = sh.screen().size();
+            (cols, rows)
+        }
+    }
+
+    #[test]
+    fn two_viewers_with_different_sizes_settle_with_nobody_typing() {
+        let mut f = SizeFixture::new(80, 24);
+        let a = f.join("window", 89, 128);
+        assert_eq!(f.applied(), (89, 128), "the first viewer to give a size owns it");
+        let b = f.join("window", 55, 70);
+        assert_eq!(f.applied(), (89, 128), "a second window's hello must not take the size");
+        // Both panes keep reporting their own size as they lay out and re-fit. Nobody types.
+        for _ in 0..5 {
+            f.resize(b, 55, 70);
+            assert_eq!(f.applied(), (89, 128), "a viewer that has not typed cannot change the size");
+            f.resize(a, 89, 128);
+            assert_eq!(f.applied(), (89, 128));
+        }
+        assert_eq!(f.screen_size(), (89, 128), "the screen model follows the applied size");
+    }
+
+    #[test]
+    fn typing_hands_the_size_over() {
+        let mut f = SizeFixture::new(80, 24);
+        let a = f.join("window", 89, 128);
+        let b = f.join("window", 55, 70);
+        assert_eq!(f.applied(), (89, 128));
+        f.types(b);
+        assert_eq!(f.applied(), (55, 70), "the viewer that types owns the size");
+        f.resize(b, 60, 75);
+        assert_eq!(f.applied(), (60, 75), "the owner's resize applies");
+        f.resize(a, 89, 128);
+        assert_eq!(f.applied(), (60, 75), "a resize from the other window still does nothing");
+        f.types(a);
+        assert_eq!(f.applied(), (89, 128), "typing takes the size back");
+        assert_eq!(f.screen_size(), (89, 128));
+    }
+
+    #[test]
+    fn one_viewer_always_gets_its_size() {
+        let mut f = SizeFixture::new(80, 24);
+        let a = f.join("window", 90, 20);
+        assert_eq!(f.applied(), (90, 20));
+        f.resize(a, 100, 30);
+        assert_eq!(f.applied(), (100, 30), "the only viewer resizes before typing");
+        f.types(a);
+        f.resize(a, 110, 40);
+        assert_eq!(f.applied(), (110, 40), "and after typing");
+    }
+
+    #[test]
+    fn when_the_owner_leaves_the_remaining_viewer_applies() {
+        let mut f = SizeFixture::new(80, 24);
+        let a = f.join("window", 89, 128);
+        let b = f.join("window", 55, 70);
+        f.types(a);
+        assert_eq!(f.applied(), (89, 128));
+        f.leave(a);
+        assert_eq!(f.applied(), (55, 70), "the size falls to the viewer that most recently said one");
+        f.resize(b, 50, 60);
+        assert_eq!(f.applied(), (50, 60), "and that viewer now owns it");
+    }
+
+    #[test]
+    fn focus_and_mouse_reports_leave_the_size_with_the_typist() {
+        let mut f = SizeFixture::new(80, 24);
+        let a = f.join("window", 89, 128);
+        let b = f.join("window", 55, 70);
+        f.types(a);
+        assert_eq!(f.applied(), (89, 128));
+        // The other window is clicked and the pointer crosses it: its emulator reports focus and
+        // mouse on its own, with nobody typing there.
+        for _ in 0..3 {
+            f.reports(b, b"\x1b[O");
+            f.reports(b, b"\x1b[I");
+            f.reports(b, b"\x1b[<0;40;12M");
+            f.reports(b, b"\x1b[<0;40;12m");
+            f.reports(a, b"\x1b[O");
+            assert_eq!(f.applied(), (89, 128), "reports must never move the size");
+        }
+        // Real input there still does.
+        f.types(b);
+        assert_eq!(f.applied(), (55, 70));
+    }
+
+    #[test]
+    fn report_only_payloads_are_told_from_typing() {
+        // Terminal reports, which the emulator sends by itself.
+        for r in [
+            &b"\x1b[I"[..],
+            b"\x1b[O",
+            b"\x1b[M !!",
+            b"\x1b[<0;40;12M",
+            b"\x1b[<35;120;40m",
+            b"\x1b[12;40R",
+            b"\x1b[0n",
+            b"\x1b[?62;1;6c",
+            b"\x1b[>0;95;0c",
+            b"\x1b[?50n",
+        ] {
+            assert!(is_report_only(r), "report: {:?}", String::from_utf8_lossy(r));
+        }
+        // Several in one frame, in any mix.
+        assert!(is_report_only(b"\x1b[O\x1b[I\x1b[<0;1;1M\x1b[<0;1;1m\x1b[3;9R"));
+        // An empty frame types nothing, so it cannot claim the size either.
+        assert!(is_report_only(b""));
+        // Real input, including a report with a keystroke after it.
+        for k in [
+            &b"\x1b[Ihello"[..],
+            b"\x1b[Ox",
+            b"\x1b[<0;1;1M\r",
+            b"a",
+            b"\r",
+            b"\x03",
+            b"\x1b[A",
+            b"\x1b[200~pasted\x1b[201~",
+            // Partial or malformed: read as typing, the safer default.
+            b"\x1b[",
+            b"\x1b[<0;40;12",
+            b"\x1b[M!",
+            b"\x1b[999",
+            b"\x1b[;R\x1b",
+        ] {
+            assert!(!is_report_only(k), "input: {:?}", String::from_utf8_lossy(k));
+        }
+    }
+
+    #[test]
+    fn the_size_log_line_says_who_asked_and_what_applied() {
+        let now = size_log_now();
+        assert_eq!(now.len(), 24, "an ISO timestamp with milliseconds: {now}");
+        assert!(now.ends_with('Z') && now.as_bytes()[19] == b'.', "{now}");
+
+        assert_eq!(
+            size_log_line("2026-09-17T14:53:31Z", SizeCause::Resize, 4, "window", Some((89, 128)), Some(4), (89, 128), true),
+            "2026-09-17T14:53:31Z resize viewer=4 label=window asked=89x128 owner=4 applied=89x128 changed\n"
+        );
+        assert_eq!(
+            size_log_line("2026-09-17T14:53:32Z", SizeCause::Hello, 5, "window", Some((55, 70)), Some(4), (89, 128), false),
+            "2026-09-17T14:53:32Z hello viewer=5 label=window asked=55x70 owner=4 applied=89x128 kept\n"
+        );
+        assert_eq!(
+            size_log_line("2026-09-17T14:53:33Z", SizeCause::Leave, 4, "-", None, None, (89, 128), false),
+            "2026-09-17T14:53:33Z leave viewer=4 label=- asked=- owner=- applied=89x128 kept\n"
+        );
+        assert_eq!(
+            size_log_line("2026-09-17T14:53:34Z", SizeCause::Report, 5, "window", Some((55, 70)), Some(4), (89, 128), false),
+            "2026-09-17T14:53:34Z report viewer=5 label=window asked=55x70 owner=4 applied=89x128 kept\n"
+        );
+    }
+
+    #[test]
+    fn the_size_log_records_every_decision_and_only_when_asked_for() {
+        assert_eq!(size_log_path(None), None, "unset: no log");
+        assert_eq!(size_log_path(Some(std::ffi::OsString::new())), None, "empty: no log");
+        assert_eq!(size_log_path(Some("/tmp/sz.log".into())), Some(PathBuf::from("/tmp/sz.log")));
+
+        let dir = PathBuf::from(format!("/tmp/szs-{}-sizelog", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::paths::ensure_dir(&dir).unwrap();
+        let log = dir.join("size.log");
+
+        // Off: nothing is written at all.
+        let mut off = SizeFixture::new(80, 24);
+        off.join("window", 89, 128);
+        assert!(!log.exists());
+
+        let mut f = SizeFixture::logging_to(80, 24, &log);
+        let a = f.join("window", 89, 128);
+        let b = f.join("window", 55, 70);
+        f.resize(b, 55, 71);
+        f.reports(b, b"\x1b[I");
+        f.types(b);
+        f.leave(a);
+        let text = std::fs::read_to_string(&log).unwrap();
+        let causes: Vec<&str> = text.lines().map(|l| l.split(' ').nth(1).unwrap()).collect();
+        assert_eq!(causes, ["hello", "hello", "resize", "report", "data", "leave"]);
+        assert!(text.contains("hello viewer=2 label=window asked=55x70 owner=1 applied=89x128 kept"), "{text}");
+        assert!(text.contains("report viewer=2 label=window asked=55x71 owner=1 applied=89x128 kept"), "{text}");
+        assert!(text.contains("data viewer=2 label=window asked=55x71 owner=2 applied=55x71 changed"), "{text}");
+        assert!(text.lines().last().unwrap().contains("leave viewer=1 label=- asked=- owner=2 applied=55x71 kept"), "{text}");
+
+        // A path that cannot be written is ignored, not fatal.
+        let mut bad = SizeFixture::logging_to(80, 24, &dir.join("nope").join("size.log"));
+        bad.join("window", 90, 20);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tool_viewers_never_own_the_size() {
+        let mut f = SizeFixture::new(80, 24);
+        let t = f.join(TOOL_VIEWER, 50, 10);
+        assert_eq!(f.applied(), (80, 24), "a tool viewer's hello applies nothing");
+        let a = f.join("window", 89, 128);
+        assert_eq!(f.applied(), (89, 128));
+        f.resize(t, 50, 10);
+        assert_eq!(f.applied(), (89, 128), "a tool viewer's resize applies nothing");
+        f.types(t);
+        assert_eq!(f.applied(), (89, 128), "a tool viewer never becomes the owner");
+        f.leave(a);
+        assert_eq!(f.applied(), (89, 128), "and never inherits the size either");
+    }
+
     #[test]
     fn two_viewers_see_the_same_output() {
         let (_d, p, h) = start("two", VIEWER_QUEUE_CAP);
@@ -574,6 +1041,33 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         b.out.clear();
         b.send(b"echo sz-$(stty size | tr ' ' x)\n");
+        assert!(b.wait_for("sz-30x100", 5));
+        b.send(b"exit 0\n");
+        assert!(b.wait_for("", 5));
+        h.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn focus_and_mouse_reports_over_the_socket_do_not_take_the_size() {
+        let (_d, p, h) = start("focusreport", VIEWER_QUEUE_CAP);
+        let mut a = Viewer::connect(&p, "window", 80, 24);
+        let mut b = Viewer::connect(&p, "window", 100, 30);
+        a.send(b"stty size\n");
+        assert!(a.wait_for("24 80", 5));
+        // The other window is clicked and the pointer crosses it: its emulator sends these by
+        // itself, and they still reach the program — they just do not take the size.
+        b.send(b"\x1b[I");
+        b.send(b"\x1b[<0;10;5M");
+        b.send(b"\x1b[<0;10;5m");
+        b.send(b"\x1b[O");
+        std::thread::sleep(Duration::from_millis(300));
+        a.out.clear();
+        // Ctrl-U first: those reports are sitting in the shell's line buffer.
+        a.send(b"\x15echo sz-$(stty size | tr ' ' x)\n");
+        assert!(a.wait_for("sz-24x80", 5), "reports from the other window must not resize");
+        // Real typing there still hands the size over.
+        b.out.clear();
+        b.send(b"\x15echo sz-$(stty size | tr ' ' x)\n");
         assert!(b.wait_for("sz-30x100", 5));
         b.send(b"exit 0\n");
         assert!(b.wait_for("", 5));
