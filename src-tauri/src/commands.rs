@@ -621,6 +621,19 @@ pub async fn phones() -> Result<Vec<swarmz_tool::phone::PhoneKey>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// This Mac's name, login user and ssh host key fingerprints: the pairing QR code's contents
+/// (`swarmz host-keys`). Nothing here is secret -- host keys are public -- so the code can be
+/// shown on screen and photographed; the Mac's password is still needed to pair.
+#[tauri::command]
+pub async fn host_keys() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let tool = crate::toolbin::ensure_installed()?;
+        crate::toolbin::run_tool_json(&tool, &["host-keys"], Duration::from_secs(10))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Removes a phone's key here and on every other Mac the tool can reach.
 #[tauri::command]
 pub async fn revoke_phone(device: String) -> Result<serde_json::Value, String> {

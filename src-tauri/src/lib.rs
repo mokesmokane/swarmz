@@ -48,6 +48,7 @@ pub fn run() {
             commands::close_session,
             commands::phones,
             commands::revoke_phone,
+            commands::host_keys,
             commands::agents_watch,
             commands::agents_unwatch,
             commands::paste_image_to_remote,

@@ -70,6 +70,14 @@ export interface PhoneKey {
   keyEnd: string;
 }
 
+/** The pairing QR code's contents: this Mac's name, login user and ssh host key fingerprints. */
+export interface HostKeys {
+  host: string;
+  user: string;
+  /** `SHA256:<unpadded base64>`, one per host key type the Mac offers; empty when it offers none. */
+  fingerprints: string[];
+}
+
 export interface MachineResult {
   machine: string;
   ok: boolean;
@@ -139,6 +147,8 @@ export const ipc = {
   phones: () => invoke<PhoneKey[]>("phones"),
   /** Removes a phone's key here and on every other Mac the tool can reach. */
   revokePhone: (device: string) => invoke<{ removed: number; machines: MachineResult[] }>("revoke_phone", { device }),
+  /** This Mac's name, login user and ssh host key fingerprints, for the pairing QR code. */
+  hostKeys: () => invoke<HostKeys>("host_keys"),
   /** Resolves with the generation of the watcher now running for `host` (see `agents_watch`). */
   agentsWatch: (host: string | null) => invoke<number>("agents_watch", { host }),
   agentsUnwatch: (host: string | null) => invoke<void>("agents_unwatch", { host }),
