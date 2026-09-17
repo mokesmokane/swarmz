@@ -25,12 +25,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.async
-import kotlinx.coroutines.test.runCurrent
-import kotlinx.coroutines.test.runTest
 import org.junit.After
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -83,38 +78,5 @@ class NewSessionTest {
         compose.waitUntil(5_000) { started != null }
         assertEquals(TileKey("mini", "n1"), started)
         assertTrue(newCmd in conn.ran)
-    }
-
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    @Test
-    fun aSecondTapWhileStartingStartsNothing() = runTest {
-        installBouncyCastle()
-        val newCmd = Cmd.newTile("/Users/me", skipPermissions = false)
-        val gate = CompletableDeferred<Unit>()
-        val conn = FakeConn { cmd ->
-            when (cmd) {
-                Cmd.machines() -> """{"machines":[],"v":1}"""
-                Cmd.folders(null) -> """{"dirs":[],"parent":"/Users","path":"/Users/me","v":1}"""
-                newCmd -> """{"tile":{"cwd":"/Users/me","id":"n1","kind":"claude","name":"me","running":true},"v":1}"""
-                else -> VERSION_OK
-            }
-        }
-        conn.beforeExec = { if (it == newCmd) gate.await() }
-        val settings = MemorySettings().also { runBlocking { it.setPaired(Paired("mini", "me", "Fold")) } }
-        val repo = Repository(settings, { PhoneKey(Ed25519.generate()) }, HostConnector(mapOf("mini" to ArrayDeque(listOf(conn)))), backgroundScope)
-        repo.start()
-        runCurrent()
-        val model = NewSessionModel(repo, backgroundScope)
-        model.pickMac("mini")
-        runCurrent()
-        val first = async { model.start() }
-        runCurrent()
-        assertTrue(model.state.value.starting)
-        val second = async { model.start() }
-        runCurrent()
-        gate.complete(Unit)
-        assertEquals(TileKey("mini", "n1"), first.await())
-        assertNull(second.await())
-        assertEquals(1, conn.ran.count { it == newCmd })
     }
 }

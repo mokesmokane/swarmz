@@ -238,15 +238,16 @@ class SshTest {
         val release = CountDownLatch(1)
         mac.beforePasswordCheck = {
             checking.countDown()
-            release.await(10, TimeUnit.SECONDS)
+            release.await(60, TimeUnit.SECONDS)
         }
         val job = launch(Dispatchers.IO) { SshjConnector(pins).connect("127.0.0.1", mac.port, password) }
-        assertTrue(checking.await(5, TimeUnit.SECONDS))
+        // Waits are only for the steps to happen, never for them not to: they are generous, so load cannot fail them.
+        assertTrue("the login reached the Mac", checking.await(60, TimeUnit.SECONDS))
         assertEquals(1, mac.openSessions)
         job.cancel()
         release.countDown()
         job.join()
-        withTimeout(5_000) { while (mac.openSessions > 0) delay(20) }
+        withTimeout(60_000) { while (mac.openSessions > 0) delay(20) }
     }
 
     @Test

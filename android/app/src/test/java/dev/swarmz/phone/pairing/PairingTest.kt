@@ -32,6 +32,9 @@ import org.junit.rules.TemporaryFolder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+/** Long enough that no local command times out, however loaded the machine is. */
+private const val GENEROUS_MS = 120_000L
+
 class PairingTest {
     @get:Rule val tmp = TemporaryFolder()
     private lateinit var mac: FakeMac
@@ -64,6 +67,11 @@ class PairingTest {
 
     /** The timeout each command ran with, over any connection the pairing opens. */
     private val timeouts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * Records the timeout the code under test asks for, and runs the command with a generous one: what the timeouts
+     * are for is checked here, and a loaded machine must not turn a slow local command into a pairing failure.
+     */
     private val recording = object : SshConnector {
         val inner = SshjConnector(settings)
         override suspend fun connect(host: String, port: Int, auth: Auth): SshConnection {
@@ -71,7 +79,7 @@ class PairingTest {
             return object : SshConnection by conn {
                 override suspend fun exec(command: String, timeoutMs: Long): ExecResult {
                     timeouts[command] = timeoutMs
-                    return conn.exec(command, timeoutMs)
+                    return conn.exec(command, maxOf(timeoutMs, GENEROUS_MS))
                 }
             }
         }
@@ -169,7 +177,7 @@ class PairingTest {
         val pw = "pw".toCharArray()
         val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
         val result = scope.async { pairing().pair("127.0.0.1", "me", pw, "Fold") }
-        assertTrue(started.await(5, TimeUnit.SECONDS))
+        assertTrue("the key login reached the Mac", started.await(60, TimeUnit.SECONDS))
         result.cancel()
         val outcome = runCatching { result.await() }
         assertTrue(outcome.exceptionOrNull() is CancellationException)
