@@ -125,15 +125,3 @@ fun TileScreen(c: TileController, unfolded: Boolean, onBack: (() -> Unit)?, now:
         }
     }
 }
-
-/** STUB: Task 13 replaces this with the real shell output from ShellOutput.kt. */
-@Composable
-private fun ShellBody(c: TileController, row: TileRow, modifier: Modifier) {
-    Text("", modifier = modifier)
-}
-
-/** STUB: Task 13 replaces this with the real shell quick keys from ShellOutput.kt. */
-@Composable
-private fun ShellQuickKeys(enabled: Boolean, onCtrlC: () -> Unit, onUp: () -> Unit, onTab: () -> Unit) {
-    Row {}
-}

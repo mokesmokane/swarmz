@@ -52,6 +52,7 @@ class TileScreenTest {
                 Cmd.pending("t1") -> """{"pending":{"tool":"Bash","summary":"npm test","options":[{"n":1,"label":"Yes"},{"n":2,"label":"Yes, always"},{"n":3,"label":"No"}]},"v":1}"""
                 Cmd.answer("t1", "1", "npm test") -> """{"answered":true,"option":{"n":1,"label":"Yes"},"v":1}"""
                 Cmd.send("t1", "go on") -> """{"sent":true,"v":1}"""
+                Cmd.send("s1", "ls") -> """{"sent":true,"v":1}"""
                 else -> VERSION_OK
             }
         }
@@ -60,6 +61,9 @@ class TileScreenTest {
             conn.stream(Cmd.transcript("t1", follow = true)).send(
                 """{"hasMore":false,"messages":[{"id":"u","role":"user","text":"fix the build"},""" +
                     """{"id":"a","role":"assistant","text":"Done. Run:\n```\nnpm test\n```","tools":[{"name":"Bash","summary":"npm run build","ok":true}]}],"v":1}""",
+            )
+            conn.stream(Cmd.output("s1", lines = 300, follow = true)).send(
+                """{"cols":80,"rows":24,"lines":[[{"text":"$ ls"}],[{"text":"file.txt"}]],"v":1}""",
             )
         }
         val settings = MemorySettings().also { it.paired.value = Paired("mini", "me", "Fold") }
@@ -116,5 +120,21 @@ class TileScreenTest {
         compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
         compose.waitUntil(5_000) { compose.onAllNodes(hasText("Restart")).fetchSemanticsNodes().isNotEmpty() }
         compose.onAllNodes(hasText("exited 1")).onFirst().assertIsDisplayed()
+    }
+
+    @Test
+    fun shellTileShowsOutputAndQuickKeys() {
+        val c = controller("s1", """{"cwd":"/p","id":"s1","kind":"shell","name":"sh","running":true,"status":"offline"}""")
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("$ ls")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("file.txt").assertIsDisplayed()
+        compose.onNodeWithText("SHELL").assertIsDisplayed()
+        compose.onNodeWithText("^C").assertIsDisplayed()
+        compose.onNodeWithText("↑").assertIsDisplayed()
+        compose.onNodeWithText("Tab").assertIsDisplayed()
+        compose.onNodeWithText("Type a command…").assertIsDisplayed()
+        compose.onNodeWithTag("composer").performTextInput("ls")
+        compose.onNodeWithContentDescription("Send").performClick()
+        compose.waitUntil(5_000) { Cmd.send("s1", "ls") in conn.ran }
     }
 }
