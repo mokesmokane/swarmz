@@ -5,14 +5,12 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
@@ -21,13 +19,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.swarmz.phone.state.TileKey
 import dev.swarmz.phone.ui.home.HomeScreen
 import dev.swarmz.phone.ui.home.TileListPane
 import dev.swarmz.phone.ui.pairing.PairingScreen
 import dev.swarmz.phone.ui.pairing.defaultDeviceName
 import dev.swarmz.phone.ui.theme.Sw
 import dev.swarmz.phone.ui.theme.SwarmzTheme
+import dev.swarmz.phone.ui.tile.TileScreen
 
 val UNFOLDED_MIN_WIDTH = 600.dp
 
@@ -89,19 +87,11 @@ private fun Detail(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boole
             onNew = vm::openNewSession,
             onSettings = vm::openSettings,
         )
-        is Route.Tile -> TileDetail(vm, route.key, showBack)
+        is Route.Tile -> {
+            val c by vm.tile.collectAsStateWithLifecycle()
+            c?.let { TileScreen(it, unfolded = !showBack, onBack = if (showBack) ({ vm.back() }) else null, now = vm.now) }
+        }
         Route.NewSession -> Text("New session", modifier = Modifier.padding(16.dp))
         Route.Settings -> Text("Settings", modifier = Modifier.padding(16.dp))
-    }
-}
-
-/** Replaced by TileScreen in Task 12. */
-@Composable
-private fun TileDetail(vm: AppViewModel, key: TileKey, showBack: Boolean) {
-    val home by vm.home.collectAsStateWithLifecycle()
-    val name = (home.model.needs + home.model.quiet).firstOrNull { it.key == key }?.row?.name ?: key.id
-    Column(Modifier.padding(16.dp)) {
-        Text(name, style = MaterialTheme.typography.titleMedium)
-        Text("Message $name…")
     }
 }
