@@ -35,7 +35,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -57,6 +63,30 @@ import java.util.concurrent.atomic.AtomicBoolean
 private const val DISCOVERY_MS = 5 * 60_000L
 
 data class Banner(val mac: String, val text: String)
+
+/** A Mac that refused this phone's key and has no pairing of its own: Home offers to pair it. */
+data class PairHint(val mac: String, val label: String)
+
+/** A revoke that did not reach every Mac. [revoked] and [failed] are labels, in pairing order. */
+class RevokeFailure(val revoked: List<String>, val failed: List<String>, message: String) : Exception(message)
+
+/** An address is only ever itself; a name also matches its short MagicDNS form (`studio` is `studio.tail.ts.net`). */
+private fun isAddress(name: String) = name.contains(':') || name.isNotEmpty() && name.all { it.isDigit() || it == '.' }
+
+/** Whether two names mean the same Mac. */
+internal fun sameMac(a: String, b: String): Boolean {
+    if (a.equals(b, ignoreCase = true)) return true
+    if (isAddress(a) || isAddress(b)) return false
+    val short = a.substringBefore('.')
+    return short.isNotEmpty() && short.equals(b.substringBefore('.'), ignoreCase = true)
+}
+
+/** The user to log in to [mac] with: its own pairing's, else the first pairing's. */
+internal fun userFor(mac: String, pairings: List<Paired>): String? =
+    pairings.firstOrNull { sameMac(it.host, mac) }?.user ?: pairings.firstOrNull()?.user
+
+/** Whether [mac] is one of the paired Macs. */
+internal fun isPaired(mac: String, pairings: List<Paired>) = pairings.any { sameMac(it.host, mac) }
 
 private data class LinkSnapshot(val link: MacLink, val state: LinkState, val tiles: Map<String, TileRow>, val lastSeen: Long?)
 
@@ -138,7 +168,12 @@ class Repository(
 ) {
     private val links = MutableStateFlow<Map<String, MacLink>>(emptyMap())
     private val labels = MutableStateFlow<Map<String, String>>(emptyMap())
-    private var discovery: Job? = null
+    /** The user each link logs in with, so a pairing change can tell which links need restarting. */
+    private val linkUsers = mutableMapOf<String, String>()
+    /** One discovery round per paired Mac, with the link it follows. */
+    private val discoveries = mutableMapOf<String, Pair<MacLink, Job>>()
+    /** Held while the link map is rebuilt, so a discovery round and a pairing change cannot cross. */
+    private val linkChanges = kotlinx.coroutines.sync.Mutex()
     private val started = AtomicBoolean(false)
     /** Open sessions: their jobs, and each one's Mac and how to end it. */
     private val sessions = mutableMapOf<Job, Pair<String, (String) -> Unit>>()
@@ -165,14 +200,23 @@ class Repository(
      * What Home shows above the cards. A Mac other than the paired one that refuses the key is left out: it was
      * offline when this phone paired, and Settings explains that.
      */
-    val banners: StateFlow<List<Banner>> = combine(snapshots, labels, settings.paired) { snaps, names, p ->
+    val banners: StateFlow<List<Banner>> = combine(snapshots, labels, settings.pairings) { snaps, names, pairings ->
         snaps.mapNotNull { s ->
             val label = names[s.link.mac] ?: s.link.mac
             when (val st = s.state) {
                 is LinkState.TooOld -> Banner(s.link.mac, "Update swarmz on $label")
-                is LinkState.Blocked -> if (st.keyRejected && s.link.mac != p?.host) null else Banner(s.link.mac, st.reason)
+                is LinkState.Blocked -> if (st.keyRejected && !isPaired(s.link.mac, pairings)) null else Banner(s.link.mac, st.reason)
                 else -> null
             }
+        }
+    }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** The Macs that refused this phone's key and have no pairing: they can be paired one by one. */
+    val pairHints: StateFlow<List<PairHint>> = combine(snapshots, labels, settings.pairings) { snaps, names, pairings ->
+        snaps.mapNotNull { s ->
+            val st = s.state
+            if (st is LinkState.Blocked && st.keyRejected && !isPaired(s.link.mac, pairings)) PairHint(s.link.mac, names[s.link.mac] ?: s.link.mac)
+            else null
         }
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
@@ -193,63 +237,124 @@ class Repository(
     fun start() {
         if (!started.compareAndSet(false, true)) return
         scope.launch {
-            var previous: Paired? = null
-            settings.paired.collect { p ->
+            var previous: List<Paired> = emptyList()
+            settings.pairings.collect { pairings ->
+                // A new first pairing (or none) starts over; anything else only adds or fixes the links it names.
+                if (previous.isNotEmpty() && pairings.firstOrNull() == previous.first()) {
+                    previous = pairings
+                    applyPairings(pairings)
+                    return@collect
+                }
                 // Joined, so a round that already read the old links cannot write them back after the reset.
-                discovery?.cancelAndJoin()
-                discovery = null
-                links.value.values.forEach { it.stop() }
-                endSessions()
-                links.value = emptyMap()
-                labels.value = emptyMap()
-                if (previous != null && p != null && p != previous) settings.setMacs(emptyList())
-                previous = p
-                if (p != null) pair(p, settings.loadMacs())
+                stopEverything()
+                if (previous.isNotEmpty() && pairings.isNotEmpty()) settings.setMacs(emptyList())
+                previous = pairings
+                if (pairings.isNotEmpty()) pair(pairings, settings.loadMacs())
             }
         }
     }
 
-    private fun newLink(p: Paired, host: String): MacLink =
-        MacLink(host, host, { Auth.Key(p.user, key()) }, connector, scope) { now().toEpochMilli() }.also { it.start() }
+    private suspend fun stopEverything() {
+        discoveries.values.forEach { it.second.cancelAndJoin() }
+        discoveries.clear()
+        links.value.values.forEach { it.stop() }
+        endSessions()
+        links.value = emptyMap()
+        labels.value = emptyMap()
+        linkUsers.clear()
+    }
+
+    private fun newLink(user: String, host: String): MacLink {
+        linkUsers[host] = user
+        return MacLink(host, host, { Auth.Key(user, key()) }, connector, scope) { now().toEpochMilli() }.also { it.start() }
+    }
+
+    /** The link key for [host], which may be its short or full name. */
+    private fun keyOf(host: String): String? = links.value.keys.firstOrNull { sameMac(it, host) }
 
     /**
-     * Links the paired Mac and the Macs saved from earlier rounds ([known]) at once, so they are reachable while the
+     * Links every paired Mac and the Macs saved from earlier rounds ([known]) at once, so they are reachable while a
      * paired Mac is offline. Discovery then adds new Macs; it never removes one, since `machines` leaves out
      * Macs that are merely asleep.
      */
-    private fun pair(p: Paired, known: List<KnownMac>) {
-        val primary = newLink(p, p.host)
-        val initial = linkedMapOf(p.host to primary)
+    private suspend fun pair(pairings: List<Paired>, known: List<KnownMac>) {
+        val initial = LinkedHashMap<String, MacLink>()
         val names = mutableMapOf<String, String>()
+        for (p in pairings) if (initial.keys.none { sameMac(it, p.host) }) initial[p.host] = newLink(p.user, p.host)
         for (m in known) {
-            names[m.name] = m.label
-            if (m.name !in initial) initial[m.name] = newLink(p, m.name)
+            // A saved Mac that is a paired one under its other name keeps the one link, and lends it its label.
+            val existing = initial.keys.firstOrNull { sameMac(it, m.name) }
+            names[existing ?: m.name] = m.label
+            if (existing == null) initial[m.name] = newLink(userFor(m.name, pairings)!!, m.name)
         }
         links.value = initial
         labels.value = names
-        discovery = scope.launch {
-            // A round runs each time the paired Mac comes online, then every 5 minutes while it stays online.
-            primary.state.map { it is LinkState.Online }.distinctUntilChanged().collectLatest { online ->
+        for (p in pairings) keyOf(p.host)?.let { ensureDiscovery(it) }
+    }
+
+    /**
+     * Applies a changed pairing list without disturbing the links it does not touch: a link whose user is now a
+     * different one is restarted, a paired Mac with no link gets one, and every other link is only nudged to retry.
+     */
+    private suspend fun applyPairings(pairings: List<Paired>) {
+        linkChanges.withLock {
+            val next = LinkedHashMap(links.value)
+            for ((mac, link) in links.value) {
+                val user = userFor(mac, pairings) ?: continue
+                if (linkUsers[mac] == user) {
+                    // A Mac that refused the old key can try again now, at once.
+                    link.retryNow()
+                    continue
+                }
+                link.stop()
+                endSessions(mac)
+                next[mac] = newLink(user, mac)
+            }
+            for (p in pairings) if (next.keys.none { sameMac(it, p.host) }) next[p.host] = newLink(p.user, p.host)
+            links.value = next
+        }
+        for (p in pairings) keyOf(p.host)?.let { ensureDiscovery(it) }
+    }
+
+    /** Runs a discovery round on [mac]'s link each time it comes online, then every 5 minutes while it stays online. */
+    private suspend fun ensureDiscovery(mac: String) {
+        val link = links.value[mac] ?: return
+        val current = discoveries[mac]
+        if (current != null && current.first === link) return
+        current?.second?.cancelAndJoin()
+        discoveries[mac] = link to scope.launch {
+            link.state.map { it is LinkState.Online }.distinctUntilChanged().collectLatest { online ->
                 if (!online) return@collectLatest
                 while (true) {
-                    primary.state.first { it is LinkState.Online }
-                    discover(p, primary)
+                    link.state.first { it is LinkState.Online }
+                    discover(link)
                     delay(DISCOVERY_MS)
                 }
             }
         }
     }
 
-    private suspend fun discover(p: Paired, primary: MacLink) {
-        try {
-            val list = primary.call<MachineList>(Cmd.machines()).machines
+    private suspend fun discover(primary: MacLink) {
+        val list = try {
+            primary.call<MachineList>(Cmd.machines()).machines
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Retried on the next round.
+            return
+        }
+        linkChanges.withLock {
+            val pairings = settings.pairings.value
             val names = mutableMapOf<String, String>()
-            list.firstOrNull { it.isSelf }?.let { names[p.host] = it.alias ?: it.name }
+            // This Mac names itself, alias or not; another Mac without an alias does not rename one we know.
+            list.firstOrNull { it.isSelf }?.let { names[primary.mac] = it.alias ?: it.name }
             // Only adds: `machines` leaves out Macs that are asleep, and those stay (dimmed, with "last seen").
             val next = LinkedHashMap(links.value)
             for (m in list.filter { !it.isSelf }) {
-                names[m.name] = m.alias ?: m.name
-                if (m.name !in next) next[m.name] = newLink(p, m.name)
+                val existing = next.keys.firstOrNull { sameMac(it, m.name) }
+                val mac = existing ?: m.name
+                names[mac] = m.alias ?: labels.value[mac] ?: m.name
+                if (existing == null) next[mac] = newLink(userFor(mac, pairings) ?: return@withLock, mac)
             }
             links.value = next
             // A Mac this round did not list keeps the label it had.
@@ -257,10 +362,6 @@ class Repository(
             labels.value = merged
             val saved = settings.macs.value.associateBy { it.name }
             settings.setMacs(next.keys.map { mac -> KnownMac(mac, merged[mac] ?: mac, next[mac]?.lastSeen?.value ?: saved[mac]?.lastSeen) })
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            // Retried on the next round.
         }
     }
 
@@ -280,7 +381,7 @@ class Repository(
     }
 
     fun retry(mac: String) {
-        links.value[mac]?.retryNow()
+        keyOf(mac)?.let { links.value[it]?.retryNow() }
     }
 
     private fun link(mac: String): MacLink = links.value[mac] ?: throw LinkDown("$mac is not connected")
@@ -314,13 +415,40 @@ class Repository(
         OutputSession(scope, link(key.mac), key.id).also { register(it.job, key.mac, it::end) }
 
     /**
-     * Removes this phone's key through the paired Mac, which passes the revoke on to the other Macs, then forgets
-     * the pairing. Throws [ToolFailure] or [LinkDown], keeping the pairing, when the Mac does not confirm it.
+     * Removes this phone's key from every paired Mac, in parallel, then forgets the pairing. Throws [RevokeFailure]
+     * when some Macs answered and others did not (a single pairing throws its own error), keeping the pairings.
      */
     suspend fun revokeThisPhone() {
-        val p = settings.paired.value ?: return
-        ToolJson.obj(link(p.host).exec(Cmd.phoneRevoke(p.device), timeoutMs = PHONE_KEY_EXEC_MS))
-        settings.forgetPairing()
+        val pairings = settings.pairings.value
+        if (pairings.isEmpty()) return
+        val results = coroutineScope {
+            pairings.map { p ->
+                async {
+                    p to try {
+                        withTimeout(PHONE_KEY_EXEC_MS) { ToolJson.obj(link(keyOf(p.host) ?: p.host).exec(Cmd.phoneRevoke(p.device), timeoutMs = PHONE_KEY_EXEC_MS)) }
+                        null
+                    } catch (e: TimeoutCancellationException) {
+                        LinkDown("${p.host} did not answer in time")
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        e
+                    }
+                }
+            }.awaitAll()
+        }
+        if (results.all { it.second == null }) {
+            settings.forgetPairing()
+            return
+        }
+        if (pairings.size == 1) throw results.first().second!!
+        val labelOf = { p: Paired -> labels.value[keyOf(p.host) ?: p.host] ?: p.host }
+        val revoked = results.filter { it.second == null }.map { labelOf(it.first) }
+        val failed = results.filter { it.second != null }
+        val parts = mutableListOf<String>()
+        if (revoked.isNotEmpty()) parts += "Revoked on " + revoked.joinToString(", ")
+        for ((p, e) in failed) parts += if (e is LinkDown) "couldn't reach ${labelOf(p)}" else "${labelOf(p)}: ${e?.message ?: "unknown error"}"
+        throw RevokeFailure(revoked, failed.map { labelOf(it.first) }, parts.joinToString("; ").replaceFirstChar { it.uppercase() })
     }
 
     /** Forgets the pairing on this phone only; the Macs keep the key. */

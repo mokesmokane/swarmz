@@ -2,6 +2,7 @@ package dev.swarmz.phone.data
 
 import android.content.Context
 import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -12,6 +13,11 @@ import androidx.datastore.preferences.preferencesDataStore
 import dev.swarmz.phone.ssh.HostKeyPins
 import dev.swarmz.phone.state.TileKey
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -35,14 +41,24 @@ import java.util.concurrent.ConcurrentHashMap
 
 val DEFAULT_NOTIFY = setOf("permission", "question", "finished")
 
+/** [list] with [p] in place of the entry for the same host, or at the end. */
+fun List<Paired>.withPairing(p: Paired): List<Paired> =
+    if (any { it.host == p.host }) map { if (it.host == p.host) p else it } else this + p
+
 interface SettingsStore : HostKeyPins {
+    /** The first pairing: the Mac this phone paired with first. */
     val paired: StateFlow<Paired?>
+    /** Every paired Mac, in the order they were paired; the first is [paired]. */
+    val pairings: StateFlow<List<Paired>>
     val macs: StateFlow<List<KnownMac>>
     val seen: StateFlow<Map<TileKey, Instant>>
     val dictationLanguage: StateFlow<String?>
     val backgroundWatch: StateFlow<Boolean>
     val notifyKinds: StateFlow<Set<String>>
+    /** Replaces every pairing with [p] alone (or none). */
     suspend fun setPaired(p: Paired?)
+    /** Adds [p], replacing a pairing with the same host and keeping the order; the first addition becomes [paired]. */
+    suspend fun addPairing(p: Paired)
     suspend fun setMacs(list: List<KnownMac>)
     suspend fun markSeen(key: TileKey, at: Instant)
     suspend fun setDictationLanguage(tag: String?)
@@ -55,7 +71,11 @@ interface SettingsStore : HostKeyPins {
 }
 
 class MemorySettings : SettingsStore {
+    /** The first pairing. Tests may set it directly; [pairings] follows it. */
     override val paired = MutableStateFlow<Paired?>(null)
+    /** The pairings after the first. */
+    private val others = MutableStateFlow<List<Paired>>(emptyList())
+    override val pairings: StateFlow<List<Paired>> = PairingList(paired, others)
     override val macs = MutableStateFlow<List<KnownMac>>(emptyList())
     override val seen = MutableStateFlow<Map<TileKey, Instant>>(emptyMap())
     override val dictationLanguage = MutableStateFlow<String?>(null)
@@ -64,7 +84,18 @@ class MemorySettings : SettingsStore {
     private val pins = ConcurrentHashMap<String, String>()
     override fun get(id: String) = pins[id]
     override fun put(id: String, fingerprint: String) { pins[id] = fingerprint }
-    override suspend fun setPaired(p: Paired?) { paired.value = p }
+    override suspend fun setPaired(p: Paired?) {
+        others.value = emptyList()
+        paired.value = p
+    }
+    override suspend fun addPairing(p: Paired) {
+        val first = paired.value
+        when {
+            first == null -> paired.value = p
+            first.host == p.host -> paired.value = p
+            else -> others.update { it.withPairing(p) }
+        }
+    }
     override suspend fun setMacs(list: List<KnownMac>) {
         // A discovery round that finishes after forgetPairing must not bring the Macs back.
         if (paired.value == null) return
@@ -75,10 +106,23 @@ class MemorySettings : SettingsStore {
     override suspend fun setBackgroundWatch(on: Boolean) { backgroundWatch.value = on }
     override suspend fun setNotifyKinds(kinds: Set<String>) { notifyKinds.value = kinds }
     override suspend fun forgetPairing() {
+        others.value = emptyList()
         paired.value = null
         macs.value = emptyList()
         seen.value = emptyMap()
         pins.clear()
+    }
+}
+
+/** The first pairing followed by the others (none without a first), read live from both. */
+@OptIn(ExperimentalForInheritanceCoroutinesApi::class)
+private class PairingList(private val first: StateFlow<Paired?>, private val rest: StateFlow<List<Paired>>) : StateFlow<List<Paired>> {
+    private fun of(p: Paired?, others: List<Paired>): List<Paired> = if (p == null) emptyList() else listOf(p) + others.filter { it.host != p.host }
+    override val value: List<Paired> get() = of(first.value, rest.value)
+    override val replayCache: List<List<Paired>> get() = listOf(value)
+    override suspend fun collect(collector: FlowCollector<List<Paired>>): Nothing {
+        combine(first, rest, ::of).distinctUntilChanged().collect(collector)
+        error("a state flow never completes")
     }
 }
 
@@ -89,6 +133,7 @@ internal val Context.swarmzStore by preferencesDataStore(name = "swarmz_settings
 
 internal object K {
     val paired = stringPreferencesKey("paired")
+    val pairings = stringPreferencesKey("pairings")
     val macs = stringPreferencesKey("macs")
     val seen = stringPreferencesKey("seen")
     val pins = stringPreferencesKey("pins")
@@ -120,6 +165,12 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
         if (saved != null) runCatching { json.decodeFromString<Map<String, String>>(saved) }.getOrNull()?.let(pinCache::putAll)
     }
 
+    /** Writes a single stored pairing (from before the list) into the list; done once the job completes. */
+    internal val migrated: Job = scope.launch {
+        if (loaded[K.pairings] != null) return@launch
+        store.edit { p -> if (p[K.pairings] == null && readPairings(p).isNotEmpty()) p[K.pairings] = json.encodeToString(readPairings(p)) }
+    }
+
     private fun <T> field(read: (Preferences) -> T): StateFlow<T> =
         store.data.map(read).stateIn(scope, SharingStarted.Eagerly, read(loaded))
 
@@ -131,7 +182,13 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
 
     private fun readMacs(p: Preferences): List<KnownMac> = decodeOrNull<List<KnownMac>>(p[K.macs]) ?: emptyList()
 
-    override val paired = field { p -> decodeOrNull<Paired>(p[K.paired]) }
+    /** The stored list; before it existed, the single stored pairing. */
+    private fun readPairings(p: Preferences): List<Paired> =
+        decodeOrNull<List<Paired>>(p[K.pairings])?.takeIf { it.isNotEmpty() }
+            ?: listOfNotNull(decodeOrNull<Paired>(p[K.paired]))
+
+    override val pairings = field(::readPairings)
+    override val paired = field { p -> readPairings(p).firstOrNull() }
     override val macs = field(::readMacs)
     override val seen = field { p ->
         seenTimes(p).entries.mapNotNull { (k, v) -> parseSeenKey(k)?.let { it to Instant.ofEpochMilli(v) } }.toMap()
@@ -157,7 +214,22 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
     }
 
     override suspend fun setPaired(p: Paired?) {
-        store.edit { if (p == null) it.remove(K.paired) else it[K.paired] = json.encodeToString(p) }
+        store.edit { writePairings(it, listOfNotNull(p)) }
+    }
+
+    override suspend fun addPairing(p: Paired) {
+        store.edit { writePairings(it, readPairings(it).withPairing(p)) }
+    }
+
+    /** Stores [list], with its first entry also under the single key (which [setMacs] checks). */
+    private fun writePairings(prefs: MutablePreferences, list: List<Paired>) {
+        if (list.isEmpty()) {
+            prefs.remove(K.paired)
+            prefs.remove(K.pairings)
+        } else {
+            prefs[K.paired] = json.encodeToString(list.first())
+            prefs[K.pairings] = json.encodeToString(list)
+        }
     }
 
     override suspend fun setMacs(list: List<KnownMac>) {
@@ -190,6 +262,7 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
             pinCache.clear()
             store.edit {
                 it.remove(K.paired)
+                it.remove(K.pairings)
                 it.remove(K.macs)
                 it.remove(K.seen)
                 it.remove(K.pins)

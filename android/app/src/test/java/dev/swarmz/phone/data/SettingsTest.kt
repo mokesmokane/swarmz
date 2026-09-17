@@ -114,4 +114,69 @@ class SettingsTest {
         assertNull(ctx.swarmzStore.data.first()[K.macs])
         scope.cancel()
     }
+
+    @Test
+    fun aSinglePairingIsMigratedIntoTheList() = runBlocking {
+        val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+        ctx.swarmzStore.edit {
+            it.clear()
+            it[K.paired] = """{"host":"mini","user":"me","device":"Fold"}"""
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val s = DataStoreSettings(ctx, scope)
+        assertEquals(listOf(Paired("mini", "me", "Fold")), s.pairings.value)
+        assertEquals(Paired("mini", "me", "Fold"), s.paired.value)
+        // The list is written back, so later versions find it stored.
+        s.migrated.join()
+        assertEquals(listOf(Paired("mini", "me", "Fold")), kotlinx.serialization.json.Json.decodeFromString<List<Paired>>(ctx.swarmzStore.data.first()[K.pairings]!!))
+        scope.cancel()
+    }
+
+    @Test
+    fun addingAPairingKeepsOrderAndReplacesTheSameHost() = runBlocking {
+        val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+        ctx.swarmzStore.edit { it.clear() }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val s = DataStoreSettings(ctx, scope)
+        // With nothing paired, the first addition is the first pairing.
+        s.addPairing(Paired("mini", "me", "Fold"))
+        s.addPairing(Paired("studio", "ann", "Fold"))
+        s.addPairing(Paired("air", "me", "Fold"))
+        s.addPairing(Paired("studio", "bob", "Fold"))
+        val want = listOf(Paired("mini", "me", "Fold"), Paired("studio", "bob", "Fold"), Paired("air", "me", "Fold"))
+        assertEquals(want, s.pairings.first { it == want })
+        assertEquals(Paired("mini", "me", "Fold"), s.paired.value)
+        // Another instance reads the same list.
+        assertEquals(want, DataStoreSettings(ctx, scope).pairings.value)
+        // setPaired starts over with one pairing; forgetting clears them all.
+        s.setPaired(Paired("other", "me", "Fold"))
+        assertEquals(listOf(Paired("other", "me", "Fold")), s.pairings.first { it.size == 1 })
+        s.forgetPairing()
+        assertEquals(emptyList<Paired>(), s.pairings.first { it.isEmpty() })
+        assertNull(s.paired.first { it == null })
+        scope.cancel()
+    }
+
+    @Test
+    fun memorySettingsMirrorThePairingList() = runBlocking {
+        val s = MemorySettings()
+        assertEquals(emptyList<Paired>(), s.pairings.value)
+        // Tests set the first pairing directly; the list follows it.
+        s.paired.value = Paired("mini", "me", "Fold")
+        assertEquals(listOf(Paired("mini", "me", "Fold")), s.pairings.value)
+        s.addPairing(Paired("studio", "ann", "Fold"))
+        s.addPairing(Paired("air", "me", "Fold"))
+        s.addPairing(Paired("studio", "bob", "Fold"))
+        s.addPairing(Paired("mini", "root", "Fold"))
+        assertEquals(
+            listOf(Paired("mini", "root", "Fold"), Paired("studio", "bob", "Fold"), Paired("air", "me", "Fold")),
+            s.pairings.value,
+        )
+        assertEquals(Paired("mini", "root", "Fold"), s.paired.value)
+        // The flow emits the list too.
+        assertEquals(3, s.pairings.first().size)
+        s.forgetPairing()
+        assertEquals(emptyList<Paired>(), s.pairings.value)
+        assertNull(s.paired.value)
+    }
 }

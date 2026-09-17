@@ -99,6 +99,21 @@ class PairingTest {
     }
 
     @Test
+    fun addModeKeepsTheSavedDeviceNameAndAddsAPairing() = runBlocking {
+        settings.setPaired(Paired("mini", "me", "Galaxy Fold"))
+        // The screen sends no device name in add mode; the saved one is used, so `phone revoke` works everywhere.
+        val result = pairing().pair("127.0.0.1", "me", "pw".toCharArray(), "")
+        assertEquals("studio", result.others.single().machine)
+        assertTrue(mac.commands.contains(Cmd.phoneAdd("Galaxy Fold", key.openSsh)))
+        // The first pairing stays first; the new Mac is added, not put in its place.
+        assertEquals(Paired("mini", "me", "Galaxy Fold"), settings.paired.value)
+        assertEquals(
+            listOf(Paired("mini", "me", "Galaxy Fold"), Paired("127.0.0.1", "me", "Galaxy Fold")),
+            settings.pairings.value,
+        )
+    }
+
+    @Test
     fun explainsFailures() = runBlocking {
         assertEquals("That device name can't be used.", message { pairing().pair("127.0.0.1", "me", "pw".toCharArray(), " Fold") })
         assertEquals(

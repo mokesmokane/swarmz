@@ -413,4 +413,175 @@ class RepositoryTest {
         runCurrent()
         assertEquals(listOf("mini"), refused.banners.value.map { it.mac })
     }
+
+    private fun machines(vararg entries: String) = """{"machines":[${entries.joinToString(",")}],"v":1}"""
+    private fun self(name: String, alias: String? = null) = """{"name":"$name",${alias?.let { "\"alias\":\"$it\"," } ?: ""}"self":true}"""
+    private fun other(name: String, alias: String? = null) = """{"name":"$name",${alias?.let { "\"alias\":\"$it\"," } ?: ""}"self":false}"""
+
+    @Test
+    fun eachPairingGetsItsOwnLinkUserAndDiscovery() = runTest {
+        // mini lists studio; only studio lists air.
+        val mini = FakeConn { if (it == Cmd.machines()) machines(self("mini"), other("studio")) else VERSION_OK }
+        val studio = FakeConn { if (it == Cmd.machines()) machines(self("studio", "Studio"), other("air", "Air")) else VERSION_OK }
+        val air = FakeConn()
+        val connector = HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)), "studio" to ArrayDeque(listOf(studio)), "air" to ArrayDeque(listOf(air))))
+        val settings = paired("mini")
+        settings.addPairing(Paired("studio", "ann", "Fold"))
+        val repo = repo(settings, connector)
+        repo.start()
+        runCurrent()
+        assertTrue(Cmd.machines() in mini.ran)
+        assertTrue(Cmd.machines() in studio.ran)
+        assertEquals(listOf("mini", "studio", "air"), repo.macs.value.map { it.name })
+        assertEquals(listOf("mini", "Studio", "Air"), repo.macs.value.map { it.label })
+        assertEquals(mapOf("mini" to "me", "studio" to "ann", "air" to "me"), connector.logins.toMap())
+        assertEquals(3, connector.logins.size)
+        assertTrue(repo.macs.value.all { it.online })
+        assertEquals(listOf("mini", "studio", "air"), settings.macs.value.map { it.name })
+    }
+
+    @Test
+    fun addingAPairingLeavesTheOtherLinksAlone() = runTest {
+        val mini = FakeConn { if (it == Cmd.machines()) machines(self("mini"), other("studio", "Studio")) else VERSION_OK }
+        val studio = FakeConn { if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
+        val inner = HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)), "studio" to ArrayDeque(listOf(studio))))
+        // studio only takes ann's key.
+        val connector = object : SshConnector {
+            override suspend fun connect(host: String, port: Int, auth: Auth): SshConnection {
+                if (host == "studio" && auth.user != "ann") {
+                    inner.logins += host to auth.user
+                    throw AuthRejected(host)
+                }
+                return inner.connect(host, port, auth)
+            }
+        }
+        val settings = paired("mini")
+        val repo = repo(settings, connector)
+        repo.start()
+        runCurrent()
+        assertTrue((repo.macStates.value["studio"] as LinkState.Blocked).keyRejected)
+        assertEquals(listOf(PairHint("studio", "Studio")), repo.pairHints.value)
+        assertEquals(emptyList<Banner>(), repo.banners.value)
+        val out = repo.openOutput(TileKey("mini", T1))
+        runCurrent()
+        settings.addPairing(Paired("studio", "ann", "Fold"))
+        runCurrent()
+        // studio connects at once with its own user; mini keeps its link and its session.
+        assertTrue(repo.macStates.value["studio"] is LinkState.Online)
+        assertEquals(listOf("mini" to "me", "studio" to "me", "studio" to "ann"), inner.logins)
+        assertTrue(!mini.closed)
+        assertTrue(out.job.isActive)
+        assertNull(out.error.value)
+        assertEquals(emptyList<PairHint>(), repo.pairHints.value)
+        assertEquals(listOf("mini", "studio"), repo.macs.value.map { it.name })
+        assertEquals("Studio", repo.macs.value.last().label)
+        // Discovery now also runs on studio.
+        assertTrue(Cmd.machines() in studio.ran)
+        out.close()
+    }
+
+    @Test
+    fun aLinkUnderAnotherUserRestartsWithThePairingsUser() = runTest {
+        val mini = FakeConn { if (it == Cmd.machines()) machines(self("mini"), other("studio")) else VERSION_OK }
+        val studio1 = FakeConn()
+        val studio2 = FakeConn()
+        val connector = HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)), "studio" to ArrayDeque(listOf(studio1, studio2))))
+        val settings = paired("mini")
+        val repo = repo(settings, connector)
+        repo.start()
+        runCurrent()
+        assertTrue(repo.macStates.value["studio"] is LinkState.Online)
+        settings.addPairing(Paired("studio", "ann", "Fold"))
+        runCurrent()
+        assertTrue(studio1.closed)
+        assertTrue(!mini.closed)
+        assertEquals(listOf("mini" to "me", "studio" to "me", "studio" to "ann"), connector.logins)
+        assertTrue(repo.macStates.value["studio"] is LinkState.Online)
+    }
+
+    @Test
+    fun aMacMatchingAPairingByShortNameUsesThatPairing() = runTest {
+        val mini = FakeConn { if (it == Cmd.machines()) machines(self("mini"), other("studio", "Studio")) else VERSION_OK }
+        val studio = FakeConn()
+        val connector = HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)), "studio.tail.ts.net" to ArrayDeque(listOf(studio))))
+        val settings = paired("mini").also { it.macs.value = listOf(KnownMac("mini", "mini"), KnownMac("studio", "Studio", 7)) }
+        settings.addPairing(Paired("studio.tail.ts.net", "ann", "Fold"))
+        val repo = repo(settings, connector)
+        repo.start()
+        runCurrent()
+        // The saved and the discovered "studio" are the paired studio.tail.ts.net: one link, with ann.
+        assertEquals(listOf("mini" to "me", "studio.tail.ts.net" to "ann"), connector.logins)
+        assertEquals(listOf("mini", "studio.tail.ts.net"), repo.macs.value.map { it.name })
+        assertEquals("Studio", repo.macs.value.last().label)
+        assertEquals(emptyList<PairHint>(), repo.pairHints.value)
+    }
+
+    @Test
+    fun discoveredMacsMatchingAPairingUseItsUser() = runTest {
+        // mini is paired as a full name and lists itself and studio by short name.
+        val mini = FakeConn { if (it == Cmd.machines()) machines(self("mini"), other("studio")) else VERSION_OK }
+        val studio = FakeConn()
+        val connector = HostConnector(mapOf("mini.tail.ts.net" to ArrayDeque(listOf(mini)), "studio" to ArrayDeque(listOf(studio))))
+        val settings = paired("mini.tail.ts.net")
+        // Paired while its link was not yet known: the discovered "studio" takes ann.
+        settings.addPairing(Paired("studio", "ann", "Fold"))
+        val repo = repo(settings, connector)
+        repo.start()
+        runCurrent()
+        assertEquals(listOf("mini.tail.ts.net" to "me", "studio" to "ann"), connector.logins)
+        assertEquals(listOf("mini.tail.ts.net", "studio"), repo.macs.value.map { it.name })
+    }
+
+    @Test
+    fun revokeRunsOnEveryPairingAtOnce() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val mini = FakeConn { if (it == Cmd.phoneRevoke("Fold")) """{"revoked":1,"machines":[],"v":1}""" else if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
+        val studio = FakeConn { if (it == Cmd.phoneRevoke("Fold")) """{"revoked":1,"machines":[],"v":1}""" else if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
+        // mini's revoke waits until studio's has started: they run in parallel.
+        mini.beforeExec = { if (it == Cmd.phoneRevoke("Fold")) gate.await() }
+        studio.beforeExec = { if (it == Cmd.phoneRevoke("Fold")) gate.complete(Unit) }
+        val settings = paired("mini")
+        settings.addPairing(Paired("studio", "ann", "Fold"))
+        val repo = repo(settings, HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)), "studio" to ArrayDeque(listOf(studio)))))
+        repo.start()
+        runCurrent()
+        repo.revokeThisPhone()
+        runCurrent()
+        assertEquals(PHONE_KEY_EXEC_MS, mini.timeouts[Cmd.phoneRevoke("Fold")])
+        assertEquals(PHONE_KEY_EXEC_MS, studio.timeouts[Cmd.phoneRevoke("Fold")])
+        assertNull(settings.paired.value)
+        assertEquals(emptyList<Paired>(), settings.pairings.value)
+    }
+
+    @Test
+    fun aPartialRevokeSaysWhereItWorkedAndKeepsThePairings() = runTest {
+        val mini = FakeConn { if (it == Cmd.phoneRevoke("Fold")) """{"revoked":1,"machines":[],"v":1}""" else if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
+        val air = FakeConn { if (it == Cmd.phoneRevoke("Fold")) """{"code":"failed","error":"no such device","v":1}""" else if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
+        val settings = paired("mini")
+        settings.addPairing(Paired("studio", "ann", "Fold"))
+        settings.addPairing(Paired("air", "me", "Fold"))
+        // studio never answers.
+        val repo = repo(settings, HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)), "air" to ArrayDeque(listOf(air)))))
+        repo.start()
+        runCurrent()
+        val failure = try {
+            repo.revokeThisPhone()
+            null
+        } catch (e: RevokeFailure) {
+            e
+        }
+        assertEquals("Revoked on mini; couldn't reach studio; air: no such device", failure?.message)
+        assertEquals(listOf("mini"), failure?.revoked)
+        assertEquals(listOf("studio", "air"), failure?.failed)
+        assertEquals(3, settings.pairings.value.size)
+
+        // Nothing revoked at all.
+        val none = try {
+            repo(paired("mini").also { it.addPairing(Paired("studio", "ann", "Fold")) }, HostConnector(emptyMap())).also { it.start() }.revokeThisPhone()
+            null
+        } catch (e: RevokeFailure) {
+            e.message
+        }
+        assertEquals("Couldn't reach mini; couldn't reach studio", none)
+    }
 }
