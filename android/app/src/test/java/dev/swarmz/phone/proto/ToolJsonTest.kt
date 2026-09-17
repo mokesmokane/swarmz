@@ -62,6 +62,9 @@ class ToolJsonTest {
         assertTrue(page.hasMore)
         assertEquals("Ran mkdir", page.messages[1].tools[0].summary)
         assertEquals("image/png", page.messages[2].images[0].mime)
+        assertTrue(!page.reset)
+        val reset = ToolJson.transcriptEvent("""{"hasMore":false,"messages":[],"reset":true,"v":1}""") as TranscriptEvent.First
+        assertTrue(reset.page.reset)
     }
 
     @Test

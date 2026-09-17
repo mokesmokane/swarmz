@@ -39,6 +39,25 @@ class TranscriptTest {
     }
 
     @Test
+    fun aResetFirstPageReplacesTheLoadedTranscript() {
+        var s = TranscriptState().apply(TranscriptEvent.First(TranscriptPage(listOf(m("a"), m("b")), hasMore = false)))
+        // The tool did not know `--after b` (e.g. the transcript was rewritten): it sends a fresh newest page.
+        s = s.apply(TranscriptEvent.First(TranscriptPage(listOf(m("x"), m("y")), hasMore = true, reset = true)))
+        assertEquals(listOf("x", "y"), s.messages.map { it.id })
+        assertTrue(s.hasMore)
+        assertTrue(s.loaded)
+        assertEquals("x", s.oldestId)
+        // Older pages continue from the new state.
+        s = s.withOlder(TranscriptPage(listOf(m("w")), hasMore = false))
+        assertEquals(listOf("w", "x", "y"), s.messages.map { it.id })
+        assertFalse(s.hasMore)
+        // A reset page on an unloaded state loads as usual.
+        val fresh = TranscriptState().apply(TranscriptEvent.First(TranscriptPage(listOf(m("z")), reset = true)))
+        assertEquals(listOf("z"), fresh.messages.map { it.id })
+        assertTrue(fresh.loaded)
+    }
+
+    @Test
     fun sessionSwitchClears() {
         var s = TranscriptState().apply(TranscriptEvent.First(TranscriptPage(listOf(m("a")), hasMore = true)))
         s = s.apply(TranscriptEvent.Session("s2"))

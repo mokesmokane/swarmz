@@ -53,7 +53,8 @@ data class Message(
     val tools: List<ToolView> = emptyList(),
 )
 
-@Serializable data class TranscriptPage(val messages: List<Message>, val hasMore: Boolean = false)
+/** [reset]: the tool did not know the `--after` id, so this is a fresh newest page that replaces what the phone has. */
+@Serializable data class TranscriptPage(val messages: List<Message>, val hasMore: Boolean = false, val reset: Boolean = false)
 
 @Serializable
 data class Span(

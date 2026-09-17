@@ -20,9 +20,9 @@ private fun List<Message>.upsert(incoming: List<Message>): List<Message> {
 }
 
 fun TranscriptState.apply(event: TranscriptEvent): TranscriptState = when (event) {
-    // A first page arrives on open (newest page) and on every resume (`--after lastId`).
+    // A first page arrives on open (newest page) and on every resume (`--after lastId`); a reset page starts over.
     is TranscriptEvent.First -> {
-        if (!loaded) TranscriptState(event.page.messages, event.page.hasMore, loaded = true)
+        if (!loaded || event.page.reset) TranscriptState(event.page.messages, event.page.hasMore, loaded = true)
         else copy(messages = messages.upsert(event.page.messages))
     }
     is TranscriptEvent.New -> copy(messages = messages.upsert(listOf(event.message)))
