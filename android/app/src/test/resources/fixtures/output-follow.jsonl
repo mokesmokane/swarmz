@@ -1,0 +1,4 @@
+{"cols":80,"cursor":null,"lines":[[{"text":"a"}],[{"text":"b"}]],"rows":24,"v":1}
+{"cursor":[1,0],"drop":1,"from":1,"lines":[[{"text":"c"}]],"type":"update","v":1}
+{"type":"ping","v":1}
+{"type":"exit","v":1}

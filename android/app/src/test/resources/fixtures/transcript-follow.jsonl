@@ -1,0 +1,5 @@
+{"hasMore":false,"messages":[],"v":1}
+{"message":{"id":"a2","images":[],"role":"assistant","text":"working on it","tools":[],"ts":"t"},"type":"message","v":1}
+{"message":{"id":"a2","images":[],"role":"assistant","text":"working on it","tools":[{"name":"Edit","ok":null,"summary":"Edited main.rs"}],"ts":"t"},"type":"update","v":1}
+{"sessionId":"s2","type":"session","v":1}
+{"type":"ping","v":1}
