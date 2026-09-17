@@ -1,7 +1,7 @@
 # swarmz on the phone: session holder, Mac tool, Android app, alerts
 
 Date: 2026-09-16
-Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented; sub-project 3 (phone app) implemented; acceptance on the Fold pending
+Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented; sub-project 3 (phone app) implemented; amended after acceptance on the Fold (2026-09-17): the phone pairs each Mac itself (§7.2)
 Amends: `2026-09-10-swarmz-design.md` §3.1 (the swarmz window no longer owns
 PTYs); `2026-09-15-agent-state-hooks-design.md` §2.1 (status colours), §3.2
 (hook events gain `PermissionRequest` and a synchronous `PostToolUse`); `2026-09-15-tile-folder-and-session-history-design.md`
@@ -644,8 +644,11 @@ settings.
 
 ### 6.9 Settings
 
-Macs (paired Mac, discovered Macs, online state), background watching on or
-off, notification kinds, dictation language, revoke this phone.
+Macs (each paired Mac, discovered Macs, online state), background watching on
+or off, notification kinds, dictation language, revoke this phone. Every Mac
+row that has no pairing of its own, or whose link refused the key, offers
+**Pair this Mac** (§7.2), and there is an **Add a Mac** button; Home shows one
+quiet, dismissible line for such a Mac.
 
 ### 6.10 Errors
 
@@ -692,6 +695,26 @@ off, notification kinds, dictation language, revoke this phone.
    tailnet — and prints which Macs accepted it. `from=` admits only tailnet
    addresses.
 5. The phone learns the other Macs from `machines` and connects with its key.
+
+The fan-out in step 4 is best effort, not the way the phone reaches every
+Mac: it logs in with `BatchMode=yes`, so it only works where the Macs already
+log in to each other without a password. Where they do not (swarmz itself
+types passwords into a pty, so a password-only tailnet is normal), the other
+Macs never get the key and refuse the phone's login.
+
+So the phone pairs each Mac itself. From Settings (or Home's hint for a Mac
+that refused the key) it opens the same pairing screen in *add* mode: the
+Mac's name and a username, which default to that Mac's own pairing's user,
+else the first pairing's, and the password, used once as in step 3. Add mode
+asks for no device name and reuses the saved one, so this phone is known by
+one name everywhere and `phone revoke <device>` matches on every Mac. The
+pairings are a list, the first of which is the Mac paired first; each Mac's
+link logs in with its own pairing's user (a Mac with no pairing of its own
+uses the first pairing's), discovery runs against every online paired Mac and
+the results merge, and pairing another Mac disturbs no existing link.
+`phone revoke` runs on every pairing in parallel, each with its own 60 s
+timeout; a partial revoke says where it worked ("Revoked on mini-3; couldn't
+reach mini-2") and still offers to forget the pairings on the phone only.
 
 A device name is letters, digits, single inner spaces (never leading,
 trailing or doubled), `.`, `_` and `-`, up to 40 characters. Adding a key
