@@ -15,8 +15,14 @@ import java.util.Base64
 
 /** A stand-in for the Keystore: reversible, and visibly not the plain bytes. */
 class XorVault : KeyVault {
+    var erased = false
+        private set
+
     override fun seal(plain: ByteArray) = byteArrayOf(0x5A) + plain.map { (it.toInt() xor 0x5A).toByte() }
     override fun open(sealed: ByteArray) = sealed.drop(1).map { (it.toInt() xor 0x5A).toByte() }.toByteArray()
+    override fun erase() {
+        erased = true
+    }
 }
 
 class PhoneKeyTest {
@@ -41,7 +47,8 @@ class PhoneKeyTest {
 
     @Test
     fun storeCreatesOnceAndReloads() {
-        val store = PhoneKeyStore(tmp.root, XorVault())
+        val vault = XorVault()
+        val store = PhoneKeyStore(tmp.root, vault)
         assertFalse(store.exists())
         val first = store.loadOrCreate()
         assertTrue(store.exists())
@@ -58,7 +65,9 @@ class PhoneKeyTest {
         v.initVerify(first.keyPair.public)
         v.update(data)
         assertTrue(v.verify(sig))
+        assertFalse(vault.erased)
         store.delete()
+        assertTrue(vault.erased)
         assertFalse(store.exists())
     }
 }

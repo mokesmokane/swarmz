@@ -65,14 +65,19 @@ class PhoneKeyStore(private val dir: File, private val vault: KeyVault) {
         }
         val kp = Ed25519.generate()
         dir.mkdirs()
-        writeAtomically(sealedFile, vault.seal(kp.private.encoded))
+        val pkcs8 = kp.private.encoded
+        writeAtomically(sealedFile, vault.seal(pkcs8))
+        pkcs8.fill(0)
         writeAtomically(publicFile, kp.public.encoded)
         return PhoneKey(kp)
     }
 
     fun delete() {
+        vault.erase()
         sealedFile.delete()
         publicFile.delete()
+        File(dir, sealedFile.name + ".tmp").delete()
+        File(dir, publicFile.name + ".tmp").delete()
     }
 
     private fun writeAtomically(f: File, bytes: ByteArray) {

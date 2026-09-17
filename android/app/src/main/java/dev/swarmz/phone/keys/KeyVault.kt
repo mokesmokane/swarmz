@@ -12,6 +12,7 @@ import javax.crypto.spec.GCMParameterSpec
 interface KeyVault {
     fun seal(plain: ByteArray): ByteArray
     fun open(sealed: ByteArray): ByteArray
+    fun erase()
 }
 
 /** AES-256-GCM with a key that never leaves the phone's secure hardware. Output: iv length, iv, ciphertext. */
@@ -46,9 +47,14 @@ class AndroidKeystoreVault(private val alias: String = "swarmz-phone-wrap") : Ke
     }
 
     override fun open(sealed: ByteArray): ByteArray {
-        val n = sealed[0].toInt()
+        val n = sealed[0].toInt() and 0xFF
         val c = Cipher.getInstance("AES/GCM/NoPadding")
         c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, sealed, 1, n))
         return c.doFinal(sealed, 1 + n, sealed.size - 1 - n)
+    }
+
+    override fun erase() {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        if (ks.containsAlias(alias)) ks.deleteEntry(alias)
     }
 }
