@@ -1,7 +1,7 @@
 # swarmz on the phone: session holder, Mac tool, Android app, alerts
 
 Date: 2026-09-16
-Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented; sub-project 3 (phone app) implemented; amended after acceptance on the Fold (2026-09-17): the phone pairs each Mac itself (§7.2)
+Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented; sub-project 3 (phone app) implemented; amended after acceptance on the Fold (2026-09-17): the phone pairs each Mac itself (§7.2), and a Claude tile can switch to its live screen, with tappable links on it (§6.6)
 Amends: `2026-09-10-swarmz-design.md` §3.1 (the swarmz window no longer owns
 PTYs); `2026-09-15-agent-state-hooks-design.md` §2.1 (status colours), §3.2
 (hook events gain `PermissionRequest` and a synchronous `PostToolUse`); `2026-09-15-tile-folder-and-session-history-design.md`
@@ -619,6 +619,18 @@ sections are dimmed with "last seen …".
 - **Shell tile:** monospace coloured output lines (from `output --follow`),
   bottom-aligned, following new output; "[process exited with code N]" when
   it ends.
+- **Screen toggle (amended 2026-09-17):** a Claude tile's header carries a
+  Screen button, left of the mode badge, that swaps the conversation for the
+  tile's live screen (the same `output --follow` body as a shell), which is
+  how anything Claude draws but never writes to the transcript (`/login`,
+  `/model`, `/cost`, its startup banners) is reached. The transcript session
+  stays open behind it, so going back keeps its position and older pages; the
+  Claude quick keys, composer and permission card are unchanged, and sending
+  types into the tile, which is what answers a prompt on screen.
+- **Links on a screen (amended 2026-09-17):** any `http(s)` URL on a terminal
+  screen line, shell or Claude, is underlined and tappable, offering **Open**
+  (in a browser) and **Copy**; this is how the `/login` flow is completed from
+  the phone.
 - **Quick keys** row: Claude → `Esc`, `^C`, `⇧Tab <mode>`, `/` (slash
   command picker); shell → `^C`, `↑`, `Tab`, **Restart shell**.
 - **Composer:** growing text field ("Message <name>…" / "Type a command…")

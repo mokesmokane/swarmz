@@ -119,7 +119,10 @@ reach.
   first, with online/offline state per Mac.
 - **Tile screen**: a Claude conversation (messages, tool chips, images, a permission card, a
   composer with hold-to-dictate) or a shell's coloured scrollback and command box, with a quick-key
-  row for each kind.
+  row for each kind. A Claude tile's header also has a Screen button that swaps the conversation for
+  the tile's live terminal, which is the only way to reach what Claude draws but never writes to the
+  transcript (`/login`, `/model`, `/cost`, its banners); any `http(s)` URL on a terminal screen is
+  tappable, offering Open and Copy, which is how the `/login` flow is completed from the phone.
 - **New session**: pick an online Mac, browse or pick a recent folder, optionally skip
   permissions, and start.
 - **Settings**: paired and discovered Macs, dictation language, and this phone's key (revoke it
