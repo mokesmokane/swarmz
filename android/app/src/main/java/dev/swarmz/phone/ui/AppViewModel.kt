@@ -20,6 +20,7 @@ import dev.swarmz.phone.state.homeModel
 import dev.swarmz.phone.state.needOf
 import dev.swarmz.phone.state.parseTime
 import dev.swarmz.phone.state.tileListSections
+import dev.swarmz.phone.ui.newsession.NewSessionModel
 import dev.swarmz.phone.ui.tile.TileController
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -27,6 +28,7 @@ import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -246,7 +248,13 @@ class AppViewModel(
         if (visible.value) markSeen(key, repo.tiles.value.firstOrNull { it.key == key }?.row?.turnEndedAt)
     }
 
+    private var newSession: NewSessionModel? = null
+
+    /** The new-session flow's model: kept while the screen is shown, fresh on each visit. */
+    fun newSessionModel(): NewSessionModel = newSession ?: NewSessionModel(repo, viewModelScope).also { newSession = it }
+
     fun openNewSession() {
+        if (_route.value != Route.NewSession) newSession = null
         _route.value = Route.NewSession
     }
 
@@ -258,8 +266,50 @@ class AppViewModel(
         if (_route.value == Route.Home) return false
         _tile.value?.close()
         _tile.value = null
+        newSession = null
         _route.value = Route.Home
         return true
+    }
+
+    /**
+     * Revokes this phone's key on the Macs, then forgets the pairing and the key. Null on success, else the error.
+     * The work runs on the view model's scope: forgetting the pairing removes the screen that asked for it.
+     */
+    suspend fun revoke(): String? = viewModelScope.async {
+        try {
+            repo.revokeThisPhone()
+            forgetKey()
+            back()
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e.message ?: "unknown error"
+        }
+    }.await()
+
+    /** Forgets the pairing and the key on this phone only, e.g. after a revoke that could not finish. */
+    fun forgetLocally() {
+        viewModelScope.launch {
+            repo.forgetLocally()
+            forgetKey()
+            back()
+        }
+    }
+
+    fun setBackgroundWatch(on: Boolean) {
+        viewModelScope.launch { settings.setBackgroundWatch(on) }
+    }
+
+    fun setNotify(kind: String, on: Boolean) {
+        viewModelScope.launch {
+            val kinds = settings.notifyKinds.value
+            settings.setNotifyKinds(if (on) kinds + kind else kinds - kind)
+        }
+    }
+
+    fun setLanguage(tag: String?) {
+        viewModelScope.launch { settings.setDictationLanguage(tag) }
     }
 
     private fun answer(key: TileKey, choice: String) {

@@ -84,6 +84,33 @@ class RepositoryTest {
     }
 
     @Test
+    fun revokingRunsOnThePairedMacThenForgets() = runTest {
+        val mini = FakeConn { cmd ->
+            when (cmd) {
+                Cmd.machines() -> NO_MACHINES
+                Cmd.phoneRevoke("Fold") -> """{"revoked":1,"machines":[],"v":1}"""
+                else -> VERSION_OK
+            }
+        }
+        val settings = paired("mini")
+        val repo = repo(settings, HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)))))
+        repo.start()
+        runCurrent()
+        mini.stream(Cmd.watch()).send(
+            """{"tiles":[{"cwd":"/p/a","id":"t1","kind":"claude","name":"a","running":true,"turnEndedAt":"2026-09-17T09:00:00Z"},""" +
+                """{"cwd":"/p/b","id":"t2","kind":"claude","name":"b","running":true,"turnEndedAt":"2026-09-17T10:00:00Z"},""" +
+                """{"cwd":"/p/a","id":"t3","kind":"shell","name":"c","running":true}],"type":"snapshot","v":1}""",
+        )
+        runCurrent()
+        assertEquals(listOf("/p/b", "/p/a"), repo.recentFolders("mini"))
+        repo.revokeThisPhone()
+        runCurrent()
+        assertTrue(Cmd.phoneRevoke("Fold") in mini.ran)
+        assertNull(settings.paired.value)
+        assertTrue(repo.tiles.value.isEmpty())
+    }
+
+    @Test
     fun commandsGoToTheRightMac() = runTest {
         val mini = FakeConn { cmd ->
             when (cmd) {

@@ -28,6 +28,7 @@ import dev.swarmz.phone.state.TranscriptState
 import dev.swarmz.phone.state.apply
 import dev.swarmz.phone.state.lastId
 import dev.swarmz.phone.state.oldestId
+import dev.swarmz.phone.state.parseTime
 import dev.swarmz.phone.state.withOlder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -172,6 +173,18 @@ class Repository(
 
     val seen: StateFlow<Map<TileKey, Instant>> = settings.seen
 
+    val macStates: StateFlow<Map<String, LinkState>> = snapshots
+        .map { s -> s.associate { it.link.mac to it.state } }
+        .stateIn(scope, SharingStarted.Eagerly, emptyMap())
+
+    /** The distinct folders of [mac]'s tiles, most recently active first, at most 6. */
+    fun recentFolders(mac: String): List<String> =
+        tiles.value.filter { it.key.mac == mac }
+            .sortedByDescending { parseTime(it.row.turnEndedAt) ?: parseTime(it.row.since) ?: Instant.EPOCH }
+            .map { it.row.cwd }
+            .distinct()
+            .take(6)
+
     fun start() {
         if (!started.compareAndSet(false, true)) return
         scope.launch {
@@ -274,6 +287,21 @@ class Repository(
 
     fun openOutput(key: TileKey): OutputSession =
         OutputSession(scope, link(key.mac), key.id).also { register(it.job, it::end) }
+
+    /**
+     * Removes this phone's key through the paired Mac, which passes the revoke on to the other Macs, then forgets
+     * the pairing. Throws [ToolFailure] or [LinkDown], keeping the pairing, when the Mac does not confirm it.
+     */
+    suspend fun revokeThisPhone() {
+        val p = settings.paired.value ?: return
+        ToolJson.obj(link(p.host).exec(Cmd.phoneRevoke(p.device)))
+        settings.forgetPairing()
+    }
+
+    /** Forgets the pairing on this phone only; the Macs keep the key. */
+    suspend fun forgetLocally() {
+        settings.forgetPairing()
+    }
 
     /** Records that the user has looked at [key], at [at] or else now. */
     fun markSeen(key: TileKey, at: Instant? = null) {

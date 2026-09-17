@@ -36,8 +36,10 @@ import dev.swarmz.phone.ui.dictation.DictationMic
 import dev.swarmz.phone.ui.dictation.DictationOverlay
 import dev.swarmz.phone.ui.home.HomeScreen
 import dev.swarmz.phone.ui.home.TileListPane
+import dev.swarmz.phone.ui.newsession.NewSessionScreen
 import dev.swarmz.phone.ui.pairing.PairingScreen
 import dev.swarmz.phone.ui.pairing.defaultDeviceName
+import dev.swarmz.phone.ui.settings.SettingsScreen
 import dev.swarmz.phone.ui.theme.Sw
 import dev.swarmz.phone.ui.theme.SwarmzTheme
 import dev.swarmz.phone.ui.tile.TileScreen
@@ -129,7 +131,7 @@ private fun Detail(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boole
             val c by vm.tile.collectAsStateWithLifecycle()
             c?.let { TileScreen(it, unfolded = !showBack, onBack = if (showBack) ({ vm.back() }) else null, now = vm.now) }
         }
-        Route.NewSession -> Text("New session", modifier = Modifier.padding(16.dp))
-        Route.Settings -> Text("Settings", modifier = Modifier.padding(16.dp))
+        Route.NewSession -> NewSessionScreen(vm.newSessionModel(), home.macs, onStarted = vm::open, onBack = if (showBack) ({ vm.back() }) else null)
+        Route.Settings -> SettingsScreen(vm, onBack = if (showBack) ({ vm.back() }) else null)
     }
 }
