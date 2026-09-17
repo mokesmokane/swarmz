@@ -533,6 +533,34 @@ class RepositoryTest {
     }
 
     @Test
+    fun aPeersAliasDoesNotRenameAMacAnotherRoundNamed() = runTest {
+        // Two paired Macs disagree about what studio is called. Whichever round runs first names it, and the next
+        // round (here air's, and every repeat of either afterwards) leaves that name alone.
+        val mini = FakeConn { if (it == Cmd.machines()) machines(self("mini"), other("studio", "Studio")) else VERSION_OK }
+        val air = FakeConn { if (it == Cmd.machines()) machines(self("air"), other("studio", "Studio Two")) else VERSION_OK }
+        val studio = FakeConn()
+        val gate = CompletableDeferred<Unit>()
+        // air comes online only once mini's round has been merged, so the order is the test's, not the scheduler's.
+        air.beforeExec = { if (it == Cmd.version()) gate.await() }
+        val connector = HostConnector(
+            mapOf("mini" to ArrayDeque(listOf(mini)), "air" to ArrayDeque(listOf(air)), "studio" to ArrayDeque(listOf(studio))),
+        )
+        val settings = paired("mini")
+        settings.addPairing(Paired("air", "me", "Fold"))
+        val repo = repo(settings, connector)
+        repo.start()
+        runCurrent()
+        fun studioLabel() = repo.macs.value.first { it.name == "studio" }.label
+        assertEquals("Studio", studioLabel())
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue("air's round ran", Cmd.machines() in air.ran)
+        assertEquals("Studio", studioLabel())
+        // air still names itself.
+        assertEquals("air", repo.macs.value.first { it.name == "air" }.label)
+    }
+
+    @Test
     fun revokeRunsOnEveryPairingAtOnce() = runTest {
         val gate = CompletableDeferred<Unit>()
         val mini = FakeConn { if (it == Cmd.phoneRevoke("Fold")) """{"revoked":1,"machines":[],"v":1}""" else if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }

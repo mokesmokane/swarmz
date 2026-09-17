@@ -126,7 +126,7 @@ class MacLink(
                 pause(null)
                 continue
             } catch (e: AuthRejected) {
-                _state.value = LinkState.Blocked("$mac refused this phone's key. Pair again: forget this pairing in Settings.", keyRejected = true)
+                _state.value = LinkState.Blocked("$mac refused this phone's key. Pair it again below.", keyRejected = true)
                 pause(null)
                 continue
             } catch (e: Exception) {

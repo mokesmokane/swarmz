@@ -4,7 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.swarmz.phone.data.Banner
 import dev.swarmz.phone.data.PairHint
-import dev.swarmz.phone.data.sameMac
+import dev.swarmz.phone.data.userFor
 import dev.swarmz.phone.data.Paired
 import dev.swarmz.phone.data.Repository
 import dev.swarmz.phone.data.RevokeFailure
@@ -316,7 +316,7 @@ class AppViewModel(
     /** Opens add mode for [host] (or with no Mac chosen yet), coming back here when it ends. */
     fun openAddMac(host: String?) {
         val pairings = settings.pairings.value
-        val user = host?.let { h -> pairings.firstOrNull { sameMac(it.host, h) }?.user } ?: pairings.firstOrNull()?.user
+        val user = if (host == null) pairings.firstOrNull()?.user else userFor(host, pairings)
         if (_route.value !is Route.AddMac) addReturn = _route.value
         _addMacUi.value = PairingUi()
         _route.value = Route.AddMac(host, user)
@@ -355,7 +355,7 @@ class AppViewModel(
         } catch (e: CancellationException) {
             throw e
         } catch (e: RevokeFailure) {
-            e.message
+            e.message ?: "Couldn't revoke on some Macs"
         } catch (e: Exception) {
             "Couldn't revoke: ${e.message ?: "unknown error"}"
         }

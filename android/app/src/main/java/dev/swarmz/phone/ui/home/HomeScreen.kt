@@ -34,7 +34,9 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -110,10 +112,11 @@ fun HomeScreen(
                         "${hint.label} isn't paired with this phone yet · Pair",
                         style = MaterialTheme.typography.bodySmall,
                         color = Sw.Secondary,
-                        modifier = Modifier.weight(1f).clickable { onPairMac(hint.mac) },
+                        // The line stays small; its touch target does not.
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp).clickable { onPairMac(hint.mac) }.wrapContentHeight(),
                     )
-                    IconButton(onClick = { onDismissHint(hint.mac) }, modifier = Modifier.size(24.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = Sw.Muted)
+                    IconButton(onClick = { onDismissHint(hint.mac) }) {
+                        Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = Sw.Muted, modifier = Modifier.size(16.dp))
                     }
                 }
             }

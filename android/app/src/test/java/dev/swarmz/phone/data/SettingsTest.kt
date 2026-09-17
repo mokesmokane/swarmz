@@ -10,6 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Rule
@@ -143,16 +144,18 @@ class SettingsTest {
         s.addPairing(Paired("studio", "ann", "Fold"))
         s.addPairing(Paired("air", "me", "Fold"))
         s.addPairing(Paired("studio", "bob", "Fold"))
-        val want = listOf(Paired("mini", "me", "Fold"), Paired("studio", "bob", "Fold"), Paired("air", "me", "Fold"))
-        assertEquals(want, s.pairings.first { it == want })
+        // The same Mac under its full MagicDNS name is the same pairing, not a second one.
+        s.addPairing(Paired("studio.tail.ts.net", "kim", "Fold"))
+        val want = listOf(Paired("mini", "me", "Fold"), Paired("studio.tail.ts.net", "kim", "Fold"), Paired("air", "me", "Fold"))
+        assertEquals(want, withTimeout(5_000) { s.pairings.first { it == want } })
         assertEquals(Paired("mini", "me", "Fold"), s.paired.value)
         // Another instance reads the same list.
         assertEquals(want, DataStoreSettings(ctx, scope).pairings.value)
         // setPaired starts over with one pairing; forgetting clears them all.
         s.setPaired(Paired("other", "me", "Fold"))
-        assertEquals(listOf(Paired("other", "me", "Fold")), s.pairings.first { it.size == 1 })
+        assertEquals(listOf(Paired("other", "me", "Fold")), withTimeout(5_000) { s.pairings.first { it.size == 1 } })
         s.forgetPairing()
-        assertEquals(emptyList<Paired>(), s.pairings.first { it.isEmpty() })
+        assertEquals(emptyList<Paired>(), withTimeout(5_000) { s.pairings.first { it.isEmpty() } })
         assertNull(s.paired.first { it == null })
         scope.cancel()
     }
@@ -167,12 +170,12 @@ class SettingsTest {
         s.addPairing(Paired("studio", "ann", "Fold"))
         s.addPairing(Paired("air", "me", "Fold"))
         s.addPairing(Paired("studio", "bob", "Fold"))
-        s.addPairing(Paired("mini", "root", "Fold"))
+        s.addPairing(Paired("mini.tail.ts.net", "root", "Fold"))
         assertEquals(
-            listOf(Paired("mini", "root", "Fold"), Paired("studio", "bob", "Fold"), Paired("air", "me", "Fold")),
+            listOf(Paired("mini.tail.ts.net", "root", "Fold"), Paired("studio", "bob", "Fold"), Paired("air", "me", "Fold")),
             s.pairings.value,
         )
-        assertEquals(Paired("mini", "root", "Fold"), s.paired.value)
+        assertEquals(Paired("mini.tail.ts.net", "root", "Fold"), s.paired.value)
         // The flow emits the list too.
         assertEquals(3, s.pairings.first().size)
         s.forgetPairing()

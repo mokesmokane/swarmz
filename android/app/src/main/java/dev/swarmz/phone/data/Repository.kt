@@ -197,8 +197,8 @@ class Repository(
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /**
-     * What Home shows above the cards. A Mac other than the paired one that refuses the key is left out: it was
-     * offline when this phone paired, and Settings explains that.
+     * What Home shows above the cards. A Mac with no pairing of its own that refuses the key is left out: it has
+     * never had this phone's key, and [pairHints] offers to pair it instead.
      */
     val banners: StateFlow<List<Banner>> = combine(snapshots, labels, settings.pairings) { snaps, names, pairings ->
         snaps.mapNotNull { s ->
@@ -313,6 +313,12 @@ class Repository(
             for (p in pairings) if (next.keys.none { sameMac(it, p.host) }) next[p.host] = newLink(p.user, p.host)
             links.value = next
         }
+        // Outside the lock: a round being cancelled may be waiting for it.
+        for ((mac, running) in discoveries.toList()) {
+            if (isPaired(mac, pairings)) continue
+            running.second.cancelAndJoin()
+            discoveries.remove(mac)
+        }
         for (p in pairings) keyOf(p.host)?.let { ensureDiscovery(it) }
     }
 
@@ -353,7 +359,8 @@ class Repository(
             for (m in list.filter { !it.isSelf }) {
                 val existing = next.keys.firstOrNull { sameMac(it, m.name) }
                 val mac = existing ?: m.name
-                names[mac] = m.alias ?: labels.value[mac] ?: m.name
+                // What we already call it wins: two paired Macs can disagree, and the label must not flip each round.
+                names[mac] = labels.value[mac] ?: m.alias ?: m.name
                 // No user at all means the pairing went while this round ran; that reset stops the link anyway.
                 val user = userFor(mac, pairings)
                 if (existing == null && user != null) next[mac] = newLink(user, mac)

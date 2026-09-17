@@ -334,7 +334,7 @@ class MacLinkTest {
         runCurrent()
         val st = link.state.value as LinkState.Blocked
         assertTrue(st.keyRejected)
-        assertEquals("mini refused this phone's key. Pair again: forget this pairing in Settings.", st.reason)
+        assertEquals("mini refused this phone's key. Pair it again below.", st.reason)
         assertTrue(!(LinkState.Blocked("x")).keyRejected)
     }
 

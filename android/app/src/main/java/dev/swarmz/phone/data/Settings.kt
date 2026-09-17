@@ -42,9 +42,12 @@ import java.util.concurrent.ConcurrentHashMap
 
 val DEFAULT_NOTIFY = setOf("permission", "question", "finished")
 
-/** [list] with [p] in place of the entry for the same host, or at the end. */
+/**
+ * [p] in place of the entry for the same Mac, or at the end. Matched the way the links are ([sameMac]), so a Mac
+ * paired again under its other name replaces its pairing instead of adding a second, stale one.
+ */
 fun List<Paired>.withPairing(p: Paired): List<Paired> =
-    if (any { it.host == p.host }) map { if (it.host == p.host) p else it } else this + p
+    if (any { sameMac(it.host, p.host) }) map { if (sameMac(it.host, p.host)) p else it } else this + p
 
 interface SettingsStore : HostKeyPins {
     /** The first pairing: the Mac this phone paired with first. */
