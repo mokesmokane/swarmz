@@ -95,8 +95,8 @@ jobs:
 
       # Notarisation uses an App Store Connect API key: this account's Apple ID auth returns 401.
       # The bundler wants the key as a file named AuthKey_<id>.p8 (tauri-bundler 2.11's
-      # notarize_auth). The secret holds the PEM text, newlines and all, so it is written out as
-      # it is; `printf '%s'` keeps them and adds nothing.
+      # notarize_auth). The secret holds the PEM text rather than base64, and the step below
+      # normalises its trailing newline so the file is byte-identical to the downloaded .p8.
       - name: Write the App Store Connect key
         env:
           APPLE_API_KEY_PEM: ${{ secrets.APPLE_API_KEY }}

@@ -150,5 +150,11 @@ base64 -i ~/.swarmz-android/release.jks | pbcopy
 - **A failed `macos` job can leave an empty draft release behind**, because `tauri-action` creates
   the release before it finishes building. Delete that draft before re-tagging, or the next run
   attaches its artifacts alongside the stale ones.
+- **Pre-release tags are not supported.** `v0.3.0-rc1` matches the workflow's `v*` trigger, but
+  `npm run version` refuses a pre-release suffix (the Android `versionCode` has nowhere to put it,
+  and the updater compares plain versions), so the tag/version guard fails the run and the command
+  it suggests would fail too. Ship pre-releases, if they are ever needed, as ordinary patch
+  versions from a branch — or teach `scripts/version.mjs` and the Android `versionCode` about
+  suffixes first.
 - **Re-running the workflow on the same tag overwrites the release body.** Anything written in the
   draft's notes before a re-run is lost, so write them last, once the run has gone green.

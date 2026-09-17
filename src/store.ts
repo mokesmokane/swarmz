@@ -2184,10 +2184,15 @@ export const useStore = create<WorkbenchState>((set) => ({
 
   async checkForUpdates(opts) {
     const manual = opts?.manual === true;
-    const { status, version: known } = useStore.getState().update;
+    const { status, version: known, failedAt: wasFailedAt, error: wasError } = useStore.getState().update;
     // A check in flight, a download running, or an update already staged on disk: asking again
     // would either duplicate the request or throw away a package we have already paid for.
     if (status === "checking" || status === "downloading" || status === "ready") return;
+    // A download that broke is the only thing the notice tells the user about, and a background
+    // check failing on top of it must not relabel it - an unasked-for check failure renders
+    // nothing, so the "could not update" would simply vanish. A check they asked for answers for
+    // itself. Captured here because the line below clears the error we would have to restore.
+    const keepInstallFailure = wasFailedAt === "install" && !manual;
     set((s) => ({ update: { ...s.update, status: "checking", error: null, manual } }));
     let found: Awaited<ReturnType<typeof updater.check>>;
     try {
@@ -2196,7 +2201,13 @@ export const useStore = create<WorkbenchState>((set) => ({
       const msg = errText(e);
       console.warn("swarmz: update check failed:", msg);
       set((s) => ({
-        update: { ...s.update, status: "failed", failedAt: "check", error: msg, checkedAt: new Date().toISOString() },
+        update: {
+          ...s.update,
+          status: "failed",
+          failedAt: keepInstallFailure ? "install" : "check",
+          error: keepInstallFailure ? wasError : msg,
+          checkedAt: new Date().toISOString(),
+        },
       }));
       return;
     }

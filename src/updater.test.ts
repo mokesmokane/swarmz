@@ -218,6 +218,36 @@ describe("update state machine", () => {
     expect(state().failedAt).toBeNull();
   });
 
+  it("a failed background check does not bury a failed install", async () => {
+    // The notice is the only place the user learns a download broke. A later background check
+    // that also fails must not relabel it as a check failure, which would hide it.
+    check.mockResolvedValue(found);
+    await useStore.getState().checkForUpdates();
+    install.mockRejectedValueOnce("disk full");
+    await useStore.getState().installUpdate();
+    expect(state().failedAt).toBe("install");
+
+    check.mockReset();
+    check.mockRejectedValue("network down");
+    await useStore.getState().checkForUpdates();
+    expect(state().failedAt).toBe("install");
+    expect(state().error).toContain("disk full");
+    expect(state().version).toBe("0.2.0");
+  });
+
+  it("a check the user asked for does report its own failure", async () => {
+    check.mockResolvedValue(found);
+    await useStore.getState().checkForUpdates();
+    install.mockRejectedValueOnce("disk full");
+    await useStore.getState().installUpdate();
+
+    check.mockReset();
+    check.mockRejectedValue("network down");
+    await useStore.getState().checkForUpdates({ manual: true });
+    expect(state().failedAt).toBe("check");
+    expect(state().error).toContain("network down");
+  });
+
   it("un-dismisses when a newer version turns up", async () => {
     check.mockResolvedValue(found);
     await useStore.getState().checkForUpdates();

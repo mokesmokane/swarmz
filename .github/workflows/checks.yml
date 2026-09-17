@@ -2,12 +2,14 @@ name: checks
 
 # The one place the frontend and tool checks are defined. `ci.yml` calls it on every push and
 # pull request; `release.yml` calls it before it signs anything, so a tag can never publish a
-# build whose tests were never run.
+# build whose tests were never run. Both callers get both jobs, so a push and a release run
+# exactly the same tests.
 on:
   workflow_call:
 
 jobs:
-  checks:
+  # Node, TypeScript and vitest do not care what they run on, so they take the cheap runner.
+  web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -28,14 +30,25 @@ jobs:
 
       - run: npm test
 
+  # macOS, and not for want of a cheaper option: swarmz is a macOS product and the tool's tests
+  # exercise macOS process behaviour directly. `concurrent_hold_for_the_same_tile_converges_on_one_holder`
+  # reads `pgrep -fl` output expecting the full argv, which BSD pgrep prints and procps-ng does
+  # not (it prints the 15-character `comm`, so the test saw `4117 swarmz-tool` and matched
+  # nothing). Testing the holders anywhere but the platform they ship on tests the wrong thing.
+  # macOS minutes are free on this public repo.
+  rust:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      # Only the tool: the `swarmz` app crate links WebKit and the macOS frameworks, so it is
-      # compiled on the macOS runner in `release.yml` and never here. The tool is plain Rust and
-      # is what the holders and the phone run.
+      # Only the tool. The `swarmz` app crate is compiled, signed and bundled by `release.yml`'s
+      # macos job; building it here as well would double every release's slowest step for no
+      # extra coverage. The tool is what the holders and the phone run.
       - name: cargo test (swarmz-tool)
         run: cargo test --manifest-path src-tauri/Cargo.toml -p swarmz-tool
