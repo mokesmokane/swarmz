@@ -70,4 +70,24 @@ class PhoneKeyTest {
         assertTrue(vault.erased)
         assertFalse(store.exists())
     }
+
+    @Test
+    fun anUnreadableSealedKeyIsReplaced() {
+        val first = PhoneKeyStore(tmp.root, XorVault()).loadOrCreate()
+        // The Keystore key is gone (e.g. the app's data was restored onto another phone): opening fails.
+        val broken = object : KeyVault by XorVault() {
+            var erased = false
+            override fun open(sealed: ByteArray): ByteArray = throw javax.crypto.AEADBadTagException("no")
+            override fun erase() { erased = true }
+        }
+        val replaced = PhoneKeyStore(tmp.root, broken).loadOrCreate()
+        assertTrue(broken.erased)
+        assertFalse(first.openSsh == replaced.openSsh)
+        assertEquals(replaced.openSsh, PhoneKeyStore(tmp.root, XorVault()).loadOrCreate().openSsh)
+
+        // A cut-off sealed file reads as missing too.
+        tmp.root.resolve("phone_key.sealed").writeBytes(ByteArray(0))
+        val fresh = PhoneKeyStore(tmp.root, XorVault()).loadOrCreate()
+        assertFalse(fresh.openSsh == replaced.openSsh)
+    }
 }

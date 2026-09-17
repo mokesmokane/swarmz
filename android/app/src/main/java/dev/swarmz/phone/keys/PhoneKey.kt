@@ -57,11 +57,26 @@ class PhoneKeyStore(private val dir: File, private val vault: KeyVault) {
 
     fun exists(): Boolean = sealedFile.exists() && publicFile.exists()
 
+    /**
+     * Loads the key, or creates one. A saved key that can no longer be opened (its Keystore key is gone, or the
+     * file is damaged) counts as missing: it is deleted and replaced, and the Macs then refuse the new key, which
+     * the app reports as "pair again".
+     */
     @Synchronized
     fun loadOrCreate(): PhoneKey {
         if (exists()) {
-            val pkcs8 = vault.open(sealedFile.readBytes())
-            return PhoneKey(Ed25519.fromEncoded(pkcs8, publicFile.readBytes())).also { pkcs8.fill(0) }
+            val loaded = try {
+                val pkcs8 = vault.open(sealedFile.readBytes())
+                try {
+                    PhoneKey(Ed25519.fromEncoded(pkcs8, publicFile.readBytes()))
+                } finally {
+                    pkcs8.fill(0)
+                }
+            } catch (_: Exception) {
+                null
+            }
+            if (loaded != null) return loaded
+            delete()
         }
         val kp = Ed25519.generate()
         dir.mkdirs()

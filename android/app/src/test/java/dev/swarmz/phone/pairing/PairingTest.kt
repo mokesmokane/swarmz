@@ -7,8 +7,14 @@ import dev.swarmz.phone.keys.Ed25519
 import dev.swarmz.phone.keys.PhoneKey
 import dev.swarmz.phone.proto.Cmd
 import dev.swarmz.phone.ssh.CUT
+import dev.swarmz.phone.proto.PHONE_KEY_EXEC_MS
+import dev.swarmz.phone.ssh.Auth
+import dev.swarmz.phone.ssh.ExecResult
 import dev.swarmz.phone.ssh.FakeMac
+import dev.swarmz.phone.ssh.SshConnection
+import dev.swarmz.phone.ssh.SshConnector
 import dev.swarmz.phone.ssh.SshjConnector
+import java.net.InetAddress
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,7 +62,23 @@ class PairingTest {
 
     @After fun down() = mac.close()
 
-    private fun pairing(port: Int = mac.port) = Pairing(SshjConnector(settings), { key }, settings, port)
+    /** The timeout each command ran with, over any connection the pairing opens. */
+    private val timeouts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val recording = object : SshConnector {
+        val inner = SshjConnector(settings)
+        override suspend fun connect(host: String, port: Int, auth: Auth): SshConnection {
+            val conn = inner.connect(host, port, auth)
+            return object : SshConnection by conn {
+                override suspend fun exec(command: String, timeoutMs: Long): ExecResult {
+                    timeouts[command] = timeoutMs
+                    return conn.exec(command, timeoutMs)
+                }
+            }
+        }
+    }
+
+    // The fake Mac listens on 127.0.0.1, which is not a Tailscale address.
+    private fun pairing(port: Int = mac.port) = Pairing(recording, { key }, settings, port, resolver = { true })
 
     private suspend fun message(block: suspend () -> Unit): String = try {
         block()
@@ -73,6 +95,7 @@ class PairingTest {
         assertEquals(Paired("127.0.0.1", "me", "Galaxy Fold"), settings.paired.value)
         assertTrue(pw.all { it == Char.MIN_VALUE })
         assertTrue(mac.commands.contains(Cmd.phoneAdd("Galaxy Fold", key.openSsh)))
+        assertEquals(PHONE_KEY_EXEC_MS, timeouts[Cmd.phoneAdd("Galaxy Fold", key.openSsh)])
     }
 
     @Test
@@ -137,5 +160,40 @@ class PairingTest {
         assertTrue(outcome.exceptionOrNull() is CancellationException)
         assertNull(settings.paired.value)
         assertTrue(pw.all { it == Char.MIN_VALUE })
+    }
+
+    @Test
+    fun onlyTailscaleAddressesGetThePassword() = runBlocking {
+        var passwordChecks = 0
+        mac.beforePasswordCheck = { passwordChecks++ }
+        val pw = "pw".toCharArray()
+        val real = Pairing(recording, { key }, settings, mac.port)
+        assertEquals(
+            "127.0.0.1 isn't a Tailscale address. Use the Mac's Tailscale name (for example mini or mini.tailnet.ts.net).",
+            message { real.pair("127.0.0.1", "me", pw, "Fold") },
+        )
+        assertEquals(0, passwordChecks)
+        assertTrue(mac.commands.isEmpty())
+        assertTrue(pw.all { it == Char.MIN_VALUE })
+        assertNull(settings.paired.value)
+        var asked: String? = null
+        val stub = Pairing(recording, { key }, settings, mac.port, resolver = { asked = it; false })
+        assertEquals(
+            "mini isn't a Tailscale address. Use the Mac's Tailscale name (for example mini or mini.tailnet.ts.net).",
+            message { stub.pair("mini", "me", "pw".toCharArray(), "Fold") },
+        )
+        assertEquals("mini", asked)
+    }
+
+    @Test
+    fun tailscaleAddressRanges() {
+        fun ts(a: String) = isTailscaleAddress(InetAddress.getByName(a))
+        assertTrue(ts("100.64.0.1"))
+        assertTrue(ts("100.127.255.254"))
+        assertTrue(ts("fd7a:115c:a1e0::1"))
+        assertTrue(ts("fd7a:115c:a1e0:ab12:4843:cd96:6258:b240"))
+        for (a in listOf("100.63.255.255", "100.128.0.1", "10.0.0.1", "127.0.0.1", "192.168.1.2", "fd7a:115c:a1e1::1", "::1", "fe80::1")) {
+            assertTrue(a, !ts(a))
+        }
     }
 }

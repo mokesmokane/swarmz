@@ -17,9 +17,39 @@ import dev.swarmz.phone.ssh.HostKeyChanged
 import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.ssh.SshConnector
 import dev.swarmz.phone.ssh.Unreachable
+import dev.swarmz.phone.proto.PHONE_KEY_EXEC_MS
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.InetAddress
+import java.net.UnknownHostException
 
 data class PairResult(val others: List<MachineResult>)
+/** Tailscale's ranges: IPv4 100.64.0.0/10 (CGNAT) and IPv6 fd7a:115c:a1e0::/48. */
+internal fun isTailscaleAddress(a: InetAddress): Boolean {
+    val b = a.address.map { it.toInt() and 0xFF }
+    return when (a) {
+        is Inet4Address -> b[0] == 100 && (b[1] and 0xC0) == 64
+        is Inet6Address -> b.take(6) == listOf(0xFD, 0x7A, 0x11, 0x5C, 0xA1, 0xE0)
+        else -> false
+    }
+}
+
+/**
+ * Whether every address [host] resolves to is a Tailscale one, so the password only ever travels over the tailnet.
+ * A name that does not resolve at all is reported as unreachable.
+ */
+suspend fun resolvesToTailscale(host: String): Boolean = withContext(Dispatchers.IO) {
+    val all = try {
+        InetAddress.getAllByName(host)
+    } catch (_: UnknownHostException) {
+        throw PairingError("Can't reach $host. Is Tailscale connected?")
+    }
+    all.isNotEmpty() && all.all(::isTailscaleAddress)
+}
+
 class PairingError(message: String) : Exception(message)
 
 private val HOST = Regex("^[A-Za-z0-9.-]{1,253}$")
@@ -35,12 +65,17 @@ class Pairing(
     private val keys: () -> PhoneKey,
     private val settings: SettingsStore,
     private val port: Int = 22,
+    /** Whether a host is on the tailnet; tests, whose Mac is on 127.0.0.1, replace it. */
+    private val resolver: suspend (String) -> Boolean = ::resolvesToTailscale,
 ) {
     suspend fun pair(host: String, user: String, password: CharArray, device: String): PairResult {
         try {
             if (!validDevice(device)) throw PairingError("That device name can't be used.")
             if (!HOST.matches(host)) throw PairingError("That Mac name can't be used.")
             if (!USER.matches(user)) throw PairingError("That username can't be used.")
+            if (!resolver(host)) {
+                throw PairingError("$host isn't a Tailscale address. Use the Mac's Tailscale name (for example mini or mini.tailnet.ts.net).")
+            }
             val key = keys()
             val reply = passwordSession(host, user, password).use { conn ->
                 // This one-off session has no phone key yet, so it can't go through the ssh-gate
@@ -57,7 +92,7 @@ class Pairing(
                 } ?: throw PairingError("swarmz isn't installed on $host yet. Open swarmz on that Mac once, then try again.")
                 if (version.protocol < APP_PROTOCOL) throw PairingError("Update swarmz on $host first.")
                 try {
-                    ToolJson.decode<PhoneAddReply>(conn.exec(Cmd.phoneAdd(device, key.openSsh)).stdout)
+                    ToolJson.decode<PhoneAddReply>(conn.exec(Cmd.phoneAdd(device, key.openSsh), PHONE_KEY_EXEC_MS).stdout)
                 } catch (e: ToolFailure) {
                     throw PairingError(e.message)
                 }
