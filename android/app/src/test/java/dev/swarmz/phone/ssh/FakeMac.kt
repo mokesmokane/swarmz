@@ -24,10 +24,16 @@ class FakeMac(hostKeyFile: Path, var handler: Handler) : AutoCloseable {
     val commands = CopyOnWriteArrayList<String>()
     val destroyed = CopyOnWriteArrayList<String>()
 
+    /** Runs inside password checks before they answer; tests use it to hold a login open. */
+    @Volatile var beforePasswordCheck: () -> Unit = {}
+
     private val server: SshServer = SshServer.setUpDefaultServer().apply {
         port = 0
         keyPairProvider = SimpleGeneratorHostKeyProvider(hostKeyFile)
-        passwordAuthenticator = PasswordAuthenticator { user, password, _ -> user == "me" && password == "pw" }
+        passwordAuthenticator = PasswordAuthenticator { user, password, _ ->
+            beforePasswordCheck()
+            user == "me" && password == "pw"
+        }
         publickeyAuthenticator = PublickeyAuthenticator { user, key, _ ->
             val line = PublicKeyEntry.toString(key)
             user == "me" && allowedKeys.any { it.trim().split(" ").take(2).joinToString(" ") == line }
@@ -37,6 +43,9 @@ class FakeMac(hostKeyFile: Path, var handler: Handler) : AutoCloseable {
     }
 
     val port: Int get() = server.port
+
+    /** SSH sessions (connections) the server still has open. */
+    val openSessions: Int get() = server.activeSessions.size
 
     override fun close() = server.stop(true)
 
