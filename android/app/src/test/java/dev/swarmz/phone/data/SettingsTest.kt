@@ -1,7 +1,9 @@
 package dev.swarmz.phone.data
 
+import androidx.datastore.preferences.core.edit
 import androidx.test.core.app.ApplicationProvider
 import dev.swarmz.phone.state.TileKey
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -42,5 +44,48 @@ class SettingsTest {
         assertNull(b.paired.first { it == null })
         assertNull(b.get("mini:22"))
         scope2.cancel()
+    }
+    @Test
+    fun corruptValuesReadAsDefaults() = runBlocking {
+        val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+        ctx.swarmzStore.edit {
+            it.clear()
+            it[K.paired] = "{not json"
+            it[K.macs] = "[1,"
+            it[K.pins] = "garbage"
+            it[K.seen] = """{"nobar":1,"a|b|c":2,"|x":3,"mini|t1":4000}"""
+        }
+        val failures = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, e -> failures += e })
+        val s = DataStoreSettings(ctx, scope)
+        assertEquals(mapOf(TileKey("mini", "t1") to Instant.ofEpochMilli(4000)), s.seen.first { it.isNotEmpty() })
+        assertNull(s.paired.value)
+        assertEquals(emptyList<KnownMac>(), s.macs.value)
+        assertNull(s.get("mini:22"))
+        // Writes still work on top of the bad values.
+        s.markSeen(TileKey("mini", "t2"), Instant.ofEpochMilli(5000))
+        s.put("mini:22", "SHA256:x")
+        s.flushPins()
+        assertEquals(Instant.ofEpochMilli(5000), s.seen.first { it.size == 2 }[TileKey("mini", "t2")])
+        assertEquals("SHA256:x", DataStoreSettings(ctx, scope).get("mini:22"))
+        assertEquals(emptyList<Throwable>(), failures.toList())
+        scope.cancel()
+    }
+
+    @Test
+    fun macsAreIgnoredWhenUnpaired() = runBlocking {
+        val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+        ctx.swarmzStore.edit { it.clear() }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val s = DataStoreSettings(ctx, scope)
+        s.setMacs(listOf(KnownMac("mini", "Mini")))
+        assertNull(ctx.swarmzStore.data.first()[K.macs])
+        s.setPaired(Paired("mini", "me", "Fold"))
+        s.setMacs(listOf(KnownMac("mini", "Mini")))
+        assertEquals(listOf(KnownMac("mini", "Mini")), s.macs.first { it.isNotEmpty() })
+        s.forgetPairing()
+        s.setMacs(listOf(KnownMac("mini", "Mini")))
+        assertNull(ctx.swarmzStore.data.first()[K.macs])
+        scope.cancel()
     }
 }

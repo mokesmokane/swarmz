@@ -33,18 +33,26 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicBoolean
+
+private const val DISCOVERY_MS = 5 * 60_000L
 
 data class Banner(val mac: String, val text: String)
 
@@ -56,7 +64,7 @@ class TranscriptSession internal constructor(scope: CoroutineScope, private val 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    private val job: Job = scope.launch {
+    internal val job: Job = scope.launch {
         try {
             link.follow { Cmd.transcript(tile, after = _state.value.lastId, follow = true) }.collect { line ->
                 ToolJson.transcriptEvent(line)?.let { ev -> _state.update { it.apply(ev) } }
@@ -67,7 +75,7 @@ class TranscriptSession internal constructor(scope: CoroutineScope, private val 
             _error.value = e.message
         } catch (e: Exception) {
             // Anything else (a malformed line, a stream failure that was not a drop) ends the session, not the app.
-            _error.value = e.message ?: "the stream failed"
+            _error.value = "Couldn't read this conversation"
         }
     }
 
@@ -79,6 +87,12 @@ class TranscriptSession internal constructor(scope: CoroutineScope, private val 
         _state.update { it.withOlder(page) }
     }
 
+    /** Ends the session from outside, e.g. because its Mac's link stopped. */
+    internal fun end(message: String) {
+        if (job.isActive) _error.value = message
+        job.cancel()
+    }
+
     fun close() = job.cancel()
 }
 
@@ -88,7 +102,7 @@ class OutputSession internal constructor(scope: CoroutineScope, link: MacLink, t
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    private val job: Job = scope.launch {
+    internal val job: Job = scope.launch {
         try {
             link.follow { Cmd.output(tile, lines = 300, follow = true) }.collect { line ->
                 ToolJson.outputEvent(line)?.let { ev -> _state.update { it.apply(ev) } }
@@ -99,8 +113,14 @@ class OutputSession internal constructor(scope: CoroutineScope, link: MacLink, t
             _error.value = e.message
         } catch (e: Exception) {
             // Anything else (a malformed line, a stream failure that was not a drop) ends the session, not the app.
-            _error.value = e.message ?: "the stream failed"
+            _error.value = "Couldn't read this tile's output"
         }
+    }
+
+    /** Ends the session from outside, e.g. because its Mac's link stopped. */
+    internal fun end(message: String) {
+        if (job.isActive) _error.value = message
+        job.cancel()
     }
 
     fun close() = job.cancel()
@@ -117,6 +137,9 @@ class Repository(
     private val links = MutableStateFlow<Map<String, MacLink>>(emptyMap())
     private val labels = MutableStateFlow<Map<String, String>>(emptyMap())
     private var discovery: Job? = null
+    private val started = AtomicBoolean(false)
+    /** Open sessions: their jobs and how to end them. */
+    private val sessions = mutableMapOf<Job, (String) -> Unit>()
 
     private val snapshots: StateFlow<List<LinkSnapshot>> = links.flatMapLatest { map ->
         if (map.isEmpty()) flowOf(emptyList())
@@ -150,12 +173,19 @@ class Repository(
     val seen: StateFlow<Map<TileKey, Instant>> = settings.seen
 
     fun start() {
+        if (!started.compareAndSet(false, true)) return
         scope.launch {
+            var previous: Paired? = null
             settings.paired.collect { p ->
-                discovery?.cancel()
+                // Joined, so a round that already read the old links cannot write them back after the reset.
+                discovery?.cancelAndJoin()
+                discovery = null
                 links.value.values.forEach { it.stop() }
+                endSessions()
                 links.value = emptyMap()
                 labels.value = emptyMap()
+                if (previous != null && p != null && p != previous) settings.setMacs(emptyList())
+                previous = p
                 if (p != null) pair(p)
             }
         }
@@ -168,27 +198,47 @@ class Repository(
         val primary = newLink(p, p.host)
         links.value = mapOf(p.host to primary)
         discovery = scope.launch {
-            while (true) {
-                try {
-                    val list = primary.call<MachineList>(Cmd.machines()).machines
-                    val names = mutableMapOf<String, String>()
-                    list.firstOrNull { it.isSelf }?.let { names[p.host] = it.alias ?: it.name }
-                    val next = links.value.toMutableMap()
-                    for (m in list.filter { !it.isSelf }) {
-                        names[m.name] = m.alias ?: m.name
-                        if (m.name !in next) next[m.name] = newLink(p, m.name)
-                    }
-                    links.value = next
-                    labels.value = names
-                    settings.setMacs(next.keys.map { mac -> KnownMac(mac, names[mac] ?: mac, next[mac]?.lastSeen?.value) })
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    // Retried on the next round.
+            // A round runs each time the paired Mac comes online, then every 5 minutes while it stays online.
+            primary.state.map { it is LinkState.Online }.distinctUntilChanged().collectLatest { online ->
+                if (!online) return@collectLatest
+                while (true) {
+                    primary.state.first { it is LinkState.Online }
+                    discover(p, primary)
+                    delay(DISCOVERY_MS)
                 }
-                delay(5 * 60_000L)
             }
         }
+    }
+
+    private suspend fun discover(p: Paired, primary: MacLink) {
+        try {
+            val list = primary.call<MachineList>(Cmd.machines()).machines
+            val names = mutableMapOf<String, String>()
+            list.firstOrNull { it.isSelf }?.let { names[p.host] = it.alias ?: it.name }
+            val next = links.value.toMutableMap()
+            for (m in list.filter { !it.isSelf }) {
+                names[m.name] = m.alias ?: m.name
+                if (m.name !in next) next[m.name] = newLink(p, m.name)
+            }
+            links.value = next
+            labels.value = names
+            settings.setMacs(next.keys.map { mac -> KnownMac(mac, names[mac] ?: mac, next[mac]?.lastSeen?.value) })
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Retried on the next round.
+        }
+    }
+
+    private fun register(job: Job, end: (String) -> Unit) {
+        synchronized(sessions) { sessions[job] = end }
+        job.invokeOnCompletion { synchronized(sessions) { sessions.remove(job) } }
+    }
+
+    /** Every open session follows a link that is being stopped, where `follow` would wait for ever. */
+    private fun endSessions() {
+        val open = synchronized(sessions) { sessions.values.toList().also { sessions.clear() } }
+        open.forEach { it("Disconnected") }
     }
 
     fun retry(mac: String) {
@@ -219,9 +269,11 @@ class Repository(
 
     suspend fun image(key: TileKey, imageId: String): ImageReply = link(key.mac).call(Cmd.image(key.id, imageId))
 
-    fun openTranscript(key: TileKey) = TranscriptSession(scope, link(key.mac), key.id)
+    fun openTranscript(key: TileKey): TranscriptSession =
+        TranscriptSession(scope, link(key.mac), key.id).also { register(it.job, it::end) }
 
-    fun openOutput(key: TileKey) = OutputSession(scope, link(key.mac), key.id)
+    fun openOutput(key: TileKey): OutputSession =
+        OutputSession(scope, link(key.mac), key.id).also { register(it.job, it::end) }
 
     fun markSeen(key: TileKey) {
         scope.launch { settings.markSeen(key, now()) }

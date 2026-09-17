@@ -10,7 +10,10 @@ import dev.swarmz.phone.ssh.Auth
 import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.ssh.SshConnector
 import dev.swarmz.phone.state.TileKey
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -28,6 +31,23 @@ class HostConnector(val byHost: Map<String, ArrayDeque<SshConnection>>) : SshCon
     override suspend fun connect(host: String, port: Int, auth: Auth): SshConnection {
         auths += auth
         return byHost[host]?.removeFirstOrNull() ?: throw dev.swarmz.phone.ssh.Unreachable(host, Exception("no more"))
+    }
+}
+
+/** Refuses connections to [host] until the virtual clock reaches [upAt]. */
+class LateConnector(private val clock: () -> Long, private val host: String, private val upAt: Long, private val inner: SshConnector) : SshConnector {
+    override suspend fun connect(host: String, port: Int, auth: Auth): SshConnection {
+        if (host == this.host && clock() < upAt) throw dev.swarmz.phone.ssh.Unreachable(host, Exception("down"))
+        return inner.connect(host, port, auth)
+    }
+}
+
+/** Settings whose `setMacs` waits, uncancellably, for [gate]: a write that has started and cannot be abandoned. */
+class GatedSettings(val inner: MemorySettings = MemorySettings()) : SettingsStore by inner {
+    val gate = CompletableDeferred<Unit>()
+    override suspend fun setMacs(list: List<KnownMac>) {
+        withContext(NonCancellable) { gate.await() }
+        inner.setMacs(list)
     }
 }
 
@@ -176,11 +196,13 @@ class RepositoryTest {
         repo.start()
         runCurrent()
         val out = repo.openOutput(TileKey("mini", T1))
+        val chat = repo.openTranscript(TileKey("mini", T1))
         runCurrent()
         mini.stream(Cmd.output(T1, lines = 300, follow = true)).send("not json")
+        mini.stream(Cmd.transcript(T1, follow = true)).send("not json")
         runCurrent()
-        assertTrue(out.error.value != null)
-        out.close()
+        assertEquals("Couldn't read this tile's output", out.error.value)
+        assertEquals("Couldn't read this conversation", chat.error.value)
     }
 
     @Test
@@ -205,5 +227,100 @@ class RepositoryTest {
             org.junit.Assert.fail("expected LinkDown")
         } catch (_: dev.swarmz.phone.link.LinkDown) {
         }
+    }
+    @Test
+    fun discoveryRunsAsSoonAsThePairedMacComesOnline() = runTest {
+        val mini = FakeConn { if (it == Cmd.machines()) MACHINES else VERSION_OK }
+        val studio = FakeConn()
+        val hosts = HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)), "studio" to ArrayDeque(listOf(studio))))
+        // Down for the first 20 s; the link's backoff next tries at 31 s.
+        val repo = repo(paired("mini"), LateConnector({ testScheduler.currentTime }, "mini", 20_000, hosts))
+        repo.start()
+        advanceTimeBy(20_000)
+        assertEquals(listOf("mini"), repo.macs.value.map { it.name })
+        advanceTimeBy(12_000)
+        runCurrent()
+        assertEquals(listOf("mini", "studio"), repo.macs.value.map { it.name })
+        assertTrue(repo.macs.value.all { it.online })
+    }
+
+    @Test
+    fun discoveryRunsAgainWhenThePairedMacReconnects() = runTest {
+        val first = FakeConn { if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
+        val second = FakeConn { if (it == Cmd.machines()) MACHINES else VERSION_OK }
+        val studio = FakeConn()
+        val repo = repo(paired("mini"), HostConnector(mapOf("mini" to ArrayDeque(listOf(first, second)), "studio" to ArrayDeque(listOf(studio)))))
+        repo.start()
+        runCurrent()
+        assertEquals(listOf("mini"), repo.macs.value.map { it.name })
+        first.stream(Cmd.watch()).close(java.io.IOException("reset"))
+        advanceTimeBy(1_001)
+        runCurrent()
+        assertEquals(listOf("mini", "studio"), repo.macs.value.map { it.name })
+    }
+
+    @Test
+    fun aPairingChangeWaitsForARoundInProgress() = runTest {
+        val mini = FakeConn { if (it == Cmd.machines()) MACHINES else VERSION_OK }
+        val studio = FakeConn()
+        val connector = HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)), "studio" to ArrayDeque(listOf(studio))))
+        val settings = GatedSettings().also { it.inner.paired.value = Paired("mini", "me", "Fold") }
+        val repo = repo(settings, connector)
+        repo.start()
+        runCurrent()
+        // The round has added studio and is stuck saving the list.
+        assertEquals(2, connector.auths.size)
+        settings.inner.paired.value = Paired("other", "me", "Fold")
+        runCurrent()
+        // The reset waits for the round, so nothing of the new pairing has started yet.
+        assertEquals(2, connector.auths.size)
+        assertTrue(!mini.closed && !studio.closed)
+        settings.gate.complete(Unit)
+        runCurrent()
+        assertTrue(mini.closed && studio.closed)
+        assertEquals(3, connector.auths.size)
+        assertEquals(listOf("other"), repo.macs.value.map { it.name })
+        // The old pairing's list, written by the finished round, is cleared for the new pairing.
+        assertEquals(emptyList<KnownMac>(), settings.macs.value)
+    }
+
+    @Test
+    fun memorySettingsIgnoreMacsWhenUnpaired() = runTest {
+        val settings = paired("mini")
+        settings.forgetPairing()
+        settings.setMacs(listOf(KnownMac("mini", "Mini")))
+        assertEquals(emptyList<KnownMac>(), settings.macs.value)
+        settings.setPaired(Paired("mini", "me", "Fold"))
+        settings.setMacs(listOf(KnownMac("mini", "Mini")))
+        assertEquals(listOf(KnownMac("mini", "Mini")), settings.macs.value)
+    }
+
+    @Test
+    fun sessionsEndWhenTheirLinkStops() = runTest {
+        val mini = FakeConn { if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
+        val settings = paired("mini")
+        val repo = repo(settings, HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)))))
+        repo.start()
+        runCurrent()
+        val out = repo.openOutput(TileKey("mini", T1))
+        val chat = repo.openTranscript(TileKey("mini", T1))
+        runCurrent()
+        settings.setPaired(null)
+        runCurrent()
+        assertEquals("Disconnected", out.error.value)
+        assertEquals("Disconnected", chat.error.value)
+        assertTrue(!out.job.isActive && !chat.job.isActive)
+    }
+
+    @Test
+    fun startingTwiceStartsOnce() = runTest {
+        val mini = FakeConn { if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
+        val connector = HostConnector(mapOf("mini" to ArrayDeque(listOf(mini, FakeConn()))))
+        val repo = repo(paired("mini"), connector)
+        repo.start()
+        repo.start()
+        runCurrent()
+        assertEquals(1, connector.auths.size)
+        assertEquals(1, repo.macs.value.size)
     }
 }

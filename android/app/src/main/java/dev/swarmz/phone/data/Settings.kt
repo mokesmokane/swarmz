@@ -60,7 +60,11 @@ class MemorySettings : SettingsStore {
     override fun get(id: String) = pins[id]
     override fun put(id: String, fingerprint: String) { pins[id] = fingerprint }
     override suspend fun setPaired(p: Paired?) { paired.value = p }
-    override suspend fun setMacs(list: List<KnownMac>) { macs.value = list }
+    override suspend fun setMacs(list: List<KnownMac>) {
+        // A discovery round that finishes after forgetPairing must not bring the Macs back.
+        if (paired.value == null) return
+        macs.value = list
+    }
     override suspend fun markSeen(key: TileKey, at: Instant) { seen.update { it + (key to at) } }
     override suspend fun setDictationLanguage(tag: String?) { dictationLanguage.value = tag }
     override suspend fun setBackgroundWatch(on: Boolean) { backgroundWatch.value = on }
@@ -73,9 +77,9 @@ class MemorySettings : SettingsStore {
     }
 }
 
-private val Context.swarmzStore by preferencesDataStore(name = "swarmz_settings")
+internal val Context.swarmzStore by preferencesDataStore(name = "swarmz_settings")
 
-private object K {
+internal object K {
     val paired = stringPreferencesKey("paired")
     val macs = stringPreferencesKey("macs")
     val seen = stringPreferencesKey("seen")
@@ -87,9 +91,11 @@ private object K {
 
 private fun seenKey(key: TileKey) = "${key.mac}|${key.id}"
 
-private fun parseSeenKey(s: String): TileKey {
-    val (mac, id) = s.split('|', limit = 2)
-    return TileKey(mac, id)
+/** Null for a key that is not `mac|id`. */
+private fun parseSeenKey(s: String): TileKey? {
+    val parts = s.split('|')
+    if (parts.size != 2 || parts[0].isEmpty() || parts[1].isEmpty()) return null
+    return TileKey(parts[0], parts[1])
 }
 
 class DataStoreSettings(context: Context, private val scope: CoroutineScope) : SettingsStore {
@@ -100,17 +106,22 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
 
     init {
         val saved = runBlocking { store.data.first()[K.pins] }
-        if (saved != null) pinCache.putAll(json.decodeFromString<Map<String, String>>(saved))
+        if (saved != null) runCatching { json.decodeFromString<Map<String, String>>(saved) }.getOrNull()?.let(pinCache::putAll)
     }
 
     private fun <T> field(read: (Preferences) -> T, initial: T): StateFlow<T> =
         store.data.map(read).stateIn(scope, SharingStarted.Eagerly, initial)
 
-    override val paired = field({ p -> p[K.paired]?.let { json.decodeFromString<Paired>(it) } }, null)
-    override val macs = field({ p -> p[K.macs]?.let { json.decodeFromString<List<KnownMac>>(it) } ?: emptyList() }, emptyList())
+    // A stored value that no longer decodes reads as unset rather than failing the flow.
+    private inline fun <reified T> decodeOrNull(text: String?): T? =
+        text?.let { runCatching { json.decodeFromString<T>(it) }.getOrNull() }
+
+    private fun seenTimes(p: Preferences): Map<String, Long> = decodeOrNull<Map<String, Long>>(p[K.seen]) ?: emptyMap()
+
+    override val paired = field({ p -> decodeOrNull<Paired>(p[K.paired]) }, null)
+    override val macs = field({ p -> decodeOrNull<List<KnownMac>>(p[K.macs]) ?: emptyList() }, emptyList())
     override val seen = field({ p ->
-        (p[K.seen]?.let { json.decodeFromString<Map<String, Long>>(it) } ?: emptyMap())
-            .entries.associate { (k, v) -> parseSeenKey(k) to Instant.ofEpochMilli(v) }
+        seenTimes(p).entries.mapNotNull { (k, v) -> parseSeenKey(k)?.let { it to Instant.ofEpochMilli(v) } }.toMap()
     }, emptyMap())
     override val dictationLanguage = field({ p -> p[K.language] }, null)
     override val backgroundWatch = field({ p -> p[K.background] ?: true }, true)
@@ -135,12 +146,13 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
     }
 
     override suspend fun setMacs(list: List<KnownMac>) {
-        store.edit { it[K.macs] = json.encodeToString(list) }
+        // Checked in the same edit: a discovery round that finishes after forgetPairing must not bring the Macs back.
+        store.edit { if (it[K.paired] != null) it[K.macs] = json.encodeToString(list) }
     }
 
     override suspend fun markSeen(key: TileKey, at: Instant) {
         store.edit { p ->
-            val current = p[K.seen]?.let { json.decodeFromString<Map<String, Long>>(it) } ?: emptyMap()
+            val current = seenTimes(p)
             p[K.seen] = json.encodeToString(current + (seenKey(key) to at.toEpochMilli()))
         }
     }
