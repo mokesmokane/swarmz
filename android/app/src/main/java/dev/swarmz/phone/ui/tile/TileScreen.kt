@@ -24,7 +24,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import dev.swarmz.phone.proto.Key
 import dev.swarmz.phone.proto.TileRow
 import dev.swarmz.phone.state.Need
@@ -50,13 +53,20 @@ fun TileScreen(c: TileController, unfolded: Boolean, onBack: (() -> Unit)?, now:
     val notice by c.notice.collectAsStateWithLifecycle()
     val streamError by c.streamError.collectAsStateWithLifecycle()
     var clock by remember { mutableStateOf(now()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(1_000)
-            clock = now()
+    val r = row
+    // Times only move on screen for a working tile ("working · 12s") or an offline Mac ("last seen 3m ago").
+    val ticking = (r?.running == true && r.status == "working") || !online
+    val lifecycle = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycle, ticking) {
+        clock = now()
+        if (!ticking) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                clock = now()
+                delay(1_000)
+            }
         }
     }
-    val r = row
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) {

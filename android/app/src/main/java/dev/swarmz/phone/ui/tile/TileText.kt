@@ -8,11 +8,26 @@ import java.time.Instant
 
 enum class SendState { Sending, Sent, Failed }
 
-data class Outgoing(val id: Long, val text: String, val state: SendState)
+/** A message typed on the phone; [after] is the transcript's last message id when it was sent. */
+data class Outgoing(val id: Long, val text: String, val state: SendState, val after: String? = null)
 
+/**
+ * Drops each `Sent` entry whose echo has arrived: a user message with the same trimmed text after the entry's
+ * [Outgoing.after] (or among the last 10 messages when that id is unknown). Each message echoes one entry.
+ */
 fun reconcile(outgoing: List<Outgoing>, messages: List<Message>): List<Outgoing> {
-    val recent = messages.takeLast(10).filter { it.role == "user" }.map { it.text.trim() }.toSet()
-    return outgoing.filterNot { it.state == SendState.Sent && it.text.trim() in recent }
+    val used = mutableSetOf<Int>()
+    return outgoing.filterNot { o ->
+        if (o.state != SendState.Sent) return@filterNot false
+        val from = o.after?.let { id -> messages.indexOfLast { it.id == id } }?.takeIf { it >= 0 }?.plus(1)
+            ?: (messages.size - 10).coerceAtLeast(0)
+        val text = o.text.trim()
+        val hit = (from until messages.size).firstOrNull { i ->
+            i !in used && messages[i].role == "user" && messages[i].text.trim() == text
+        } ?: return@filterNot false
+        used += hit
+        true
+    }
 }
 
 fun statusLine(row: TileRow, now: Instant): String = when {

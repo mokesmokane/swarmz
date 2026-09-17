@@ -102,6 +102,8 @@ class TileScreenTest {
     fun slashPickerFillsTheComposer() {
         val c = controller("t1", permissionRow)
         compose.setContent { SwarmzTheme { TileScreen(c, unfolded = true, onBack = null) } }
+        // The keys only work once the tile is known.
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("ACCEPT EDITS")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("/").performClick()
         compose.onNodeWithText("/compact").performClick()
         assertTrue(c.draft.value.text == "/compact ")

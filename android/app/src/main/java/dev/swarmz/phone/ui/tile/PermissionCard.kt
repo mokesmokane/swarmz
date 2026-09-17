@@ -2,7 +2,8 @@ package dev.swarmz.phone.ui.tile
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
@@ -22,6 +23,7 @@ import dev.swarmz.phone.ui.components.SwCard
 import dev.swarmz.phone.ui.theme.Mono
 import dev.swarmz.phone.ui.theme.Sw
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PermissionCard(pending: Pending, horizontal: Boolean, onAnswer: (Opt) -> Unit) {
     SwCard(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), highlighted = true) {
@@ -40,7 +42,9 @@ fun PermissionCard(pending: Pending, horizontal: Boolean, onAnswer: (Opt) -> Uni
                 else QuietButton(opt.label, { onAnswer(opt) }, m, color = if (opt.label.startsWith("No")) Sw.ErrorLine else Sw.Body)
             }
         }
-        if (horizontal) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { buttons(Modifier) }
+        if (horizontal) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { buttons(Modifier) }
+        }
         else Column(verticalArrangement = Arrangement.spacedBy(6.dp)) { buttons(Modifier.fillMaxWidth()) }
     }
 }

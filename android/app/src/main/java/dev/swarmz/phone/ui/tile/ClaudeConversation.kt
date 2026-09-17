@@ -43,7 +43,10 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
@@ -51,11 +54,13 @@ import dev.swarmz.phone.proto.Message
 import dev.swarmz.phone.ui.theme.MonoBody
 import dev.swarmz.phone.ui.theme.MonoSmall
 import dev.swarmz.phone.ui.theme.Sw
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 
 private val Bubble = RoundedCornerShape(8.dp)
+private const val OLDER_KEY = "older"
 
 /** Messages oldest first; the list is reversed so it sits at the bottom and follows new messages. */
 @Composable
@@ -69,10 +74,12 @@ fun ClaudeConversation(
     listState: LazyListState,
     modifier: Modifier = Modifier,
 ) {
-    LaunchedEffect(listState, hasMore) {
-        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+    // Load older pages when the "older" row scrolls into view; the message count restarts this after each page.
+    LaunchedEffect(listState, hasMore, messages.size) {
+        if (!hasMore) return@LaunchedEffect
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.any { it.key == OLDER_KEY } }
             .distinctUntilChanged()
-            .filter { hasMore && it >= listState.layoutInfo.totalItemsCount - 2 }
+            .filter { it }
             .collect { c.loadOlder() }
     }
     BoxWithConstraints(modifier) {
@@ -84,7 +91,7 @@ fun ClaudeConversation(
             items(messages.reversed(), key = { it.id }) { m ->
                 if (m.role == "user") UserBubble(m.text, mine) else AssistantMessage(c, m, theirs)
             }
-            if (hasMore) item(key = "older") { Text("Loading older messages…", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp)) }
+            if (hasMore) item(key = OLDER_KEY) { Text("Loading older messages…", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp)) }
         }
     }
 }
@@ -92,10 +99,14 @@ fun ClaudeConversation(
 @Composable
 private fun StatusLine(text: String) {
     var on by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            kotlinx.coroutines.delay(530)
-            on = !on
+    val lifecycle = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycle) {
+        // Blinks only while the app is on screen.
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                delay(530)
+                on = !on
+            }
         }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
