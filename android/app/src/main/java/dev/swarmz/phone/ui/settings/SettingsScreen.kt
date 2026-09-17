@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.swarmz.phone.data.sameMac
 import dev.swarmz.phone.link.LinkState
 import dev.swarmz.phone.state.relativeTime
 import dev.swarmz.phone.ui.AppViewModel
@@ -46,7 +47,8 @@ val NOTIFY_KINDS = listOf("permission" to "Permission requests", "question" to "
 fun SettingsScreen(vm: AppViewModel, onBack: (() -> Unit)?) {
     val home by vm.home.collectAsStateWithLifecycle()
     val states by vm.repo.macStates.collectAsStateWithLifecycle()
-    val paired by vm.settings.paired.collectAsStateWithLifecycle()
+    val pairings by vm.settings.pairings.collectAsStateWithLifecycle()
+    val paired = pairings.firstOrNull()
     val background by vm.settings.backgroundWatch.collectAsStateWithLifecycle()
     val kinds by vm.settings.notifyKinds.collectAsStateWithLifecycle()
     val language by vm.settings.dictationLanguage.collectAsStateWithLifecycle()
@@ -64,22 +66,28 @@ fun SettingsScreen(vm: AppViewModel, onBack: (() -> Unit)?) {
             Text("MACS", style = MaterialTheme.typography.labelSmall)
             home.macs.forEach { m ->
                 val st = states[m.name]
+                val pairing = pairings.firstOrNull { sameMac(it.host, m.name) }
+                val refused = st is LinkState.Blocked && st.keyRejected
                 SwCard {
                     Text(m.label, style = MaterialTheme.typography.titleSmall)
-                    Text(m.name + if (m.name == paired?.host) " · paired" else "", style = MonoSmall)
+                    Text(m.name + if (pairing != null) " · paired" else "", style = MonoSmall)
                     val line = when (st) {
                         is LinkState.Online -> "online"
                         is LinkState.TooOld -> "Update swarmz on ${m.label}"
-                        // A Mac that was offline at pairing never got the key; only the paired Mac's refusal means pairing again.
+                        // Each Mac takes this phone's key itself: one that has not had it yet refuses the login.
                         is LinkState.Blocked ->
-                            if (st.keyRejected && m.name != paired?.host) "${m.label} doesn't have this phone's key yet (it was offline when you paired)"
+                            if (st.keyRejected && pairing == null) "${m.label} doesn't have this phone's key yet"
                             else st.reason
                         else -> "offline" + (m.lastSeen?.let { " · last seen ${relativeTime(it, home.now)}" } ?: "")
                     }
                     Text(line, style = MaterialTheme.typography.bodySmall, color = if (st is LinkState.Blocked || st is LinkState.TooOld) Sw.NeedsYou else Sw.Secondary)
-                    if (st is LinkState.Blocked) QuietButton("Try again", onClick = { vm.repo.retry(m.name) })
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (st is LinkState.Blocked) QuietButton("Try again", onClick = { vm.repo.retry(m.name) })
+                        if (pairing == null || refused) QuietButton("Pair this Mac", onClick = { vm.openAddMac(m.name) })
+                    }
                 }
             }
+            QuietButton("Add a Mac", onClick = { vm.openAddMac(null) })
             Text("ALERTS", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 12.dp))
             Row(Modifier.fillMaxWidth().clickable { vm.setBackgroundWatch(!background) }, verticalAlignment = Alignment.CenterVertically) {
                 Text("Watch in the background", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
@@ -110,7 +118,7 @@ fun SettingsScreen(vm: AppViewModel, onBack: (() -> Unit)?) {
             title = { Text("Revoke this phone?") },
             text = {
                 Text(
-                    revokeError?.let { "Couldn't revoke: $it" }
+                    revokeError
                         ?: "This removes this phone's key from your Macs and forgets them here. You'll need your Mac password to pair again.",
                 )
             },

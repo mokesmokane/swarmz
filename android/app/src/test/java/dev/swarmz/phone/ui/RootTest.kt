@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -87,6 +88,39 @@ class RootTest {
         compose.onNodeWithText("Tiles").assertIsDisplayed()
         compose.onNodeWithText("Nothing needs you").assertDoesNotExist()
         compose.onNodeWithText("Message docs…").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h780dp")
+    fun foldedAddModeFillsTheScreenAndComesBack() {
+        val vm = vm(paired = true)
+        compose.setContent { SwarmzRoot(vm) }
+        compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("docs") > 0 }
+        vm.openSettings()
+        vm.openAddMac("studio")
+        compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("Pair studio") > 0 }
+        // Full screen: the tile list and Home are gone, and the Mac is filled in.
+        compose.onNodeWithText("Nothing needs you").assertDoesNotExist()
+        compose.onNodeWithText("Tiles").assertDoesNotExist()
+        compose.onNodeWithText("studio").assertIsDisplayed()
+        // Back returns to where the flow started.
+        compose.onNodeWithContentDescription("Cancel").performClick()
+        compose.waitUntil(5_000) { vm.route.value == Route.Settings }
+    }
+
+    @Test
+    @Config(qualifiers = "w700dp-h800dp")
+    fun unfoldedAddModeSitsBesideTheList() {
+        val vm = vm(paired = true)
+        compose.setContent { SwarmzRoot(vm) }
+        compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("docs") > 0 }
+        vm.openAddMac(null)
+        compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("Add a Mac") > 0 }
+        compose.onNodeWithText("Tiles").assertIsDisplayed()
+        compose.onNodeWithText("Add a Mac").assertIsDisplayed()
+        // Started from Home, so cancelling goes back there.
+        compose.onNodeWithContentDescription("Cancel").performClick()
+        compose.waitUntil(5_000) { vm.route.value == Route.Home }
     }
 }
 

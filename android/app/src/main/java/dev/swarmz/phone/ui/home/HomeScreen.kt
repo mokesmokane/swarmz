@@ -14,6 +14,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -32,6 +33,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.text.SpanStyle
@@ -72,6 +74,8 @@ fun HomeScreen(
     onSettings: () -> Unit,
     showActions: Boolean = true,
     onReplyRestored: (TileKey) -> Unit = {},
+    onPairMac: (String) -> Unit = {},
+    onDismissHint: (String) -> Unit = {},
 ) {
     val needs = ui.model.needs
     val quiet = ui.model.quiet
@@ -98,6 +102,20 @@ fun HomeScreen(
             }
             items(ui.banners, key = { "banner-" + it.mac }) { b ->
                 SwCard { Text(b.text, style = MaterialTheme.typography.bodyMedium, color = Sw.NeedsYou) }
+            }
+            items(ui.pairHints, key = { "hint-" + it.mac }) { hint ->
+                // One quiet line: this Mac has no key of ours, so none of its tiles are here.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${hint.label} isn't paired with this phone yet · Pair",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Sw.Secondary,
+                        modifier = Modifier.weight(1f).clickable { onPairMac(hint.mac) },
+                    )
+                    IconButton(onClick = { onDismissHint(hint.mac) }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = Sw.Muted)
+                    }
+                }
             }
             items(needs, key = { "need-" + it.key.mac + "/" + it.key.id }) { view ->
                 // homeModel already decided these need you; a row without `needs` is a finished turn.

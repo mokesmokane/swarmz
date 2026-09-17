@@ -9,6 +9,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.assertTextContains
+import dev.swarmz.phone.data.PairHint
 import dev.swarmz.phone.proto.Opt
 import dev.swarmz.phone.proto.Pending
 import dev.swarmz.phone.proto.TileRow
@@ -151,6 +152,26 @@ class HomeScreenTest {
         compose.onNodeWithTag("reply-web").assertTextContains("ship it")
         compose.onNodeWithText("Couldn't send: web is not running").assertIsDisplayed()
         compose.waitUntil(5_000) { restored == web }
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h780dp")
+    fun anUnpairedMacGetsOneQuietLineOnHome() {
+        val events = mutableListOf<String>()
+        val ui = sampleHome().copy(pairHints = listOf(PairHint("studio", "Studio")))
+        compose.setContent {
+            SwarmzTheme {
+                HomeScreen(
+                    ui,
+                    onOpen = {}, onAllow = {}, onDeny = {}, onReply = { _, _ -> }, onNew = {}, onSettings = {},
+                    onPairMac = { events += "pair $it" },
+                    onDismissHint = { events += "dismiss $it" },
+                )
+            }
+        }
+        compose.onNodeWithText("Studio isn't paired with this phone yet · Pair").assertIsDisplayed().performClick()
+        compose.onNodeWithContentDescription("Dismiss").performClick()
+        assertEquals(listOf("pair studio", "dismiss studio"), events)
     }
 
     @Test

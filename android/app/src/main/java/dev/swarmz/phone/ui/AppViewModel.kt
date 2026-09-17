@@ -3,8 +3,11 @@ package dev.swarmz.phone.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.swarmz.phone.data.Banner
+import dev.swarmz.phone.data.PairHint
+import dev.swarmz.phone.data.sameMac
 import dev.swarmz.phone.data.Paired
 import dev.swarmz.phone.data.Repository
+import dev.swarmz.phone.data.RevokeFailure
 import dev.swarmz.phone.data.SettingsStore
 import dev.swarmz.phone.pairing.Pairing
 import dev.swarmz.phone.pairing.PairingError
@@ -53,6 +56,8 @@ sealed interface Route {
     data class Tile(val key: TileKey) : Route
     data object NewSession : Route
     data object Settings : Route
+    /** Pairing another Mac: [host] and [user] are what its fields start with. */
+    data class AddMac(val host: String?, val user: String?) : Route
 }
 
 data class HomeUi(
@@ -64,6 +69,8 @@ data class HomeUi(
     val now: Instant,
     val seen: Map<TileKey, Instant> = emptyMap(),
     val replyErrors: Map<TileKey, ReplyError> = emptyMap(),
+    /** Macs that refused this phone's key and have no pairing yet. */
+    val pairHints: List<PairHint> = emptyList(),
 )
 
 /** A Home reply that did not send: its [text] goes back into the card's field once ([restored] after that). */
@@ -109,6 +116,16 @@ class AppViewModel(
     private val _pairingUi = MutableStateFlow(PairingUi())
     val pairingUi: StateFlow<PairingUi> = _pairingUi.asStateFlow()
 
+    /** Add mode's own busy and error state, so the first pairing screen's is untouched. */
+    private val _addMacUi = MutableStateFlow(PairingUi())
+    val addMacUi: StateFlow<PairingUi> = _addMacUi.asStateFlow()
+
+    /** Where add mode came from, and where cancelling or a successful add returns to. */
+    private var addReturn: Route = Route.Home
+
+    /** The Macs whose Home hint the user has dismissed; they come back next launch. */
+    private val dismissedHints = MutableStateFlow<Set<String>>(emptySet())
+
     /** Whether the app is on screen (resumed). Tiles are only marked seen while it is. */
     val visible = MutableStateFlow(false)
 
@@ -141,15 +158,34 @@ class AppViewModel(
     private fun turnOf(view: TileView?): Pair<String?, String?> = view?.row?.since to view?.row?.turnEndedAt
 
     val home: StateFlow<HomeUi> = combine(
-        combine(repo.tiles, repo.seen, repo.macs, repo.banners) { tiles, seen, macs, banners -> Inputs(tiles, seen, macs, banners) },
+        combine(repo.tiles, repo.seen, repo.macs, repo.banners, repo.pairHints) { tiles, seen, macs, banners, hints ->
+            Inputs(tiles, seen, macs, banners, hints)
+        },
         asks,
         replyErrors,
         ticks,
-    ) { i, a, r, _ ->
-        HomeUi(homeModel(i.tiles, i.seen), tileListSections(i.tiles, i.seen, i.macs), a, i.banners, i.macs, now(), i.seen, r)
+        dismissedHints,
+    ) { i, a, r, _, dismissed ->
+        HomeUi(
+            homeModel(i.tiles, i.seen),
+            tileListSections(i.tiles, i.seen, i.macs),
+            a,
+            i.banners,
+            i.macs,
+            now(),
+            i.seen,
+            r,
+            i.hints.filter { it.mac !in dismissed },
+        )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, HomeUi(HomeModel(emptyList(), emptyList()), emptyList(), emptyMap(), emptyList(), emptyList(), now()))
 
-    private data class Inputs(val tiles: List<TileView>, val seen: Map<TileKey, Instant>, val macs: List<MacInfo>, val banners: List<Banner>)
+    private data class Inputs(
+        val tiles: List<TileView>,
+        val seen: Map<TileKey, Instant>,
+        val macs: List<MacInfo>,
+        val banners: List<Banner>,
+        val hints: List<PairHint>,
+    )
 
     init {
         viewModelScope.launch {
@@ -277,7 +313,26 @@ class AppViewModel(
         _route.value = Route.Settings
     }
 
+    /** Opens add mode for [host] (or with no Mac chosen yet), coming back here when it ends. */
+    fun openAddMac(host: String?) {
+        val pairings = settings.pairings.value
+        val user = host?.let { h -> pairings.firstOrNull { sameMac(it.host, h) }?.user } ?: pairings.firstOrNull()?.user
+        if (_route.value !is Route.AddMac) addReturn = _route.value
+        _addMacUi.value = PairingUi()
+        _route.value = Route.AddMac(host, user)
+    }
+
+    /** Hides this Mac's Home hint for the rest of this run. */
+    fun dismissPairHint(mac: String) {
+        dismissedHints.update { it + mac }
+    }
+
     fun back(): Boolean {
+        // Add mode returns to the screen it was opened from, which keeps whatever it had open.
+        if (_route.value is Route.AddMac) {
+            _route.value = addReturn
+            return true
+        }
         if (_route.value == Route.Home) return false
         _tile.value?.close()
         _tile.value = null
@@ -287,8 +342,9 @@ class AppViewModel(
     }
 
     /**
-     * Revokes this phone's key on the Macs, then forgets the pairing and the key. Null on success, else the error.
-     * The work runs on the view model's scope: forgetting the pairing removes the screen that asked for it.
+     * Revokes this phone's key on the Macs, then forgets the pairings and the key. Null on success, else what to
+     * show: a partial revoke says where it worked. The work runs on the view model's scope: forgetting the pairing
+     * removes the screen that asked for it.
      */
     suspend fun revoke(): String? = viewModelScope.async {
         try {
@@ -298,8 +354,10 @@ class AppViewModel(
             null
         } catch (e: CancellationException) {
             throw e
+        } catch (e: RevokeFailure) {
+            e.message
         } catch (e: Exception) {
-            e.message ?: "unknown error"
+            "Couldn't revoke: ${e.message ?: "unknown error"}"
         }
     }.await()
 
@@ -389,6 +447,29 @@ class AppViewModel(
                 "Pairing failed: ${e.message}"
             }
             _pairingUi.value = PairingUi(busy = false, error = error)
+        }
+    }
+
+    /** Adds another Mac with the saved device name; on success the link starts and the flow returns where it began. */
+    fun addMac(host: String, user: String, password: CharArray) {
+        val p = pairing ?: return
+        _addMacUi.value = PairingUi(busy = true)
+        viewModelScope.launch {
+            val error = try {
+                withContext(Dispatchers.IO) { p.pair(host.trim(), user.trim(), password, "") }
+                null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: PairingError) {
+                e.message
+            } catch (e: Exception) {
+                "Pairing failed: ${e.message}"
+            }
+            _addMacUi.value = PairingUi(busy = false, error = error)
+            if (error == null) {
+                repo.retry(host.trim())
+                if (_route.value is Route.AddMac) _route.value = addReturn
+            }
         }
     }
 

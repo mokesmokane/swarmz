@@ -130,10 +130,26 @@ private fun Detail(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boole
             onNew = vm::openNewSession,
             onSettings = vm::openSettings,
             showActions = showBack,
+            onPairMac = vm::openAddMac,
+            onDismissHint = vm::dismissPairHint,
         )
         is Route.Tile -> {
             val c by vm.tile.collectAsStateWithLifecycle()
             c?.let { TileScreen(it, unfolded = !showBack, onBack = if (showBack) ({ vm.back() }) else null, now = vm.now) }
+        }
+        is Route.AddMac -> {
+            val ui by vm.addMacUi.collectAsStateWithLifecycle()
+            val label = home.macs.firstOrNull { it.name == route.host }?.label ?: route.host
+            PairingScreen(
+                ui,
+                defaultDevice = "",
+                onPair = { host, user, password, _ -> vm.addMac(host, user, password) },
+                title = if (label == null) "Add a Mac" else "Pair $label",
+                initialHost = route.host ?: "",
+                initialUser = route.user ?: "",
+                askDevice = false,
+                onCancel = { vm.back() },
+            )
         }
         Route.NewSession -> NewSessionScreen(vm.newSessionModel(), home.macs, onStarted = vm::open, onBack = if (showBack) ({ vm.back() }) else null)
         Route.Settings -> SettingsScreen(vm, onBack = if (showBack) ({ vm.back() }) else null)

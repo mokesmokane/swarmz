@@ -1,7 +1,9 @@
 package dev.swarmz.phone.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -108,9 +110,26 @@ class SettingsTest {
         repo.start()
         val vm = AppViewModel(repo, settings, pairing = null, scope = scope)
         compose.setContent { SwarmzTheme { SettingsScreen(vm, onBack = {}) } }
-        val why = "Studio doesn't have this phone's key yet (it was offline when you paired)"
+        // Each Mac takes the key itself now, so the row says what is missing and offers to pair it.
+        val why = "Studio doesn't have this phone's key yet"
         compose.waitUntil(5_000) { exists(why) }
         compose.onNodeWithText(why).assertIsDisplayed()
         assertEquals(emptyList<dev.swarmz.phone.data.Banner>(), vm.home.value.banners)
+
+        // The Mac can be paired from its own row, with its name filled in and the first pairing's user.
+        compose.onAllNodesWithText("Pair this Mac")[0].performScrollTo().performClick()
+        assertEquals(Route.AddMac("studio", "me"), vm.route.value)
+    }
+
+    @Test
+    fun anyMacCanBePairedFromSettings() {
+        val vm = vm(FakeConn { if (it == Cmd.machines()) """{"machines":[],"v":1}""" else VERSION_OK })
+        compose.setContent { SwarmzTheme { SettingsScreen(vm, onBack = {}) } }
+        compose.waitUntil(5_000) { exists("online") }
+        // The paired Mac is marked as such and needs no button; a Mac can still be added by hand.
+        compose.onNodeWithText("mini · paired").assertIsDisplayed()
+        compose.onAllNodesWithText("Pair this Mac").assertCountEquals(0)
+        compose.onNodeWithText("Add a Mac").performScrollTo().performClick()
+        assertEquals(Route.AddMac(null, "me"), vm.route.value)
     }
 }
