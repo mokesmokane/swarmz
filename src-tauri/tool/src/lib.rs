@@ -5,6 +5,7 @@ pub mod commands;
 pub mod dialog;
 pub mod gate;
 pub mod hold;
+pub mod hostkeys;
 pub mod input;
 pub mod newtile;
 pub mod paths;

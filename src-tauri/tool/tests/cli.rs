@@ -1197,6 +1197,86 @@ fn transcript_pages_follows_and_serves_images() {
 }
 
 #[test]
+fn a_continued_session_is_followed_into_its_new_file() {
+    let h = home("continued");
+    let old = "d2a228c3-0000-4000-8000-000000000001";
+    let new = "fdad389a-0000-4000-8000-000000000002";
+    write_ws(
+        &h.path,
+        serde_json::json!([
+            {"id": "c1", "name": "api", "cwd": "/p", "origin": "mini", "claude": {"enabled": true, "sessionId": old, "skipPermissions": false, "started": true}},
+            {"id": "g1", "name": "guessed", "cwd": "/p", "origin": "mini", "claude": {"enabled": true, "sessionId": old, "skipPermissions": false, "started": true}}
+        ]),
+        serde_json::json!({}),
+    );
+    let user = |uuid: &str, text: &str| serde_json::json!({"type": "user", "uuid": uuid, "timestamp": "t", "message": {"role": "user", "content": text}}).to_string();
+    let asst = |uuid: &str, text: &str| serde_json::json!({"type": "assistant", "uuid": uuid, "timestamp": "t", "message": {"id": uuid, "role": "assistant", "content": [{"type": "text", "text": text}]}}).to_string();
+    let continued = |from: &str, to: &str| serde_json::json!({"type": "continued-in", "timestamp": "t", "sessionId": from, "continuedInSessionId": to}).to_string();
+    // The hook fold (c1) and the guess (g1) both name the old session.
+    let dir = h.path.join(".claude/projects/-p");
+    std::fs::create_dir_all(&dir).unwrap();
+    let old_path = dir.join(format!("{old}.jsonl"));
+    let new_path = dir.join(format!("{new}.jsonl"));
+    std::fs::write(&old_path, [user("o1", "old question"), asst("o2", "old answer"), continued(old, new)].join("\n") + "\n").unwrap();
+    std::fs::write(&new_path, [user("n1", "new question"), asst("n2", "new answer"), user("n3", "and more")].join("\n") + "\n").unwrap();
+    std::fs::create_dir_all(h.path.join(".swarmz/agents")).unwrap();
+    std::fs::write(
+        h.path.join(".swarmz/agents/events.log"),
+        format!("2026-09-16T10:00:00Z\tc1\tSessionStart\t{}\n", serde_json::json!({"session_id": old, "transcript_path": old_path})),
+    )
+    .unwrap();
+
+    for tile in ["c1", "g1"] {
+        let (code, v) = tool_env(&h.path, &["transcript", tile], MINI);
+        assert_eq!(code, 0, "{v}");
+        let texts: Vec<&str> = v["messages"].as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap()).collect();
+        assert_eq!(texts, vec!["new question", "new answer", "and more"], "{tile}");
+        assert!(v.get("reset").is_none(), "{v}");
+    }
+
+    let (code, v) = tool_env(&h.path, &["ls"], MINI);
+    assert_eq!(code, 0, "{v}");
+    for row in v["tiles"].as_array().unwrap() {
+        assert_eq!((row["sessionId"].as_str(), row["lastMessage"].as_str()), (Some(new), Some("new answer")), "{row}");
+    }
+
+    // A known --after id resumes there; an unknown one gives the newest page and says reset.
+    let (_, known) = tool_env(&h.path, &["transcript", "c1", "--after", "n2"], MINI);
+    assert_eq!(known["messages"].as_array().map(Vec::len), Some(2), "{known}");
+    assert!(known.get("reset").is_none(), "{known}");
+    let (code, unknown) = tool_env(&h.path, &["transcript", "c1", "--after", "o2", "--limit", "2"], MINI);
+    assert_eq!(code, 0, "{unknown}");
+    let texts: Vec<&str> = unknown["messages"].as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap()).collect();
+    assert_eq!(texts, vec!["new answer", "and more"]);
+    assert_eq!((unknown["reset"].as_bool(), unknown["hasMore"].as_bool()), (Some(true), Some(true)), "{unknown}");
+
+    // A follower moves on when the new file continues again, announcing the resolved session.
+    let newer = "0badcafe-0000-4000-8000-000000000003";
+    let out_path = h.path.join("t.out");
+    let _child = KillOnDrop(
+        tool_command(&h.path)
+            .args(["transcript", "c1", "--follow"])
+            .env("SWARMZ_MACHINE", "mini")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&out_path).unwrap())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let read = || std::fs::read_to_string(&out_path).unwrap_or_default();
+    assert!(wait_until(|| read().contains("\"messages\"")));
+    std::fs::write(dir.join(format!("{newer}.jsonl")), user("z1", "newest question") + "\n").unwrap();
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new().append(true).open(&new_path).unwrap();
+    writeln!(f, "{}", continued(new, newer)).unwrap();
+    drop(f);
+    assert!(wait_until(|| read().contains("newest question")), "{}", read());
+    let out = read();
+    let session = out.find(&format!("{{\"sessionId\":\"{newer}\",\"type\":\"session\",\"v\":1}}")).expect(&out);
+    assert!(session < out.find("newest question").unwrap(), "{out}");
+}
+
+#[test]
 fn commands_on_a_missing_or_bad_tile_say_so() {
     let h = home("missing");
     for args in [["send", "nope", "hi"].as_slice(), &["pending", "nope"], &["output", "nope"], &["key", "nope", "esc"]] {
@@ -1247,6 +1327,54 @@ fn phone_keys_are_added_listed_and_revoked() {
     assert_eq!((code, bad["code"].as_str()), (1, Some("usage")));
 }
 
+const FIXTURE_ED25519: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPge3R3QFKHxzq6KmYIC6KzYNvdlN93DVMtK561x2P3x root@fixture";
+const FIXTURE_ED25519_FP: &str = "SHA256:r1nwggW9AHsthrbnxzGUx9I3q9Wcckmfv27XgD/hh6U";
+const FIXTURE_RSA: &str = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDsbYhsxRKkYgvHZKeNRhRVvfTfwODNFEaoBlEdeh2GlDKEupN0pfSKwKyj4vQESugdTd9CGG2z6c2Hl/DtS9GyfBQGpuXLkKT6HeM/XBPd7zlHTnPc8O54McBr7cURAH9OcXdTx6sowdybCTkuC8hRpL4LZfnmkhChHdyH4twO9rtGc+nUmWCXnwzkQzM78ToHJRnq5CH5mKgl+j4uktbf+WQbo3iKQTGY2aKzzlRMS/EoabXrnmzVrmDQmZ9wSkRWx0cqIJl9tX7lUvsMFC0pl7JtAb2HJycYN+BziV/hCQKOMLm0klYPMfgaj/N64TCbhQ2YBd5n1Qg/jHRAcLen root@fixture";
+const FIXTURE_RSA_FP: &str = "SHA256:7CQ/ldJqhjJfG5HDFdkweMu4jkmliY+CecbtNbpO8J0";
+
+/// A stand-in for `/etc/ssh`, so the test never reads the real one.
+fn fixture_host_keys(home: &Path) -> String {
+    let dir = home.join("etc-ssh");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ssh_host_ed25519_key.pub"), format!("{FIXTURE_ED25519}\n")).unwrap();
+    std::fs::write(dir.join("ssh_host_rsa_key.pub"), format!("{FIXTURE_RSA}\n")).unwrap();
+    std::fs::write(dir.join("ssh_host_ed25519_key"), "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
+    dir.to_string_lossy().into_owned()
+}
+
+#[test]
+fn host_keys_prints_this_macs_name_user_and_fingerprints() {
+    let h = home("hostkeys");
+    let dir = fixture_host_keys(&h.path);
+    let env = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_SSH_HOST_KEY_DIR", dir.as_str()), ("USER", "me")];
+    let (code, v) = tool_env(&h.path, &["host-keys"], env);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["v"], 1);
+    assert_eq!(v["host"], "mini");
+    assert_eq!(v["user"], "me");
+    let fps: Vec<&str> = v["fingerprints"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert_eq!(fps, vec![FIXTURE_RSA_FP, FIXTURE_ED25519_FP], "{v}");
+
+    // No host keys at all still prints the name and user, so the code is still worth showing.
+    let empty = h.path.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let (code, v) = tool_env(
+        &h.path,
+        &["host-keys"],
+        &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_SSH_HOST_KEY_DIR", empty.to_str().unwrap()), ("USER", "me")],
+    );
+    assert_eq!((code, v["fingerprints"].as_array().map(Vec::len)), (0, Some(0)), "{v}");
+
+    // A name this Mac does not know, and a username that could be mistaken for an ssh option.
+    let (code, v) = tool_env(&h.path, &["host-keys"], &[("SWARMZ_MACHINE", ""), ("SWARMZ_SSH_HOST_KEY_DIR", dir.as_str()), ("USER", "me")]);
+    assert_eq!((code, v["code"].as_str()), (1, Some("failed")), "{v}");
+    let (code, v) = tool_env(&h.path, &["host-keys"], &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_SSH_HOST_KEY_DIR", dir.as_str()), ("USER", "-oProxyCommand=x")]);
+    assert_eq!((code, v["code"].as_str()), (1, Some("failed")), "{v}");
+
+    let (code, v) = tool_env(&h.path, &["host-keys", "extra"], env);
+    assert_eq!((code, v["code"].as_str()), (1, Some("usage")), "{v}");
+}
+
 /// Runs `ssh-gate` with `tool_command`'s HOME/PATH (never the developer's real one), the given
 /// `SSH_ORIGINAL_COMMAND` (or none), and `SWARMZ_MACHINE=mini` so it never asks Tailscale.
 fn gate(home: &Path, original: Option<&str>) -> (i32, serde_json::Value) {
@@ -1286,6 +1414,8 @@ fn the_gate_runs_only_allowed_commands() {
         "swarmz hold t1",
         "swarmz __keep-def t1",
         "swarmz ssh-gate",
+        // The phone reads the QR code with its camera; it never runs this over ssh.
+        "swarmz host-keys",
         "/tmp/swarmz version",
         "~/swarmz version",
         "'~/.swarmz/bin/swarmz ls'",

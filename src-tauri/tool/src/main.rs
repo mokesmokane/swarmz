@@ -358,11 +358,15 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             }
             _ => Err(CliError::new("usage", "usage: swarmz phone <add|ls|revoke> …")),
         },
+        Some("host-keys") => {
+            a.expect_positional(1, "host-keys")?;
+            Ok(Some(cmd::host_keys(&cmd::Env::from_process()?)?))
+        }
         Some("ssh-gate") => {
             a.expect_positional(1, "ssh-gate")?;
             Err(cmd::ssh_gate(&cmd::Env::for_gate()?))
         }
-        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|transcript|image|phone|ssh-gate> …")),
+        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|transcript|image|phone|host-keys|ssh-gate> …")),
     }
 }
 

@@ -1,7 +1,7 @@
 # swarmz on the phone: session holder, Mac tool, Android app, alerts
 
 Date: 2026-09-16
-Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented
+Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented; sub-project 3 (phone app) implemented; amended after acceptance on the Fold (2026-09-17): the phone pairs each Mac itself (§7.2), and a Claude tile can switch to its live screen, with tappable links on it (§6.6)
 Amends: `2026-09-10-swarmz-design.md` §3.1 (the swarmz window no longer owns
 PTYs); `2026-09-15-agent-state-hooks-design.md` §2.1 (status colours), §3.2
 (hook events gain `PermissionRequest` and a synchronous `PostToolUse`); `2026-09-15-tile-folder-and-session-history-design.md`
@@ -304,6 +304,7 @@ the hook log alone.
 | `new --folder <dir> [--skip-permissions] [--name <name>]` | `{tile:{…}}`, the new tile's `ls` row, §4.5 |
 | `restart <tile>` | holds a fresh session for a tile that is not running and types its startup step (Claude tiles resume their session); refuses (`running`) a tile that is already running, including one another `hold`/`restart` started concurrently; returns `{tile:{…}}` |
 | `phone add --name <device> --key <pubkey>` / `phone ls` / `phone revoke <device>` | §7.2 |
+| `host-keys` | `{v:1, host, user, fingerprints:["SHA256:…"]}` for the pairing QR code (§7.2): this Mac's name, its login user and the `SHA256:` fingerprints of every public host key in `/etc/ssh` (`SWARMZ_SSH_HOST_KEY_DIR` overrides the folder for tests). Not in the gate's allow list — the phone reads the code with its camera |
 
 ### 4.2 Status
 
@@ -356,7 +357,10 @@ From the session's `transcript_path` (known from `SessionStart`), or, for a
 tile the hook log has never reported one for, a guessed path — and only
 when the tile is one of this Mac's own homed defs and its Claude session id
 is UUID-shaped (an ssh tile's, or another Mac's, transcript is never
-guessed at):
+guessed at). Either path is followed through Claude's `continued-in`
+records (a file whose last record names a UUID session whose file exists in
+the same folder; at most ten hops, stopping on a cycle), so `transcript`,
+`image`, `ls` and `watch` read the newest file and report its session id.
 
 - Kept: user text (including slash commands), assistant text, user images.
 - Tool use and tool results are grouped into `tools: [{name, summary, ok}]`
@@ -370,13 +374,16 @@ guessed at):
 - Paging: newest first with `--before`; `--after <id>` returns that message
   (its `tools` may have changed since) and every newer one, so a `--follow`
   reader that lost its connection resumes from the last id it saw with no
-  gaps or duplicates.
+  gaps or duplicates. An `--after` id that is not in the transcript gives
+  the newest page (as `--limit` alone would) with `"reset": true`, telling
+  the reader to replace what it has.
 - `--follow` streams, after the first page, one line per change:
   `{"type":"message","message":…}` for a new message,
   `{"type":"update","message":…}` when an already-sent message gains tools
   or a tool result (never repeated as a new message), and
   `{"type":"session","sessionId":…}` when the tile's Claude session changes
-  (a fresh transcript path, or the current file rewritten shorter — a
+  (a fresh transcript path, including a `continued-in` move, with the
+  resolved session id; or the current file rewritten shorter — a
   session event is sent then too, before its messages are re-sent). It also
   sends `{"type":"ping"}` every 25 s.
 
@@ -541,9 +548,10 @@ this affects an ordinary command.
 
 Kotlin, Jetpack Compose, Material 3 with a custom theme, `minSdk 31`,
 `targetSdk 35`. Libraries: sshj (ssh), kotlinx.serialization (JSON),
-material3-adaptive (list–detail layout), a Compose Markdown renderer,
+a Compose Markdown renderer (`multiplatform-markdown-renderer-m3`),
 DataStore (settings), Android Keystore (key protection), Android
-`SpeechRecognizer` (dictation), `compose-markdown` (Markdown rendering). Sideloaded APK.
+`SpeechRecognizer` (dictation). Sideloaded APK. The list–detail layout is a
+plain width check (§6.3), not material3-adaptive.
 
 ### 6.2 Visual language (from the design)
 
@@ -560,9 +568,15 @@ DataStore (settings), Android Keystore (key protection), Android
 
 ### 6.3 Layouts
 
-- **Folded** (compact width): one screen at a time, home or tile.
-- **Unfolded** (expanded width): tile list (312 dp) on the left, the open
-  tile on the right; opening a tile never leaves the list.
+- **Folded** (narrower than 600 dp): one screen at a time, home or tile.
+- **Unfolded** (a width of at least 600 dp): tile list on the left, the open
+  tile on the right; opening a tile never leaves the list. With no tile open,
+  home sits beside the list (without the list's own Settings and New session
+  actions). The list can be collapsed (a chevron in its header hides it; a
+  "Show the list" control in the detail pane brings it back) and resized by
+  dragging the divider between the panes. Its width is stored, defaults to
+  260 dp and is held between 220 dp and 480 dp, and is clamped further so the
+  detail pane always keeps at least 320 dp.
 - Folding or unfolding keeps the open tile, the composer text and scroll
   position.
 
@@ -575,7 +589,9 @@ DataStore (settings), Android Keystore (key protection), Android
     "Claude wants to run `<summary>` in <folder>", buttons **Allow once**
     (primary) and **Deny**.
   - Question / finished turn: dot, name, relative time, Claude's last
-    message in quotes, and an inline **Reply** field with a mic.
+    message in quotes, and an inline **Reply** field with a mic. A reply
+    that fails to send is put back in the field, with a short error on the
+    card ("Couldn't send: …").
   - Tapping a card's body opens the tile.
 - **Running**: a wrapping row of pill chips (dot + name) for every other
   tile; tapping opens it.
@@ -608,6 +624,18 @@ sections are dimmed with "last seen …".
 - **Shell tile:** monospace coloured output lines (from `output --follow`),
   bottom-aligned, following new output; "[process exited with code N]" when
   it ends.
+- **Screen toggle (amended 2026-09-17):** a Claude tile's header carries a
+  Screen button, left of the mode badge, that swaps the conversation for the
+  tile's live screen (the same `output --follow` body as a shell), which is
+  how anything Claude draws but never writes to the transcript (`/login`,
+  `/model`, `/cost`, its startup banners) is reached. The transcript session
+  stays open behind it, so going back keeps its position and older pages; the
+  Claude quick keys, composer and permission card are unchanged, and sending
+  types into the tile, which is what answers a prompt on screen.
+- **Links on a screen (amended 2026-09-17):** any `http(s)` URL on a terminal
+  screen line, shell or Claude, is underlined and tappable, offering **Open**
+  (in a browser) and **Copy**; this is how the `/login` flow is completed from
+  the phone.
 - **Quick keys** row: Claude → `Esc`, `^C`, `⇧Tab <mode>`, `/` (slash
   command picker); shell → `^C`, `↑`, `Tab`, **Restart shell**.
 - **Composer:** growing text field ("Message <name>…" / "Type a command…")
@@ -633,8 +661,11 @@ settings.
 
 ### 6.9 Settings
 
-Macs (paired Mac, discovered Macs, online state), background watching on or
-off, notification kinds, dictation language, revoke this phone.
+Macs (each paired Mac, discovered Macs, online state), background watching on
+or off, notification kinds, dictation language, revoke this phone. Every Mac
+row that has no pairing of its own, or whose link refused the key, offers
+**Pair this Mac** (§7.2), and there is an **Add a Mac** button; Home shows one
+quiet, dismissible line for such a Mac.
 
 ### 6.10 Errors
 
@@ -665,7 +696,11 @@ off, notification kinds, dictation language, revoke this phone.
    encrypted with a hardware-backed Android Keystore key and never leaves the
    phone.
 2. You enter one Mac's name, your Mac username and password (macOS Remote
-   Login must be on, as it already is for swarmz between Macs).
+   Login must be on, as it already is for swarmz between Macs). Before the
+   password is sent, the name must resolve to Tailscale addresses only
+   (IPv4 100.64.0.0/10, IPv6 fd7a:115c:a1e0::/48); otherwise pairing stops
+   with "<host> isn't a Tailscale address. Use the Mac's Tailscale name (for
+   example mini or mini.tailnet.ts.net)."
 3. The phone logs in with the password once and runs
    `~/.swarmz/bin/swarmz phone add --name <device> --key <pubkey>`. The
    password is not stored.
@@ -677,6 +712,26 @@ off, notification kinds, dictation language, revoke this phone.
    tailnet — and prints which Macs accepted it. `from=` admits only tailnet
    addresses.
 5. The phone learns the other Macs from `machines` and connects with its key.
+
+The fan-out in step 4 is best effort, not the way the phone reaches every
+Mac: it logs in with `BatchMode=yes`, so it only works where the Macs already
+log in to each other without a password. Where they do not (swarmz itself
+types passwords into a pty, so a password-only tailnet is normal), the other
+Macs never get the key and refuse the phone's login.
+
+So the phone pairs each Mac itself. From Settings (or Home's hint for a Mac
+that refused the key) it opens the same pairing screen in *add* mode: the
+Mac's name and a username, which default to that Mac's own pairing's user,
+else the first pairing's, and the password, used once as in step 3. Add mode
+asks for no device name and reuses the saved one, so this phone is known by
+one name everywhere and `phone revoke <device>` matches on every Mac. The
+pairings are a list, the first of which is the Mac paired first; each Mac's
+link logs in with its own pairing's user (a Mac with no pairing of its own
+uses the first pairing's), discovery runs against every online paired Mac and
+the results merge, and pairing another Mac disturbs no existing link.
+`phone revoke` runs on every pairing in parallel, each with its own 60 s
+timeout; a partial revoke says where it worked ("Revoked on mini-3; couldn't
+reach mini-2") and still offers to forget the pairings on the phone only.
 
 A device name is letters, digits, single inner spaces (never leading,
 trailing or doubled), `.`, `_` and `-`, up to 40 characters. Adding a key
@@ -749,8 +804,9 @@ reported as a clean, empty fan-out.
   handling, remote folder tracking.
 - **Phone:** unit tests for JSON parsing, needs-you logic, reconnect cursors;
   Compose UI tests for home, tile list, tile screen, composer and dictation
-  overlay at compact and expanded widths, against a fake tool; one emulator
-  end-to-end run against a real Mac.
+  overlay at compact and expanded widths, against a fake tool. The
+  end-to-end run against a real Mac is the acceptance on the Fold below,
+  not an emulator run.
 - **By hand on the Fold:** pair; open a live Claude tile; answer a
   permission from a notification; dictate and send a reply; start a new
   session and see it appear in swarmz; fold and unfold mid-conversation;
@@ -758,8 +814,9 @@ reported as a clean, empty fan-out.
 
 ## 10. Tooling and distribution
 
-- This Mac needs a Java runtime (Temurin 17), the Android SDK command-line
-  tools and platform 35, and Gradle (via the wrapper), installed with
+- This Mac needs a JDK (`openjdk@21`, not Temurin 17), the Android SDK
+  command-line tools with platform 36 and build-tools 36.0.0 (`compileSdk 36`,
+  `targetSdk` stays 35), and Gradle (via the wrapper), installed with
   Homebrew. Android Studio is optional (emulator).
 - The APK is signed with a release key kept outside the repo, built with
   `./gradlew assembleRelease`, installed over USB (`adb install`) the first

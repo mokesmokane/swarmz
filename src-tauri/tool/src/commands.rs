@@ -14,7 +14,7 @@ use crate::input::{key_bytes, send_bytes};
 use crate::phone::{add_key, authorized_keys, list_keys, machine_hosts, revoke, valid_device};
 use crate::proc::run_with_timeout;
 use crate::screen::{diff_lines, LinesUpdate};
-use crate::transcript::{after, guess_path, image as transcript_image, page, Change, Normaliser};
+use crate::transcript::{after, guess_path, image as transcript_image, page, resolve_continued, Change, Normaliser};
 use crate::tiles::{apply_screen, homed_defs, prune as prune_sessions, session_rows, stamp, tile_rows, try_tile_rows_with_folds, watch_events, LastTextCache, Stamp, TileRow};
 use crate::util::{new_uuid, now_iso_ms, sh_quote, valid_abs_path};
 use crate::workspace::{load_from, read_from, save_to, ClaudeConfig, TerminalDef, Workspace};
@@ -203,7 +203,7 @@ pub fn watch(env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
     loop {
         let folds = log.folds(&env.home);
         // An unreadable workspace keeps the rows we had rather than reporting every tile gone.
-        let now = try_tile_rows_with_folds(&env.home, env.machine.as_deref(), folds, &cwd, &|id| dialog_for(env, id), &|p| texts.get(p))
+        let now = try_tile_rows_with_folds(&env.home, env.machine.as_deref(), folds, &cwd, &|id| dialog_for(env, id), &|p| texts.get(p), &|p| texts.resolve(p))
             .unwrap_or_else(|| prev.values().cloned().collect());
         let events = if first { vec![json!({"v": 1, "type": "snapshot", "tiles": now})] } else { watch_events(&prev, &now) };
         for e in &events {
@@ -587,8 +587,15 @@ fn transcript_path(env: &Env, tile: &str) -> Result<(PathBuf, Option<String>), C
     transcript_path_from(env, tile, fold_for(env, tile).unwrap_or_default())
 }
 
-/// `transcript_path` with the tile's fold supplied (a follower keeps the log folded).
+/// `transcript_path` with the tile's fold supplied (a follower keeps the log folded). Either path
+/// is followed through Claude's `continued-in` records, and the session id is then the new file's.
 fn transcript_path_from(env: &Env, tile: &str, fold: Fold) -> Result<(PathBuf, Option<String>), CliError> {
+    let (path, session) = known_transcript_path(env, tile, fold)?;
+    let (path, moved) = resolve_continued(&path);
+    Ok((path, moved.or(session)))
+}
+
+fn known_transcript_path(env: &Env, tile: &str, fold: Fold) -> Result<(PathBuf, Option<String>), CliError> {
     if let Some(p) = fold.transcript_path.clone() {
         return Ok((PathBuf::from(p), fold.session_id));
     }
@@ -645,7 +652,15 @@ pub fn transcript(
     let (_, mut offset) = read_new(&path, 0, &mut n);
     let views = n.views();
     let first = match after_id {
-        Some(id) => json!({"v": 1, "messages": after(&views, id), "hasMore": false}),
+        Some(id) => match after(&views, id) {
+            Some(msgs) => json!({"v": 1, "messages": msgs, "hasMore": false}),
+            // Not in this transcript (another session, or rewritten): the newest page, replacing
+            // whatever the reader has.
+            None => {
+                let (p, more) = page(&views, None, limit);
+                json!({"v": 1, "messages": p, "hasMore": more, "reset": true})
+            }
+        },
         None => {
             let (p, more) = page(&views, before, limit);
             json!({"v": 1, "messages": p, "hasMore": more})
@@ -766,6 +781,27 @@ fn fan_out(env: &Env, args: &[&str]) -> Result<Vec<Value>, String> {
         })
         .collect();
     Ok(handles.into_iter().map(|h| h.join().unwrap_or_else(|_| json!({"ok": false, "error": "the ssh thread panicked"}))).collect())
+}
+
+/// This Mac's name, login user and ssh host key fingerprints: everything the pairing QR code
+/// carries (spec §7.2). It holds no secret -- host keys are public and world-readable -- so a
+/// photograph of the code gives nobody access; the password is still needed.
+///
+/// Deliberately out of the ssh gate's allow list: the phone reads the code with its camera and
+/// never runs this.
+pub fn host_keys(env: &Env) -> Result<Value, CliError> {
+    let host = env
+        .machine
+        .clone()
+        .ok_or_else(|| CliError::new("failed", "this Mac's Tailscale name is not known; is Tailscale running?"))?;
+    let user = std::env::var("USER")
+        .ok()
+        .filter(|u| crate::phone::valid_ssh_user(u))
+        .ok_or_else(|| CliError::new("failed", "cannot tell which user is logged in ($USER)"))?;
+    // No host keys (Remote Login never switched on, say) is not an error: the code still saves
+    // the typing, and the phone falls back to trusting the first key it is offered.
+    let fingerprints = crate::hostkeys::fingerprints_in(&crate::hostkeys::host_key_dir());
+    Ok(json!({"v": 1, "host": host, "user": user, "fingerprints": fingerprints}))
 }
 
 pub fn phone_add(env: &Env, device: &str, key: &str, local: bool) -> Result<Value, CliError> {
