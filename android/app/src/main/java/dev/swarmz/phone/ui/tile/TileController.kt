@@ -166,12 +166,17 @@ class TileController(
                     val before = prev
                     prev = t
                     val kind = t.kind ?: return@collect
-                    val session: Any? = if (kind == "shell") outputSession.value else transcriptSession.value
-                    // The tile came (back) into view, its Mac came back online, or it was restarted.
-                    val fresh = before == null || before.kind == null || !before.online || (t.running && !before.running)
+                    val session = if (kind == "shell") outputSession.value?.job else transcriptSession.value?.job
+                    // Restarted: the old session ended with the shell (the tool reports the exit and closes the
+                    // stream cleanly), so follow the new one.
+                    val restarted = before?.kind != null && t.running && !before.running
+                    // The tile came (back) into view, or its Mac came back online.
+                    val fresh = before == null || before.kind == null || !before.online
+                    // Failed, or finished without an error.
+                    val ended = currentError() != null || session?.isActive == false
                     when {
                         session == null -> open(kind)
-                        currentError() != null && t.online && fresh -> open(kind)
+                        t.online && (restarted || (ended && fresh)) -> open(kind)
                     }
                 }
         }

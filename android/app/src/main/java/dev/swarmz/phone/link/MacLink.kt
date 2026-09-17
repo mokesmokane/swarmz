@@ -12,10 +12,12 @@ import dev.swarmz.phone.ssh.AuthRejected
 import dev.swarmz.phone.ssh.HostKeyChanged
 import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.ssh.SshConnector
+import android.os.Looper
 import java.io.IOException
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -31,6 +33,9 @@ import kotlinx.coroutines.flow.produceIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 sealed interface LinkState {
@@ -38,7 +43,7 @@ sealed interface LinkState {
     data object Connecting : LinkState
     data class Online(val version: Version) : LinkState
     data class Offline(val reason: String, val retryAt: Long) : LinkState
-    data class Blocked(val reason: String) : LinkState
+    data class Blocked(val reason: String, val keyRejected: Boolean = false) : LinkState
     data class TooOld(val version: Version) : LinkState
 }
 
@@ -49,6 +54,17 @@ private const val WATCH_SILENCE_MS = 75_000L
 
 /** How long `follow` waits for a failed stream's connection to be declared down before calling the failure its own. */
 private const val DROP_GRACE_MS = 2_000L
+
+/**
+ * Channel limits per connection. macOS sshd allows 10 sessions on one connection (`MaxSessions`), so a link
+ * uses at most 6 for `exec` and 4 for streams: the watch, which needs no slot as there is one per connection,
+ * plus [FOLLOW_SLOTS] follows. Separate limits mean open streams can never starve `exec`.
+ */
+const val EXEC_SLOTS = 6
+const val FOLLOW_SLOTS = 3
+
+/** True on Android's main thread; false off it, and in plain JVM tests, which have no main looper. */
+@PublishedApi internal fun onMainThread(): Boolean = Looper.getMainLooper()?.isCurrentThread == true
 
 fun backoffMs(attempt: Int): Long = min(30_000L, 1_000L shl min(attempt, 5))
 
@@ -70,6 +86,8 @@ class MacLink(
     private val current = MutableStateFlow<SshConnection?>(null)
     private val kick = Channel<Unit>(Channel.CONFLATED)
     private var job: Job? = null
+    private val execSlots = Semaphore(EXEC_SLOTS)
+    private val followSlots = Semaphore(FOLLOW_SLOTS)
 
     fun start() {
         if (job == null) job = scope.launch { loop() }
@@ -108,7 +126,7 @@ class MacLink(
                 pause(null)
                 continue
             } catch (e: AuthRejected) {
-                _state.value = LinkState.Blocked("$mac refused this phone's key. Pair again from Settings.")
+                _state.value = LinkState.Blocked("$mac refused this phone's key. Pair again: forget this pairing in Settings.", keyRejected = true)
                 pause(null)
                 continue
             } catch (e: Exception) {
@@ -181,10 +199,11 @@ class MacLink(
         withTimeoutOrNull(waitMs) { current.first { it != null && state.value is LinkState.Online } }
             ?: throw LinkDown("$mac is offline")
 
-    suspend fun exec(command: String, waitMs: Long = 15_000): String {
+    /** Runs [command] once the link is online (waiting up to [waitMs]); [timeoutMs] bounds the command itself. */
+    suspend fun exec(command: String, waitMs: Long = 15_000, timeoutMs: Long = 20_000): String = execSlots.withPermit {
         val conn = online(waitMs)
         val result = try {
-            conn.exec(command)
+            conn.exec(command, timeoutMs)
         } catch (e: IOException) {
             throw LinkDown(e.message ?: "lost the connection to $mac")
         }
@@ -194,10 +213,14 @@ class MacLink(
             val detail = result.stderr.lineSequence().firstOrNull { it.isNotBlank() }?.let { ": $it" } ?: ""
             throw LinkDown("swarmz failed on $mac (exit $exit)$detail")
         }
-        return result.stdout
+        result.stdout
     }
 
-    suspend inline fun <reified T> call(command: String): T = ToolJson.decode(exec(command))
+    /** Runs [command] and decodes its reply, off the main thread: replies such as transcript pages and images are large. */
+    suspend inline fun <reified T> call(command: String): T {
+        val text = exec(command)
+        return if (onMainThread()) withContext(Dispatchers.Default) { ToolJson.decode<T>(text) } else ToolJson.decode(text)
+    }
 
     fun follow(command: () -> String): Flow<String> = flow {
         while (true) {
@@ -205,7 +228,7 @@ class MacLink(
             val line = command()
             // Only the remote stream's own failure is caught here; the collector's exceptions pass straight through.
             var failure: Throwable? = null
-            conn.lines(line).catch { failure = it }.collect { emit(it) }
+            followSlots.withPermit { conn.lines(line).catch { failure = it }.collect { emit(it) } }
             val dropped = current.value !== conn || !conn.isOpen
             val error = failure
             if (error == null && !dropped) return@flow

@@ -21,6 +21,12 @@ class FakeConn(
     /** What `exec` does; replace it to return a given result or throw. */
     var execs: (String) -> ExecResult = { ExecResult(0, replies(it), "") }
 
+    /** Runs inside `exec` after the command is recorded; tests use it to hold a command open. */
+    var beforeExec: suspend (String) -> Unit = {}
+
+    /** The timeout each command was last run with. */
+    val timeouts = mutableMapOf<String, Long>()
+
     /** A failure `lines` raises for a command at once, with the connection left open. */
     var lineFailures: (String) -> Exception? = { null }
 
@@ -29,6 +35,8 @@ class FakeConn(
     override val isOpen get() = !closed
     override suspend fun exec(command: String, timeoutMs: Long): ExecResult {
         ran += command
+        timeouts[command] = timeoutMs
+        beforeExec(command)
         return execs(command)
     }
     override fun lines(command: String): Flow<String> {

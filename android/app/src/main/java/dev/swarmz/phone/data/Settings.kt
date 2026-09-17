@@ -1,9 +1,11 @@
 package dev.swarmz.phone.data
 
 import android.content.Context
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -47,6 +49,9 @@ interface SettingsStore : HostKeyPins {
     suspend fun setBackgroundWatch(on: Boolean)
     suspend fun setNotifyKinds(kinds: Set<String>)
     suspend fun forgetPairing()
+
+    /** The saved Macs as stored now, consistent with [paired] (the [macs] flow can trail a write). */
+    suspend fun loadMacs(): List<KnownMac> = macs.value
 }
 
 class MemorySettings : SettingsStore {
@@ -77,7 +82,10 @@ class MemorySettings : SettingsStore {
     }
 }
 
-internal val Context.swarmzStore by preferencesDataStore(name = "swarmz_settings")
+/** A settings file that no longer parses starts over empty (the phone then asks to pair again) rather than failing every read. */
+internal val SETTINGS_CORRUPTION_HANDLER = ReplaceFileCorruptionHandler { emptyPreferences() }
+
+internal val Context.swarmzStore by preferencesDataStore(name = "swarmz_settings", corruptionHandler = SETTINGS_CORRUPTION_HANDLER)
 
 internal object K {
     val paired = stringPreferencesKey("paired")
@@ -104,13 +112,16 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
     private val pinCache = ConcurrentHashMap<String, String>()
     private val pinWrites = Mutex()
 
+    /** The store as it was when this was created. Every field starts from it, so none reads as unset while loading. */
+    private val loaded: Preferences = runBlocking { store.data.first() }
+
     init {
-        val saved = runBlocking { store.data.first()[K.pins] }
+        val saved = loaded[K.pins]
         if (saved != null) runCatching { json.decodeFromString<Map<String, String>>(saved) }.getOrNull()?.let(pinCache::putAll)
     }
 
-    private fun <T> field(read: (Preferences) -> T, initial: T): StateFlow<T> =
-        store.data.map(read).stateIn(scope, SharingStarted.Eagerly, initial)
+    private fun <T> field(read: (Preferences) -> T): StateFlow<T> =
+        store.data.map(read).stateIn(scope, SharingStarted.Eagerly, read(loaded))
 
     // A stored value that no longer decodes reads as unset rather than failing the flow.
     private inline fun <reified T> decodeOrNull(text: String?): T? =
@@ -118,14 +129,18 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
 
     private fun seenTimes(p: Preferences): Map<String, Long> = decodeOrNull<Map<String, Long>>(p[K.seen]) ?: emptyMap()
 
-    override val paired = field({ p -> decodeOrNull<Paired>(p[K.paired]) }, null)
-    override val macs = field({ p -> decodeOrNull<List<KnownMac>>(p[K.macs]) ?: emptyList() }, emptyList())
-    override val seen = field({ p ->
+    private fun readMacs(p: Preferences): List<KnownMac> = decodeOrNull<List<KnownMac>>(p[K.macs]) ?: emptyList()
+
+    override val paired = field { p -> decodeOrNull<Paired>(p[K.paired]) }
+    override val macs = field(::readMacs)
+    override val seen = field { p ->
         seenTimes(p).entries.mapNotNull { (k, v) -> parseSeenKey(k)?.let { it to Instant.ofEpochMilli(v) } }.toMap()
-    }, emptyMap())
-    override val dictationLanguage = field({ p -> p[K.language] }, null)
-    override val backgroundWatch = field({ p -> p[K.background] ?: true }, true)
-    override val notifyKinds = field({ p -> p[K.notify] ?: DEFAULT_NOTIFY }, DEFAULT_NOTIFY)
+    }
+    override val dictationLanguage = field { p -> p[K.language] }
+    override val backgroundWatch = field { p -> p[K.background] ?: true }
+    override val notifyKinds = field { p -> p[K.notify] ?: DEFAULT_NOTIFY }
+
+    override suspend fun loadMacs(): List<KnownMac> = readMacs(store.data.first())
 
     override fun get(id: String): String? = pinCache[id]
 

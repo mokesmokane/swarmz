@@ -10,6 +10,7 @@ import dev.swarmz.phone.proto.Folders
 import dev.swarmz.phone.proto.ImageReply
 import dev.swarmz.phone.proto.Key
 import dev.swarmz.phone.proto.MachineList
+import dev.swarmz.phone.proto.PHONE_KEY_EXEC_MS
 import dev.swarmz.phone.proto.Pending
 import dev.swarmz.phone.proto.PendingReply
 import dev.swarmz.phone.proto.SentReply
@@ -139,8 +140,8 @@ class Repository(
     private val labels = MutableStateFlow<Map<String, String>>(emptyMap())
     private var discovery: Job? = null
     private val started = AtomicBoolean(false)
-    /** Open sessions: their jobs and how to end them. */
-    private val sessions = mutableMapOf<Job, (String) -> Unit>()
+    /** Open sessions: their jobs, and each one's Mac and how to end it. */
+    private val sessions = mutableMapOf<Job, Pair<String, (String) -> Unit>>()
 
     private val snapshots: StateFlow<List<LinkSnapshot>> = links.flatMapLatest { map ->
         if (map.isEmpty()) flowOf(emptyList())
@@ -160,12 +161,16 @@ class Repository(
         }
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
-    val banners: StateFlow<List<Banner>> = combine(snapshots, labels) { snaps, names ->
+    /**
+     * What Home shows above the cards. A Mac other than the paired one that refuses the key is left out: it was
+     * offline when this phone paired, and Settings explains that.
+     */
+    val banners: StateFlow<List<Banner>> = combine(snapshots, labels, settings.paired) { snaps, names, p ->
         snaps.mapNotNull { s ->
             val label = names[s.link.mac] ?: s.link.mac
             when (val st = s.state) {
                 is LinkState.TooOld -> Banner(s.link.mac, "Update swarmz on $label")
-                is LinkState.Blocked -> Banner(s.link.mac, st.reason)
+                is LinkState.Blocked -> if (st.keyRejected && s.link.mac != p?.host) null else Banner(s.link.mac, st.reason)
                 else -> null
             }
         }
@@ -199,7 +204,7 @@ class Repository(
                 labels.value = emptyMap()
                 if (previous != null && p != null && p != previous) settings.setMacs(emptyList())
                 previous = p
-                if (p != null) pair(p)
+                if (p != null) pair(p, settings.loadMacs())
             }
         }
     }
@@ -207,9 +212,20 @@ class Repository(
     private fun newLink(p: Paired, host: String): MacLink =
         MacLink(host, host, { Auth.Key(p.user, key()) }, connector, scope) { now().toEpochMilli() }.also { it.start() }
 
-    private fun pair(p: Paired) {
+    /**
+     * Links the paired Mac and the Macs saved from earlier rounds ([known]) at once, so they are reachable while the
+     * paired Mac is offline. Discovery then adds new Macs and drops ones the paired Mac no longer lists.
+     */
+    private fun pair(p: Paired, known: List<KnownMac>) {
         val primary = newLink(p, p.host)
-        links.value = mapOf(p.host to primary)
+        val initial = linkedMapOf(p.host to primary)
+        val names = mutableMapOf<String, String>()
+        for (m in known) {
+            names[m.name] = m.label
+            if (m.name !in initial) initial[m.name] = newLink(p, m.name)
+        }
+        links.value = initial
+        labels.value = names
         discovery = scope.launch {
             // A round runs each time the paired Mac comes online, then every 5 minutes while it stays online.
             primary.state.map { it is LinkState.Online }.distinctUntilChanged().collectLatest { online ->
@@ -228,14 +244,20 @@ class Repository(
             val list = primary.call<MachineList>(Cmd.machines()).machines
             val names = mutableMapOf<String, String>()
             list.firstOrNull { it.isSelf }?.let { names[p.host] = it.alias ?: it.name }
-            val next = links.value.toMutableMap()
-            for (m in list.filter { !it.isSelf }) {
+            val next = LinkedHashMap(links.value)
+            val others = list.filter { !it.isSelf }
+            for (m in others) {
                 names[m.name] = m.alias ?: m.name
                 if (m.name !in next) next[m.name] = newLink(p, m.name)
             }
+            val listed = others.map { it.name }.toSet()
+            val gone = next.keys.filter { it != p.host && it !in listed }
+            for (mac in gone) next.remove(mac)?.stop()
             links.value = next
             labels.value = names
-            settings.setMacs(next.keys.map { mac -> KnownMac(mac, names[mac] ?: mac, next[mac]?.lastSeen?.value) })
+            gone.forEach(::endSessions)
+            val saved = settings.macs.value.associateBy { it.name }
+            settings.setMacs(next.keys.map { mac -> KnownMac(mac, names[mac] ?: mac, next[mac]?.lastSeen?.value ?: saved[mac]?.lastSeen) })
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -243,14 +265,18 @@ class Repository(
         }
     }
 
-    private fun register(job: Job, end: (String) -> Unit) {
-        synchronized(sessions) { sessions[job] = end }
+    private fun register(job: Job, mac: String, end: (String) -> Unit) {
+        synchronized(sessions) { sessions[job] = mac to end }
         job.invokeOnCompletion { synchronized(sessions) { sessions.remove(job) } }
     }
 
-    /** Every open session follows a link that is being stopped, where `follow` would wait for ever. */
-    private fun endSessions() {
-        val open = synchronized(sessions) { sessions.values.toList().also { sessions.clear() } }
+    /** Ends the open sessions of [mac] (or every one), whose link is being stopped, where `follow` would wait for ever. */
+    private fun endSessions(mac: String? = null) {
+        val open = synchronized(sessions) {
+            val ending = sessions.filterValues { mac == null || it.first == mac }
+            ending.keys.forEach(sessions::remove)
+            ending.values.map { it.second }
+        }
         open.forEach { it("Disconnected") }
     }
 
@@ -283,10 +309,10 @@ class Repository(
     suspend fun image(key: TileKey, imageId: String): ImageReply = link(key.mac).call(Cmd.image(key.id, imageId))
 
     fun openTranscript(key: TileKey): TranscriptSession =
-        TranscriptSession(scope, link(key.mac), key.id).also { register(it.job, it::end) }
+        TranscriptSession(scope, link(key.mac), key.id).also { register(it.job, key.mac, it::end) }
 
     fun openOutput(key: TileKey): OutputSession =
-        OutputSession(scope, link(key.mac), key.id).also { register(it.job, it::end) }
+        OutputSession(scope, link(key.mac), key.id).also { register(it.job, key.mac, it::end) }
 
     /**
      * Removes this phone's key through the paired Mac, which passes the revoke on to the other Macs, then forgets
@@ -294,7 +320,7 @@ class Repository(
      */
     suspend fun revokeThisPhone() {
         val p = settings.paired.value ?: return
-        ToolJson.obj(link(p.host).exec(Cmd.phoneRevoke(p.device)))
+        ToolJson.obj(link(p.host).exec(Cmd.phoneRevoke(p.device), timeoutMs = PHONE_KEY_EXEC_MS))
         settings.forgetPairing()
     }
 

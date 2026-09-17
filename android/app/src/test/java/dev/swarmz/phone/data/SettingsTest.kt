@@ -12,7 +12,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -21,6 +23,23 @@ import java.time.Instant
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class SettingsTest {
+    @get:Rule val tmp = TemporaryFolder()
+
+    @Test
+    fun aCorruptStoreIsReplacedWithAnEmptyOne() = runBlocking {
+        val file = tmp.root.resolve("bad.preferences_pb").apply { writeBytes(byteArrayOf(0x7F, 0x01, 0x02, 0x03)) }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val store = androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(
+            corruptionHandler = SETTINGS_CORRUPTION_HANDLER,
+            scope = scope,
+            produceFile = { file },
+        )
+        assertEquals(androidx.datastore.preferences.core.emptyPreferences(), store.data.first())
+        store.edit { it[K.language] = "en-GB" }
+        assertEquals("en-GB", store.data.first()[K.language])
+        scope.cancel()
+    }
+
     @Test
     fun valuesPersistAcrossInstances() = runBlocking {
         val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
@@ -35,6 +54,13 @@ class SettingsTest {
         scope1.cancel()
         val scope2 = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val b = DataStoreSettings(ctx, scope2)
+        // Loaded before the first frame, even when the scope has not run yet: no pairing screen flashes for a paired phone.
+        val idle = CoroutineScope(SupervisorJob() + kotlinx.coroutines.test.StandardTestDispatcher())
+        val early = DataStoreSettings(ctx, idle)
+        assertEquals(Paired("mini", "me", "Fold"), early.paired.value)
+        assertEquals("en-GB", early.dictationLanguage.value)
+        assertEquals(false, early.backgroundWatch.value)
+        idle.cancel()
         assertEquals(Paired("mini", "me", "Fold"), b.paired.first { it != null })
         assertEquals(Instant.ofEpochSecond(100), b.seen.first { it.isNotEmpty() }[TileKey("mini", "t1")])
         assertEquals("SHA256:abc", b.get("mini:22"))

@@ -22,6 +22,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -271,6 +272,63 @@ class TileControllerTest {
         c.loadImage("i1")
         runCurrent()
         assertEquals(2, conn.ran.count { it == Cmd.image("t1", "i1") })
+        c.close()
+    }
+
+    private fun shellRow(running: Boolean) =
+        """{"tile":{"cwd":"/p","id":"s1","kind":"shell","name":"sh","running":$running,"status":"idle"${if (running) "" else ""","exitCode":0"""}},"type":"tile","v":1}"""
+
+    private val screenOne = """{"cols":80,"rows":1,"cursor":[0,2],"lines":[[{"text":"$ "}]],"v":1}"""
+
+    @Test
+    fun aRestartedShellShowsOutputAgain() = runTest {
+        val (repo, conn) = setup()
+        conn.stream(Cmd.watch()).send(snapshot(null))
+        runCurrent()
+        val c = TileController(TileKey("mini", "s1"), repo, backgroundScope) { Instant.EPOCH }
+        runCurrent()
+        val out = Cmd.output("s1", lines = 300, follow = true)
+        conn.stream(out).send(screenOne)
+        // The shell exits: the tool reports it and ends the stream cleanly, with no error.
+        conn.stream(out).send("""{"type":"exit","v":1}""")
+        conn.stream(out).close()
+        conn.stream(Cmd.watch()).send(shellRow(running = false))
+        runCurrent()
+        assertTrue(c.screen.value.exited)
+        assertNull(c.streamError.value)
+        assertEquals(1, conn.ran.count { it == out })
+        // "Restart shell": the row runs again, and the output is followed afresh.
+        conn.streams.remove(out)
+        conn.stream(Cmd.watch()).send(shellRow(running = true))
+        runCurrent()
+        assertEquals(2, conn.ran.count { it == out })
+        assertFalse(c.screen.value.exited)
+        conn.stream(out).send(screenOne.replace("$ ", "$ again"))
+        runCurrent()
+        assertEquals("$ again", c.screen.value.lines[0][0].text)
+        c.close()
+    }
+
+    @Test
+    fun aSessionThatEndedCleanlyReopensWhenTheMacIsBack() = runTest {
+        val (repo, conn) = setup()
+        conn.stream(Cmd.watch()).send(snapshot(null))
+        runCurrent()
+        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
+        runCurrent()
+        val open = Cmd.transcript("t1", follow = true)
+        conn.stream(open).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
+        conn.stream(open).close()
+        runCurrent()
+        assertNull(c.streamError.value)
+        // The link drops and comes back on the next connection.
+        conn.stream(Cmd.watch()).close()
+        runCurrent()
+        advanceTimeBy(1_100)
+        runCurrent()
+        assertTrue(c.macOnline.value)
+        assertTrue(open in conn2.ran)
+        assertEquals(listOf("hello"), c.transcript.value.messages.map { it.text })
         c.close()
     }
 }

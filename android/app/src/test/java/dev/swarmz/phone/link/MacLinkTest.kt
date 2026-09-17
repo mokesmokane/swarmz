@@ -4,11 +4,14 @@ import dev.swarmz.phone.proto.Cmd
 import dev.swarmz.phone.proto.ToolFailure
 import dev.swarmz.phone.proto.Version
 import dev.swarmz.phone.ssh.Auth
+import dev.swarmz.phone.ssh.AuthRejected
 import dev.swarmz.phone.ssh.ExecResult
 import dev.swarmz.phone.ssh.HostKeyChanged
 import dev.swarmz.phone.ssh.Unreachable
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
@@ -322,5 +325,56 @@ class MacLinkTest {
         link.start()
         runCurrent()
         assertEquals("swarmz isn't answering on mini", (link.state.value as LinkState.Offline).reason)
+    }
+
+    @Test
+    fun aRejectedKeyBlocksAndSaysHowToPairAgain() = runTest {
+        val link = link(FakeConnector(AuthRejected("mini")))
+        link.start()
+        runCurrent()
+        val st = link.state.value as LinkState.Blocked
+        assertTrue(st.keyRejected)
+        assertEquals("mini refused this phone's key. Pair again: forget this pairing in Settings.", st.reason)
+        assertTrue(!(LinkState.Blocked("x")).keyRejected)
+    }
+
+    @Test
+    fun execPassesItsTimeoutThrough() = runTest {
+        val conn = FakeConn()
+        val link = link(FakeConnector(conn))
+        link.start()
+        runCurrent()
+        link.exec("a")
+        link.exec("b", timeoutMs = 60_000)
+        assertEquals(20_000L, conn.timeouts["a"])
+        assertEquals(60_000L, conn.timeouts["b"])
+    }
+
+    @Test
+    fun execChannelsAreLimitedAndStreamsCannotStarveThem() = runTest {
+        val conn = FakeConn()
+        val gate = CompletableDeferred<Unit>()
+        conn.beforeExec = { if (it.startsWith("slow")) gate.await() }
+        val link = link(FakeConnector(conn))
+        link.start()
+        runCurrent()
+        repeat(8) { i -> backgroundScope.launch { link.exec("slow $i") } }
+        runCurrent()
+        assertEquals(EXEC_SLOTS, conn.ran.count { it.startsWith("slow") })
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(8, conn.ran.count { it.startsWith("slow") })
+
+        // Streams take their own slots: the watch plus FOLLOW_SLOTS follows.
+        repeat(FOLLOW_SLOTS + 1) { i -> backgroundScope.launch { link.follow { "follow $i" }.collect {} } }
+        runCurrent()
+        assertEquals(FOLLOW_SLOTS, conn.ran.count { it.startsWith("follow") })
+        // Every stream slot is taken, and exec still runs.
+        assertEquals(VERSION_OK, link.exec("quick"))
+        // A follow that ends frees its slot for the one waiting.
+        conn.stream("follow 0").close()
+        runCurrent()
+        assertEquals(FOLLOW_SLOTS + 1, conn.ran.count { it.startsWith("follow") })
+        assertEquals(10, EXEC_SLOTS + FOLLOW_SLOTS + 1)
     }
 }

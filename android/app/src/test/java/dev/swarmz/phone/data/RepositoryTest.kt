@@ -6,7 +6,10 @@ import dev.swarmz.phone.keys.PhoneKey
 import dev.swarmz.phone.link.FakeConn
 import dev.swarmz.phone.link.VERSION_OK
 import dev.swarmz.phone.proto.Cmd
+import dev.swarmz.phone.proto.PHONE_KEY_EXEC_MS
+import dev.swarmz.phone.link.LinkState
 import dev.swarmz.phone.ssh.Auth
+import dev.swarmz.phone.ssh.AuthRejected
 import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.ssh.SshConnector
 import dev.swarmz.phone.state.TileKey
@@ -106,6 +109,7 @@ class RepositoryTest {
         repo.revokeThisPhone()
         runCurrent()
         assertTrue(Cmd.phoneRevoke("Fold") in mini.ran)
+        assertEquals(PHONE_KEY_EXEC_MS, mini.timeouts[Cmd.phoneRevoke("Fold")])
         assertNull(settings.paired.value)
         assertTrue(repo.tiles.value.isEmpty())
     }
@@ -340,5 +344,68 @@ class RepositoryTest {
         runCurrent()
         assertEquals(1, connector.auths.size)
         assertEquals(1, repo.macs.value.size)
+    }
+
+    @Test
+    fun savedMacsAreReachedWhileThePairedMacIsOffline() = runTest {
+        val studio = FakeConn()
+        val settings = paired("mini").also {
+            it.macs.value = listOf(KnownMac("mini", "Mini", 5), KnownMac("studio", "Studio", 7))
+        }
+        // mini never answers.
+        val repo = repo(settings, HostConnector(mapOf("studio" to ArrayDeque(listOf(studio)))))
+        repo.start()
+        runCurrent()
+        studio.stream(Cmd.watch()).send(snapshot("t2", "web"))
+        runCurrent()
+        assertEquals(listOf("web"), repo.tiles.value.map { it.row.name })
+        assertEquals(listOf("mini" to "Mini", "studio" to "Studio"), repo.macs.value.map { it.name to it.label })
+        assertEquals(listOf(false, true), repo.macs.value.map { it.online })
+        assertEquals(Instant.ofEpochMilli(5), repo.macs.value.first().lastSeen)
+    }
+
+    @Test
+    fun discoveryDropsMacsTheMachinesListNoLongerHas() = runTest {
+        val mini = FakeConn { if (it == Cmd.machines()) """{"machines":[{"name":"mini","self":true}],"v":1}""" else VERSION_OK }
+        val studio = FakeConn()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        // The paired Mac's version check waits, so studio is up (with a session open) before discovery runs.
+        mini.beforeExec = { if (it == Cmd.version()) gate.await() }
+        val settings = paired("mini").also { it.macs.value = listOf(KnownMac("mini", "Mini"), KnownMac("studio", "Studio", 9)) }
+        val repo = repo(settings, HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)), "studio" to ArrayDeque(listOf(studio)))))
+        repo.start()
+        runCurrent()
+        val out = repo.openOutput(TileKey("studio", "t9"))
+        runCurrent()
+        assertEquals(listOf("mini", "studio"), repo.macs.value.map { it.name })
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(listOf("mini"), repo.macs.value.map { it.name })
+        assertTrue(studio.closed)
+        assertEquals("Disconnected", out.error.value)
+        assertEquals(listOf(KnownMac("mini", "mini", 0)), settings.macs.value)
+    }
+
+    @Test
+    fun aMacWithoutThePhonesKeyIsNotAHomeBanner() = runTest {
+        val mini = FakeConn { if (it == Cmd.machines()) MACHINES else VERSION_OK }
+        val rejecting = object : SshConnector {
+            val inner = HostConnector(mapOf("mini" to ArrayDeque(listOf(mini))))
+            override suspend fun connect(host: String, port: Int, auth: Auth): SshConnection =
+                if (host == "studio") throw AuthRejected(host) else inner.connect(host, port, auth)
+        }
+        val repo = repo(paired("mini"), rejecting)
+        repo.start()
+        runCurrent()
+        assertTrue((repo.macStates.value["studio"] as LinkState.Blocked).keyRejected)
+        assertEquals(emptyList<Banner>(), repo.banners.value)
+
+        // The paired Mac refusing the key still is one.
+        val refused = repo(paired("mini"), object : SshConnector {
+            override suspend fun connect(host: String, port: Int, auth: Auth): SshConnection = throw AuthRejected(host)
+        })
+        refused.start()
+        runCurrent()
+        assertEquals(listOf("mini"), refused.banners.value.map { it.mac })
     }
 }

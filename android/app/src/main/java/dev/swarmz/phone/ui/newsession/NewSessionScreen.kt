@@ -90,7 +90,9 @@ class NewSessionModel(private val repo: Repository, private val scope: Coroutine
 
     val atStart: Boolean get() = _state.value.folders?.path == startPath
 
+    /** Starts the session; null when it did not start, including a second tap while one is starting. */
     suspend fun start(): TileKey? {
+        if (_state.value.starting) return null
         val s = _state.value
         val mac = s.mac ?: return null
         val folder = s.folders?.path ?: return null
