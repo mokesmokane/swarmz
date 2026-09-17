@@ -5,9 +5,13 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.security.Security
 
 class SwarmzApp : Application() {
+    lateinit var graph: AppGraph
+        private set
+
     override fun onCreate() {
         super.onCreate()
         installBouncyCastle()
+        graph = AppGraph(this)
     }
 }
 

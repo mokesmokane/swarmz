@@ -1,0 +1,108 @@
+package dev.swarmz.phone.ui
+
+import android.os.Build
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.swarmz.phone.state.TileKey
+import dev.swarmz.phone.ui.home.HomeScreen
+import dev.swarmz.phone.ui.home.TileListPane
+import dev.swarmz.phone.ui.pairing.PairingScreen
+import dev.swarmz.phone.ui.pairing.defaultDeviceName
+import dev.swarmz.phone.ui.theme.Sw
+import dev.swarmz.phone.ui.theme.SwarmzTheme
+
+val UNFOLDED_MIN_WIDTH = 600.dp
+
+@Composable
+fun SwarmzRoot(vm: AppViewModel) {
+    SwarmzTheme {
+        val paired by vm.paired.collectAsStateWithLifecycle()
+        Box(Modifier.fillMaxSize().background(Sw.Background).safeDrawingPadding()) {
+            if (paired == null) {
+                val ui by vm.pairingUi.collectAsStateWithLifecycle()
+                PairingScreen(ui, defaultDeviceName(Build.MODEL ?: "phone"), vm::pair)
+            } else {
+                PairedContent(vm)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PairedContent(vm: AppViewModel) {
+    val route by vm.route.collectAsStateWithLifecycle()
+    val home by vm.home.collectAsStateWithLifecycle()
+    BackHandler(enabled = route != Route.Home) { vm.back() }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val unfolded = maxWidth >= UNFOLDED_MIN_WIDTH
+        if (unfolded) {
+            Row(Modifier.fillMaxSize()) {
+                TileListPane(
+                    home,
+                    selected = (route as? Route.Tile)?.key,
+                    onOpen = vm::open,
+                    onNew = vm::openNewSession,
+                    onSettings = vm::openSettings,
+                    modifier = Modifier.width(312.dp),
+                )
+                VerticalDivider(color = Sw.Border)
+                Box(Modifier.weight(1f).fillMaxHeight()) { Detail(vm, route, showBack = false) }
+            }
+        } else {
+            when (route) {
+                Route.Home -> HomeScreen(
+                    home,
+                    onOpen = vm::open,
+                    onAllow = vm::allowOnce,
+                    onDeny = vm::deny,
+                    onReply = vm::reply,
+                    onNew = vm::openNewSession,
+                    onSettings = vm::openSettings,
+                )
+                else -> Detail(vm, route, showBack = true)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Detail(vm: AppViewModel, route: Route, showBack: Boolean) {
+    when (route) {
+        Route.Home -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("Pick a tile", style = MaterialTheme.typography.bodyMedium, color = Sw.Muted)
+        }
+        is Route.Tile -> TileDetail(vm, route.key, showBack)
+        Route.NewSession -> Text("New session", modifier = Modifier.padding(16.dp))
+        Route.Settings -> Text("Settings", modifier = Modifier.padding(16.dp))
+    }
+}
+
+/** Replaced by TileScreen in Task 12. */
+@Composable
+private fun TileDetail(vm: AppViewModel, key: TileKey, showBack: Boolean) {
+    val home by vm.home.collectAsStateWithLifecycle()
+    val name = (home.model.needs + home.model.quiet).firstOrNull { it.key == key }?.row?.name ?: key.id
+    Column(Modifier.padding(16.dp)) {
+        Text(name, style = MaterialTheme.typography.titleMedium)
+        Text("Message $name…")
+    }
+}

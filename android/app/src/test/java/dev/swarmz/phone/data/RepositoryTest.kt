@@ -25,15 +25,6 @@ import org.junit.Before
 import org.junit.Test
 import java.time.Instant
 
-/** Connections by host; each host hands out its queue in order. */
-class HostConnector(val byHost: Map<String, ArrayDeque<SshConnection>>) : SshConnector {
-    val auths = mutableListOf<Auth>()
-    override suspend fun connect(host: String, port: Int, auth: Auth): SshConnection {
-        auths += auth
-        return byHost[host]?.removeFirstOrNull() ?: throw dev.swarmz.phone.ssh.Unreachable(host, Exception("no more"))
-    }
-}
-
 /** Refuses connections to [host] until the virtual clock reaches [upAt]. */
 class LateConnector(private val clock: () -> Long, private val host: String, private val upAt: Long, private val inner: SshConnector) : SshConnector {
     override suspend fun connect(host: String, port: Int, auth: Auth): SshConnection {
