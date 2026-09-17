@@ -21,6 +21,10 @@ must stay under 100 or that number stops increasing; the script refuses anything
 refuses pre-release suffixes. A test in `scripts/version.test.mjs` fails if the three files ever
 drift apart, so CI catches a hand-edited version.
 
+Both release jobs refuse to start if `${GITHUB_REF_NAME#v}` is not exactly the version in
+`src-tauri/tauri.conf.json`, because a mismatch would publish a release whose `latest.json` still
+names the old version: nobody would update and nothing would error.
+
 The tag push starts `.github/workflows/release.yml`. When it finishes there is a **draft**
 release: write the notes and press Publish. **Publishing is what ships the update** — the app's
 updater reads `releases/latest/download/latest.json`, and a draft is never "latest", so a draft
@@ -35,11 +39,20 @@ release is invisible to everyone's updater.
 | `release.yml` | a tag matching `v*` | `checks`, then `macos` and `android`. |
 
 `release.yml`'s `macos` job (on `macos-14`, so **Apple Silicon only** — see Limitations) imports
-the Developer ID certificate into a throwaway keychain, runs `tauri-apps/tauri-action`, and
-deletes the keychain in a final `always()` step. The action signs, notarises and staples the app,
+the Developer ID certificate into a throwaway keychain, writes the App Store Connect key to
+`$RUNNER_TEMP/private_keys/AuthKey_<id>.p8` (mode 600), runs `tauri-apps/tauri-action@v1`, and
+deletes both in a final `always()` step that recomputes the keychain path rather than trusting a
+variable an aborted import may never have exported. The action signs, notarises and staples the app,
 and — because `bundle.createUpdaterArtifacts` is true — also produces `swarmz.app.tar.gz` and its
 minisign `.sig`, generates `latest.json` and attaches all of it, with the DMG, to the draft
 release.
+
+**Notarisation uses an App Store Connect API key, not an Apple ID.** Apple ID authentication
+returns 401 on this account. `tauri-bundler` tries `APPLE_ID` + `APPLE_PASSWORD` + `APPLE_TEAM_ID`
+*first* and only falls through to the key when that triple is incomplete — and an empty-but-set
+`APPLE_ID` counts as set — so those two variables must not appear in the workflow at all. They do
+not. Note that the bundler's `APPLE_API_KEY` variable holds the key **ID**; the key itself is the
+file named by `APPLE_API_KEY_PATH`.
 
 The `android` job waits for that release to exist, writes the keystore from `ANDROID_KEYSTORE` to
 a temporary file, runs `./gradlew :app:testDebugUnitTest :app:assembleRelease` with the passwords
@@ -70,11 +83,20 @@ automatic**. Copy them somewhere safe (an encrypted disk image, a password manag
 | `~/.swarmz-release/updater.key.pub` | the public half, in `tauri.conf.json` | — (public) |
 | `~/.swarmz-release/developer-id.p12` | Apple Developer ID Application certificate | `APPLE_CERTIFICATE` (base64) |
 | `~/.swarmz-release/p12-password.txt` | its password | `APPLE_CERTIFICATE_PASSWORD` |
+| the App Store Connect `AuthKey_DR2GC9B77Q.p8` | notarisation key — **Apple lets you download it once** | `APPLE_API_KEY` (the PEM text, not base64) |
 | `~/.swarmz-android/release.jks` | Android upload/release keystore | `ANDROID_KEYSTORE` (base64) |
 | `~/.swarmz-android/signing.properties` | its passwords and alias, for local builds | `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` |
 
-The repository secrets are the same values: `APPLE_SIGNING_IDENTITY`, `APPLE_TEAM_ID`, `APPLE_ID`
-and `APPLE_PASSWORD` (an app-specific password for notarisation) round out the list.
+The rest are plain strings: `APPLE_SIGNING_IDENTITY`
+(`Developer ID Application: Martin O'Kane (SQUJL7DXG8)`), `APPLE_TEAM_ID` (`SQUJL7DXG8`),
+`APPLE_API_KEY_ID` (`DR2GC9B77Q`) and `APPLE_API_ISSUER`
+(`e563a705-53db-4312-a469-996efab75c4e`). There is no `APPLE_ID` or `APPLE_PASSWORD`; they were
+deleted when notarisation moved to the API key.
+
+`APPLE_API_KEY` is stored as the `.p8`'s text, newlines and all, not base64. The workflow writes it
+with `printf '%s\n' "${VAR%$'\n'}"`, which reproduces the original file byte for byte whether or
+not it was pasted with a trailing blank line; base64 would buy nothing. To re-set it:
+`pbcopy < AuthKey_DR2GC9B77Q.p8`.
 
 **Losing the updater private key means no installed copy of swarmz can ever be updated again** —
 every install only trusts the one public key compiled into it. Losing the Android keystore means
@@ -98,8 +120,13 @@ base64 -i ~/.swarmz-android/release.jks | pbcopy
   `.p12`, replace `~/.swarmz-release/developer-id.p12` and the `APPLE_CERTIFICATE` /
   `APPLE_CERTIFICATE_PASSWORD` secrets, and update `APPLE_SIGNING_IDENTITY` if the name changed.
   This one is safe to rotate: notarisation, not the certificate, is what Gatekeeper checks.
-- **`APPLE_PASSWORD`.** Revoke and re-create the app-specific password at appleid.apple.com and
-  update the secret. Nothing else changes.
+- **App Store Connect key.** In App Store Connect → Users and Access → Integrations → App Store
+  Connect API, revoke the old key and generate a new one with the **Developer** role. The `.p8`
+  can only be downloaded once, so save it before leaving the page. Update `APPLE_API_KEY` (its
+  text) and `APPLE_API_KEY_ID`; `APPLE_API_ISSUER` only changes if the team does. Nothing that is
+  already released is affected — the key authenticates the notarisation request, and tickets
+  already stapled stay valid. Check it before relying on it:
+  `xcrun notarytool history --key AuthKey_<id>.p8 --key-id <id> --issuer <issuer>`.
 - **Android keystore.** There is no rotation: a new key means a new `applicationId`, or every
   phone uninstalling and reinstalling. Treat `~/.swarmz-android/release.jks` as permanent.
 
@@ -111,3 +138,17 @@ base64 -i ~/.swarmz-android/release.jks | pbcopy
   triple first.
 - The first release has to be published by hand before any updater can see it, and `latest.json`
   only ever points at the most recent **published** release.
+- **Check `latest.json` after the first publish.** The action writes the download URLs while the
+  release is still a draft, and a draft has no tag page, so they can come out as
+  `/releases/download/untagged-<hash>/…` instead of `/releases/download/v<version>/…`. An
+  `untagged-` URL stops working the moment the release is published and every updater 404s. Open
+  the attached `latest.json` and look before announcing anything; if it is wrong, fix the URLs and
+  re-upload that one file.
+- **A failed `android` job leaves a draft with no APK.** The desktop half is complete and
+  publishable, but phones get nothing. Either re-run the job or attach the APK by hand
+  (`gh release upload v<version> swarmz-<version>.apk`) before publishing.
+- **A failed `macos` job can leave an empty draft release behind**, because `tauri-action` creates
+  the release before it finishes building. Delete that draft before re-tagging, or the next run
+  attaches its artifacts alongside the stale ones.
+- **Re-running the workflow on the same tag overwrites the release body.** Anything written in the
+  draft's notes before a re-run is lost, so write them last, once the run has gone green.

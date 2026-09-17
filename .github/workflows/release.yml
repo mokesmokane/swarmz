@@ -35,6 +35,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # A tag that does not match the version would publish a release whose latest.json still
+      # names the old one: nobody updates, and nothing errors. Node is preinstalled on the runner,
+      # so this needs no setup and runs before anything expensive.
+      - name: The tag must match the version
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the version in src-tauri/tauri.conf.json ($VERSION). Run \`npm run version -- $TAG\`, commit, delete the tag and tag again."
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME matches version $VERSION"
+
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -59,6 +73,8 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
+          # Kept in step with the cleanup step, which recomputes it rather than reading a variable
+          # this step might never reach.
           KEYCHAIN_PATH="$RUNNER_TEMP/swarmz-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
           echo "::add-mask::$KEYCHAIN_PASSWORD"
@@ -66,7 +82,8 @@ jobs:
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          # No auto-lock: a notarised build can take longer than the default five minutes.
+          # Locks on sleep and after six hours rather than the default five minutes, which
+          # signing plus notarisation can easily outlast.
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
@@ -75,21 +92,49 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
           security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
           rm -f "$CERT_PATH"
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      # Notarisation uses an App Store Connect API key: this account's Apple ID auth returns 401.
+      # The bundler wants the key as a file named AuthKey_<id>.p8 (tauri-bundler 2.11's
+      # notarize_auth). The secret holds the PEM text, newlines and all, so it is written out as
+      # it is; `printf '%s'` keeps them and adds nothing.
+      - name: Write the App Store Connect key
+        env:
+          APPLE_API_KEY_PEM: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8"
+          # Strips at most one trailing newline and adds exactly one, so the file is the same
+          # whether or not the secret was pasted with a final blank line.
+          printf '%s\n' "${APPLE_API_KEY_PEM%$'\n'}" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          # Shape only; nothing from the file is printed.
+          grep -q -- "-----BEGIN PRIVATE KEY-----" "$KEY_PATH"
+          grep -q -- "-----END PRIVATE KEY-----" "$KEY_PATH"
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
 
       # Builds the .app and .dmg, signs with the Developer ID, notarises with the App Store
       # Connect credentials, staples the ticket, and — because bundle.createUpdaterArtifacts is
-      # true — writes swarmz.app.tar.gz and its minisign .sig. uploadUpdaterJson (on by default)
-      # then generates and uploads latest.json pointing at that archive.
+      # true — writes swarmz.app.tar.gz and its minisign .sig. In tauri-action v1 the
+      # uploadUpdaterJson and uploadUpdaterSignatures inputs both default to true, so latest.json
+      # and the .sig are generated and attached without asking. (v0 spells the first of those
+      # includeUpdaterJson; the inputs used below exist in both.)
+      #
+      # APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID is tried FIRST by tauri-bundler 2.11.4's
+      # notarize_auth, and an empty-but-set APPLE_ID would match it, so those two variables must
+      # not appear here at all. APPLE_API_KEY holds the key *ID*, not the key: the key itself is
+      # the file at APPLE_API_KEY_PATH, written above.
       - name: Build, sign, notarise and draft the release
         id: tauri
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
@@ -103,15 +148,19 @@ jobs:
           # path to follow the triple too.
           args: ""
 
-      # Runs even when the build failed, so the key never outlives the job.
-      - name: Remove the signing keychain
+      # Runs even when the build failed, and even when the import step itself failed half way
+      # through - hence recomputing the path rather than reading a variable that step might never
+      # have exported. Nothing signing-related outlives the job.
+      - name: Remove the signing keychain and the API key
         if: always()
         run: |
           set -euo pipefail
-          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+          KEYCHAIN_PATH="$RUNNER_TEMP/swarmz-signing.keychain-db"
+          if [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
           rm -f "$RUNNER_TEMP/developer-id.p12" || true
+          rm -rf "$RUNNER_TEMP/private_keys" || true
 
   # The phone app, attached to the same draft release. Independent of the desktop build except
   # for needing the release to exist first.
@@ -123,6 +172,19 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v5
+
+      # The same guard as the macOS job: this job attaches an APK named after the version, and a
+      # mismatch would name it something no release claims.
+      - name: The tag must match the version
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the version in src-tauri/tauri.conf.json ($VERSION). Run \`npm run version -- $TAG\`, commit, delete the tag and tag again."
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME matches version $VERSION"
 
       - uses: actions/setup-java@v4
         with:
