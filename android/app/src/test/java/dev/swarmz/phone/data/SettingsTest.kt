@@ -13,6 +13,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -182,5 +183,47 @@ class SettingsTest {
         s.forgetPairing()
         assertEquals(emptyList<Paired>(), s.pairings.value)
         assertNull(s.paired.value)
+    }
+
+    @Test
+    fun theListPaneWidthAndCollapseArePersistedAndClamped() = runBlocking {
+        val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+        ctx.swarmzStore.edit { it.clear() }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val s = DataStoreSettings(ctx, scope)
+        assertEquals(LIST_DEFAULT_DP, s.listWidth.value)
+        assertEquals(false, s.listCollapsed.value)
+        s.setListWidth(300)
+        s.setListCollapsed(true)
+        assertEquals(300, withTimeout(5_000) { s.listWidth.first { it == 300 } })
+        assertTrue(withTimeout(5_000) { s.listCollapsed.first { it } })
+        // Another instance reads them before its scope has run.
+        val later = DataStoreSettings(ctx, scope)
+        assertEquals(300, later.listWidth.value)
+        assertEquals(true, later.listCollapsed.value)
+        // A width is clamped as it is written...
+        s.setListWidth(9000)
+        assertEquals(LIST_MAX_DP, withTimeout(5_000) { s.listWidth.first { it == LIST_MAX_DP } })
+        s.setListWidth(0)
+        assertEquals(LIST_MIN_DP, withTimeout(5_000) { s.listWidth.first { it == LIST_MIN_DP } })
+        // ...and again as it is read, so a hand-edited store cannot push the list off the screen.
+        ctx.swarmzStore.edit { it[K.listWidth] = 4000 }
+        assertEquals(LIST_MAX_DP, withTimeout(5_000) { s.listWidth.first { it == LIST_MAX_DP } })
+        scope.cancel()
+    }
+
+    @Test
+    fun memorySettingsClampTheListPaneWidthToo() = runBlocking {
+        val s = MemorySettings()
+        assertEquals(LIST_DEFAULT_DP, s.listWidth.value)
+        assertEquals(false, s.listCollapsed.value)
+        s.setListWidth(9000)
+        assertEquals(LIST_MAX_DP, s.listWidth.value)
+        s.setListWidth(0)
+        assertEquals(LIST_MIN_DP, s.listWidth.value)
+        s.setListWidth(300)
+        assertEquals(300, s.listWidth.value)
+        s.setListCollapsed(true)
+        assertEquals(true, s.listCollapsed.value)
     }
 }

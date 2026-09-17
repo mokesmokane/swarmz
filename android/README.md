@@ -116,7 +116,9 @@ reach.
   cards with reply/allow/deny actions — then a row of pills for every other running tile, and a
   New session button.
 - **Tile list** (unfolded width, beside the open tile): every tile grouped by Mac, NEEDS YOU
-  first, with online/offline state per Mac.
+  first, with online/offline state per Mac. The list can be dragged wider or
+  narrower (220-480 dp, 260 dp by default) and hidden with the chevron in its header, which leaves the
+  open tile the whole width until you bring it back.
 - **Tile screen**: a Claude conversation (messages, tool chips, images, a permission card, a
   composer with hold-to-dictate) or a shell's coloured scrollback and command box, with a quick-key
   row for each kind. A Claude tile's header also has a Screen button that swaps the conversation for

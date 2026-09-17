@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -38,6 +39,14 @@ import java.util.concurrent.ConcurrentHashMap
 
 val DEFAULT_NOTIFY = setOf("permission", "question", "finished")
 
+/** The unfolded tile list's width in dp: its default, and the range it is held to. */
+const val LIST_DEFAULT_DP = 260
+const val LIST_MIN_DP = 220
+const val LIST_MAX_DP = 480
+
+/** Applied to every stored width, on the way in and on the way out, so a hand-edited store cannot break the layout. */
+fun clampListWidth(dp: Int): Int = dp.coerceIn(LIST_MIN_DP, LIST_MAX_DP)
+
 /**
  * [p] in place of the entry for the same Mac, or at the end. Matched the way the links are ([sameMac]), so a Mac
  * paired again under its other name replaces its pairing instead of adding a second, stale one.
@@ -55,6 +64,10 @@ interface SettingsStore : HostKeyPins {
     val dictationLanguage: StateFlow<String?>
     val backgroundWatch: StateFlow<Boolean>
     val notifyKinds: StateFlow<Set<String>>
+    /** The unfolded tile list's width in dp, always within [LIST_MIN_DP]..[LIST_MAX_DP]. */
+    val listWidth: StateFlow<Int>
+    /** Whether the unfolded tile list is hidden, leaving the open tile the whole width. */
+    val listCollapsed: StateFlow<Boolean>
     /** Replaces every pairing with [p] alone (or none). */
     suspend fun setPaired(p: Paired?)
     /** Adds [p], replacing a pairing with the same host and keeping the order; the first addition becomes [paired]. */
@@ -64,6 +77,8 @@ interface SettingsStore : HostKeyPins {
     suspend fun setDictationLanguage(tag: String?)
     suspend fun setBackgroundWatch(on: Boolean)
     suspend fun setNotifyKinds(kinds: Set<String>)
+    suspend fun setListWidth(dp: Int)
+    suspend fun setListCollapsed(on: Boolean)
     suspend fun forgetPairing()
 
     /** The saved Macs as stored now, consistent with [paired] (the [macs] flow can trail a write). */
@@ -86,6 +101,8 @@ class MemorySettings : SettingsStore {
     override val dictationLanguage = MutableStateFlow<String?>(null)
     override val backgroundWatch = MutableStateFlow(true)
     override val notifyKinds = MutableStateFlow(DEFAULT_NOTIFY)
+    override val listWidth = MutableStateFlow(LIST_DEFAULT_DP)
+    override val listCollapsed = MutableStateFlow(false)
     private val pins = ConcurrentHashMap<String, String>()
     override fun get(id: String) = pins[id]
     override fun put(id: String, fingerprint: String) { pins[id] = fingerprint }
@@ -100,6 +117,8 @@ class MemorySettings : SettingsStore {
     override suspend fun setDictationLanguage(tag: String?) { dictationLanguage.value = tag }
     override suspend fun setBackgroundWatch(on: Boolean) { backgroundWatch.value = on }
     override suspend fun setNotifyKinds(kinds: Set<String>) { notifyKinds.value = kinds }
+    override suspend fun setListWidth(dp: Int) { listWidth.value = clampListWidth(dp) }
+    override suspend fun setListCollapsed(on: Boolean) { listCollapsed.value = on }
     override suspend fun forgetPairing() {
         set(emptyList())
         macs.value = emptyList()
@@ -122,6 +141,8 @@ internal object K {
     val language = stringPreferencesKey("dictation_language")
     val background = booleanPreferencesKey("background_watch")
     val notify = stringSetPreferencesKey("notify_kinds")
+    val listWidth = intPreferencesKey("list_width")
+    val listCollapsed = booleanPreferencesKey("list_collapsed")
 }
 
 private fun seenKey(key: TileKey) = "${key.mac}|${key.id}"
@@ -178,6 +199,8 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
     override val dictationLanguage = field { p -> p[K.language] }
     override val backgroundWatch = field { p -> p[K.background] ?: true }
     override val notifyKinds = field { p -> p[K.notify] ?: DEFAULT_NOTIFY }
+    override val listWidth = field { p -> clampListWidth(p[K.listWidth] ?: LIST_DEFAULT_DP) }
+    override val listCollapsed = field { p -> p[K.listCollapsed] ?: false }
 
     override suspend fun loadMacs(): List<KnownMac> = readMacs(store.data.first())
 
@@ -236,6 +259,14 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
 
     override suspend fun setNotifyKinds(kinds: Set<String>) {
         store.edit { it[K.notify] = kinds }
+    }
+
+    override suspend fun setListWidth(dp: Int) {
+        store.edit { it[K.listWidth] = clampListWidth(dp) }
+    }
+
+    override suspend fun setListCollapsed(on: Boolean) {
+        store.edit { it[K.listCollapsed] = on }
     }
 
     override suspend fun forgetPairing() {

@@ -568,10 +568,14 @@ plain width check (§6.3), not material3-adaptive.
 ### 6.3 Layouts
 
 - **Folded** (narrower than 600 dp): one screen at a time, home or tile.
-- **Unfolded** (a width of at least 600 dp): tile list (312 dp) on the left,
-  the open tile on the right; opening a tile never leaves the list. With no
-  tile open, home sits beside the list (without the list's own Settings and
-  New session actions).
+- **Unfolded** (a width of at least 600 dp): tile list on the left, the open
+  tile on the right; opening a tile never leaves the list. With no tile open,
+  home sits beside the list (without the list's own Settings and New session
+  actions). The list can be collapsed (a chevron in its header hides it; a
+  "Show the list" control in the detail pane brings it back) and resized by
+  dragging the divider between the panes. Its width is stored, defaults to
+  260 dp and is held between 220 dp and 480 dp, and is clamped further so the
+  detail pane always keeps at least 320 dp.
 - Folding or unfolding keeps the open tile, the composer text and scroll
   position.
 

@@ -385,6 +385,18 @@ class AppViewModel(
         viewModelScope.launch { settings.setDictationLanguage(tag) }
     }
 
+    /** The unfolded tile list's width in dp, and whether it is hidden; both are stored, so they outlive a fold. */
+    val listWidth: StateFlow<Int> = settings.listWidth
+    val listCollapsed: StateFlow<Boolean> = settings.listCollapsed
+
+    fun setListWidth(dp: Int) {
+        viewModelScope.launch { settings.setListWidth(dp) }
+    }
+
+    fun setListCollapsed(on: Boolean) {
+        viewModelScope.launch { settings.setListCollapsed(on) }
+    }
+
     private fun answer(key: TileKey, choice: String) {
         val ask = asks.value[key] ?: return
         asks.update { it - key }

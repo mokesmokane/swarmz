@@ -7,28 +7,45 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.swarmz.phone.data.LIST_MAX_DP
+import dev.swarmz.phone.data.LIST_MIN_DP
 import dev.swarmz.phone.ui.components.LocalMic
 import dev.swarmz.phone.ui.dictation.AndroidRecognizer
 import dev.swarmz.phone.ui.dictation.Dictation
@@ -44,8 +61,15 @@ import dev.swarmz.phone.ui.settings.SettingsScreen
 import dev.swarmz.phone.ui.theme.Sw
 import dev.swarmz.phone.ui.theme.SwarmzTheme
 import dev.swarmz.phone.ui.tile.TileScreen
+import kotlin.math.roundToInt
 
 val UNFOLDED_MIN_WIDTH = 600.dp
+
+/** However wide the list is stored, the open tile beside it never gets less than this. */
+private val DETAIL_MIN_WIDTH = 320.dp
+
+/** The draggable strip between the two panes. */
+private val HANDLE_WIDTH = 12.dp
 
 @Composable
 fun SwarmzRoot(vm: AppViewModel) {
@@ -96,19 +120,34 @@ private fun PairedContent(vm: AppViewModel) {
     val home by vm.home.collectAsStateWithLifecycle()
     BackHandler(enabled = route != Route.Home) { vm.back() }
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val unfolded = maxWidth >= UNFOLDED_MIN_WIDTH
+        val available = maxWidth
+        val unfolded = available >= UNFOLDED_MIN_WIDTH
         if (unfolded) {
+            val collapsed by vm.listCollapsed.collectAsStateWithLifecycle()
+            val stored by vm.listWidth.collectAsStateWithLifecycle()
             Row(Modifier.fillMaxSize()) {
-                TileListPane(
-                    home,
-                    selected = (route as? Route.Tile)?.key,
-                    onOpen = vm::open,
-                    onNew = vm::openNewSession,
-                    onSettings = vm::openSettings,
-                    modifier = Modifier.width(312.dp),
-                )
-                VerticalDivider(color = Sw.Border)
-                Box(Modifier.weight(1f).fillMaxHeight()) { Detail(vm, home, route, showBack = false) }
+                if (!collapsed) {
+                    // The drag moves this local copy every frame; only the settled value is written to settings,
+                    // and a stored value coming back re-keys it.
+                    var dragged by remember(stored) { mutableStateOf(stored.dp) }
+                    val widest = maxOf(LIST_MIN_DP.dp, minOf(LIST_MAX_DP.dp, available - DETAIL_MIN_WIDTH))
+                    TileListPane(
+                        home,
+                        selected = (route as? Route.Tile)?.key,
+                        onOpen = vm::open,
+                        onNew = vm::openNewSession,
+                        onSettings = vm::openSettings,
+                        onCollapse = { vm.setListCollapsed(true) },
+                        modifier = Modifier.width(dragged.coerceAtMost(available - DETAIL_MIN_WIDTH)),
+                    )
+                    ResizeHandle(
+                        onDrag = { by -> dragged = (dragged + by).coerceIn(LIST_MIN_DP.dp, widest) },
+                        onStop = { vm.setListWidth(dragged.value.roundToInt()) },
+                    )
+                }
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    Detail(vm, home, route, showBack = false, onShowList = if (collapsed) ({ vm.setListCollapsed(false) }) else null)
+                }
             }
         } else {
             Detail(vm, home, route, showBack = true)
@@ -116,8 +155,43 @@ private fun PairedContent(vm: AppViewModel) {
     }
 }
 
+/** A 12 dp strip around a 1 dp line: dragging it resizes the tile list. */
 @Composable
-private fun Detail(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boolean) {
+private fun ResizeHandle(onDrag: (Dp) -> Unit, onStop: () -> Unit) {
+    val density = LocalDensity.current
+    val state = rememberDraggableState { delta -> onDrag(with(density) { delta.toDp() }) }
+    Box(
+        Modifier
+            .fillMaxHeight()
+            .width(HANDLE_WIDTH)
+            .draggable(state, Orientation.Horizontal, onDragStopped = { onStop() })
+            .semantics { contentDescription = "Resize the list" },
+        contentAlignment = Alignment.Center,
+    ) {
+        VerticalDivider(color = Sw.Border)
+    }
+}
+
+/**
+ * [onShowList] is set only when unfolded with the list hidden. A tile's header has its own place for it, beside the
+ * status dot; every other route would need the same parameter threaded through it, so those get a thin bar instead.
+ */
+@Composable
+private fun Detail(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boolean, onShowList: (() -> Unit)? = null) {
+    if (onShowList != null && route !is Route.Tile) {
+        Column(Modifier.fillMaxSize()) {
+            IconButton(onClick = onShowList, modifier = Modifier.padding(start = 4.dp, top = 4.dp)) {
+                Icon(Icons.Default.ChevronRight, contentDescription = "Show the list", tint = Sw.Title)
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) { Screen(vm, home, route, showBack, null) }
+        }
+        return
+    }
+    Screen(vm, home, route, showBack, onShowList)
+}
+
+@Composable
+private fun Screen(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boolean, onShowList: (() -> Unit)?) {
     when (route) {
         // Folded, or unfolded with no tile open (beside the list, which then owns Settings and New session).
         Route.Home -> HomeScreen(
@@ -135,7 +209,7 @@ private fun Detail(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boole
         )
         is Route.Tile -> {
             val c by vm.tile.collectAsStateWithLifecycle()
-            c?.let { TileScreen(it, unfolded = !showBack, onBack = if (showBack) ({ vm.back() }) else null, now = vm.now) }
+            c?.let { TileScreen(it, unfolded = !showBack, onBack = if (showBack) ({ vm.back() }) else null, now = vm.now, onShowList = onShowList) }
         }
         is Route.AddMac -> {
             val ui by vm.addMacUi.collectAsStateWithLifecycle()

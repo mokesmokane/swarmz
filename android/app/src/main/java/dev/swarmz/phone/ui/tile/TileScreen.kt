@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -47,7 +48,13 @@ import kotlinx.coroutines.delay
 import java.time.Instant
 
 @Composable
-fun TileScreen(c: TileController, unfolded: Boolean, onBack: (() -> Unit)?, now: () -> Instant = Instant::now) {
+fun TileScreen(
+    c: TileController,
+    unfolded: Boolean,
+    onBack: (() -> Unit)?,
+    now: () -> Instant = Instant::now,
+    onShowList: (() -> Unit)? = null,
+) {
     val row by c.row.collectAsStateWithLifecycle()
     val online by c.macOnline.collectAsStateWithLifecycle()
     val macLabel by c.macLabel.collectAsStateWithLifecycle()
@@ -76,6 +83,9 @@ fun TileScreen(c: TileController, unfolded: Boolean, onBack: (() -> Unit)?, now:
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Sw.Title) }
+            } else if (onShowList != null) {
+                // Unfolded with the list hidden: the same spot brings it back.
+                IconButton(onClick = onShowList) { Icon(Icons.Filled.ChevronRight, contentDescription = "Show the list", tint = Sw.Title) }
             }
             if (r != null) StatusDot(dotOf(r, if (r.needs == "permission") Need.Permission else null), Modifier.padding(horizontal = 6.dp))
             Column(Modifier.weight(1f).padding(start = 6.dp)) {

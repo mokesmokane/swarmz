@@ -9,6 +9,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.geometry.Offset
 import dev.swarmz.phone.data.MemorySettings
 import dev.swarmz.phone.data.Paired
 import dev.swarmz.phone.data.Repository
@@ -25,6 +27,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -121,6 +124,67 @@ class RootTest {
         // Started from Home, so cancelling goes back there.
         compose.onNodeWithContentDescription("Cancel").performClick()
         compose.waitUntil(5_000) { vm.route.value == Route.Home }
+    }
+
+    @Test
+    @Config(qualifiers = "w700dp-h800dp")
+    fun unfoldedHidesAndShowsTheList() {
+        val vm = vm(paired = true)
+        compose.setContent { SwarmzRoot(vm) }
+        compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("docs") > 0 }
+        compose.onNodeWithText("Tiles").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Hide the list").performClick()
+        compose.waitUntil(5_000) { vm.listCollapsed.value }
+        compose.onNodeWithText("Tiles").assertDoesNotExist()
+        // Beside Home, the control sits in the detail pane.
+        compose.onNodeWithContentDescription("Show the list").assertIsDisplayed()
+        // The state is in settings, so a route change (and the recomposition with it) keeps the list hidden.
+        vm.open(dev.swarmz.phone.state.TileKey("mini", "t3"))
+        compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("Message docs\u2026") > 0 }
+        compose.onNodeWithText("Tiles").assertDoesNotExist()
+        // On a tile the control sits in the header, where the back arrow sits when folded.
+        compose.onNodeWithContentDescription("Back").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Show the list").performClick()
+        compose.waitUntil(5_000) { !vm.listCollapsed.value }
+        compose.onNodeWithText("Tiles").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Show the list").assertDoesNotExist()
+    }
+
+    @Test
+    @Config(qualifiers = "w700dp-h800dp")
+    fun unfoldedResizesTheListByDraggingTheHandle() {
+        val vm = vm(paired = true)
+        compose.setContent { SwarmzRoot(vm) }
+        compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("docs") > 0 }
+        assertEquals(260, vm.listWidth.value)
+        compose.onNodeWithContentDescription("Resize the list").performTouchInput {
+            down(center)
+            moveBy(Offset(30f, 0f))
+            moveBy(Offset(30f, 0f))
+            moveBy(Offset(30f, 0f))
+            up()
+        }
+        // The settled width is what reaches settings; the exact dp depends on the touch slop.
+        compose.waitUntil(5_000) { vm.listWidth.value > 260 }
+        assertTrue("dragged to ${vm.listWidth.value} dp", vm.listWidth.value in 261..380)
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h780dp")
+    fun foldedHasNoListPaneControls() {
+        val vm = vm(paired = true)
+        compose.setContent { SwarmzRoot(vm) }
+        compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("docs") > 0 }
+        compose.onNodeWithContentDescription("Hide the list").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Show the list").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Resize the list").assertDoesNotExist()
+        // A list collapsed while unfolded changes nothing folded: the tile still has its back arrow.
+        vm.setListCollapsed(true)
+        compose.waitUntil(5_000) { vm.listCollapsed.value }
+        compose.onNodeWithText("docs").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithTextCount("Message docs\u2026") > 0 }
+        compose.onNodeWithContentDescription("Back").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Show the list").assertDoesNotExist()
     }
 }
 

@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,12 +37,24 @@ import dev.swarmz.phone.ui.theme.MonoSmall
 import dev.swarmz.phone.ui.theme.Sw
 
 @Composable
-fun TileListPane(ui: HomeUi, selected: TileKey?, onOpen: (TileKey) -> Unit, onNew: () -> Unit, onSettings: () -> Unit, modifier: Modifier = Modifier) {
+fun TileListPane(
+    ui: HomeUi,
+    selected: TileKey?,
+    onOpen: (TileKey) -> Unit,
+    onNew: () -> Unit,
+    onSettings: () -> Unit,
+    onCollapse: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
     Column(modifier.fillMaxHeight().background(Sw.Background)) {
         Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Tiles", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
             IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Sw.Secondary) }
             IconButton(onClick = onNew) { Icon(Icons.Default.Add, contentDescription = "New session", tint = Sw.Title) }
+            // Slides the list away to the left, leaving the open tile the whole width.
+            if (onCollapse != null) {
+                IconButton(onClick = onCollapse) { Icon(Icons.Default.ChevronLeft, contentDescription = "Hide the list", tint = Sw.Secondary) }
+            }
         }
         ui.banners.forEach { b -> Text(b.text, color = Sw.NeedsYou, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
         LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
