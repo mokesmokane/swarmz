@@ -1,8 +1,13 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
+
+val signingFile = File(System.getProperty("user.home"), ".swarmz-android/signing.properties")
+val signing = Properties().apply { if (signingFile.exists()) signingFile.inputStream().use(::load) }
 
 android {
     namespace = "dev.swarmz.phone"
@@ -16,9 +21,21 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        if (signingFile.exists()) {
+            create("release") {
+                storeFile = File(signing.getProperty("storeFile"))
+                storePassword = signing.getProperty("storePassword")
+                keyAlias = signing.getProperty("keyAlias")
+                keyPassword = signing.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

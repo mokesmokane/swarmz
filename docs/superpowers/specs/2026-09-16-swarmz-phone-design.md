@@ -1,7 +1,7 @@
 # swarmz on the phone: session holder, Mac tool, Android app, alerts
 
 Date: 2026-09-16
-Status: approved design; sub-projects 1 (session holder) and 2 (Mac tool) implemented
+Status: approved design; sub-projects 1 (session holder), 2 (Mac tool) and 3 (phone app) implemented
 Amends: `2026-09-10-swarmz-design.md` §3.1 (the swarmz window no longer owns
 PTYs); `2026-09-15-agent-state-hooks-design.md` §2.1 (status colours), §3.2
 (hook events gain `PermissionRequest` and a synchronous `PostToolUse`); `2026-09-15-tile-folder-and-session-history-design.md`
@@ -758,8 +758,9 @@ reported as a clean, empty fan-out.
 
 ## 10. Tooling and distribution
 
-- This Mac needs a Java runtime (Temurin 17), the Android SDK command-line
-  tools and platform 35, and Gradle (via the wrapper), installed with
+- This Mac needs a JDK (`openjdk@21`, not Temurin 17), the Android SDK
+  command-line tools with platform 36 and build-tools 36.0.0 (`compileSdk 36`,
+  `targetSdk` stays 35), and Gradle (via the wrapper), installed with
   Homebrew. Android Studio is optional (emulator).
 - The APK is signed with a release key kept outside the repo, built with
   `./gradlew assembleRelease`, installed over USB (`adb install`) the first
