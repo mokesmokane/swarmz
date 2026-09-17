@@ -19,6 +19,9 @@ import kotlin.concurrent.thread
 /** A handler result that closes the channel without sending an exit status, as a cut link would. */
 const val CUT = -1
 
+/** A handler result that sends EOF, then drops the whole connection before any exit status. */
+const val DROP = -2
+
 /** What a command does: write to [out], return the exit code (or [CUT]). Runs on its own thread; [stopped] turns true when the client goes away. */
 typealias Handler = (command: String, out: OutputStream, stopped: () -> Boolean) -> Int
 
@@ -26,6 +29,7 @@ class FakeMac(hostKeyFile: Path, var handler: Handler) : AutoCloseable {
     val allowedKeys = CopyOnWriteArrayList<String>()
     val commands = CopyOnWriteArrayList<String>()
     val destroyed = CopyOnWriteArrayList<String>()
+    val eofSent = CopyOnWriteArrayList<String>()
 
     /** Runs inside password checks before they answer; tests use it to hold a login open. */
     @Volatile var beforePasswordCheck: () -> Unit = {}
@@ -71,7 +75,18 @@ class FakeMac(hostKeyFile: Path, var handler: Handler) : AutoCloseable {
                     255
                 }
                 runCatching { out.flush() }
-                if (code == CUT) channel.close(false) else exit.onExit(code)
+                when (code) {
+                    CUT -> channel.close(false)
+                    DROP -> {
+                        // sendEof is protected; wait until the EOF is on the wire so the client reaches EOF first.
+                        val sendEof = org.apache.sshd.common.channel.AbstractChannel::class.java.getDeclaredMethod("sendEof")
+                        sendEof.isAccessible = true
+                        (sendEof.invoke(channel) as org.apache.sshd.common.io.IoWriteFuture).verify(5_000)
+                        eofSent += command
+                        channel.session.close(true)
+                    }
+                    else -> exit.onExit(code)
+                }
             }
         }
 

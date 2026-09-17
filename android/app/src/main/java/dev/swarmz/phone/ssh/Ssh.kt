@@ -1,16 +1,14 @@
 package dev.swarmz.phone.ssh
 
 import dev.swarmz.phone.keys.PhoneKey
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import net.schmizz.keepalive.KeepAliveProvider
 import net.schmizz.sshj.DefaultConfig
@@ -84,58 +82,85 @@ class SshjConnector(private val pins: HostKeyPins) : SshConnector {
     }
 }
 
-/** sshj's channel close waits up to 30 s for the peer's CLOSE; on a dead link that must not hold anyone up. */
-private fun closeInBackground(session: Session) {
-    thread(name = "ssh-close", isDaemon = true) { runCatching { session.close() } }
+/** How long a background close waits for the peer's CLOSE before giving up on the channel (sshj's own default). */
+private const val CLOSE_WAIT_MS = 30_000L
+
+/**
+ * Closes a channel without holding anyone up and without endangering the connection. sshj's close sends CLOSE and
+ * waits up to 30 s for the peer's; only after that are the [streams] marked EOF (a no-op if the peer's CLOSE already
+ * did it). Marking them EOF earlier would be fatal: sshj treats data arriving on an EOF'ed stream as a protocol error
+ * and kills the whole transport, and a command that keeps writing always has data in flight.
+ */
+private fun closeInBackground(session: Session, vararg streams: java.io.InputStream) {
+    thread(name = "ssh-close", isDaemon = true) {
+        runCatching { session.close() }
+        // close() returns at once when another caller already asked (the wait releases the channel lock), so wait
+        // for the channel's own close here; it ends early if the connection dies.
+        runCatching { session.join(CLOSE_WAIT_MS, TimeUnit.MILLISECONDS) }
+        streams.forEach { runCatching { it.close() } }
+    }
+}
+
+/** Copies [input] into a buffer on a thread of its own, which the caller may abandon. */
+private class Pump(input: java.io.InputStream, name: String) {
+    private val buffer = java.io.ByteArrayOutputStream() // synchronized
+    @Volatile var failure: IOException? = null
+        private set
+    val thread: Thread = thread(name = name, isDaemon = true) {
+        try {
+            val chunk = ByteArray(8192)
+            while (true) {
+                val n = input.read(chunk)
+                if (n < 0) break
+                buffer.write(chunk, 0, n)
+            }
+        } catch (e: IOException) {
+            failure = e
+        }
+    }
+
+    fun text(): String = buffer.toByteArray().decodeToString()
 }
 
 private class SshjConnection(private val client: SSHClient) : SshConnection {
     override val isOpen: Boolean get() = client.isConnected && client.isAuthenticated
 
     /**
-     * Runs [command] to completion. After [timeoutMs], or when the caller is cancelled, the channel's streams are
-     * closed at once (waking the reads) and the channel is closed in the background; a timed-out run reports
-     * `exit = null` with whatever output arrived.
+     * Runs [command] to completion. The output is pumped on threads of its own, so the caller never waits on a read:
+     * after [timeoutMs] the run reports `exit = null` with whatever output has arrived, and a cancelled caller returns
+     * at once. Either way the channel is closed in the background. A connection that fails before the exit status
+     * arrives throws.
      */
-    override suspend fun exec(command: String, timeoutMs: Long): ExecResult = withContext(Dispatchers.IO) {
-        val s = client.startSession()
-        var finished = false
-        try {
-            val cmd = s.exec(command)
-            val timedOut = AtomicBoolean(false)
-            val result = coroutineScope {
-                val watchdog = launch {
-                    try {
-                        delay(timeoutMs)
-                        timedOut.set(true)
-                    } finally {
-                        // Harmless once both streams are drained; wakes them if they are not.
-                        runCatching { cmd.inputStream.close() }
-                        runCatching { cmd.errorStream.close() }
-                    }
-                }
-                val err = async { drain(cmd.errorStream) { timedOut.get() } }
-                val out = drain(cmd.inputStream) { timedOut.get() }
-                val errText = err.await()
-                if (!timedOut.get()) runCatching { cmd.join(timeoutMs, TimeUnit.MILLISECONDS) }
-                watchdog.cancel()
-                ExecResult(if (timedOut.get()) null else cmd.exitStatus, out, errText)
+    override suspend fun exec(command: String, timeoutMs: Long): ExecResult {
+        val (s, cmd) = withContext(Dispatchers.IO) {
+            val s = client.startSession()
+            try {
+                s to s.exec(command)
+            } catch (e: Throwable) {
+                closeInBackground(s)
+                throw e
             }
-            finished = !timedOut.get()
-            result
-        } finally {
-            if (finished) runCatching { s.close() } else closeInBackground(s)
         }
-    }
-
-    private fun drain(input: java.io.InputStream, timedOut: () -> Boolean): String {
-        val buf = java.io.ByteArrayOutputStream()
+        val out = Pump(cmd.inputStream, "ssh-exec-out")
+        val err = Pump(cmd.errorStream, "ssh-exec-err")
+        val done = CompletableDeferred<Unit>()
+        thread(name = "ssh-exec-wait", isDaemon = true) {
+            try {
+                out.thread.join()
+                err.thread.join()
+                (out.failure ?: err.failure)?.let { throw it }
+                cmd.join() // the exit status arrives before the peer's CLOSE; a dropped link throws here
+                done.complete(Unit)
+            } catch (e: Throwable) {
+                done.completeExceptionally(e)
+            }
+        }
         try {
-            input.copyTo(buf)
-        } catch (e: IOException) {
-            if (!timedOut()) throw e
+            val finished = withTimeoutOrNull(timeoutMs) { done.await() } != null
+            return ExecResult(if (finished) cmd.exitStatus else null, out.text(), err.text())
+        } finally {
+            closeInBackground(s, cmd.inputStream, cmd.errorStream)
         }
-        return buf.toByteArray().decodeToString()
     }
 
     override fun lines(command: String): Flow<String> = callbackFlow {
@@ -148,9 +173,15 @@ private class SshjConnection(private val client: SSHClient) : SshConnection {
         }
         val stream = cmd.inputStream
         val cancelled = AtomicBoolean(false)
+        val closing = AtomicBoolean(false)
         thread(name = "ssh-lines", isDaemon = true) {
             try {
-                stream.bufferedReader().useLines { seq -> seq.forEach { trySendBlocking(it).getOrThrow() } }
+                // Not useLines: closing the reader would mark the stream EOF while data may still be in flight.
+                val reader = stream.bufferedReader()
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    trySendBlocking(line).getOrThrow()
+                }
                 if (!cancelled.get()) {
                     // EOF alone does not mean the command finished: a channel cut without an exit status is a drop.
                     runCatching { cmd.join(2, TimeUnit.SECONDS) }
@@ -162,13 +193,14 @@ private class SshjConnection(private val client: SSHClient) : SshConnection {
             } catch (e: Throwable) {
                 close(e)
             } finally {
-                closeInBackground(session)
+                if (closing.compareAndSet(false, true)) closeInBackground(session, stream)
             }
         }
-        // Closing the stream first wakes the reader at once, even on a dead link; the reader then closes the channel.
+        // The collector never waits on the reader. Closing the channel ends the reader: the peer's CLOSE (or, on a
+        // dead link, the close timing out) marks the stream EOF, and a closed flow makes its next send fail.
         awaitClose {
             cancelled.set(true)
-            runCatching { stream.close() }
+            if (closing.compareAndSet(false, true)) closeInBackground(session, stream)
         }
     }.flowOn(Dispatchers.IO)
 

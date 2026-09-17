@@ -4,6 +4,7 @@ import dev.swarmz.phone.installBouncyCastle
 import dev.swarmz.phone.keys.PhoneKey
 import dev.swarmz.phone.keys.Ed25519
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -43,13 +44,19 @@ class SshTest {
                 command == "echo" -> { out.write("one\ntwo\n".toByteArray()); 0 }
                 command == "fail" -> { out.write("{\"v\":1,\"error\":\"nope\",\"code\":\"usage\"}\n".toByteArray()); 1 }
                 command == "tick" -> {
+                    // No pauses and no end: the client's close is the only way out, and data is always in flight.
                     var i = 0
-                    while (!stopped() && i < 200) {
+                    while (!stopped()) {
                         out.write("line $i\n".toByteArray()); out.flush(); i++
-                        Thread.sleep(20)
                     }
                     0
                 }
+                command == "flood" -> {
+                    val chunk = "x".repeat(1023).plus("\n").toByteArray()
+                    while (!stopped()) out.write(chunk)
+                    0
+                }
+                command == "dropAfterEof" -> { out.write("x\n".toByteArray()); out.flush(); DROP }
                 command == "quiet" -> {
                     out.write("a\nb\nc\n".toByteArray()); out.flush()
                     while (!stopped()) Thread.sleep(20)
@@ -121,6 +128,38 @@ class SshTest {
         SshjConnector(pins).connect("127.0.0.1", mac.port, Auth.Key("me", key)).use { c ->
             assertEquals(0, c.exec("echo").exit)
         }
+    }
+
+    @Test
+    fun stoppingAChattyCommandLeavesTheConnectionUp() = runBlocking {
+        SshjConnector(pins).connect("127.0.0.1", mac.port, password).use { c ->
+            repeat(3) {
+                assertEquals(5, withTimeout(5_000) { c.lines("flood").take(5).toList() }.size)
+                val r = withTimeout(5_000) { c.exec("flood", timeoutMs = 100) }
+                assertEquals(null, r.exit)
+                assertTrue(r.stdout.isNotEmpty())
+                val cancelled = launch(Dispatchers.IO) { c.exec("flood", timeoutMs = 60_000) }
+                delay(100)
+                withTimeout(5_000) { cancelled.cancelAndJoin() }
+            }
+            // Every run has been closed by the Mac, so nothing is in flight any more.
+            withTimeout(10_000) { while (mac.destroyed.count { it == "flood" } < 9) delay(20) }
+            assertTrue(c.isOpen)
+            assertEquals(ExecResult(0, "one\ntwo\n", ""), c.exec("echo"))
+        }
+    }
+
+    @Test
+    fun execFailsWhenTheLinkDropsBeforeTheExitStatus() = runBlocking {
+        val c = SshjConnector(pins).connect("127.0.0.1", mac.port, password)
+        try {
+            withTimeout(5_000) { c.exec("dropAfterEof") }
+            fail("expected an IOException")
+        } catch (_: java.io.IOException) {
+        } finally {
+            c.close()
+        }
+        assertTrue("dropAfterEof" in mac.eofSent)
     }
 
     @Test
