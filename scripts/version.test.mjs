@@ -4,6 +4,8 @@ import {
   androidVersionCode,
   currentVersions,
   parseVersion,
+  setCargoLockVersion,
+  setCargoVersion,
   setGradleVersion,
   setJsonVersion,
 } from "./version.mjs";
@@ -60,6 +62,17 @@ describe("setJsonVersion", () => {
     expect(setJsonVersion(before, "9.9.9")).toContain('"x": "0.1.0"');
   });
 
+  it("sets every occurrence when asked, for package-lock.json's two copies", () => {
+    const before = '{\n  "name": "swarmz",\n  "version": "0.1.0",\n  "packages": {\n    "": {\n      "name": "swarmz",\n      "version": "0.1.0",\n      "dependencies": {}\n    },\n    "node_modules/x": {\n      "version": "0.1.0"\n    }\n  }\n}\n';
+    const after = setJsonVersion(before, "0.2.0", { count: 2 });
+    expect(after.match(/"version": "0\.2\.0"/g)).toHaveLength(2);
+    expect(after).toContain('"node_modules/x": {\n      "version": "0.1.0"\n    }');
+  });
+
+  it("refuses when there are not as many versions as asked for", () => {
+    expect(() => setJsonVersion('{\n  "version": "0.1.0"\n}\n', "0.2.0", { count: 2 })).toThrow(/2/);
+  });
+
   it("refuses a file with no version", () => {
     expect(() => setJsonVersion('{\n  "name": "x"\n}\n', "0.2.0")).toThrow(/version/);
   });
@@ -79,14 +92,62 @@ describe("setGradleVersion", () => {
   });
 });
 
+describe("setCargoVersion", () => {
+  it("sets the [package] version and nothing else", () => {
+    const before = '[package]\nname = "swarmz"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\nlibc = "0.2"\n';
+    expect(setCargoVersion(before, "0.2.0")).toBe(
+      '[package]\nname = "swarmz"\nversion = "0.2.0"\nedition = "2021"\n\n[dependencies]\nlibc = "0.2"\n',
+    );
+  });
+
+  it("refuses a manifest with no version", () => {
+    expect(() => setCargoVersion('[package]\nname = "swarmz"\n', "0.2.0")).toThrow(/version/);
+  });
+});
+
+describe("setCargoLockVersion", () => {
+  it("sets only the swarmz entry, never swarmz-tool or anything else", () => {
+    const before = [
+      "[[package]]",
+      'name = "swarmz"',
+      'version = "0.1.0"',
+      "dependencies = [",
+      "]",
+      "",
+      "[[package]]",
+      'name = "swarmz-tool"',
+      'version = "0.1.0"',
+      "",
+      "[[package]]",
+      'name = "serde"',
+      'version = "0.1.0"',
+      "",
+    ].join("\n");
+    const after = setCargoLockVersion(before, "0.2.0");
+    expect(after).toContain('name = "swarmz"\nversion = "0.2.0"');
+    expect(after).toContain('name = "swarmz-tool"\nversion = "0.1.0"');
+    expect(after).toContain('name = "serde"\nversion = "0.1.0"');
+  });
+
+  it("refuses a lockfile with no swarmz entry", () => {
+    expect(() => setCargoLockVersion('[[package]]\nname = "serde"\nversion = "1.0.0"\n', "0.2.0")).toThrow(/swarmz/);
+  });
+});
+
 describe("the repo's versions", () => {
   it("agree across package.json, tauri.conf.json and the Android build", () => {
     const v = currentVersions({
       pkg: read("package.json"),
+      lock: read("package-lock.json"),
       tauri: read("src-tauri/tauri.conf.json"),
+      cargo: read("src-tauri/Cargo.toml"),
+      cargoLock: read("src-tauri/Cargo.lock"),
       gradle: read("android/app/build.gradle.kts"),
     });
     expect(v.tauri).toBe(v.pkg);
+    expect(v.lock).toBe(v.pkg);
+    expect(v.cargo).toBe(v.pkg);
+    expect(v.cargoLock).toBe(v.pkg);
     expect(v.androidName).toBe(v.pkg);
     expect(v.androidCode).toBe(androidVersionCode(parseVersion(v.pkg)));
   });

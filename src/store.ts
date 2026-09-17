@@ -314,6 +314,9 @@ export type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "
 
 export interface UpdateState {
   status: UpdateStatus;
+  /** Which step failed, so the notice offers the retry that can actually work: checking again
+   * after a check that never got an answer, installing again after a download that broke. */
+  failedAt: "check" | "install" | null;
   /** The offered version, kept through `failed` so a retry knows what it is retrying. */
   version: string | null;
   notes: string | null;
@@ -329,6 +332,7 @@ export interface UpdateState {
 
 export const EMPTY_UPDATE: UpdateState = {
   status: "idle",
+  failedAt: null,
   version: null,
   notes: null,
   error: null,
@@ -2191,7 +2195,9 @@ export const useStore = create<WorkbenchState>((set) => ({
     } catch (e) {
       const msg = errText(e);
       console.warn("swarmz: update check failed:", msg);
-      set((s) => ({ update: { ...s.update, status: "failed", error: msg, checkedAt: new Date().toISOString() } }));
+      set((s) => ({
+        update: { ...s.update, status: "failed", failedAt: "check", error: msg, checkedAt: new Date().toISOString() },
+      }));
       return;
     }
     const checkedAt = new Date().toISOString();
@@ -2203,6 +2209,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       update: {
         ...s.update,
         status: "available",
+        failedAt: null,
         version: found.version,
         notes: found.notes,
         error: null,
@@ -2216,10 +2223,15 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   async installUpdate() {
-    const { status, version } = useStore.getState().update;
+    const { status, version, failedAt } = useStore.getState().update;
     if (!version) return;
     if (status !== "available" && status !== "failed") return;
-    set((s) => ({ update: { ...s.update, status: "downloading", error: null, downloaded: 0, contentLength: null } }));
+    // A check that never got an answer left no package to resume; only a failed download can be
+    // retried by installing again.
+    if (status === "failed" && failedAt !== "install") return;
+    set((s) => ({
+      update: { ...s.update, status: "downloading", failedAt: null, error: null, downloaded: 0, contentLength: null },
+    }));
     try {
       await updater.install((p) =>
         set((s) => (s.update.status === "downloading" ? { update: { ...s.update, ...p } } : {})),
@@ -2227,10 +2239,10 @@ export const useStore = create<WorkbenchState>((set) => ({
     } catch (e) {
       const msg = errText(e);
       console.warn("swarmz: update download failed:", msg);
-      set((s) => ({ update: { ...s.update, status: "failed", error: msg } }));
+      set((s) => ({ update: { ...s.update, status: "failed", failedAt: "install", error: msg } }));
       return;
     }
-    set((s) => ({ update: { ...s.update, status: "ready", error: null } }));
+    set((s) => ({ update: { ...s.update, status: "ready", failedAt: null, error: null } }));
     try {
       await updater.relaunch();
     } catch (e) {

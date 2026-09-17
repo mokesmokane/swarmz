@@ -61,11 +61,33 @@ describe("UpdateNotice", () => {
     expect(screen.getByText(/Downloading swarmz 0\.2\.0 · 50%/)).toBeTruthy();
   });
 
-  it("keeps the notice and offers a retry when the download failed", async () => {
-    setUpdate({ status: "failed", version: "0.2.0", error: "disk full" });
+  it("keeps the notice and offers a retry when the download failed", () => {
+    setUpdate({ status: "failed", failedAt: "install", version: "0.2.0", error: "disk full" });
     render(<UpdateNotice />);
     expect(screen.getByText(/disk full/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+
+  it("a failed download retries the install", () => {
+    const installUpdate = vi.fn(async () => {});
+    const checkForUpdates = vi.fn(async () => {});
+    setUpdate({ status: "failed", failedAt: "install", version: "0.2.0", error: "disk full" });
+    useStore.setState({ installUpdate, checkForUpdates });
+    render(<UpdateNotice />);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(installUpdate).toHaveBeenCalled();
+    expect(checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it("a failed check checks again rather than installing", () => {
+    const installUpdate = vi.fn(async () => {});
+    const checkForUpdates = vi.fn(async () => {});
+    setUpdate({ status: "failed", failedAt: "check", manual: true, error: "network down" });
+    useStore.setState({ installUpdate, checkForUpdates });
+    render(<UpdateNotice />);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(checkForUpdates).toHaveBeenCalledWith({ manual: true });
+    expect(installUpdate).not.toHaveBeenCalled();
   });
 
   it("says to restart by hand when the relaunch failed", () => {
@@ -75,14 +97,23 @@ describe("UpdateNotice", () => {
   });
 
   it("stays quiet about a failed background check", () => {
-    setUpdate({ status: "failed", error: "network down", manual: false });
+    setUpdate({ status: "failed", failedAt: "check", error: "network down", manual: false });
+    const { container } = render(<UpdateNotice />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("stays quiet about a failed background check even when it knows a version", () => {
+    // A version left over from an earlier check is not a reason to shout about a check that
+    // nobody asked for.
+    setUpdate({ status: "failed", failedAt: "check", version: "0.2.0", error: "network down", manual: false });
     const { container } = render(<UpdateNotice />);
     expect(container.firstChild).toBeNull();
   });
 
   it("reports a failed check that was asked for", () => {
-    setUpdate({ status: "failed", error: "network down", manual: true });
+    setUpdate({ status: "failed", failedAt: "check", error: "network down", manual: true });
     render(<UpdateNotice />);
+    expect(screen.getByText(/Could not check for updates/)).toBeTruthy();
     expect(screen.getByText(/network down/)).toBeTruthy();
   });
 });

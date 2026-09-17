@@ -174,6 +174,50 @@ describe("update state machine", () => {
     expect(state().manual).toBe(false);
   });
 
+  it("records which step failed, so the notice can offer the right retry", async () => {
+    check.mockRejectedValue("network down");
+    await useStore.getState().checkForUpdates({ manual: true });
+    expect(state().status).toBe("failed");
+    expect(state().failedAt).toBe("check");
+
+    check.mockReset();
+    check.mockResolvedValue(found);
+    useStore.setState({ update: EMPTY_UPDATE });
+    await useStore.getState().checkForUpdates();
+    expect(state().failedAt).toBeNull();
+    install.mockRejectedValueOnce("disk full");
+    await useStore.getState().installUpdate();
+    expect(state().status).toBe("failed");
+    expect(state().failedAt).toBe("install");
+  });
+
+  it("clears failedAt once a retry works", async () => {
+    check.mockResolvedValue(found);
+    await useStore.getState().checkForUpdates();
+    install.mockRejectedValueOnce("disk full");
+    await useStore.getState().installUpdate();
+    expect(state().failedAt).toBe("install");
+    install.mockResolvedValue(undefined);
+    await useStore.getState().installUpdate();
+    expect(state().status).toBe("ready");
+    expect(state().failedAt).toBeNull();
+  });
+
+  it("a failed check can be checked again, unlike a failed install", async () => {
+    // installUpdate only resumes a failed *install*: there is nothing to install after a check
+    // that never got an answer, and calling it would fail forever.
+    check.mockRejectedValue("network down");
+    await useStore.getState().checkForUpdates({ manual: true });
+    await useStore.getState().installUpdate();
+    expect(install).not.toHaveBeenCalled();
+
+    check.mockReset();
+    check.mockResolvedValue(found);
+    await useStore.getState().checkForUpdates({ manual: true });
+    expect(state().status).toBe("available");
+    expect(state().failedAt).toBeNull();
+  });
+
   it("un-dismisses when a newer version turns up", async () => {
     check.mockResolvedValue(found);
     await useStore.getState().checkForUpdates();

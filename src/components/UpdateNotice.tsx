@@ -7,6 +7,7 @@ import { useStore } from "../store";
  */
 export function UpdateNotice() {
   const status = useStore((s) => s.update.status);
+  const failedAt = useStore((s) => s.update.failedAt);
   const version = useStore((s) => s.update.version);
   const error = useStore((s) => s.update.error);
   const manual = useStore((s) => s.update.manual);
@@ -14,13 +15,14 @@ export function UpdateNotice() {
   const downloaded = useStore((s) => s.update.downloaded);
   const contentLength = useStore((s) => s.update.contentLength);
   const install = useStore((s) => s.installUpdate);
+  const check = useStore((s) => s.checkForUpdates);
   const dismiss = useStore((s) => s.dismissUpdate);
 
   if (dismissed) return null;
 
-  // A background check that could not reach the endpoint is not news: the app is fine, and the
-  // next check is 30 minutes away. Only a check the user asked for reports itself.
-  if (status === "failed" && !version && !manual) return null;
+  // A background check that could not reach the endpoint is not news, whether or not an earlier
+  // check left a version behind: the app is fine. Only a check the user asked for reports itself.
+  if (status === "failed" && failedAt === "check" && !manual) return null;
   if (status === "idle" || status === "checking") return null;
 
   const pct = contentLength && contentLength > 0 ? Math.min(100, Math.round((downloaded / contentLength) * 100)) : null;
@@ -34,11 +36,14 @@ export function UpdateNotice() {
           ? error
             ? `swarmz ${version} is installed. Quit and reopen swarmz to use it.`
             : `swarmz ${version} is installed · restarting…`
-          : version
+          : failedAt === "install"
             ? `Could not update to swarmz ${version}`
             : "Could not check for updates";
 
   const failed = status === "failed";
+  // Retrying the step that failed: installing again resumes a broken download, but after a check
+  // that never got an answer there is nothing to install, so the button checks again.
+  const retryCheck = failed && failedAt !== "install";
 
   return (
     <div
@@ -55,10 +60,9 @@ export function UpdateNotice() {
       {(status === "available" || failed) && (
         <button
           className="shrink-0 rounded border border-neutral-700 px-1.5 py-0.5 text-neutral-200 hover:bg-neutral-800"
-          onClick={() => void install()}
-          disabled={failed && !version}
+          onClick={() => void (retryCheck ? check({ manual: true }) : install())}
         >
-          {failed ? "Retry" : "Update and restart"}
+          {retryCheck ? "Try again" : failed ? "Retry" : "Update and restart"}
         </button>
       )}
       <button className="shrink-0 text-neutral-500 hover:text-neutral-200" onClick={dismiss}>

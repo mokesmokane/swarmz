@@ -16,10 +16,13 @@ export default function App() {
         await useStore.getState().refreshTailscale();
         await useStore.getState().pullWorkspace();
         await useStore.getState().refreshOutsideSessions();
-        // Last, and never awaited by anything: a slow or unreachable endpoint must not hold up
-        // the workspace, and `checkForUpdates` never rejects.
-        void useStore.getState().checkForUpdates();
       });
+  }, []);
+
+  // One background check, on its own: the updater has nothing to do with the workspace, must not
+  // wait for it, and `checkForUpdates` never rejects whatever the endpoint does.
+  useEffect(() => {
+    void useStore.getState().checkForUpdates();
   }, []);
 
   useEffect(() => {
