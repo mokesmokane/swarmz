@@ -6,8 +6,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -54,6 +57,7 @@ fun TileScreen(c: TileController, unfolded: Boolean, onBack: (() -> Unit)?, now:
     val streamError by c.streamError.collectAsStateWithLifecycle()
     var clock by remember { mutableStateOf(now()) }
     val r = row
+    val screenMode = c.screenMode.value
     // Times only move on screen for a working tile ("working · 12s") or an offline Mac ("last seen 3m ago").
     val ticking = (r?.running == true && r.status == "working") || !online
     val lifecycle = LocalLifecycleOwner.current
@@ -77,6 +81,14 @@ fun TileScreen(c: TileController, unfolded: Boolean, onBack: (() -> Unit)?, now:
                 Text(r?.name ?: c.key.id, style = MaterialTheme.typography.titleMedium, maxLines = 1)
                 Text("$macLabel · ${r?.let { folderName(it.cwd) } ?: ""}", style = MonoSmall, maxLines = 1)
             }
+            if (r != null && r.kind != "shell") {
+                // Anything Claude draws but never writes to the transcript (`/login`, `/model`, `/cost`) is only
+                // reachable on the live screen.
+                IconButton(onClick = c::toggleScreen, modifier = Modifier.size(36.dp)) {
+                    val icon = if (screenMode) Icons.AutoMirrored.Filled.Chat else Icons.Filled.Terminal
+                    Icon(icon, contentDescription = if (screenMode) "Conversation" else "Screen", tint = Sw.Title, modifier = Modifier.size(20.dp))
+                }
+            }
             if (r != null) Badge(modeLabel(r), modifier = Modifier.padding(end = 12.dp))
         }
         HorizontalDivider(color = Sw.Border)
@@ -86,7 +98,7 @@ fun TileScreen(c: TileController, unfolded: Boolean, onBack: (() -> Unit)?, now:
         }
         streamError?.let { Text(it, color = Sw.ErrorLine, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) }
         val body = Modifier.weight(1f).fillMaxWidth()
-        if (r?.kind == "shell") {
+        if (r != null && (r.kind == "shell" || screenMode)) {
             ShellBody(c, r, body)
         } else {
             val t by c.transcript.collectAsStateWithLifecycle()

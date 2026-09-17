@@ -1,5 +1,7 @@
 package dev.swarmz.phone.ui.tile
 
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -64,6 +66,9 @@ class TileScreenTest {
             )
             conn.stream(Cmd.output("s1", lines = 300, follow = true)).send(
                 """{"cols":80,"rows":24,"lines":[[{"text":"$ ls"}],[{"text":"file.txt"}]],"v":1}""",
+            )
+            conn.stream(Cmd.output("t1", lines = 300, follow = true)).send(
+                """{"cols":80,"rows":24,"lines":[[{"text":"Select login method:"}],[{"text":"1. Claude account"}]],"v":1}""",
             )
         }
         val settings = MemorySettings().also { it.paired.value = Paired("mini", "me", "Fold") }
@@ -136,5 +141,49 @@ class TileScreenTest {
         compose.onNodeWithTag("composer").performTextInput("ls")
         compose.onNodeWithContentDescription("Send").performClick()
         compose.waitUntil(5_000) { Cmd.send("s1", "ls") in conn.ran }
+    }
+
+    @Test
+    fun theScreenToggleSwapsTheBodyAndKeepsTheConversation() {
+        val c = controller("t1", permissionRow)
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Screen").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Select login method:")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("1. Claude account").assertIsDisplayed()
+        compose.onNodeWithText("fix the build").assertDoesNotExist()
+        // The Claude keys and composer stay: sending types into the tile, which answers what is on screen.
+        compose.onNodeWithText("Esc").assertIsDisplayed()
+        compose.onNodeWithText("^C").assertIsDisplayed()
+        compose.onNodeWithText("⇧Tab accept edits").assertIsDisplayed()
+        compose.onNodeWithText("Message api…").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Conversation").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Done. Run:", substring = true).assertIsDisplayed()
+        assertTrue("the transcript session was never closed", conn.ran.count { it == Cmd.transcript("t1", follow = true) } == 1)
+    }
+
+    @Test
+    fun theScreenToggleSurvivesARecomposition() {
+        val c = controller("t1", permissionRow)
+        val unfolded = mutableStateOf(false)
+        compose.setContent { SwarmzTheme { key(unfolded.value) { TileScreen(c, unfolded.value, onBack = null) } } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Screen").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Select login method:")).fetchSemanticsNodes().isNotEmpty() }
+        // Unfolding throws away everything TileScreen remembers; the toggle lives in the controller.
+        compose.runOnIdle { unfolded.value = true }
+        compose.waitForIdle()
+        compose.onNodeWithText("Select login method:").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Conversation").assertIsDisplayed()
+    }
+
+    @Test
+    fun aShellTileHasNoScreenToggle() {
+        val c = controller("s1", """{"cwd":"/p","id":"s1","kind":"shell","name":"sh","running":true,"status":"offline"}""")
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("$ ls")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Screen").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Conversation").assertDoesNotExist()
     }
 }

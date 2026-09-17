@@ -13,6 +13,7 @@ import dev.swarmz.phone.link.VERSION_OK
 import dev.swarmz.phone.proto.Cmd
 import dev.swarmz.phone.proto.Key
 import dev.swarmz.phone.proto.Opt
+import dev.swarmz.phone.proto.ToolFailure
 import dev.swarmz.phone.state.TileKey
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import dev.swarmz.phone.link.LinkDown
@@ -418,6 +419,96 @@ class TileControllerTest {
         assertTrue(c.macOnline.value)
         assertTrue(open in conn2.ran)
         assertEquals(listOf("hello"), c.transcript.value.messages.map { it.text })
+        c.close()
+    }
+
+    @Test
+    fun screenModeOpensAndClosesTheOutputSessionAndKeepsTheTranscript() = runTest {
+        val (repo, conn) = setup()
+        conn.stream(Cmd.watch()).send(snapshot(null))
+        runCurrent()
+        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
+        runCurrent()
+        val tr = Cmd.transcript("t1", follow = true)
+        val out = Cmd.output("t1", lines = 300, follow = true)
+        conn.stream(tr).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
+        runCurrent()
+        assertFalse("a Claude tile starts on its conversation", c.screenMode.value)
+        assertEquals("no output stream until the screen is asked for", 0, conn.ran.count { it == out })
+
+        c.toggleScreen()
+        runCurrent()
+        assertTrue(c.screenMode.value)
+        assertEquals(1, conn.ran.count { it == out })
+        conn.stream(out).send("""{"cols":80,"rows":1,"lines":[[{"text":"Select login method:"}]],"v":1}""")
+        runCurrent()
+        assertEquals("Select login method:", c.screen.value.lines[0][0].text)
+        assertEquals("the transcript session was never reopened", 1, conn.ran.count { it == tr })
+        assertEquals(listOf("hello"), c.transcript.value.messages.map { it.text })
+
+        c.toggleScreen()
+        runCurrent()
+        assertFalse(c.screenMode.value)
+        assertTrue("the output session is closed again", c.screen.value.lines.isEmpty())
+        assertEquals("the transcript session stayed open throughout", 1, conn.ran.count { it == tr })
+        assertEquals(listOf("hello"), c.transcript.value.messages.map { it.text })
+        c.close()
+    }
+
+    @Test
+    fun anOldHoldersScreenErrorIsVisibleInScreenMode() = runTest {
+        val (repo, conn) = setup()
+        val out = Cmd.output("t1", lines = 300, follow = true)
+        conn.lineFailures = { if (it == out) ToolFailure("old_session", "restart this tile to use it from the phone") else null }
+        conn.stream(Cmd.watch()).send(snapshot(null))
+        runCurrent()
+        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
+        runCurrent()
+        c.toggleScreen()
+        runCurrent()
+        assertEquals("restart this tile to use it from the phone", c.streamError.value)
+        c.close()
+    }
+
+    @Test
+    fun aScreenModeTileReopensBothSessionsWhenTheMacIsBack() = runTest {
+        val (repo, conn) = setup()
+        conn.stream(Cmd.watch()).send(snapshot(null))
+        runCurrent()
+        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
+        runCurrent()
+        c.toggleScreen()
+        runCurrent()
+        val tr = Cmd.transcript("t1", follow = true)
+        val out = Cmd.output("t1", lines = 300, follow = true)
+        assertEquals(1, conn.ran.count { it == out })
+        // Both streams end, then the watch ends, so the link drops and reconnects a second later.
+        conn.stream(tr).close()
+        conn.stream(out).close()
+        runCurrent()
+        conn.stream(Cmd.watch()).close()
+        runCurrent()
+        advanceTimeBy(1_100)
+        runCurrent()
+        assertTrue(c.macOnline.value)
+        assertTrue("the transcript is followed again", tr in conn2.ran)
+        assertTrue("and so is the screen", out in conn2.ran)
+        c.close()
+    }
+
+    @Test
+    fun aShellTileIgnoresTheScreenToggle() = runTest {
+        val (repo, conn) = setup()
+        conn.stream(Cmd.watch()).send(snapshot(null))
+        runCurrent()
+        val c = TileController(TileKey("mini", "s1"), repo, backgroundScope) { Instant.EPOCH }
+        runCurrent()
+        val out = Cmd.output("s1", lines = 300, follow = true)
+        assertEquals(1, conn.ran.count { it == out })
+        c.toggleScreen()
+        runCurrent()
+        assertFalse("screenMode is meaningless on a shell tile", c.screenMode.value)
+        assertEquals("its one output session is untouched", 1, conn.ran.count { it == out })
         c.close()
     }
 }

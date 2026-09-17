@@ -6,9 +6,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.text.font.FontWeight
 import dev.swarmz.phone.proto.Span
 import dev.swarmz.phone.ui.theme.Sw
@@ -91,5 +96,46 @@ class ShellOutputTest {
         lines = lines.drop(1) + listOf(listOf(Span("line300")))
         dropped += 1
         compose.onNodeWithText("line300").assertIsDisplayed()
+    }
+
+    /** The URLs [links] finds in [text], as text, which is easier to read than index ranges. */
+    private fun found(text: String) = links(text).map { text.substring(it) }
+
+    @Test
+    fun urlsAreFoundInAScreenLine() {
+        assertEquals(emptyList<String>(), found("no url here at all"))
+        assertEquals(
+            listOf("https://claude.ai/oauth/authorize?code=1"),
+            found("Open https://claude.ai/oauth/authorize?code=1 in a browser"),
+        )
+        assertEquals(listOf("http://x.test/1", "https://y.test/2"), found("a http://x.test/1 b https://y.test/2 c"))
+        assertEquals(listOf("https://x.test/a"), found("see (https://x.test/a)."))
+        assertEquals(listOf("https://x.test/a"), found("""quoted "https://x.test/a";"""))
+        assertEquals("a url can run to the end of the line", listOf("https://x.test/end"), found("visit https://x.test/end"))
+        assertEquals("a scheme with no host is not a link", emptyList<String>(), found("https:// and http://"))
+        // Known limitation: the terminal wraps a long URL, and the two halves are never joined.
+        assertEquals(listOf("https://claude.ai/oauth/auth"), found("https://claude.ai/oauth/auth"))
+        assertEquals(emptyList<String>(), found("orize?code=1"))
+    }
+
+    @OptIn(ExperimentalComposeUiApi::class)
+    @Test
+    fun aUrlOnTheScreenIsTappableAndOffersOpenAndCopy() {
+        var notice: String? = null
+        compose.setContent {
+            SwarmzTheme {
+                ShellLines(
+                    listOf(listOf(Span("Open "), Span("https://claude.ai/oauth"))),
+                    dropped = 0,
+                    exit = null,
+                    listState = rememberLazyListState(),
+                    onNotice = { notice = it },
+                )
+            }
+        }
+        compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.LinkTestMarker)).onFirst().performClick()
+        compose.onNodeWithText("Open").assertIsDisplayed()
+        compose.onNodeWithText("Copy").performClick()
+        compose.waitUntil(5_000) { notice == "Link copied" }
     }
 }

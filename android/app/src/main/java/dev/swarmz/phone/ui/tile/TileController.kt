@@ -106,6 +106,13 @@ class TileController(
     val draft: MutableState<TextFieldValue> = mutableStateOf(TextFieldValue(""))
     val listState = LazyListState()
 
+    /**
+     * Whether a Claude tile shows its live screen instead of the conversation: the way to reach anything Claude
+     * draws on the terminal but never writes to the transcript (`/login`, `/model`, `/cost`, its banners). It lives
+     * here, not in the composition, so folding keeps it, as it keeps the draft and the list position.
+     */
+    val screenMode: MutableState<Boolean> = mutableStateOf(false)
+
     /** Where images are decoded; tests replace it. */
     internal var decoder: CoroutineDispatcher = Dispatchers.Default
 
@@ -169,16 +176,15 @@ class TileController(
                     val before = prev
                     prev = t
                     val kind = t.kind ?: return@collect
-                    val session = if (kind == "shell") outputSession.value?.job else transcriptSession.value?.job
                     // Restarted: the old session ended with the shell (the tool reports the exit and closes the
                     // stream cleanly), so follow the new one.
                     val restarted = before?.kind != null && t.running && !before.running
                     // The tile came (back) into view, or its Mac came back online.
                     val fresh = before == null || before.kind == null || !before.online
                     // Failed, or finished without an error.
-                    val ended = currentError() != null || session?.isActive == false
+                    val ended = currentError() != null || openJobs(kind).any { !it.isActive }
                     when {
-                        session == null -> open(kind)
+                        missing(kind) -> open(kind)
                         t.online && (restarted || (ended && fresh)) -> open(kind)
                     }
                 }
@@ -201,20 +207,61 @@ class TileController(
     private fun currentError(): String? =
         transcriptSession.value?.error?.value ?: outputSession.value?.error?.value ?: openError.value
 
-    /** Opens (or reopens) the session for [kind], carrying the conversation shown so far across. */
+    /** A Claude tile follows its transcript; a shell, and a Claude tile in screen mode, follows the tile's output. */
+    private fun wantsTranscript(kind: String) = kind != "shell"
+    private fun wantsOutput(kind: String) = kind == "shell" || screenMode.value
+
+    /** A session that should be open but is not: nothing is being followed yet, so open. */
+    private fun missing(kind: String) =
+        (wantsTranscript(kind) && transcriptSession.value == null) || (wantsOutput(kind) && outputSession.value == null)
+
+    /** The jobs of the sessions this tile is meant to be following, so a drop of either one counts. */
+    private fun openJobs(kind: String): List<Job> = listOfNotNull(
+        if (wantsTranscript(kind)) transcriptSession.value?.job else null,
+        if (wantsOutput(kind)) outputSession.value?.job else null,
+    )
+
+    /** Opens (or reopens) the sessions for [kind], carrying the conversation shown so far across. */
     private fun open(kind: String) {
         transcriptSession.value?.let {
             it.close()
             carried.value = transcript.value
             transcriptSession.value = null
         }
+        closeOutput()
+        try {
+            if (wantsTranscript(kind)) transcriptSession.value = openTranscript(key)
+            if (wantsOutput(kind)) outputSession.value = openOutput(key)
+            openError.value = null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            openError.value = e.message ?: "Couldn't open this tile"
+        }
+    }
+
+    private fun closeOutput() {
         outputSession.value?.let {
             it.close()
             outputSession.value = null
         }
+    }
+
+    /**
+     * Switches a Claude tile between its conversation and its live screen. The transcript session stays open either
+     * way, so coming back keeps its position and any older pages; only the output session comes and goes.
+     */
+    fun toggleScreen() {
+        if (isShell) return
+        val on = !screenMode.value
+        screenMode.value = on
+        if (!on) {
+            closeOutput()
+            return
+        }
+        if (outputSession.value != null) return
         try {
-            if (kind == "shell") outputSession.value = openOutput(key)
-            else transcriptSession.value = openTranscript(key)
+            outputSession.value = openOutput(key)
             openError.value = null
         } catch (e: CancellationException) {
             throw e
@@ -411,6 +458,11 @@ class TileController(
             loadingImages.remove(id)
             _images.update { it + (id to bitmap) }
         }
+    }
+
+    /** Shows a one-off line under the body, the way a failed action does. */
+    fun notify(text: String) {
+        _notice.value = text
     }
 
     fun dismissNotice() {
