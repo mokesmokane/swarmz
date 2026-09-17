@@ -9,7 +9,6 @@ coroutines = "1.11.0"
 datastore = "1.2.1"
 sshj = "0.40.0"
 bouncycastle = "1.86"
-coil = "3.5.0"
 markdown = "0.41.0"
 junit = "4.13.2"
 robolectric = "4.17"
@@ -38,7 +37,6 @@ datastore-preferences = { group = "androidx.datastore", name = "datastore-prefer
 sshj = { group = "com.hierynomus", name = "sshj", version.ref = "sshj" }
 bcprov = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncycastle" }
 bcpkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", version.ref = "bouncycastle" }
-coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }
 markdown-m3 = { group = "com.mikepenz", name = "multiplatform-markdown-renderer-m3", version.ref = "markdown" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }

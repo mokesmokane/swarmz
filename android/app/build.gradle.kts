@@ -83,7 +83,6 @@ dependencies {
     implementation(libs.sshj)
     implementation(libs.bcprov)
     implementation(libs.bcpkix)
-    implementation(libs.coil.compose)
     implementation(libs.markdown.m3)
 
     testImplementation(libs.junit)
