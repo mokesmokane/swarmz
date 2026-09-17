@@ -285,7 +285,7 @@ class Repository(
             // A saved Mac that is a paired one under its other name keeps the one link, and lends it its label.
             val existing = initial.keys.firstOrNull { sameMac(it, m.name) }
             names[existing ?: m.name] = m.label
-            if (existing == null) initial[m.name] = newLink(userFor(m.name, pairings)!!, m.name)
+            if (existing == null) initial[m.name] = newLink(userFor(m.name, pairings) ?: pairings.first().user, m.name)
         }
         links.value = initial
         labels.value = names
@@ -354,7 +354,9 @@ class Repository(
                 val existing = next.keys.firstOrNull { sameMac(it, m.name) }
                 val mac = existing ?: m.name
                 names[mac] = m.alias ?: labels.value[mac] ?: m.name
-                if (existing == null) next[mac] = newLink(userFor(mac, pairings) ?: return@withLock, mac)
+                // No user at all means the pairing went while this round ran; that reset stops the link anyway.
+                val user = userFor(mac, pairings)
+                if (existing == null && user != null) next[mac] = newLink(user, mac)
             }
             links.value = next
             // A Mac this round did not list keeps the label it had.
