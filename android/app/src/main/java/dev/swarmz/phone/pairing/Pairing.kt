@@ -1,0 +1,78 @@
+package dev.swarmz.phone.pairing
+
+import dev.swarmz.phone.data.Paired
+import dev.swarmz.phone.data.SettingsStore
+import dev.swarmz.phone.keys.PhoneKey
+import dev.swarmz.phone.proto.APP_PROTOCOL
+import dev.swarmz.phone.proto.Cmd
+import dev.swarmz.phone.proto.MachineResult
+import dev.swarmz.phone.proto.PhoneAddReply
+import dev.swarmz.phone.proto.ToolFailure
+import dev.swarmz.phone.proto.ToolJson
+import dev.swarmz.phone.proto.Version
+import dev.swarmz.phone.proto.validDevice
+import dev.swarmz.phone.ssh.Auth
+import dev.swarmz.phone.ssh.AuthRejected
+import dev.swarmz.phone.ssh.HostKeyChanged
+import dev.swarmz.phone.ssh.SshConnection
+import dev.swarmz.phone.ssh.SshConnector
+import dev.swarmz.phone.ssh.Unreachable
+
+data class PairResult(val others: List<MachineResult>)
+class PairingError(message: String) : Exception(message)
+
+private val HOST = Regex("^[A-Za-z0-9.-]{1,253}$")
+private val USER = Regex("^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$")
+
+/**
+ * Logs in to a Mac once with the user's password, installs the phone's public key there, then
+ * confirms key login works before saving the pairing. The password is used once and never stored
+ * or logged; it is wiped on every path, success or failure.
+ */
+class Pairing(
+    private val connector: SshConnector,
+    private val keys: () -> PhoneKey,
+    private val settings: SettingsStore,
+    private val port: Int = 22,
+) {
+    suspend fun pair(host: String, user: String, password: CharArray, device: String): PairResult {
+        try {
+            if (!validDevice(device)) throw PairingError("That device name can't be used.")
+            if (!HOST.matches(host)) throw PairingError("That Mac name can't be used.")
+            if (!USER.matches(user)) throw PairingError("That username can't be used.")
+            val key = keys()
+            val reply = passwordSession(host, user, password).use { conn ->
+                val v = conn.exec("${Cmd.TOOL_PATH} ${Cmd.quote("version")}")
+                val version = runCatching { ToolJson.decode<Version>(v.stdout) }.getOrNull()
+                    ?: throw PairingError("swarmz isn't installed on $host yet. Open swarmz on that Mac once, then try again.")
+                if (version.protocol < APP_PROTOCOL) throw PairingError("Update swarmz on $host first.")
+                try {
+                    ToolJson.decode<PhoneAddReply>(conn.exec(Cmd.phoneAdd(device, key.openSsh)).stdout)
+                } catch (e: ToolFailure) {
+                    throw PairingError(e.message)
+                }
+            }
+            try {
+                connector.connect(host, port, Auth.Key(user, key)).use { conn ->
+                    ToolJson.decode<Version>(conn.exec(Cmd.version()).stdout)
+                }
+            } catch (e: Exception) {
+                throw PairingError("The key was added, but logging in with it failed: ${e.message}")
+            }
+            settings.setPaired(Paired(host, user, device))
+            return PairResult(reply.machines)
+        } finally {
+            password.fill(Char.MIN_VALUE)
+        }
+    }
+
+    private suspend fun passwordSession(host: String, user: String, password: CharArray): SshConnection = try {
+        connector.connect(host, port, Auth.Password(user, password))
+    } catch (e: AuthRejected) {
+        throw PairingError("Wrong username or password, or Remote Login is off on $host.")
+    } catch (e: Unreachable) {
+        throw PairingError("Can't reach $host. Is Tailscale connected?")
+    } catch (e: HostKeyChanged) {
+        throw PairingError("$host presented a different host key than before.")
+    }
+}
