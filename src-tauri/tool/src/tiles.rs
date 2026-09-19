@@ -2,7 +2,7 @@
 //! files behind them (`sessions`, `prune`).
 
 use crate::agent::{fold_log, read_log, Fold, Needs, Status};
-use crate::dialog::ScreenView;
+use crate::dialog::{Kind, ScreenView};
 use crate::paths::{live_session, read_meta, session_paths, sessions_dir_in, socket_live};
 use crate::transcript::{continued_in, guess_path, last_assistant_text, resolve_continued, resolve_continued_by};
 use crate::workspace::{read_from, TerminalDef, Workspace};
@@ -236,6 +236,14 @@ fn rows_from(
 /// says.
 pub fn apply_screen(fold: &mut Fold, view: &ScreenView) {
     match view.dialog.as_ref() {
+        // A question Claude asks (AskUserQuestion) is only ever seen on the screen: no hook
+        // reports it, so the fold's own state gives way while it shows and returns when it closes.
+        Some(d) if d.kind == Kind::Question => {
+            fold.tool = Some("AskUserQuestion".to_string());
+            fold.summary = Some(d.summary());
+            fold.status = Status::Blocked;
+            fold.needs = Some(Needs::Question);
+        }
         Some(d) => {
             let summary = d.summary();
             let same = fold.needs == Some(Needs::Permission) && fold.summary.as_deref() == Some(summary.as_str());
@@ -433,7 +441,31 @@ mod tests {
     }
 
     fn dialog(summary: &str) -> Dialog {
-        Dialog { heading: "Bash command".into(), target: Some(summary.into()), description: None, options: vec![] }
+        Dialog { kind: Kind::Permission, heading: "Bash command".into(), target: Some(summary.into()), description: None, options: vec![], multi: false, cursor: None, submit_at: None }
+    }
+
+    fn question(text: &str) -> Option<ScreenView> {
+        let d = Dialog { kind: Kind::Question, heading: "Colour".into(), target: Some(text.into()), ..dialog("") };
+        Some(ScreenView { dialog: Some(d), interruptible: false })
+    }
+
+    #[test]
+    fn a_question_on_screen_blocks_the_tile_and_its_close_returns_to_the_log() {
+        let mut f = Fold { status: Status::Working, ..Fold::default() };
+        apply_screen(&mut f, &question("Which colour?").unwrap());
+        assert_eq!((f.status, f.needs, f.tool.as_deref(), f.summary.as_deref()), (Status::Blocked, Some(Needs::Question), Some("AskUserQuestion"), Some("Which colour?")));
+        // No hook reports the question, so with it gone the log's own state stands.
+        let mut f = Fold { status: Status::Working, ..Fold::default() };
+        apply_screen(&mut f, &nothing_shown(false).unwrap());
+        assert_eq!((f.status, f.needs), (Status::Working, None));
+        // A row: the screen's question overrides a log that says working.
+        let h = home("asked");
+        write_workspace(&h);
+        write_meta_for(&h, "c1", true);
+        write_log(&h, &[format!("1\tc1\tUserPromptSubmit\t{}", json!({"session_id": "s"}))]);
+        let rows = tile_rows_with(&h, Some("mini"), &|_| None, &|_| question("Which colour?"), &|id| id == "c1");
+        assert_eq!(status_of(&rows, "c1"), (json!("blocked"), json!("question"), json!("Which colour?")));
+        let _ = std::fs::remove_dir_all(&h);
     }
 
     fn shown(summary: &str) -> Option<ScreenView> {

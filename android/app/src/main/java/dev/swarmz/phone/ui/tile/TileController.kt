@@ -205,8 +205,10 @@ class TileController(
             transcript.collect { t -> _outgoing.update { reconcile(it, t.messages) } }
         }
         scope.launch {
-            row.map { it?.needs to it?.since }.distinctUntilChanged().collect { (needs, _) ->
-                if (needs != "permission") {
+            // The summary is in the key so a form's next question (a new summary under the same
+            // `needs`) is fetched too.
+            row.map { Triple(it?.needs, it?.since, it?.summary) }.distinctUntilChanged().collect {
+                if (!asksOnScreen(row.value)) {
                     cancelAsk()
                     _pending.value = null
                 } else {
@@ -283,6 +285,14 @@ class TileController(
         }
     }
 
+    /**
+     * The tile has a dialog `pending` can read: a permission prompt, or a question Claude asks
+     * (only ever seen on the screen, so it carries a summary; a question block the hook log
+     * reports on its own has none, and no card).
+     */
+    private fun asksOnScreen(r: TileRow?): Boolean =
+        r?.needs == "permission" || (r?.needs == "question" && r.summary != null)
+
     private fun cancelAsk() {
         askGeneration.incrementAndGet()
         askJob?.cancel()
@@ -299,7 +309,7 @@ class TileController(
             hold?.join()
             var attempt = 0
             while (true) {
-                if (row.value?.needs != "permission") {
+                if (!asksOnScreen(row.value)) {
                     if (current()) _pending.value = null
                     return@launch
                 }
@@ -393,7 +403,12 @@ class TileController(
         deliver(again)
     }
 
-    fun answer(option: Opt) {
+    fun answer(option: Opt) = answerWith(option.n.toString())
+
+    /** Presses a multi-select question's Submit entry (`answer submit`). */
+    fun submit() = answerWith("submit")
+
+    private fun answerWith(choice: String) {
         val ask = _pending.value ?: return
         cancelAsk()
         _pending.value = null
@@ -403,7 +418,7 @@ class TileController(
         scope.launch {
             try {
                 val answered = try {
-                    repo.answer(key, option.n.toString(), ask.summary).answered
+                    repo.answer(key, choice, ask.summary).answered
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -412,7 +427,7 @@ class TileController(
                 }
                 // Still blocked? Ask the screen again once the hold ends: at once after an ignored or failed answer,
                 // shortly after a real one, since Claude closes its dialog a moment after `answer` returns.
-                if (row.value?.needs == "permission") fetchPending()
+                if (asksOnScreen(row.value)) fetchPending()
                 if (answered) delay(ASK_RETRY_MS)
             } finally {
                 hold.complete()

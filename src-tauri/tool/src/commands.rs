@@ -506,14 +506,24 @@ pub fn pending(env: &Env, tile: &str) -> Result<Value, CliError> {
     let c = connect_screen(env, tile)?;
     Ok(match current_question(env, &c, tile)? {
         None => json!({"v": 1, "pending": null}),
-        Some(q) => json!({"v": 1, "pending": {"tool": q.tool, "summary": q.summary, "options": q.dialog.options}}),
+        Some(q) => json!({
+            "v": 1,
+            "pending": {
+                "kind": q.dialog.kind,
+                "tool": q.tool,
+                "summary": q.summary,
+                "options": q.dialog.options,
+                "multi": q.dialog.multi,
+                "submit": q.dialog.submit_at.is_some(),
+            },
+        }),
     })
 }
 
 pub fn answer(env: &Env, tile: &str, choice: &str, expect_summary: Option<&str>) -> Result<Value, CliError> {
-    let known = matches!(choice, "yes" | "always" | "no" | "deny") || (!choice.is_empty() && choice.chars().all(|c| c.is_ascii_digit()));
+    let known = matches!(choice, "yes" | "always" | "no" | "deny" | "submit") || (!choice.is_empty() && choice.chars().all(|c| c.is_ascii_digit()));
     if !known {
-        return Err(CliError::new("usage", format!("unknown answer {choice:?}: use yes, always, no, deny or an option number")));
+        return Err(CliError::new("usage", format!("unknown answer {choice:?}: use yes, always, no, deny, submit or an option number")));
     }
     let c = connect_screen(env, tile)?;
     let Some(q) = current_question(env, &c, tile)? else {
@@ -526,9 +536,19 @@ pub fn answer(env: &Env, tile: &str, choice: &str, expect_summary: Option<&str>)
     let (bytes, option) = match answer {
         Answer::Esc => (b"\x1b".to_vec(), Value::Null),
         Answer::Option(o) => (o.n.to_string().into_bytes(), json!(o)),
+        Answer::Submit { downs } => {
+            // Each ↓ is its own write so the dialog moves one entry at a time before Enter lands.
+            for _ in 0..downs {
+                c.write(b"\x1b[B").map_err(failed)?;
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            (b"\r".to_vec(), Value::Null)
+        }
     };
     c.write(&bytes).map_err(failed)?;
-    Ok(json!({"v": 1, "answered": true, "option": option}))
+    // A digit on a multi-select question ticks its box rather than answering; the dialog stays.
+    let toggled = q.dialog.multi && matches!(option, Value::Object(_));
+    Ok(json!({"v": 1, "answered": true, "option": option, "toggled": toggled}))
 }
 
 pub fn output(env: &Env, tile: &str, lines: usize, follow: bool, out: &mut dyn Write) -> Result<(), CliError> {
