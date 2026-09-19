@@ -87,7 +87,7 @@ fun TileScreen(
                 // Unfolded with the list hidden: the same spot brings it back.
                 IconButton(onClick = onShowList) { Icon(Icons.Filled.ChevronRight, contentDescription = "Show the list", tint = Sw.Title) }
             }
-            if (r != null) StatusDot(dotOf(r, if (r.needs == "permission") Need.Permission else null), Modifier.padding(horizontal = 6.dp))
+            if (r != null) StatusDot(dotOf(r, when (r.needs) { "permission" -> Need.Permission; "question" -> Need.Question; else -> null }), Modifier.padding(horizontal = 6.dp))
             Column(Modifier.weight(1f).padding(start = 6.dp)) {
                 Text(r?.name ?: c.key.id, style = MaterialTheme.typography.titleMedium, maxLines = 1)
                 Text("$macLabel · ${r?.let { folderName(it.cwd) } ?: ""}", style = MonoSmall, maxLines = 1)
@@ -131,7 +131,7 @@ fun TileScreen(
             }
             return@Column
         }
-        pending?.let { p -> if (online) PermissionCard(p, horizontal = unfolded, onAnswer = c::answer) }
+        pending?.let { p -> if (online) PermissionCard(p, horizontal = unfolded, onAnswer = c::answer, onSubmit = c::submit) }
         val canType = online && r != null
         if (r?.kind == "shell") {
             ShellQuickKeys(canType, onCtrlC = { c.key(Key.CtrlC) }, onUp = { c.key(Key.Up) }, onTab = { c.key(Key.Tab) })

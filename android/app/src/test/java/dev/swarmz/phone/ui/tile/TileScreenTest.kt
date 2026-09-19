@@ -50,13 +50,19 @@ class TileScreenTest {
 
     private lateinit var conn: FakeConn
 
-    private fun controller(tile: String, row: String, messages: String? = null): TileController {
+    private val permissionPending =
+        """{"pending":{"tool":"Bash","summary":"npm test","options":[{"n":1,"label":"Yes"},{"n":2,"label":"Yes, always"},{"n":3,"label":"No"}]},"v":1}"""
+
+    private fun controller(tile: String, row: String, messages: String? = null, pending: String = permissionPending): TileController {
         installBouncyCastle()
         conn = FakeConn { cmd ->
             when (cmd) {
                 Cmd.machines() -> """{"machines":[{"name":"mini","alias":"Mini","online":true,"self":true}],"v":1}"""
-                Cmd.pending("t1") -> """{"pending":{"tool":"Bash","summary":"npm test","options":[{"n":1,"label":"Yes"},{"n":2,"label":"Yes, always"},{"n":3,"label":"No"}]},"v":1}"""
+                Cmd.pending("t1") -> pending
                 Cmd.answer("t1", "1", "npm test") -> """{"answered":true,"option":{"n":1,"label":"Yes"},"v":1}"""
+                Cmd.answer("t1", "2", "Which colour should the button be?") -> """{"answered":true,"option":{"n":2,"label":"Blue"},"v":1}"""
+                Cmd.answer("t1", "2", "Which shapes do you want?") -> """{"answered":true,"option":{"n":2,"label":"Square"},"toggled":true,"v":1}"""
+                Cmd.answer("t1", "submit", "Which shapes do you want?") -> """{"answered":true,"option":null,"v":1}"""
                 Cmd.send("t1", "go on") -> """{"sent":true,"v":1}"""
                 Cmd.send("s1", "ls") -> """{"sent":true,"v":1}"""
                 Cmd.key("t1", Key.Up), Cmd.key("t1", Key.Down), Cmd.key("t1", Key.Enter) -> """{"sent":true,"v":1}"""
@@ -168,6 +174,51 @@ class TileScreenTest {
         compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Done. Run:", substring = true).assertIsDisplayed()
         assertTrue("the transcript session was never closed", conn.ran.count { it == Cmd.transcript("t1", follow = true) } == 1)
+    }
+
+    private val questionRow =
+        """{"cwd":"/Users/me/api","id":"t1","kind":"claude","mode":"default","name":"api","needs":"question","running":true,"since":"2026-09-17T10:00:00Z","status":"blocked","summary":"Which colour should the button be?"}"""
+
+    @Test
+    fun aQuestionFromClaudeIsACardWithItsOptions() {
+        val pending = """{"pending":{"kind":"question","tool":"AskUserQuestion","summary":"Which colour should the button be?","multi":false,"submit":false,""" +
+            """"options":[{"n":1,"label":"Red","description":"A bold red button"},{"n":2,"label":"Blue","description":"A classic blue button"}]},"v":1}"""
+        val c = controller("t1", questionRow, pending = pending)
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Which colour should the button be?")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("QUESTION").assertIsDisplayed()
+        compose.onNodeWithText("A classic blue button").assertIsDisplayed()
+        compose.onNodeWithText("Run ", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("Blue").performClick()
+        compose.waitUntil(5_000) { Cmd.answer("t1", "2", "Which colour should the button be?") in conn.ran }
+    }
+
+    @Test
+    fun aQuestionTheHookLogReportsOnItsOwnHasNoCard() {
+        // An `idle_prompt` block: `needs` is question but there is no dialog to read, so nothing is asked for.
+        val row = questionRow.replace(""","summary":"Which colour should the button be?"""", "")
+        val c = controller("t1", row)
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Esc").assertIsDisplayed()
+        assertTrue(conn.ran.none { it == Cmd.pending("t1") })
+        compose.onNodeWithText("QUESTION").assertDoesNotExist()
+    }
+
+    @Test
+    fun aMultiSelectQuestionTogglesAndSubmits() {
+        val pending = """{"pending":{"kind":"question","tool":"AskUserQuestion","summary":"Which shapes do you want?","multi":true,"submit":true,""" +
+            """"options":[{"n":1,"label":"Circle","checked":false},{"n":2,"label":"Square","checked":true}]},"v":1}"""
+        val row = questionRow.replace("Which colour should the button be?", "Which shapes do you want?")
+        val c = controller("t1", row, pending = pending)
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = true, onBack = null) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("✔ Square")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("✔ Square").performClick()
+        compose.waitUntil(5_000) { Cmd.answer("t1", "2", "Which shapes do you want?") in conn.ran }
+        // The box is toggled, so the card comes back and Submit presses the dialog's Submit entry.
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("Submit")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Submit").performClick()
+        compose.waitUntil(5_000) { Cmd.answer("t1", "submit", "Which shapes do you want?") in conn.ran }
     }
 
     @Test

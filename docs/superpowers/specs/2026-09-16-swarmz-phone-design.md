@@ -313,7 +313,7 @@ the hook log alone.
 | `send <tile> [--] <text>` | `{sent:true}`; asks the holder's `Info` first and types the text as a bracketed paste when the program on screen has turned bracketed paste on (or the holder cannot say), else as plain text, then Enter as a separate write 50 ms later; everything after a lone `--` is text, never an option, so a command that itself starts with `--` can be sent; the pasted text keeps only newline, tab and printable characters, so it can never end the paste early or smuggle escape sequences of its own |
 | `key <tile> <name>` | `{sent:true}`; one of `esc`, `ctrl-c`, `tab`, `shift-tab`, `up`, `down`, `enter` |
 | `pending <tile>` | `{pending:{tool, summary, options:[{n, label}]}}` or `{pending:null}` (§4.4) |
-| `answer <tile> <yes\|always\|no\|deny\|n> [--summary <text>]` | selects that option if the same question is still showing (§4.4): `{answered:true, option:{n, label}}` (`option` is null for `deny`); otherwise `{ignored:true, reason}`; an answer the dialog has no option for fails with `no_option`. With `--summary`, the answer applies only if the pending question's summary still equals it (the value may itself start with `--`); notification actions pass it |
+| `answer <tile> <yes\|always\|no\|deny\|submit\|n> [--summary <text>]` | selects that option if the same question is still showing (§4.4): `{answered:true, option:{n, label}}` (`option` is null for `deny`); otherwise `{ignored:true, reason}`; an answer the dialog has no option for fails with `no_option`. With `--summary`, the answer applies only if the pending question's summary still equals it (the value may itself start with `--`); notification actions pass it |
 | `folders [<path>]` | `{path, parent, dirs}` (same rules as the desktop folder picker); a path containing a `.` or `..` segment is refused |
 | `new --folder <dir> [--skip-permissions] [--name <name>]` | `{tile:{…}}`, the new tile's `ls` row, §4.5 |
 | `restart <tile>` | holds a fresh session for a tile that is not running and types its startup step (Claude tiles resume their session); refuses (`running`) a tile that is already running, including one another `hold`/`restart` started concurrently; returns `{tile:{…}}` |
@@ -449,6 +449,30 @@ the same folder; at most ten hops, stopping on a cycle), so `transcript`,
   answer the wrong one; notification actions always pass it. When
   resolving `always`, an option reading "don’t ask" (curly apostrophe)
   counts the same as "don't ask".
+- **Questions from Claude (amended 2026-09-19).** The dialog Claude draws for
+  its AskUserQuestion tool is read the same way, from the screen. Captured
+  from Claude Code 2.1.278: a rule, a header tab (`☐ Button colour`; a
+  multi-question form shows every question's tab, `←  ☐ Size  ☐ Shape  ✔
+  Submit  →`), the question, numbered options each with a one-line
+  description under it (a multi-select option's label starts with its `[ ]`
+  or `[✔]` box), a `Type something` entry, a second rule, a `Chat about
+  this` entry, and the footer `Enter to select · … · Esc to cancel`. The
+  form's review step has no second rule: `Ready to submit your answers?`
+  with `Submit answers` / `Cancel`. No hook reports these questions, so the
+  screen alone sets the tile `blocked` with `needs: "question"`, `tool:
+  "AskUserQuestion"` and `summary` = the question; when the dialog closes the
+  fold's own state stands again. `pending` adds `kind` (`permission` |
+  `question`), `multi` (a multi-select question), `submit` (its Submit entry
+  is on screen) and, per option, `description` and `checked`; the `Type
+  something` and `Chat about this` entries are left out because they need
+  typing after the digit. Answers: a digit answers a single-select question
+  outright (Claude Code selects and submits on the digit) and, in a form,
+  moves to the next question, which arrives as a new pending with its own
+  summary; on a multi-select question a digit ticks that box (`answer`
+  reports `toggled: true`) and `answer <tile> submit` walks `↓` from the
+  cursor to the Submit entry and presses Enter; `deny` still sends Esc. The
+  permission words (`yes`, `always`, `no`) fit no question and fail with
+  `no_option`.
 
 ### 4.5 New sessions
 
