@@ -1013,6 +1013,81 @@ fn pending_answer_key_and_output_against_a_fake_dialog() {
     assert_eq!((code, bad["code"].as_str()), (1, Some("usage")));
 }
 
+/// Shows Claude's single-select question dialog (2.1.278) and reports the one key it gets.
+const QUESTION_SH: &str = r#"stty raw -echo opost
+printf '%s\n' '' '────────────────────────────' ' ☐ Button colour' 'Which colour should the button be?' '❯ 1. Red' '     A bold red button' '  2. Blue' '     A classic blue button' '  3. Type something.' '────────────────────────────' '  4. Chat about this' 'Enter to select · ↑/↓ to navigate · Esc to cancel'
+c=$(dd bs=1 count=1 2>/dev/null)
+stty sane
+printf '\033[2J\033[H'
+printf 'chose:%s\n' "$(printf %s "$c" | od -An -c | tr -d ' \n')"
+"#;
+
+/// Shows a multi-select question with the cursor on its first option and reports the 10 bytes
+/// it gets: three ↓ (3 bytes each, past Square and Type something) and Enter is what
+/// `answer submit` types from there.
+const MULTI_SH: &str = r#"stty raw -echo opost
+printf '%s\n' '' '────────────────────────────' '←  ☒ Size  ☐ Shape  ✔ Submit  →' 'Which shapes do you want?' '❯ 1. [ ] Circle' '  Round.' '  2. [✔] Square' '  Four sides.' '  3. [ ] Type something' '     Submit' '────────────────────────────' '  4. Chat about this' 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel'
+c=$(dd bs=1 count=10 2>/dev/null)
+stty sane
+printf '\033[2J\033[H'
+printf 'chose:%s\n' "$(printf %s "$c" | od -An -c | tr -d ' \n')"
+"#;
+
+#[test]
+fn a_question_from_claude_is_pending_and_answered_by_its_digit() {
+    let h = home("question");
+    let socket = held(&h, "q1");
+    let script = h.path.join("question.sh");
+    std::fs::write(&script, QUESTION_SH).unwrap();
+    let c = tool_client(&socket);
+    c.write(format!("sh '{}'\n", script.display()).as_bytes()).unwrap();
+    let mut p = serde_json::Value::Null;
+    assert!(wait_until(|| {
+        p = tool_env(&h.path, &["pending", "q1"], MINI).1;
+        !p["pending"].is_null()
+    }));
+    let q = &p["pending"];
+    assert_eq!((q["kind"].as_str(), q["tool"].as_str(), q["summary"].as_str()), (Some("question"), Some("AskUserQuestion"), Some("Which colour should the button be?")));
+    assert_eq!((q["multi"].as_bool(), q["submit"].as_bool()), (Some(false), Some(false)));
+    let opts = q["options"].as_array().unwrap();
+    assert_eq!(opts.len(), 2, "Type something and Chat about this are not answers: {q}");
+    assert_eq!((opts[1]["n"].as_u64(), opts[1]["label"].as_str(), opts[1]["description"].as_str()), (Some(2), Some("Blue"), Some("A classic blue button")));
+    // The tile row says the same while the question shows.
+    let cwd = h.path.to_string_lossy().into_owned();
+    write_ws(&h.path, serde_json::json!([{"id": "q1", "name": "q1", "cwd": cwd, "origin": "mini",
+        "claude": {"enabled": true, "sessionId": "s-q1", "skipPermissions": false, "started": true}}]), serde_json::json!({}));
+    let (_, ls) = tool_env(&h.path, &["ls"], MINI);
+    let row = ls["tiles"].as_array().unwrap().iter().find(|t| t["id"] == "q1").unwrap();
+    assert_eq!((row["status"].as_str(), row["needs"].as_str(), row["summary"].as_str()), (Some("blocked"), Some("question"), Some("Which colour should the button be?")));
+    // Permission words fit no option; a digit does, guarded by the summary.
+    let (code, bad) = tool_env(&h.path, &["answer", "q1", "yes"], MINI);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("no_option")));
+    let (_, stale) = tool_env(&h.path, &["answer", "q1", "2", "--summary", "Which size?"], MINI);
+    assert_eq!(stale["ignored"], true);
+    let (code, a) = tool_env(&h.path, &["answer", "q1", "2", "--summary", "Which colour should the button be?"], MINI);
+    assert_eq!(code, 0, "{a}");
+    assert_eq!((a["answered"].as_bool(), a["option"]["n"].as_u64(), a["toggled"].as_bool()), (Some(true), Some(2), Some(false)));
+    assert!(wait_until(|| screen_has(&c, "chose:2")));
+    assert!(tool_env(&h.path, &["pending", "q1"], MINI).1["pending"].is_null());
+
+    // A multi-select question: a digit ticks a box, `submit` walks ↓ to Submit and presses Enter.
+    let multi = h.path.join("multi.sh");
+    std::fs::write(&multi, MULTI_SH).unwrap();
+    c.write(format!("sh '{}'\n", multi.display()).as_bytes()).unwrap();
+    assert!(wait_until(|| {
+        p = tool_env(&h.path, &["pending", "q1"], MINI).1;
+        !p["pending"].is_null()
+    }));
+    let q = &p["pending"];
+    assert_eq!((q["multi"].as_bool(), q["submit"].as_bool()), (Some(true), Some(true)));
+    let opts = q["options"].as_array().unwrap();
+    assert_eq!(opts.iter().map(|o| o["checked"].as_bool()).collect::<Vec<_>>(), vec![Some(false), Some(true)]);
+    let (code, a) = tool_env(&h.path, &["answer", "q1", "submit"], MINI);
+    assert_eq!(code, 0, "{a}");
+    assert!(a["option"].is_null());
+    assert!(wait_until(|| screen_has(&c, "chose:033[B033[B033[B\\r")));
+}
+
 #[test]
 fn a_dialog_that_is_not_live_is_never_answered() {
     let h = home("stale-dialog");

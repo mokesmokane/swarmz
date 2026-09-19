@@ -69,12 +69,27 @@ typealias Line = List<Span>
 
 @Serializable data class Screen(val cols: Int, val rows: Int, val cursor: List<Int>? = null, val lines: List<Line>)
 @Serializable data class LinesUpdate(val drop: Int, val from: Int, val lines: List<Line>, val cursor: List<Int>? = null)
-@Serializable data class Opt(val n: Int, val label: String)
-@Serializable data class Pending(val tool: String, val summary: String, val options: List<Opt>)
+/** A dialog option: [description] and [checked] (a multi-select box) come with a question's options only. */
+@Serializable data class Opt(val n: Int, val label: String, val description: String? = null, val checked: Boolean? = null)
+
+/**
+ * What a tile is asking (spec §4.4): a `permission` prompt, or a `question` Claude asks with
+ * AskUserQuestion. [multi] is a multi-select question, whose digits tick boxes; [submit] says its
+ * Submit entry is on screen, so `answer submit` can press it.
+ */
+@Serializable
+data class Pending(
+    val tool: String,
+    val summary: String,
+    val options: List<Opt>,
+    val kind: String = "permission",
+    val multi: Boolean = false,
+    val submit: Boolean = false,
+)
 @Serializable data class PendingReply(val pending: Pending? = null)
 
 @Serializable
-data class AnswerReply(val answered: Boolean = false, val option: Opt? = null, val ignored: Boolean = false, val reason: String? = null)
+data class AnswerReply(val answered: Boolean = false, val option: Opt? = null, val ignored: Boolean = false, val reason: String? = null, val toggled: Boolean = false)
 
 @Serializable data class SentReply(val sent: Boolean = false)
 @Serializable data class TileReply(val tile: TileRow)
