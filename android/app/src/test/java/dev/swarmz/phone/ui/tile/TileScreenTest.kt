@@ -23,6 +23,7 @@ import dev.swarmz.phone.keys.PhoneKey
 import dev.swarmz.phone.link.FakeConn
 import dev.swarmz.phone.link.VERSION_OK
 import dev.swarmz.phone.proto.Cmd
+import dev.swarmz.phone.proto.Key
 import dev.swarmz.phone.state.TileKey
 import dev.swarmz.phone.ui.theme.SwarmzTheme
 import kotlinx.coroutines.CoroutineScope
@@ -58,6 +59,7 @@ class TileScreenTest {
                 Cmd.answer("t1", "1", "npm test") -> """{"answered":true,"option":{"n":1,"label":"Yes"},"v":1}"""
                 Cmd.send("t1", "go on") -> """{"sent":true,"v":1}"""
                 Cmd.send("s1", "ls") -> """{"sent":true,"v":1}"""
+                Cmd.key("t1", Key.Up), Cmd.key("t1", Key.Down), Cmd.key("t1", Key.Enter) -> """{"sent":true,"v":1}"""
                 else -> VERSION_OK
             }
         }
@@ -166,6 +168,27 @@ class TileScreenTest {
         compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Done. Run:", substring = true).assertIsDisplayed()
         assertTrue("the transcript session was never closed", conn.ran.count { it == Cmd.transcript("t1", follow = true) } == 1)
+    }
+
+    @Test
+    fun arrowAndEnterKeysAnswerAPromptOnTheScreen() {
+        // A question the permission card cannot read (here a login picker; Claude's own
+        // multiple-choice questions and the /resume picker look the same to the phone) is
+        // answered by moving through it and confirming with the keys under the screen.
+        val c = controller("t1", permissionRow)
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Screen").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Select login method:")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("↓").performClick()
+        compose.waitUntil(5_000) { Cmd.key("t1", Key.Down) in conn.ran }
+        compose.onNodeWithText("↑").performClick()
+        compose.waitUntil(5_000) { Cmd.key("t1", Key.Up) in conn.ran }
+        compose.onNodeWithText("Enter").performClick()
+        compose.waitUntil(5_000) { Cmd.key("t1", Key.Enter) in conn.ran }
+        // Pressing a key never types a message: nothing was sent and no bubble was added.
+        assertTrue(conn.ran.none { " 'send' " in it })
+        assertTrue(c.outgoing.value.isEmpty())
     }
 
     @Test

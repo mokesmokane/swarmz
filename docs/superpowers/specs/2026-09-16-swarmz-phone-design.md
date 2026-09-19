@@ -651,8 +651,13 @@ sections are dimmed with "last seen …".
   screen line, shell or Claude, is underlined and tappable, offering **Open**
   (in a browser) and **Copy**; this is how the `/login` flow is completed from
   the phone.
-- **Quick keys** row: Claude → `Esc`, `^C`, `⇧Tab <mode>`, `/` (slash
-  command picker); shell → `^C`, `↑`, `Tab`, **Restart shell**.
+- **Quick keys** row: Claude → `Esc`, `^C`, `↑`, `↓`, `Enter`, `⇧Tab <mode>`,
+  `/` (slash command picker); shell → `^C`, `↑`, `Tab`, **Restart shell**.
+  (Amended 2026-09-19: `↑`, `↓` and `Enter` were added to the Claude row so a
+  prompt the permission card does not read — Claude's own multiple-choice
+  questions, the `/resume` picker — can be moved through and confirmed from
+  the Screen view; without them such a question could be seen but not
+  answered.)
 - **Composer:** growing text field ("Message <name>…" / "Type a command…")
   and a round mic button. Tap the send arrow (shown when the field has text)
   to send. Your message appears immediately with sending / sent / failed

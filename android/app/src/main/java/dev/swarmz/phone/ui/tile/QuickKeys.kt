@@ -27,8 +27,23 @@ fun KeyChip(label: String, onClick: () -> Unit, enabled: Boolean = true) {
     }
 }
 
+/**
+ * The Claude tile's key row. `↑`, `↓` and `Enter` move through and confirm whatever prompt is on
+ * the tile's screen, which is how a question the permission card does not recognise (Claude's
+ * own multiple-choice questions, the `/resume` picker) is answered from the phone.
+ */
 @Composable
-fun ClaudeQuickKeys(mode: String, enabled: Boolean, onEsc: () -> Unit, onCtrlC: () -> Unit, onShiftTab: () -> Unit, onSlash: (String) -> Unit) {
+fun ClaudeQuickKeys(
+    mode: String,
+    enabled: Boolean,
+    onEsc: () -> Unit,
+    onCtrlC: () -> Unit,
+    onUp: () -> Unit,
+    onDown: () -> Unit,
+    onEnter: () -> Unit,
+    onShiftTab: () -> Unit,
+    onSlash: (String) -> Unit,
+) {
     var picking by remember { mutableStateOf(false) }
     Row(
         Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
@@ -36,6 +51,9 @@ fun ClaudeQuickKeys(mode: String, enabled: Boolean, onEsc: () -> Unit, onCtrlC: 
     ) {
         KeyChip("Esc", onEsc, enabled)
         KeyChip("^C", onCtrlC, enabled)
+        KeyChip("↑", onUp, enabled)
+        KeyChip("↓", onDown, enabled)
+        KeyChip("Enter", onEnter, enabled)
         KeyChip("⇧Tab $mode", onShiftTab, enabled)
         Box {
             KeyChip("/", { picking = true }, enabled)
