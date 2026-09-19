@@ -23,7 +23,8 @@ sessions started from the phone.
 
 Non-goals: a terminal emulator on the phone; iPhone; editing files on the
 phone; sharing with other people; sessions surviving a Mac reboot; image
-attachments from the phone; search.
+attachments from the phone (lifted by
+`2026-09-19-phone-attachments-design.md`); search.
 
 ## 2. Architecture
 
