@@ -142,6 +142,9 @@ fun TileScreen(
                 enabled = canType,
                 onEsc = { c.key(Key.Esc) },
                 onCtrlC = { c.key(Key.CtrlC) },
+                onUp = { c.key(Key.Up) },
+                onDown = { c.key(Key.Down) },
+                onEnter = { c.key(Key.Enter) },
                 onShiftTab = { c.key(Key.ShiftTab) },
                 onSlash = { cmd -> c.draft.value = TextFieldValue("$cmd ", TextRange(cmd.length + 1)) },
             )
