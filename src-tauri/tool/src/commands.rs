@@ -261,7 +261,20 @@ pub fn sessions(env: &Env) -> Result<Value, CliError> {
 }
 
 pub fn prune(env: &Env) -> Result<Value, CliError> {
-    Ok(json!({"v": 1, "removed": prune_sessions(&env.home, PRUNE_AGE)}))
+    Ok(json!({
+        "v": 1,
+        "removed": prune_sessions(&env.home, PRUNE_AGE),
+        "pasteRemoved": crate::upload::sweep_paste(&env.home, crate::upload::PASTE_AGE),
+    }))
+}
+
+/// `upload` (phone attachments spec §3.1): exactly `size` bytes of stdin into `~/.swarmz/paste`
+/// under a stamped, sanitised name; prints the absolute path. Sweeps old paste files afterwards.
+pub fn upload(env: &Env, name: &str, size: u64) -> Result<Value, CliError> {
+    let mut stdin = std::io::stdin().lock();
+    let (path, n) = crate::upload::write_upload(&env.home, name, size, &mut stdin).map_err(|(code, msg)| CliError::new(code, msg))?;
+    let _ = crate::upload::sweep_paste(&env.home, crate::upload::PASTE_AGE);
+    Ok(json!({"v": 1, "path": path.to_string_lossy(), "size": n}))
 }
 
 pub fn folders(env: &Env, path: Option<&str>) -> Result<Value, CliError> {

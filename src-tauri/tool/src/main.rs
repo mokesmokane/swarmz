@@ -21,7 +21,7 @@ const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_
 /// The most lines `output --follow` watches.
 const MAX_FOLLOW_LINES: usize = 1000;
 
-const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap"];
+const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size"];
 const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user"];
 
 struct Args {
@@ -281,6 +281,16 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             a.expect_positional(1, "sessions")?;
             Ok(Some(cmd::sessions(&cmd::Env::from_process()?)?))
         }
+        Some("upload") => {
+            a.expect_positional(1, "upload --name <name> --size <bytes>")?;
+            let name = a.opt("--name").ok_or_else(|| CliError::new("usage", "missing --name"))?;
+            let size: u64 = a
+                .opt("--size")
+                .ok_or_else(|| CliError::new("usage", "missing --size"))?
+                .parse()
+                .map_err(|_| CliError::new("usage", "--size must be a number of bytes"))?;
+            Ok(Some(cmd::upload(&cmd::Env::from_process()?, name, size)?))
+        }
         Some("prune") => {
             a.expect_positional(1, "prune")?;
             Ok(Some(cmd::prune(&cmd::Env::from_process()?)?))
@@ -370,7 +380,7 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             a.expect_positional(1, "ssh-gate")?;
             Err(cmd::ssh_gate(&cmd::Env::for_gate()?))
         }
-        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|card|transcript|image|phone|host-keys|ssh-gate> …")),
+        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|card|upload|transcript|image|phone|host-keys|ssh-gate> …")),
     }
 }
 

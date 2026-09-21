@@ -79,6 +79,26 @@ fn tool_env(home: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, serde_jso
     (status.code().unwrap_or(-1), v)
 }
 
+/// `tool_env` with bytes on stdin (for `upload`).
+fn tool_env_input(home: &Path, args: &[&str], env: &[(&str, &str)], input: &[u8]) -> (i32, serde_json::Value) {
+    let mut child = tool_command(home)
+        .args(args)
+        .envs(env.iter().copied())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        let _ = stdin.write_all(input);
+    }
+    let out = child.wait_with_output().unwrap();
+    let v = serde_json::from_slice(&out.stdout).unwrap_or(serde_json::Value::Null);
+    (out.status.code().unwrap_or(-1), v)
+}
+
 /// A PATH without the developer's own tools: a session that types a Claude line must never start
 /// the real Claude Code installed on this Mac.
 const SAFE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
@@ -1086,6 +1106,35 @@ fn a_question_from_claude_is_pending_and_answered_by_its_digit() {
     assert_eq!(code, 0, "{a}");
     assert!(a["option"].is_null());
     assert!(wait_until(|| screen_has(&c, "chose:033[B033[B033[B\\r")));
+}
+
+#[test]
+fn upload_writes_stdin_into_the_paste_folder_and_prune_sweeps_it() {
+    let h = home("upload");
+    let payload: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
+    let (code, v) = tool_env_input(&h.path, &["upload", "--name", "IMG 1.jpg", "--size", &payload.len().to_string()], MINI, &payload);
+    assert_eq!(code, 0, "{v}");
+    let path = std::path::PathBuf::from(v["path"].as_str().unwrap());
+    assert!(path.is_absolute() && path.starts_with(h.path.join(".swarmz/paste")), "{}", path.display());
+    assert!(path.file_name().unwrap().to_string_lossy().ends_with("-IMG_1.jpg"));
+    assert_eq!(v["size"].as_u64(), Some(payload.len() as u64));
+    assert_eq!(std::fs::read(&path).unwrap(), payload);
+    // Short: nothing left. Over the cap: refused. Missing flags: usage.
+    let (code, short) = tool_env_input(&h.path, &["upload", "--name", "x.bin", "--size", "100"], MINI, b"abc");
+    assert_eq!((code, short["code"].as_str()), (1, Some("short")));
+    assert_eq!(std::fs::read_dir(h.path.join(".swarmz/paste")).unwrap().count(), 1);
+    let (code, big) = tool_env_input(&h.path, &["upload", "--name", "x.bin", "--size", "99999999"], MINI, b"");
+    assert_eq!((code, big["code"].as_str()), (1, Some("too_large")));
+    let (code, none) = tool_env_input(&h.path, &["upload", "--name", "x.bin"], MINI, b"");
+    assert_eq!((code, none["code"].as_str()), (1, Some("usage")));
+    // The gate lets a phone key run it, with stdin passed through.
+    let (code, gated) = tool_env_input(&h.path, &["ssh-gate"], &[("SWARMZ_MACHINE", "mini"), ("SSH_ORIGINAL_COMMAND", "swarmz upload --name 'a b.txt' --size 5")], b"hello");
+    assert_eq!(code, 0, "{gated}");
+    assert!(gated["path"].as_str().unwrap().ends_with("-a_b.txt"));
+    // prune reports the sweep; nothing here is old enough.
+    let (_, p) = tool_env(&h.path, &["prune"], MINI);
+    assert_eq!(p["pasteRemoved"].as_u64(), Some(0));
+    assert_eq!(std::fs::read_dir(h.path.join(".swarmz/paste")).unwrap().count(), 2);
 }
 
 #[test]

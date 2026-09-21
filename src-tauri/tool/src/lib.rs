@@ -20,5 +20,6 @@ pub mod server;
 pub mod tailscale;
 pub mod tiles;
 pub mod transcript;
+pub mod upload;
 pub mod util;
 pub mod workspace;
