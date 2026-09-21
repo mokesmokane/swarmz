@@ -85,9 +85,14 @@ The shell is on another Mac. Two sources, in priority order:
    connected (`sshConnected`), so the local prompt's own OSC 7 before or
    after the remote session never overwrites the remote folder. Most prompt integrations (Terminal.app
    defaults, iTerm shell integration, oh-my-zsh, starship) emit it.
-2. **Claude hooks.** Every hook event carries `cwd`; SessionStart and
-   UserPromptSubmit from that tile set `settings.ssh.cwd` when it differs
-   (§4).
+2. **Claude hooks.** Every hook event carries `cwd`; SessionStart from that
+   tile sets `settings.ssh.cwd` when it differs (§4). (Amended 2026-09-21:
+   UserPromptSubmit no longer does. Claude Code reports the folder of its
+   own Bash shell in `cwd`, which moves as Claude `cd`s, while the tile's
+   shell does not; applying both made a tile's folder flip between the two
+   on every event, each flip re-arming the connect card and bumping the
+   shared workspace on every Mac. SessionStart's `cwd` is the session's
+   project folder, which is what Connect needs to resume it.)
 
 A bare `cd` in a remote shell with neither source is not tracked; the
 folder updates the next time Claude runs there. Accepted.
