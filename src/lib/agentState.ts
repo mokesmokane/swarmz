@@ -6,6 +6,10 @@ export interface AgentState {
   since: string;
   lastEvent: string;
   unseen: boolean;
+  /** The session's first prompt as a title (conversation cards spec §2.1); null until then. */
+  title: string | null;
+  /** That first prompt in full (up to what the core forwards), for the tooltip. */
+  firstPrompt: string | null;
 }
 
 /** One line of ~/.swarmz/agents/events.log as parsed by the core. */
@@ -18,9 +22,31 @@ export interface AgentEvent {
   source: string | null;
   cwd: string | null;
   permissionMode: string | null;
+  /** `UserPromptSubmit`'s prompt text, when the core forwarded it. */
+  prompt?: string | null;
 }
 
-export const OFFLINE: AgentState = { status: "offline", sessionId: null, since: "", lastEvent: "", unseen: false };
+export const OFFLINE: AgentState = { status: "offline", sessionId: null, since: "", lastEvent: "", unseen: false, title: null, firstPrompt: null };
+
+export const TITLE_MAX = 60;
+
+/**
+ * The title a session gets before its agent sets one: the first line of its first prompt,
+ * whitespace collapsed, cut on a word boundary with `…` past `TITLE_MAX`. A slash command, or
+ * an empty prompt, gives none. Mirrors `card::fallback_title` in the tool.
+ */
+export function fallbackTitle(prompt: string): string | null {
+  const first = prompt.split("\n").find((l) => l.trim() !== "");
+  if (first === undefined) return null;
+  const joined = first.split(/\s+/).filter(Boolean).join(" ");
+  if (!joined || joined.startsWith("/")) return null;
+  const chars = Array.from(joined);
+  if (chars.length <= TITLE_MAX) return joined;
+  const cut = chars.slice(0, TITLE_MAX - 1).join("");
+  const space = cut.lastIndexOf(" ");
+  const atWord = space > 0 ? cut.slice(0, space) : cut;
+  return `${atWord.trimEnd()}…`;
+}
 
 export const BLOCKING_NOTIFICATIONS: ReadonlySet<string> = new Set([
   "permission_prompt",
@@ -43,12 +69,18 @@ export function applyAgentEvent(prev: AgentState | undefined, ev: AgentEvent, fo
     since: ev.ts,
     lastEvent: ev.event,
     unseen,
+    title: cur.title,
+    firstPrompt: cur.firstPrompt,
   });
   switch (ev.event) {
     case "SessionStart":
-      return next("idle", false, ev.sessionId);
-    case "UserPromptSubmit":
-      return next("working", false);
+      return { ...next("idle", false, ev.sessionId), title: null, firstPrompt: null };
+    case "UserPromptSubmit": {
+      const working = next("working", false);
+      if (cur.title !== null || !ev.prompt) return working;
+      const title = fallbackTitle(ev.prompt);
+      return title === null ? working : { ...working, title, firstPrompt: ev.prompt };
+    }
     case "Stop":
     case "StopFailure":
       return next("idle", cur.status === "working" && !focused);

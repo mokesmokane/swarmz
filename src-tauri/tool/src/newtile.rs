@@ -124,8 +124,14 @@ pub fn workspace_file(home: &Path) -> PathBuf {
 pub fn add_def(ws: &mut Workspace, mut def: TerminalDef, self_machine: &str, now: &str) {
     def.extra.insert("origin".into(), json!(self_machine));
     ws.terminals.push(def);
+    bump_revision(ws, self_machine, now);
+}
+
+/// Marks the workspace as changed by `by` now: the next revision, which every Mac's sync then
+/// adopts (shared workspace spec).
+pub fn bump_revision(ws: &mut Workspace, by: &str, now: &str) {
     let revision = ws.extra.get("sync").and_then(|s| s.get("revision")).and_then(|r| r.as_u64()).unwrap_or(0) + 1;
-    ws.extra.insert("sync".into(), json!({"revision": revision, "updatedAt": now, "updatedBy": self_machine}));
+    ws.extra.insert("sync".into(), json!({"revision": revision, "updatedAt": now, "updatedBy": by}));
 }
 
 /// What `new` hands its keep-def helper (spec §4.5), in `~/.swarmz/sessions/<id>.def.json`.

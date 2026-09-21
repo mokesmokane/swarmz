@@ -75,7 +75,7 @@ afterEach(() => {
 
 describe("tab dot", () => {
   it("shows the agent status colour and ring", () => {
-    useStore.setState({ agentState: { [ID]: { status: "working", sessionId: "s", since: "t", lastEvent: "UserPromptSubmit", unseen: false } } });
+    useStore.setState({ agentState: { [ID]: { status: "working", sessionId: "s", since: "t", lastEvent: "UserPromptSubmit", unseen: false, title: null, firstPrompt: null } } });
     render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
     const dot = screen.getByTestId(`tab-dot-${ID}`);
     expect(dot.style.backgroundColor).toBe("rgb(37, 191, 53)");
@@ -86,7 +86,7 @@ describe("tab dot", () => {
   it("keeps a clean exit grey even with agent state", () => {
     useStore.setState({
       terminals: { [ID]: { id: ID, name: "desk", cwd: "/home/me", exited: 0, error: null } },
-      agentState: { [ID]: { status: "idle", sessionId: "s", since: "t", lastEvent: "Stop", unseen: true } },
+      agentState: { [ID]: { status: "idle", sessionId: "s", since: "t", lastEvent: "Stop", unseen: true, title: null, firstPrompt: null } },
     });
     render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
     expect(screen.getByTestId(`tab-dot-${ID}`).className).toContain("bg-neutral-600");

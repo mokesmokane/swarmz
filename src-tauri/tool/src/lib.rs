@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod attach;
+pub mod card;
 pub mod client;
 pub mod commands;
 pub mod dialog;

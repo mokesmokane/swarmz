@@ -1089,6 +1089,58 @@ fn a_question_from_claude_is_pending_and_answered_by_its_digit() {
 }
 
 #[test]
+fn card_sets_reads_and_keeps_a_user_title() {
+    let h = home("card");
+    let cwd = h.path.to_string_lossy().into_owned();
+    write_ws(&h.path, serde_json::json!([
+        {"id": "c1", "name": "api", "cwd": cwd, "origin": "mini", "claude": {"enabled": true, "sessionId": "s-c1", "skipPermissions": false, "started": true}},
+        {"id": "c2", "name": "web", "cwd": cwd, "origin": "mini"}
+    ]), serde_json::json!({}));
+    // Nothing yet, and the tile must be named somehow.
+    let (_, none) = tool_env(&h.path, &["card", "--tile", "c1"], MINI);
+    assert!(none["card"].is_null(), "{none}");
+    // No tile given and none in the environment (this test may itself run inside a tile).
+    let (code, bad) = tool_env(&h.path, &["card", "--title", "x"], &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "")]);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("usage")));
+    let (code, bad) = tool_env(&h.path, &["card", "--tile", "nope", "--title", "x"], MINI);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("unknown_tile")));
+    // The tile id comes from the shell's environment, as it does for an agent in a tile.
+    let env_tile: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "c1")];
+    let (code, set) = tool_env(&h.path, &["card", "--title", " Phone: answer questions ", "--recap", "Parsed the dialog.\nNext: the card."], env_tile);
+    assert_eq!(code, 0, "{set}");
+    assert_eq!((set["card"]["title"].as_str(), set["card"]["by"].as_str()), (Some("Phone: answer questions"), Some("agent")));
+    assert_eq!(set["card"]["recap"].as_str(), Some("Parsed the dialog.\nNext: the card."));
+    let ws: serde_json::Value = serde_json::from_slice(&std::fs::read(h.path.join(".swarmz/workspace.json")).unwrap()).unwrap();
+    assert_eq!(ws["sync"]["revision"], 5, "the revision is bumped: {}", ws["sync"]);
+    assert_eq!(ws["sync"]["updatedBy"], "mini");
+    assert_eq!(ws["terminals"][0]["card"]["title"], "Phone: answer questions");
+    assert!(ws["terminals"][1].get("card").is_none(), "the other tile is untouched");
+    // A recap-only update keeps the title; a user title is kept by an agent's recap and
+    // replaced only by an agent's title.
+    let (_, r) = tool_env(&h.path, &["card", "--recap", "All green."], env_tile);
+    assert_eq!((r["card"]["title"].as_str(), r["card"]["recap"].as_str()), (Some("Phone: answer questions"), Some("All green.")));
+    let (_, u) = tool_env(&h.path, &["card", "--tile", "c1", "--title", "Mine", "--user"], MINI);
+    assert_eq!((u["card"]["title"].as_str(), u["card"]["by"].as_str(), u["card"]["recap"].as_str()), (Some("Mine"), Some("user"), Some("All green.")));
+    let (_, r2) = tool_env(&h.path, &["card", "--title", "Theirs", "--recap", "More."], env_tile);
+    assert_eq!((r2["card"]["title"].as_str(), r2["card"]["by"].as_str()), (Some("Theirs"), Some("agent")));
+    // The row carries the card; a tile without one has no title until it is prompted.
+    let (_, ls) = tool_env(&h.path, &["ls"], MINI);
+    let rows = ls["tiles"].as_array().unwrap();
+    let c1 = rows.iter().find(|t| t["id"] == "c1").unwrap();
+    assert_eq!((c1["title"].as_str(), c1["recap"].as_str(), c1["cardBy"].as_str()), (Some("Theirs"), Some("More."), Some("agent")));
+    let c2 = rows.iter().find(|t| t["id"] == "c2").unwrap();
+    assert!(c2["title"].is_null() && c2["recap"].is_null());
+    // Clearing a user title with an empty one keeps the recap and hands the title back.
+    let (_, cleared) = tool_env(&h.path, &["card", "--tile", "c1", "--title", "", "--user"], MINI);
+    assert!(cleared["card"]["title"].is_null(), "{cleared}");
+    assert_eq!(cleared["card"]["recap"].as_str(), Some("More."));
+    // The gate lets a phone key run it.
+    let (code, gated) = tool_env(&h.path, &["ssh-gate"], &[("SWARMZ_MACHINE", "mini"), ("SSH_ORIGINAL_COMMAND", "swarmz card --tile c1")]);
+    assert_eq!(code, 0, "{gated}");
+    assert_eq!(gated["card"]["recap"].as_str(), Some("More."));
+}
+
+#[test]
 fn a_dialog_that_is_not_live_is_never_answered() {
     let h = home("stale-dialog");
     let socket = held(&h, "q1");
