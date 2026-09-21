@@ -14,6 +14,12 @@
       { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1", "prompt": "please look at the phone app and tell me why the question card never shows up on the fold\nthanks" } },
       { "ts": "2026-09-16T10:00:09Z", "event": "UserPromptSubmit", "input": { "session_id": "s1", "prompt": "a later prompt does not rename it" } }],
     "expect": { "status": "working", "sessionId": "s1", "needs": null, "mode": null, "turnEndedAt": null, "title": "please look at the phone app and tell me why the question…" } },
+  { "name": "a prompt the harness injected is not a title; the next real one is",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:01Z", "event": "UserPromptSubmit", "input": { "session_id": "s1", "prompt": "<task-notification>\nBackground command finished" } },
+      { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1", "prompt": "i think we got a new user" } }],
+    "expect": { "status": "working", "sessionId": "s1", "needs": null, "mode": null, "turnEndedAt": null, "title": "i think we got a new user" } },
   { "name": "a new session starts with no title",
     "events": [
       { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },

@@ -39,7 +39,9 @@ export function fallbackTitle(prompt: string): string | null {
   const first = prompt.split("\n").find((l) => l.trim() !== "");
   if (first === undefined) return null;
   const joined = first.split(/\s+/).filter(Boolean).join(" ");
-  if (!joined || joined.startsWith("/")) return null;
+  // A slash command, or a prompt the harness injected (it starts with a tag such as
+  // `<task-notification>`), is no title; the next prompt is tried.
+  if (!joined || joined.startsWith("/") || joined.startsWith("<")) return null;
   const chars = Array.from(joined);
   if (chars.length <= TITLE_MAX) return joined;
   const cut = chars.slice(0, TITLE_MAX - 1).join("");
