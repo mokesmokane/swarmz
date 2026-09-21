@@ -53,32 +53,71 @@ internal fun percent(sent: Long, size: Long): Int = (fraction(sent, size) * 100)
 data class Picked(val name: String, val bytes: ByteArray)
 
 /**
- * Reads a picked or shared item (spec §4.3): the display name from the resolver, the bytes in full; an image over
- * the limit is re-encoded as JPEG, halving its long side until it fits; anything else over it is refused.
+ * Reads a picked or shared item (spec §4.3) without ever holding more than the limit in memory: the size is
+ * asked for first (`OpenableColumns.SIZE`) and an oversize non-image is refused unopened; a stream of unknown
+ * size is read only up to the limit. An oversize image is decoded down from its bounds and re-encoded as JPEG
+ * under the limit, each pass from a fresh stream.
  */
 fun readPicked(context: Context, uri: Uri): Result<Picked> = runCatching {
     val resolver = context.contentResolver
     var name = uri.lastPathSegment?.substringAfterLast('/') ?: "file"
-    resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-        val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-        if (i >= 0 && c.moveToFirst()) c.getString(i)?.let { name = it }
+    var size = -1L
+    resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+        if (c.moveToFirst()) {
+            val n = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (n >= 0) c.getString(n)?.let { name = it }
+            val z = c.getColumnIndex(OpenableColumns.SIZE)
+            if (z >= 0 && !c.isNull(z)) size = c.getLong(z)
+        }
     }
-    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: error("could not read $name")
     val mime = resolver.getType(uri) ?: ""
-    if (bytes.size > MAX_ATTACHMENT) {
-        if (!mime.startsWith("image/")) error("too large (limit 25 MiB)")
-        Picked(name.substringBeforeLast('.') + ".jpg", shrinkImage(bytes) ?: error("too large (limit 25 MiB)"))
-    } else {
-        Picked(name, bytes)
+    val isImage = mime.startsWith("image/")
+    val tooLarge = "too large (limit 25 MiB)"
+    if (size > MAX_ATTACHMENT) {
+        if (!isImage) error(tooLarge)
+        return@runCatching Picked(jpegName(name), shrinkImage { resolver.openInputStream(uri) } ?: error(tooLarge))
     }
+    val bytes = resolver.openInputStream(uri)?.use { readUpTo(it, MAX_ATTACHMENT + 1) } ?: error("could not read $name")
+    if (bytes.size > MAX_ATTACHMENT) {
+        if (!isImage) error(tooLarge)
+        return@runCatching Picked(jpegName(name), shrinkImage { resolver.openInputStream(uri) } ?: error(tooLarge))
+    }
+    Picked(name, bytes)
 }
 
-/** JPEG at quality 85, halving the long side until under the limit; null when even a small one does not fit. */
-internal fun shrinkImage(bytes: ByteArray): ByteArray? {
-    var sample = 2
+internal fun jpegName(name: String): String = name.substringBeforeLast('.') + ".jpg"
+
+/** At most [max] bytes of [input]; a longer stream yields exactly [max], so the caller can tell it was cut. */
+internal fun readUpTo(input: java.io.InputStream, max: Long): ByteArray {
+    val out = ByteArrayOutputStream()
+    val chunk = ByteArray(64 * 1024)
+    var total = 0L
+    while (total < max) {
+        val n = input.read(chunk, 0, minOf(chunk.size.toLong(), max - total).toInt())
+        if (n < 0) break
+        out.write(chunk, 0, n)
+        total += n
+    }
+    return out.toByteArray()
+}
+
+/** The largest bitmap a shrink pass decodes: 16 megapixels, so the decode itself stays bounded. */
+private const val MAX_DECODE_PIXELS = 16L * 1024 * 1024
+
+/**
+ * JPEG at quality 85 under the limit, decoding from [open] (a fresh stream each pass): the bounds are read
+ * first, the sample size chosen so the decode stays under [MAX_DECODE_PIXELS], then doubled until the JPEG
+ * fits. Null when even a small one does not, or the data is not an image.
+ */
+internal fun shrinkImage(open: () -> java.io.InputStream?): ByteArray? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    open()?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (bounds.outWidth.toLong() * bounds.outHeight / (sample.toLong() * sample) > MAX_DECODE_PIXELS) sample *= 2
     while (sample <= 64) {
         val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
+        val bitmap = open()?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return null
         val out = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
         bitmap.recycle()
