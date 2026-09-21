@@ -2248,12 +2248,15 @@ describe("agent state", () => {
     expect(s.sessions?.[0].startedAt).toBe("2026-09-15T10:00:00Z");
   });
 
-  it("prompts bump lastActiveAt and apply the folder; stops and notifications leave settings alone", async () => {
+  it("prompts bump lastActiveAt but leave the folder alone; stops and notifications leave settings alone", async () => {
     const id = await useStore.getState().createTerminal("/tmp/a");
     useStore.getState().applyAgentEvent(ev(id, "SessionStart", { sessionId: "s", cwd: "/tmp/a", ts: "2026-09-15T10:00:00Z" }));
+    // A prompt's cwd is Claude's own Bash shell, which moves as Claude `cd`s; the tile's shell has
+    // not moved, and following it made the folder flip between the two (the holder's Info and
+    // OSC 7 say one thing, the hook another) on every event.
     useStore.getState().applyAgentEvent(ev(id, "UserPromptSubmit", { sessionId: "s", cwd: "/tmp/moved", ts: "2026-09-15T10:01:00Z" }));
-    await vi.waitFor(() => expect(useStore.getState().terminals[id].cwd).toBe("/tmp/moved"));
-    expect(useStore.getState().settings[id].sessions?.[0].lastActiveAt).toBe("2026-09-15T10:01:00Z");
+    await vi.waitFor(() => expect(useStore.getState().settings[id].sessions?.[0].lastActiveAt).toBe("2026-09-15T10:01:00Z"));
+    expect(useStore.getState().terminals[id].cwd).toBe("/tmp/a");
     // Every new settings identity is a debounced save, a revision bump and an ssh push to
     // every peer; a Claude turn emits several of these, so they must not touch settings.
     const before = useStore.getState().settings[id];
@@ -2264,12 +2267,17 @@ describe("agent state", () => {
     expect(useStore.getState().settings[id].sessions?.[0].lastActiveAt).toBe("2026-09-15T10:01:00Z");
   });
 
-  it("an ssh tile's folder follows the hook's cwd into settings.ssh.cwd", async () => {
+  it("an ssh tile's folder follows the hook's cwd into settings.ssh.cwd at session start only", async () => {
     const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/p" });
     __stopAllPolling();
     useStore.getState().applyAgentEvent({ ...ev(id, "SessionStart", { sessionId: "r1", cwd: "/p/deeper" }), host: "me@box" });
     await vi.waitFor(() => expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p/deeper"));
     expect(useStore.getState().settings[id].sessions?.[0].cwd).toBe("/p/deeper");
+    // Claude's Bash shell wandering into a subfolder does not move the tile, and so cannot fight
+    // the remote holder's folder (which would re-arm the connect card and bump the workspace).
+    useStore.getState().applyAgentEvent({ ...ev(id, "UserPromptSubmit", { sessionId: "r1", cwd: "/p/deeper/loadtest/.local/logs", ts: "2026-09-15T10:01:00Z" }), host: "me@box" });
+    await vi.waitFor(() => expect(useStore.getState().settings[id].sessions?.[0].lastActiveAt).toBe("2026-09-15T10:01:00Z"));
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p/deeper");
   });
 
   it("a tile with a custom command is never adopted", async () => {

@@ -1956,7 +1956,11 @@ export const useStore = create<WorkbenchState>((set) => ({
           // peer, so they leave history alone (folder/session spec §4, §7).
           const bumped = bumpSession(base.sessions, event.sessionId, now);
           if (bumped) next2 = { ...base, sessions: bumped };
-          if (event.cwd && isSafeFolder(event.cwd)) folderToApply = event.cwd;
+          // A prompt's `cwd` is not applied: Claude Code reports the folder of its own Bash shell
+          // there, which moves as Claude `cd`s, while the tile's shell (the holder's Info, OSC 7)
+          // stays put. Taking both made a tile's folder flip between the two on every event, each
+          // flip re-arming the connect card and bumping the shared workspace. SessionStart's
+          // `cwd` is the session's project folder, which is what Connect needs (folder spec §3.2).
         }
         if (next2) patch.settings = { ...(patch.settings ?? s.settings), [id]: next2 };
       }
