@@ -15,19 +15,20 @@ pub const HOOK_EVENTS: [&str; 8] = [
 
 pub const SCRIPT_MARKER: &str = ".swarmz/hooks/claude.sh";
 
-pub const BRIEFING_VERSION: u32 = 1;
+pub const BRIEFING_VERSION: u32 = 2;
 pub const BRIEFING_MARKER: &str = ".swarmz/briefing.md";
 
 /// What every Claude session in a swarmz tile is told at start (conversation cards spec §4.1):
 /// the `SessionStart` hook returns it as additional context, with `<name>` filled in. Installed
 /// beside the hook script; a user who edits it keeps their version by removing the first line.
-pub const BRIEFING: &str = r#"<!-- SWARMZ_BRIEFING_VERSION=1 -->
+pub const BRIEFING: &str = r#"<!-- SWARMZ_BRIEFING_VERSION=2 -->
 You are running in a swarmz tile named "<name>", alongside other agents the user watches from a sidebar and a phone. Keep your tile's card current with the swarmz command:
 
     ~/.swarmz/bin/swarmz card --title "…" --recap "…"
 
-- Set a title after your first reply: a few words for what this conversation is about (at most 60 characters), the way a chat client names a thread.
-- Update the recap whenever you finish something, change direction, or are about to ask the user a question: two or three sentences of what is done and what is next (at most 600 characters). Both flags may be given together or alone.
+- Title: a few plain words for what this conversation is about, the way a chat client names a thread (at most 60 characters; no ticket codes or file names). Set it after your first reply.
+- Recap: a status line a colleague could read cold, in the shape of a /recap: what this conversation is about and where it stands, then "Next: …". One or two sentences, under 280 characters. Not a changelog: never a list of everything done, no step-by-step detail. Example: "Shipping swarmz 0.3.0 (phone question cards, conversation titles, file uploads); the release is published. Next: click Check for updates so this Mac shows titles."
+- Update the recap when the work changes direction, finishes, or is about to wait on the user, not after every step. Both flags may be given together or alone.
 - Do not change a title the user typed themselves unless asked; a recap-only update keeps it.
 "#;
 
@@ -593,7 +594,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".swarmz")).unwrap();
         let script = dir.join("claude.sh");
         std::fs::write(&script, HOOK_SCRIPT).unwrap();
-        std::fs::write(dir.join(".swarmz/briefing.md"), "<!-- SWARMZ_BRIEFING_VERSION=1 -->\nTile \"<name>\" says \\ hi\tthere.\nLine two & more.\n").unwrap();
+        std::fs::write(dir.join(".swarmz/briefing.md"), "<!-- SWARMZ_BRIEFING_VERSION=2 -->\nTile \"<name>\" says \\ hi\tthere.\nLine two & more.\n").unwrap();
         let run = |event: &str, name: Option<&str>| -> String {
             let mut cmd = std::process::Command::new("sh");
             cmd.arg(&script).arg(event).env("HOME", &dir).env("SWARMZ_TERMINAL_ID", "t-1");
@@ -641,8 +642,8 @@ mod tests {
     fn the_briefing_is_installed_once_and_a_users_own_is_kept() {
         assert!(briefing_needs_install(None));
         assert!(!briefing_needs_install(Some(BRIEFING)));
-        assert!(briefing_needs_install(Some("<!-- SWARMZ_BRIEFING_VERSION=0 -->\nold\n")));
-        assert!(briefing_needs_install(Some("<!-- SWARMZ_BRIEFING_VERSION=1 -->\nedited but still headed\n")));
+        assert!(briefing_needs_install(Some("<!-- SWARMZ_BRIEFING_VERSION=1 -->\nold\n")));
+        assert!(briefing_needs_install(Some("<!-- SWARMZ_BRIEFING_VERSION=2 -->\nedited but still headed\n")));
         assert!(!briefing_needs_install(Some("My own briefing.\n")));
         assert_eq!(briefing_version(BRIEFING), Some(BRIEFING_VERSION));
     }

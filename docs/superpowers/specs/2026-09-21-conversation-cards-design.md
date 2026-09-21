@@ -41,9 +41,11 @@ recaps; the messaging and status parts of the original ledger design.
   field on `TerminalDef`, carried through the `extra` map in Rust and
   `TerminalSettings` in TypeScript), so it persists, syncs to every Mac
   (shared-workspace rules unchanged) and is read by the tool for the phone.
-- `title`: 1–60 characters, one line. `recap`: up to 600 characters, plain
-  text, newlines allowed, no other control characters. Both trimmed; longer
-  input is cut at the limit, never refused.
+- `title`: 1–60 characters, one line. `recap`: up to 280 characters
+  (amended 2026-09-21 from 600: a recap is a status line in the shape of
+  `/recap`, what the conversation is about, where it stands and "Next: …",
+  never a changelog), plain text, newlines allowed, no other control
+  characters. Both trimmed; longer input is cut at the limit, never refused.
 - `by`: `agent` (set through the CLI), `user` (typed on the desktop), or
   absent when there is no card. A `user` title is kept when the agent sets
   the card without `--title`; `--title` from the agent replaces it (the
@@ -56,8 +58,9 @@ recaps; the messaging and status parts of the original ledger design.
 With no card, the title is the session's **first prompt**: the `prompt`
 field of the first `UserPromptSubmit` hook event since the last
 `SessionStart` (the hook log already records it), first line only,
-whitespace collapsed, slash commands skipped, cut to 60 characters on a
-word boundary with `…`. Both folds derive it (`agentState.ts` and the
+whitespace collapsed, slash commands and harness-injected prompts (ones
+starting with a tag such as `<task-notification>`) skipped so the next real
+prompt is tried, cut to 60 characters on a word boundary with `…`. Both folds derive it (`agentState.ts` and the
 tool's `agent`, checked by the shared `tests/fixtures/agent-status.json`).
 With no prompt yet, the row shows the name as today.
 
@@ -116,9 +119,10 @@ each version bump (a user who wants their own keeps it by removing the
 > Keep your tile's card current with
 > `~/.swarmz/bin/swarmz card --title "…" --recap "…"`: set a title after
 > your first reply (a few words for what this conversation is about) and
-> update the recap whenever you finish something, change direction, or
-> are about to ask a question — two or three sentences of what is done and
-> what is next. Do not change a title the user typed unless asked.
+> keep the recap a status line in the shape of `/recap`: what this is about,
+> where it stands, "Next: …", one or two sentences, never a changelog.
+> Update it when the work changes direction, finishes or waits on the
+> user. Do not change a title the user typed unless asked.
 
 The instruction reaches every Claude session in a swarmz tile on every Mac
 without touching any project's `CLAUDE.md`. A project that wants to add

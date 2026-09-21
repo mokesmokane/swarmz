@@ -4,7 +4,7 @@
 use serde_json::{json, Map, Value};
 
 pub const TITLE_MAX: usize = 60;
-pub const RECAP_MAX: usize = 600;
+pub const RECAP_MAX: usize = 280;
 
 /// Who last set the card.
 pub const BY_AGENT: &str = "agent";
@@ -39,12 +39,13 @@ pub fn clean_recap(s: &str) -> Option<String> {
 
 /// The title a session gets before its agent sets one: the first line of its first prompt,
 /// whitespace collapsed, cut on a word boundary with `…` when longer than `TITLE_MAX`. A slash
-/// command, or an empty prompt, gives none.
+/// command, an empty prompt, or one the harness injected rather than the user typed (it starts
+/// with a tag such as `<task-notification>`) gives none, so the next prompt is tried.
 pub fn fallback_title(prompt: &str) -> Option<String> {
     let first = prompt.lines().find(|l| !l.trim().is_empty())?;
     let words: Vec<&str> = first.split_whitespace().collect();
     let joined = words.join(" ");
-    if joined.is_empty() || joined.starts_with('/') {
+    if joined.is_empty() || joined.starts_with('/') || joined.starts_with('<') {
         return None;
     }
     if joined.chars().count() <= TITLE_MAX {
@@ -142,6 +143,7 @@ mod tests {
         assert_eq!(clean_recap("done\r\n\x00next\n").as_deref(), Some("done\nnext"));
         assert_eq!(clean_recap("\n \n"), None);
         assert_eq!(clean_recap(&"y".repeat(1000)).unwrap().chars().count(), RECAP_MAX);
+        assert_eq!(RECAP_MAX, 280);
     }
 
     #[test]
@@ -150,6 +152,8 @@ mod tests {
         assert_eq!(fallback_title("\n\n  fix   the build  ").as_deref(), Some("fix the build"));
         assert_eq!(fallback_title("/resume"), None);
         assert_eq!(fallback_title("   "), None);
+        assert_eq!(fallback_title("<task-notification>\nsomething finished"), None);
+        assert_eq!(fallback_title("<system-reminder>x</system-reminder>"), None);
         let long = "please look at the phone app and tell me why the question card never shows up on the fold";
         let t = fallback_title(long).unwrap();
         assert!(t.ends_with('…'), "{t}");
