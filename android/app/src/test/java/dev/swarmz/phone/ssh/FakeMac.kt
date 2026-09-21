@@ -30,6 +30,8 @@ class FakeMac(hostKeyFile: Path, var handler: Handler) : AutoCloseable {
     val commands = CopyOnWriteArrayList<String>()
     val destroyed = CopyOnWriteArrayList<String>()
     val eofSent = CopyOnWriteArrayList<String>()
+    /** What arrived on stdin for each `upload` command, read to EOF before its handler runs. */
+    val inputs = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
 
     /** Runs inside password checks before they answer; tests use it to hold a login open. */
     @Volatile var beforePasswordCheck: () -> Unit = {}
@@ -59,9 +61,10 @@ class FakeMac(hostKeyFile: Path, var handler: Handler) : AutoCloseable {
     private inner class FakeCommand(private val command: String) : Command {
         private lateinit var out: OutputStream
         private lateinit var exit: ExitCallback
+        private var stdin: InputStream? = null
         @Volatile private var stop = false
 
-        override fun setInputStream(`in`: InputStream) {}
+        override fun setInputStream(`in`: InputStream) { stdin = `in` }
         override fun setOutputStream(out: OutputStream) { this.out = out }
         override fun setErrorStream(err: OutputStream) {}
         override fun setExitCallback(callback: ExitCallback) { exit = callback }
@@ -69,6 +72,8 @@ class FakeMac(hostKeyFile: Path, var handler: Handler) : AutoCloseable {
         override fun start(channel: ChannelSession, env: Environment) {
             commands += command
             thread {
+                // An upload's bytes come first: the real tool reads stdin to EOF before it answers.
+                if (command.contains("'upload'")) stdin?.let { inputs[command] = it.readBytes() }
                 val code = try {
                     handler(command, out, { stop })
                 } catch (_: Exception) {

@@ -61,6 +61,10 @@ object Cmd {
         return of(*words.toTypedArray())
     }
 
+    /** Sets a title the user typed (`--user`); an empty title hands it back (spec §3.1, §6). */
+    fun cardTitle(tile: String, title: String) = of("card", "--tile", tile(tile), "--title", title, "--user")
+    /** Reads `size` bytes from stdin into the Mac's paste folder (phone attachments spec §3.1). */
+    fun upload(name: String, size: Long) = of("upload", "--name", name, "--size", size.toString())
     fun restart(tile: String) = of("restart", tile(tile))
     fun close(tile: String) = of("close", tile(tile))
     fun phoneLs() = of("phone", "ls")

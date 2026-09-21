@@ -25,9 +25,24 @@ data class TileRow(
     val sessionId: String? = null,
     val summary: String? = null,
     val machine: String? = null,
-)
+    /** The card's title, else the session's first prompt (conversation cards spec §3.2); null before either. */
+    val title: String? = null,
+    val recap: String? = null,
+    val cardAt: String? = null,
+    val cardBy: String? = null,
+) {
+    /** What rows and headers show: the title when there is one, else the name. */
+    val shownTitle: String get() = title?.takeIf { it.isNotBlank() } ?: name
+    val hasTitle: Boolean get() = !title.isNullOrBlank()
+}
 
 @Serializable data class TileList(val tiles: List<TileRow>)
+
+/** A tile's card as `card` returns it (spec §2). */
+@Serializable data class Card(val title: String? = null, val recap: String? = null, val updatedAt: String? = null, val by: String? = null)
+@Serializable data class CardReply(val card: Card? = null)
+/** What `upload` prints: where the file landed on the Mac (phone attachments spec §3.1). */
+@Serializable data class UploadReply(val path: String, val size: Long)
 
 @Serializable
 data class Machine(

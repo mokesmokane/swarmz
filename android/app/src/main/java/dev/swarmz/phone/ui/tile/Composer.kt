@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -25,12 +26,24 @@ import dev.swarmz.phone.ui.components.LocalMic
 import dev.swarmz.phone.ui.theme.Sw
 
 @Composable
-fun Composer(state: MutableState<androidx.compose.ui.text.input.TextFieldValue>, placeholder: String, enabled: Boolean, onSend: () -> Unit) {
+fun Composer(
+    state: MutableState<androidx.compose.ui.text.input.TextFieldValue>,
+    placeholder: String,
+    enabled: Boolean,
+    onSend: () -> Unit,
+    onAttach: (() -> Unit)? = null,
+) {
     Row(
         Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
         verticalAlignment = Alignment.Bottom,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        // A Claude tile takes files (phone attachments spec §4.3): the path lands in the draft.
+        if (onAttach != null) {
+            IconButton(onClick = onAttach, enabled = enabled, modifier = Modifier.size(52.dp).testTag("attach")) {
+                Icon(Icons.Filled.AttachFile, contentDescription = "Attach", tint = Sw.Title)
+            }
+        }
         OutlinedTextField(
             value = state.value,
             onValueChange = { state.value = it },

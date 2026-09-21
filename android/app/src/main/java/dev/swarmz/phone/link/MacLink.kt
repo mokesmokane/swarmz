@@ -10,7 +10,9 @@ import dev.swarmz.phone.proto.WatchEvent
 import dev.swarmz.phone.ssh.Auth
 import dev.swarmz.phone.ssh.AuthRejected
 import dev.swarmz.phone.ssh.HostKeyChanged
+import dev.swarmz.phone.ssh.Progress
 import dev.swarmz.phone.ssh.SshConnection
+import dev.swarmz.phone.ssh.uploadTimeoutMs
 import dev.swarmz.phone.ssh.SshConnector
 import android.os.Looper
 import java.io.IOException
@@ -206,9 +208,15 @@ class MacLink(
         return execSlots.withPermit { run(conn, command, timeoutMs) }
     }
 
-    private suspend fun run(conn: SshConnection, command: String, timeoutMs: Long): String {
+    /** [exec] with [input] on the command's stdin (an upload), taking a slot for as long as the bytes take. */
+    suspend fun execInput(command: String, input: ByteArray, onProgress: Progress, waitMs: Long = 15_000): String {
+        val conn = online(waitMs)
+        return execSlots.withPermit { run(conn, command, uploadTimeoutMs(input.size.toLong()), input, onProgress) }
+    }
+
+    private suspend fun run(conn: SshConnection, command: String, timeoutMs: Long, input: ByteArray? = null, onProgress: Progress = {}): String {
         val result = try {
-            conn.exec(command, timeoutMs)
+            if (input == null) conn.exec(command, timeoutMs) else conn.exec(command, input, onProgress, timeoutMs)
         } catch (e: IOException) {
             throw LinkDown(e.message ?: "lost the connection to $mac")
         }

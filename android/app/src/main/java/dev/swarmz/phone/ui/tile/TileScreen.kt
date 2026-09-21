@@ -1,5 +1,8 @@
 package dev.swarmz.phone.ui.tile
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,11 +15,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -25,6 +31,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
@@ -38,13 +46,18 @@ import dev.swarmz.phone.state.Need
 import dev.swarmz.phone.state.dotOf
 import dev.swarmz.phone.state.folderName
 import dev.swarmz.phone.state.modeLabel
+import dev.swarmz.phone.state.parseTime
 import dev.swarmz.phone.state.relativeTime
 import dev.swarmz.phone.ui.components.Badge
 import dev.swarmz.phone.ui.components.PrimaryButton
 import dev.swarmz.phone.ui.components.StatusDot
 import dev.swarmz.phone.ui.theme.MonoSmall
 import dev.swarmz.phone.ui.theme.Sw
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import androidx.compose.runtime.rememberCoroutineScope
 import java.time.Instant
 
 @Composable
@@ -64,6 +77,9 @@ fun TileScreen(
     val noticeRound by c.noticeRound.collectAsStateWithLifecycle()
     val streamError by c.streamError.collectAsStateWithLifecycle()
     var clock by remember { mutableStateOf(now()) }
+    var recapOpen by remember { mutableStateOf(false) }
+    // Editing the title happens inline under the header, not inside the dialog.
+    var titleDraft by remember { mutableStateOf<String?>(null) }
     val r = row
     val screenMode = c.screenMode.value
     // Times only move on screen for a working tile ("working · 12s") or an offline Mac ("last seen 3m ago").
@@ -88,9 +104,12 @@ fun TileScreen(
                 IconButton(onClick = onShowList) { Icon(Icons.Filled.ChevronRight, contentDescription = "Show the list", tint = Sw.Title) }
             }
             if (r != null) StatusDot(dotOf(r, when (r.needs) { "permission" -> Need.Permission; "question" -> Need.Question; else -> null }), Modifier.padding(horizontal = 6.dp))
-            Column(Modifier.weight(1f).padding(start = 6.dp)) {
-                Text(r?.name ?: c.key.id, style = MaterialTheme.typography.titleMedium, maxLines = 1)
-                Text("$macLabel · ${r?.let { folderName(it.cwd) } ?: ""}", style = MonoSmall, maxLines = 1)
+            // The title opens the tile's card: its recap, and a way to retitle it (conversation cards spec §6).
+            val titleTap = if (r != null && r.kind != "shell") Modifier.clickable { recapOpen = true } else Modifier
+            Column(Modifier.weight(1f).padding(start = 6.dp).then(titleTap).testTag("tile-title")) {
+                Text(r?.shownTitle ?: c.key.id, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                val where = "$macLabel · ${r?.let { folderName(it.cwd) } ?: ""}"
+                Text(if (r?.hasTitle == true) "${r.name} · $where" else where, style = MonoSmall, maxLines = 1)
             }
             if (r != null && r.kind != "shell") {
                 // Anything Claude draws but never writes to the transcript (`/login`, `/model`, `/cost`) is only
@@ -103,6 +122,23 @@ fun TileScreen(
             if (r != null) Badge(modeLabel(r), modifier = Modifier.padding(end = 12.dp))
         }
         HorizontalDivider(color = Sw.Border)
+        if (recapOpen && r != null) {
+            RecapDialog(r, clock, onEditTitle = { titleDraft = if (r.cardBy == "user") (r.title ?: "") else ""; recapOpen = false }, onDismiss = { recapOpen = false })
+        }
+        titleDraft?.let { draft ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { titleDraft = it },
+                    singleLine = true,
+                    label = { Text("Title") },
+                    placeholder = { Text("Empty: back to the agent's") },
+                    modifier = Modifier.weight(1f).testTag("title-edit"),
+                )
+                TextButton(onClick = { c.setTitle(draft); titleDraft = null }) { Text("Save") }
+                TextButton(onClick = { titleDraft = null }) { Text("Cancel") }
+            }
+        }
         if (!online) {
             val seen = lastSeen?.let { relativeTime(it, clock) }?.let { if (it == "now") "just now" else "$it ago" }
             Text("$macLabel is offline${seen?.let { " · last seen $it" } ?: ""}", color = Sw.Secondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
@@ -148,7 +184,46 @@ fun TileScreen(
                 onShiftTab = { c.key(Key.ShiftTab) },
                 onSlash = { cmd -> c.draft.value = TextFieldValue("$cmd ", TextRange(cmd.length + 1)) },
             )
-            Composer(c.draft, "Message ${r?.name ?: ""}…", canType, c::send)
+            // Attach: the system picker (any type); each item is read off the main thread and sent.
+            val context = LocalContext.current
+            val readScope = rememberCoroutineScope()
+            val attachments by c.attachments.collectAsStateWithLifecycle()
+            val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+                uris.forEach { uri ->
+                    readScope.launch {
+                        withContext(Dispatchers.IO) { readPicked(context, uri) }
+                            .onSuccess { c.attach(it.name, it.bytes) }
+                            .onFailure { c.notify(it.message ?: "could not read the file") }
+                    }
+                }
+            }
+            AttachmentChips(attachments, onRetry = c::retryAttachment, onRemove = c::removeAttachment)
+            Composer(c.draft, "Message ${r?.name ?: ""}…", canType, c::send, onAttach = { picker.launch(arrayOf("*/*")) })
         }
     }
+}
+
+
+/**
+ * A tile's card (conversation cards spec §6): the recap, or the last message when there is none,
+ * when it was set and by whom, and a way to retitle it (the field opens under the header).
+ */
+@Composable
+private fun RecapDialog(r: TileRow, clock: Instant, onEditTitle: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(r.shownTitle, maxLines = 3) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val body = r.recap?.takeIf { it.isNotBlank() } ?: r.lastMessage?.takeIf { it.isNotBlank() }?.let { "\u201C$it\u201D" } ?: "No recap yet"
+                Text(body, style = MaterialTheme.typography.bodyMedium)
+                parseTime(r.cardAt)?.let { at ->
+                    val ago = relativeTime(at, clock).let { if (it == "now") "just now" else "$it ago" }
+                    Text("updated $ago by ${if (r.cardBy == "user") "you" else "Claude"}", style = MaterialTheme.typography.bodySmall, color = Sw.Secondary)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onEditTitle) { Text("Edit title") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
 }

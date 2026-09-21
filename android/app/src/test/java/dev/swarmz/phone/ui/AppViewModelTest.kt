@@ -13,6 +13,7 @@ import dev.swarmz.phone.proto.Cmd
 import dev.swarmz.phone.ssh.ExecResult
 import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.state.TileKey
+import dev.swarmz.phone.ui.tile.Picked
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -81,7 +82,11 @@ class AppViewModelTest {
                     if (e.answerClearsQuestion) e.pending = NO_QUESTION
                     answer
                 }
-                else -> if (cmd.startsWith("swarmz 'send'")) e.sendError ?: """{"sent":true,"v":1}""" else VERSION_OK
+                else -> when {
+                    cmd.startsWith("swarmz 'send'") -> e.sendError ?: """{"sent":true,"v":1}"""
+                    cmd.startsWith("swarmz 'upload'") -> """{"path":"/Users/me/.swarmz/paste/paste-1-photo.jpg","size":1,"v":1}"""
+                    else -> VERSION_OK
+                }
             }
         }
         val inner = e.conn
@@ -102,6 +107,35 @@ class AppViewModelTest {
         e.push(PERMISSION_SNAPSHOT)
         runCurrent()
         return e
+    }
+
+    @Test
+    fun aShareWaitsOnHomeForTheNextTileAndLandsInItsDraft() = runTest {
+        val env = env()
+        env.vm.share(listOf(Picked("photo.jpg", byteArrayOf(1))), "see this")
+        runCurrent()
+        assertTrue(env.vm.home.value.pendingShare.containsAll(listOf("photo.jpg", "text")))
+        assertEquals(Route.Home, env.vm.route.value)
+        env.vm.open(WEB)
+        runCurrent()
+        val c = env.vm.tile.value!!
+        assertEquals(listOf("photo.jpg"), c.attachments.value.map { it.name })
+        assertEquals("see this /Users/me/.swarmz/paste/paste-1-photo.jpg ", c.draft.value.text)
+        assertTrue(env.vm.home.value.pendingShare.isEmpty())
+        // With a tile open, a share goes straight to it.
+        env.vm.share(emptyList(), "and this")
+        runCurrent()
+        assertEquals("see this /Users/me/.swarmz/paste/paste-1-photo.jpg and this ", c.draft.value.text)
+        // Dismissing a waiting share drops it.
+        env.vm.back()
+        env.vm.share(listOf(Picked("doc.pdf", byteArrayOf(2))), null)
+        runCurrent()
+        env.vm.dismissShare()
+        runCurrent()
+        assertTrue(env.vm.home.value.pendingShare.isEmpty())
+        env.vm.open(API)
+        runCurrent()
+        assertTrue(env.vm.tile.value!!.attachments.value.isEmpty())
     }
 
     @Test

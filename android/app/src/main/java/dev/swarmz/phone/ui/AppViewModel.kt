@@ -25,6 +25,9 @@ import dev.swarmz.phone.state.parseTime
 import dev.swarmz.phone.state.tileListSections
 import dev.swarmz.phone.ui.newsession.NewSessionModel
 import dev.swarmz.phone.ui.tile.TileController
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
+import dev.swarmz.phone.ui.tile.Picked
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableJob
@@ -71,6 +74,8 @@ data class HomeUi(
     val replyErrors: Map<TileKey, ReplyError> = emptyMap(),
     /** Macs that refused this phone's key and have no pairing yet. */
     val pairHints: List<PairHint> = emptyList(),
+    /** Names of shared files waiting for a tile to be chosen (phone attachments spec §4.4). */
+    val pendingShare: List<String> = emptyList(),
 )
 
 /** A Home reply that did not send: its [text] goes back into the card's field once ([restored] after that). */
@@ -157,27 +162,66 @@ class AppViewModel(
 
     private fun turnOf(view: TileView?): Pair<String?, String?> = view?.row?.since to view?.row?.turnEndedAt
 
+    /** A share received with no tile open: applied to the next tile opened (spec §4.4). */
+    private val pendingShare = MutableStateFlow<Shared?>(null)
+
     val home: StateFlow<HomeUi> = combine(
-        combine(repo.tiles, repo.seen, repo.macs, repo.banners, repo.pairHints) { tiles, seen, macs, banners, hints ->
-            Inputs(tiles, seen, macs, banners, hints)
+        combine(
+            combine(repo.tiles, repo.seen, repo.macs, repo.banners, repo.pairHints) { tiles, seen, macs, banners, hints ->
+                Inputs(tiles, seen, macs, banners, hints)
+            },
+            asks,
+            replyErrors,
+            ticks,
+            dismissedHints,
+        ) { i, a, r, _, dismissed ->
+            HomeUi(
+                homeModel(i.tiles, i.seen),
+                tileListSections(i.tiles, i.seen, i.macs),
+                a,
+                i.banners,
+                i.macs,
+                now(),
+                i.seen,
+                r,
+                i.hints.filter { it.mac !in dismissed },
+            )
         },
-        asks,
-        replyErrors,
-        ticks,
-        dismissedHints,
-    ) { i, a, r, _, dismissed ->
-        HomeUi(
-            homeModel(i.tiles, i.seen),
-            tileListSections(i.tiles, i.seen, i.macs),
-            a,
-            i.banners,
-            i.macs,
-            now(),
-            i.seen,
-            r,
-            i.hints.filter { it.mac !in dismissed },
-        )
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, HomeUi(HomeModel(emptyList(), emptyList()), emptyList(), emptyMap(), emptyList(), emptyList(), now()))
+        pendingShare,
+    ) { ui, share -> if (share == null) ui else ui.copy(pendingShare = share.items.map { it.name } + listOfNotNull(share.text?.let { "text" })) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, HomeUi(HomeModel(emptyList(), emptyList()), emptyList(), emptyMap(), emptyList(), emptyList(), now()))
+
+    /** What a share intent brought: files already read, and any text. */
+    data class Shared(val items: List<Picked>, val text: String?)
+
+    /**
+     * A share arrived (spec §4.4): it goes to the open tile, else it waits on Home for the tile the user
+     * picks next. Shared text is inserted into the draft, never uploaded.
+     */
+    fun share(items: List<Picked>, text: String?) {
+        if (items.isEmpty() && text.isNullOrBlank()) return
+        val open = _tile.value
+        if (open != null && _route.value is Route.Tile) {
+            apply(open, Shared(items, text))
+        } else {
+            pendingShare.value = Shared(items, text)
+            _route.value = Route.Home
+        }
+    }
+
+    fun dismissShare() {
+        pendingShare.value = null
+    }
+
+    private fun apply(c: TileController, share: Shared) {
+        // Text first, then the files: each path lands after it once its upload is done.
+        share.text?.let { t ->
+            val cur = c.draft.value
+            val added = if (cur.text.isEmpty() || cur.text.endsWith(" ")) "$t " else " $t "
+            c.draft.value = TextFieldValue(cur.text + added, TextRange(cur.text.length + added.length))
+        }
+        share.items.forEach { c.attach(it.name, it.bytes) }
+    }
 
     private data class Inputs(
         val tiles: List<TileView>,
@@ -296,6 +340,10 @@ class AppViewModel(
             _tile.value = TileController(key, repo, viewModelScope, now)
         }
         _route.value = Route.Tile(key)
+        pendingShare.value?.let { share ->
+            pendingShare.value = null
+            _tile.value?.let { apply(it, share) }
+        }
         if (visible.value) markSeen(key, repo.tiles.value.firstOrNull { it.key == key }?.row?.turnEndedAt)
     }
 
