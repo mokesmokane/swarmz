@@ -303,7 +303,7 @@ function Row({ id }: { id: string }) {
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ width = 256 }: { width?: number } = {}) {
   const order = useStore((s) => s.order);
   const lastCwd = useStore((s) => s.lastCwd);
   const createTerminal = useStore((s) => s.createTerminal);
@@ -333,7 +333,7 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-neutral-800 bg-neutral-950">
+    <aside className="flex h-full shrink-0 flex-col border-r border-neutral-800 bg-neutral-950" style={{ width }}>
       <div className="flex h-8 items-center justify-between border-b border-neutral-800 px-3 text-xs font-semibold uppercase tracking-wide text-neutral-400">
         <span>Terminals</span>
         <div className="flex items-center gap-1">

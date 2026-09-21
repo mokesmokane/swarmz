@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { clampSidebarWidth, loadSidebarWidth, saveSidebarWidth, SIDEBAR_DEFAULT } from "./lib/sidebarWidth";
 import { Sidebar } from "./components/Sidebar";
 import { Workbench } from "./components/Workbench";
 import { splitShortcut } from "./lib/shortcuts";
@@ -77,9 +78,45 @@ export default function App() {
     };
   }, []);
 
+  // The sidebar's width: dragged on the handle, kept per machine, double-click to reset.
+  const [sidebarWidth, setSidebarWidth] = useState(() => loadSidebarWidth());
+  const dragging = useRef<{ startX: number; startWidth: number } | null>(null);
+  const onHandleDown = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    dragging.current = { startX: e.clientX, startWidth: sidebarWidth };
+    const onMove = (ev: MouseEvent) => {
+      const d = dragging.current;
+      if (!d) return;
+      setSidebarWidth(clampSidebarWidth(d.startWidth + ev.clientX - d.startX));
+    };
+    const onUp = () => {
+      dragging.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setSidebarWidth((w) => {
+        saveSidebarWidth(w);
+        return w;
+      });
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   return (
     <div className="flex h-full w-full">
-      <Sidebar />
+      <Sidebar width={sidebarWidth} />
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the sidebar"
+        title="Drag to resize · double-click to reset"
+        className="w-1 shrink-0 cursor-col-resize bg-neutral-900 transition-colors hover:bg-blue-500 active:bg-blue-500"
+        onMouseDown={onHandleDown}
+        onDoubleClick={() => {
+          setSidebarWidth(SIDEBAR_DEFAULT);
+          saveSidebarWidth(SIDEBAR_DEFAULT);
+        }}
+      />
       <main className="min-w-0 flex-1">
         <Workbench />
       </main>
