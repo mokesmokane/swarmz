@@ -32,6 +32,11 @@ pub struct TileRow {
     pub session_id: Option<String>,
     pub summary: Option<String>,
     pub machine: Option<String>,
+    /// The card's title, else the fold's fallback (conversation cards spec §3.2).
+    pub title: Option<String>,
+    pub recap: Option<String>,
+    pub card_at: Option<String>,
+    pub card_by: Option<String>,
 }
 
 fn origin(def: &TerminalDef) -> Option<&str> {
@@ -204,7 +209,13 @@ fn rows_from(
                 None => (None, None),
             };
             let last_message = transcript.as_deref().and_then(last_text);
+            let card = crate::card::read(&def.extra);
+            let card_str = |k: &str| card.as_ref().and_then(|c| c.get(k)).and_then(|v| v.as_str()).map(str::to_string);
             TileRow {
+                title: card_str("title").or_else(|| fold.title.clone()),
+                recap: card_str("recap"),
+                card_at: card_str("updatedAt"),
+                card_by: card_str("by"),
                 cwd: if is_running { live_cwd(&def.id).unwrap_or_else(|| def.cwd.clone()) } else { def.cwd.clone() },
                 kind: if claude.is_some() { "claude" } else { "shell" }.to_string(),
                 running: is_running,

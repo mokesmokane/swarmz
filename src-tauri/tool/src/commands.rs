@@ -2,7 +2,7 @@
 
 use crate::client::HolderClient;
 use crate::hold::{detach, hold, CliError, HoldRequest};
-use crate::newtile::{add_def, claude_line, empty_workspace, keep_def, kept_def_file, list_folders, session_started, startup_line, unique_name, workspace_file, KeptDef};
+use crate::newtile::{bump_revision, add_def, claude_line, empty_workspace, keep_def, kept_def_file, list_folders, session_started, startup_line, unique_name, workspace_file, KeptDef};
 use crate::paths::{live_session, pid_alive, read_meta, session_paths, sessions_dir_in, valid_tile_id};
 use crate::proto::{Hello, PROTOCOL_VERSION};
 use crate::screen::line_text;
@@ -371,6 +371,51 @@ pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&s
     // Best effort: the tile is recorded either way.
     let _ = start_keep_def(env, &KeptDef { machine, def, revision });
     row(env, &id)
+}
+
+/// `card` (conversation cards spec §3.1): read a tile's card, or set its title and/or recap as
+/// its agent. Setting re-reads the workspace (a concurrent change is kept), merges the fields
+/// (`card::merged`), bumps the sync revision and writes atomically.
+pub fn card(env: &Env, tile: Option<&str>, title: Option<&str>, recap: Option<&str>, by_user: bool) -> Result<Value, CliError> {
+    let tile = match tile {
+        Some(t) => tile_arg(t)?,
+        None => match std::env::var("SWARMZ_TERMINAL_ID") {
+            Ok(t) if !t.is_empty() => tile_arg(&t)?,
+            _ => return Err(CliError::new("usage", "usage: swarmz card [--tile <id>] [--title <text>] [--recap <text>]: no tile given and SWARMZ_TERMINAL_ID is not set")),
+        },
+    };
+    let setting = title.is_some() || recap.is_some();
+    let ws = if setting { env.workspace_to_write()? } else { env.workspace()? };
+    let mut ws = ws.unwrap_or_else(empty_workspace);
+    let Some(def) = ws.terminals.iter_mut().find(|d| d.id == tile) else {
+        return Err(CliError::new("unknown_tile", format!("no tile {tile} in the workspace")));
+    };
+    let existing = crate::card::read(&def.extra);
+    if !setting {
+        return Ok(json!({"v": 1, "card": existing}));
+    }
+    let now = now_iso_ms();
+    let next = if by_user {
+        crate::card::with_user_title(existing.as_ref(), title.unwrap_or(""), &now)
+    } else {
+        crate::card::merged(existing.as_ref(), title, recap, &now)
+    };
+    if next == existing {
+        return Ok(json!({"v": 1, "card": existing}));
+    }
+    match &next {
+        Some(c) => {
+            def.extra.insert("card".into(), c.clone());
+        }
+        None => {
+            def.extra.remove("card");
+        }
+    }
+    // Whose change it is, for the sync tiebreak: this Mac, else the tile's home, else the tool.
+    let by = env.machine.clone().or_else(|| def.extra.get("origin").and_then(|o| o.as_str()).map(str::to_string)).unwrap_or_else(|| "swarmz".to_string());
+    bump_revision(&mut ws, &by, &now);
+    save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
+    Ok(json!({"v": 1, "card": next}))
 }
 
 /// How long, and how often, a new tile's def is watched after `new` (spec §4.5).

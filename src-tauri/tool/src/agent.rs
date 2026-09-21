@@ -19,6 +19,8 @@ pub struct Event {
     pub transcript_path: Option<String>,
     pub tool_name: Option<String>,
     pub tool_input: Option<Value>,
+    /// `UserPromptSubmit`'s prompt text.
+    pub prompt: Option<String>,
 }
 
 pub fn parse_line(line: &str) -> Option<Event> {
@@ -41,6 +43,7 @@ pub fn parse_line(line: &str) -> Option<Event> {
         transcript_path: s("transcript_path"),
         tool_name: s("tool_name"),
         tool_input: v.get("tool_input").cloned(),
+        prompt: s("prompt"),
     })
 }
 
@@ -75,6 +78,9 @@ pub struct Fold {
     /// What the pending permission is for (spec §4.4), while `needs` is `permission`.
     pub summary: Option<String>,
     pub tool: Option<String>,
+    /// The session's first prompt as a title (conversation cards spec §2.1), until its agent
+    /// sets one; cleared by `SessionStart`.
+    pub title: Option<String>,
 }
 
 impl Fold {
@@ -99,6 +105,11 @@ impl Fold {
                 if ev.transcript_path.is_some() {
                     self.transcript_path = ev.transcript_path.clone();
                 }
+                self.title = None;
+                self.clear_block();
+            }
+            "UserPromptSubmit" if self.title.is_none() => {
+                self.title = ev.prompt.as_deref().and_then(crate::card::fallback_title);
                 self.clear_block();
             }
             "Stop" | "StopFailure" => {
@@ -202,7 +213,7 @@ mod tests {
             let folds = fold_log(&log.join("\n"));
             let f = folds.get("t1").cloned().unwrap_or_default();
             let got = serde_json::to_value(&f).unwrap();
-            for key in ["status", "sessionId", "needs", "mode", "turnEndedAt"] {
+            for key in ["status", "sessionId", "needs", "mode", "turnEndedAt", "title"] {
                 assert_eq!(got[key], case["expect"][key], "{}: {key}", case["name"]);
             }
         }

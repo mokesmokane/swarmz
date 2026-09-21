@@ -7,7 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-pub const HOOK_VERSION: u32 = 2;
+pub const HOOK_VERSION: u32 = 3;
 
 pub const HOOK_EVENTS: [&str; 8] = [
     "SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "Notification", "SessionEnd", "PermissionRequest", "PostToolUse",
@@ -15,9 +15,37 @@ pub const HOOK_EVENTS: [&str; 8] = [
 
 pub const SCRIPT_MARKER: &str = ".swarmz/hooks/claude.sh";
 
+pub const BRIEFING_VERSION: u32 = 1;
+pub const BRIEFING_MARKER: &str = ".swarmz/briefing.md";
+
+/// What every Claude session in a swarmz tile is told at start (conversation cards spec §4.1):
+/// the `SessionStart` hook returns it as additional context, with `<name>` filled in. Installed
+/// beside the hook script; a user who edits it keeps their version by removing the first line.
+pub const BRIEFING: &str = r#"<!-- SWARMZ_BRIEFING_VERSION=1 -->
+You are running in a swarmz tile named "<name>", alongside other agents the user watches from a sidebar and a phone. Keep your tile's card current with the swarmz command:
+
+    ~/.swarmz/bin/swarmz card --title "…" --recap "…"
+
+- Set a title after your first reply: a few words for what this conversation is about (at most 60 characters), the way a chat client names a thread.
+- Update the recap whenever you finish something, change direction, or are about to ask the user a question: two or three sentences of what is done and what is next (at most 600 characters). Both flags may be given together or alone.
+- Do not change a title the user typed themselves unless asked; a recap-only update keeps it.
+"#;
+
+/// The `SWARMZ_BRIEFING_VERSION=<n>` header of an installed briefing, or None when absent (a
+/// user-edited briefing has no header and is never overwritten).
+pub fn briefing_version(text: &str) -> Option<u32> {
+    let first = text.lines().next()?.trim();
+    let inner = first.strip_prefix("<!--")?.strip_suffix("-->")?.trim();
+    inner.strip_prefix("SWARMZ_BRIEFING_VERSION=")?.trim().parse().ok()
+}
+
+/// The two Bash rules that let an agent run `swarmz card` without a prompt in modes that ask
+/// (spec §4.2): as the briefing types it, and as a bare `swarmz` on a PATH that has it.
+pub const CARD_PERMISSIONS: [&str; 2] = ["Bash(~/.swarmz/bin/swarmz card:*)", "Bash(swarmz card:*)"];
+
 pub const HOOK_SCRIPT: &str = r#"#!/bin/sh
 # installed by swarmz; reinstalling overwrites this file.
-# SWARMZ_HOOK_VERSION=2
+# SWARMZ_HOOK_VERSION=3
 set -u
 id="${SWARMZ_TERMINAL_ID:-}"
 [ -n "$id" ] || exit 0
@@ -40,6 +68,17 @@ if [ -f "$log" ] && [ "$(wc -c < "$log" | tr -d ' ')" -gt 2097152 ]; then
 fi
 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '%s\t%s\t%s\t%s\n' "$ts" "$id" "$event" "$input" >> "$log"
+# A new session is told about its tile (conversation cards spec §4.1): the briefing, with
+# <name> filled in, goes back to Claude Code as additional context. JSON-escaped by awk; the
+# version comment on its first line is left out.
+briefing="$HOME/.swarmz/briefing.md"
+if [ "$event" = "SessionStart" ] && [ -f "$briefing" ]; then
+  ctx=$(awk -v name="${SWARMZ_TERMINAL_NAME:-$id}" 'BEGIN{ORS=""}
+    /^<!-- SWARMZ_BRIEFING_VERSION=/ && NR==1 {next}
+    { n=split($0, p, "<name>"); line=p[1]; for (i=2; i<=n; i++) line=line name p[i];
+      gsub(/\\/, "\\\\", line); gsub(/"/, "\\\"", line); gsub(/\t/, "\\t", line); print line "\\n" }' "$briefing")
+  [ -n "$ctx" ] && printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' "$ctx"
+fi
 exit 0
 "#;
 
@@ -55,8 +94,9 @@ pub fn hook_entry(event: &str) -> Value {
     entry.insert("type".into(), json!("command"));
     entry.insert("command".into(), json!(format!("sh \"$HOME/{SCRIPT_MARKER}\" {event}")));
     // Synchronous events are logged before Claude moves on: `SessionEnd` so the end is never
-    // lost, `PostToolUse` so it can never land after the next `PermissionRequest`.
-    if event != "SessionEnd" && event != "PostToolUse" {
+    // lost, `PostToolUse` so it can never land after the next `PermissionRequest`, and
+    // `SessionStart` because only a synchronous hook's output reaches Claude (the briefing).
+    if event != "SessionEnd" && event != "PostToolUse" && event != "SessionStart" {
         entry.insert("async".into(), json!(true));
     }
     entry.insert("timeout".into(), json!(5));
@@ -99,6 +139,20 @@ pub fn install_hooks(settings: Option<&str>) -> Result<(String, bool), String> {
         arr.retain(|g| !is_swarmz_group(g));
         arr.push(hook_entry(ev));
     }
+    let permissions = obj.entry("permissions").or_insert_with(|| json!({}));
+    if !permissions.is_object() {
+        return Err("settings.json \"permissions\" is not an object".into());
+    }
+    let allow = permissions.as_object_mut().unwrap().entry("allow").or_insert_with(|| json!([]));
+    if !allow.is_array() {
+        return Err("settings.json permissions.allow is not an array".into());
+    }
+    let allow = allow.as_array_mut().unwrap();
+    for rule in CARD_PERMISSIONS {
+        if !allow.iter().any(|r| r.as_str() == Some(rule)) {
+            allow.push(json!(rule));
+        }
+    }
     let after = serde_json::to_string(&root).map_err(|e| e.to_string())?;
     let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
     Ok((pretty, before != after))
@@ -132,6 +186,11 @@ pub fn install_local_in(home: &Path) -> Result<bool, String> {
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("could not chmod {}: {e}", script_path.display()))?;
     }
+    let briefing_path = home.join(BRIEFING_MARKER);
+    if briefing_needs_install(std::fs::read_to_string(&briefing_path).ok().as_deref()) {
+        write_atomic(&briefing_path, BRIEFING)?;
+        wrote = true;
+    }
     let settings_path = home.join(".claude").join("settings.json");
     let existing = std::fs::read_to_string(&settings_path).ok();
     let (merged, changed) = install_hooks(existing.as_deref())?;
@@ -142,6 +201,18 @@ pub fn install_local_in(home: &Path) -> Result<bool, String> {
     Ok(wrote)
 }
 
+/// A briefing is (re)written when there is none, or when the installed one is swarmz's own
+/// (it carries a version header) at another version. A user's own briefing has no header.
+pub fn briefing_needs_install(current: Option<&str>) -> bool {
+    match current {
+        None => true,
+        Some(text) => match briefing_version(text) {
+            None => false,
+            Some(v) => v != BRIEFING_VERSION || text != BRIEFING,
+        },
+    }
+}
+
 pub fn install_local() -> Result<bool, String> {
     install_local_in(&home_dir())
 }
@@ -149,8 +220,13 @@ pub fn install_local() -> Result<bool, String> {
 pub const REMOTE_SEPARATOR: &str = "__SWARMZ_SEP_7f3a__";
 
 pub fn remote_read_command() -> &'static str {
-    // Each cat may fail (file absent); the separator always prints so the reply splits.
-    "cat ~/.swarmz/hooks/claude.sh 2>/dev/null; printf '\\n%s\\n' __SWARMZ_SEP_7f3a__; cat ~/.claude/settings.json 2>/dev/null; true"
+    // Each cat may fail (file absent); the separators always print so the reply splits.
+    "cat ~/.swarmz/hooks/claude.sh 2>/dev/null; printf '\\n%s\\n' __SWARMZ_SEP_7f3a__; cat ~/.claude/settings.json 2>/dev/null; printf '\\n%s\\n' __SWARMZ_SEP_7f3a__; cat ~/.swarmz/briefing.md 2>/dev/null; true"
+}
+
+/// Writes `len` bytes of stdin to `~/.swarmz/briefing.md`, atomically and only at full length.
+pub fn remote_write_briefing_command(len: usize) -> String {
+    format!("mkdir -p ~/.swarmz && cat > ~/.swarmz/briefing.md.tmp.$$ && [ \"$(wc -c < ~/.swarmz/briefing.md.tmp.$$ | tr -d ' ')\" -eq {len} ] && mv -f ~/.swarmz/briefing.md.tmp.$$ ~/.swarmz/briefing.md || {{ rm -f ~/.swarmz/briefing.md.tmp.$$; exit 1; }}")
 }
 
 /// Writes `len` bytes of stdin to the hook script, atomically. `cat` cannot tell a pipe that
@@ -167,13 +243,15 @@ pub fn remote_write_settings_command(len: usize) -> String {
     format!("mkdir -p ~/.claude && cat > ~/.claude/settings.json.tmp.$$ && [ \"$(wc -c < ~/.claude/settings.json.tmp.$$ | tr -d ' ')\" -eq {len} ] && mv -f ~/.claude/settings.json.tmp.$$ ~/.claude/settings.json || {{ rm -f ~/.claude/settings.json.tmp.$$; exit 1; }}")
 }
 
-/// Splits the reply of `remote_read_command` into (script, settings), each None when empty.
-pub fn split_remote_read(stdout: &str) -> (Option<String>, Option<String>) {
+/// Splits the reply of `remote_read_command` into (script, settings, briefing), each None when
+/// empty. A reply from a Mac whose read had only one separator (none exists any more, but the
+/// split stays lenient) gives no briefing.
+pub fn split_remote_read(stdout: &str) -> (Option<String>, Option<String>, Option<String>) {
     let sep_line = format!("\n{REMOTE_SEPARATOR}\n");
-    let (a, b) = match stdout.find(&sep_line) {
-        Some(i) => (&stdout[..i], &stdout[i + sep_line.len()..]),
-        None => (stdout, ""),
-    };
+    let mut parts = stdout.splitn(3, sep_line.as_str());
+    let a = parts.next().unwrap_or("");
+    let b = parts.next().unwrap_or("");
+    let c = parts.next().unwrap_or("");
     let clean = |s: &str| {
         let trimmed = s.trim();
         if trimmed.is_empty() || trimmed == REMOTE_SEPARATOR {
@@ -182,7 +260,7 @@ pub fn split_remote_read(stdout: &str) -> (Option<String>, Option<String>) {
             Some(s.to_string())
         }
     };
-    (clean(a), clean(b))
+    (clean(a), clean(b), clean(c))
 }
 
 pub(crate) fn ssh_command(host: &str) -> Result<Command, String> {
@@ -217,8 +295,17 @@ pub fn install_remote(host: &str) -> Result<bool, String> {
     if !done.status.success() {
         return Err(ssh_failure(&done, "remote read"));
     }
-    let (script, settings) = split_remote_read(&done.stdout);
+    let (script, settings, briefing) = split_remote_read(&done.stdout);
     let mut wrote = false;
+    if briefing_needs_install(briefing.as_deref()) {
+        let mut cmd = ssh_command(&host)?;
+        cmd.arg(remote_write_briefing_command(BRIEFING.len()));
+        let done = run_with_timeout_input(cmd, Duration::from_secs(10), "ssh", Some(BRIEFING.as_bytes()))?;
+        if !done.status.success() {
+            return Err(ssh_failure(&done, "remote briefing write"));
+        }
+        wrote = true;
+    }
     if script.as_deref().and_then(script_version) != Some(HOOK_VERSION) || script.as_deref() != Some(HOOK_SCRIPT) {
         let mut cmd = ssh_command(&host)?;
         cmd.arg(remote_write_script_command(HOOK_SCRIPT.len()));
@@ -253,6 +340,9 @@ pub struct AgentEvent {
     pub source: Option<String>,
     pub cwd: Option<String>,
     pub permission_mode: Option<String>,
+    /// `UserPromptSubmit`'s prompt, first 500 characters (the fallback title needs 60; the
+    /// tooltip shows the rest).
+    pub prompt: Option<String>,
 }
 
 /// One log line: `ts \t terminal \t event \t json`. None when malformed.
@@ -276,6 +366,7 @@ pub fn parse_line(line: &str) -> Option<AgentEvent> {
         source: s("source"),
         cwd: s("cwd"),
         permission_mode: s("permission_mode"),
+        prompt: if event == "UserPromptSubmit" { s("prompt").map(|p| p.chars().take(500).collect()) } else { None },
     })
 }
 
@@ -484,12 +575,76 @@ mod tests {
             assert_eq!(entry["type"], "command");
             assert_eq!(entry["command"], format!("sh \"$HOME/.swarmz/hooks/claude.sh\" {ev}"));
             assert_eq!(entry["timeout"], 5);
-            if ev == "SessionEnd" || ev == "PostToolUse" {
+            if ev == "SessionEnd" || ev == "PostToolUse" || ev == "SessionStart" {
                 assert!(entry.get("async").is_none(), "{ev}");
             } else {
                 assert_eq!(entry["async"], true);
             }
         }
+        // The card permissions come with the hooks (conversation cards spec §4.2).
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let allow: Vec<&str> = v["permissions"]["allow"].as_array().unwrap().iter().filter_map(|r| r.as_str()).collect();
+        assert_eq!(allow, CARD_PERMISSIONS.to_vec());
+    }
+
+    #[test]
+    fn the_script_returns_the_briefing_on_session_start_only() {
+        let dir = std::env::temp_dir().join(format!("swarmz-hook-briefing-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".swarmz")).unwrap();
+        let script = dir.join("claude.sh");
+        std::fs::write(&script, HOOK_SCRIPT).unwrap();
+        std::fs::write(dir.join(".swarmz/briefing.md"), "<!-- SWARMZ_BRIEFING_VERSION=1 -->\nTile \"<name>\" says \\ hi\tthere.\nLine two & more.\n").unwrap();
+        let run = |event: &str, name: Option<&str>| -> String {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.arg(&script).arg(event).env("HOME", &dir).env("SWARMZ_TERMINAL_ID", "t-1");
+            match name {
+                Some(n) => {
+                    cmd.env("SWARMZ_TERMINAL_NAME", n);
+                }
+                None => {
+                    cmd.env_remove("SWARMZ_TERMINAL_NAME");
+                }
+            }
+            let mut child = cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+            {
+                use std::io::Write;
+                child.stdin.take().unwrap().write_all(br#"{"session_id":"s1"}"#).unwrap();
+            }
+            let out = child.wait_with_output().unwrap();
+            assert!(out.status.success());
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let out = run("SessionStart", Some("api|web"));
+        let v: Value = serde_json::from_str(out.trim()).expect(&format!("valid hook JSON: {out}"));
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
+        let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+        assert_eq!(ctx, "Tile \"api|web\" says \\ hi\tthere.\nLine two & more.\n");
+        // Without a name the tile id stands in; other events print nothing.
+        let out = run("SessionStart", None);
+        assert!(out.contains("Tile \\\"t-1\\\""), "{out}");
+        assert_eq!(run("Stop", Some("api")), "");
+        // The events were logged as before.
+        let log = std::fs::read_to_string(dir.join(".swarmz/agents/events.log")).unwrap();
+        assert_eq!(log.lines().count(), 3);
+        // The real briefing round-trips too.
+        std::fs::write(dir.join(".swarmz/briefing.md"), BRIEFING).unwrap();
+        let out = run("SessionStart", Some("swarmz-2"));
+        let v: Value = serde_json::from_str(out.trim()).unwrap();
+        let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+        assert!(ctx.starts_with("You are running in a swarmz tile named \"swarmz-2\""), "{ctx}");
+        assert!(ctx.contains("swarmz card --title"));
+        assert!(!ctx.contains("SWARMZ_BRIEFING_VERSION"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_briefing_is_installed_once_and_a_users_own_is_kept() {
+        assert!(briefing_needs_install(None));
+        assert!(!briefing_needs_install(Some(BRIEFING)));
+        assert!(briefing_needs_install(Some("<!-- SWARMZ_BRIEFING_VERSION=0 -->\nold\n")));
+        assert!(briefing_needs_install(Some("<!-- SWARMZ_BRIEFING_VERSION=1 -->\nedited but still headed\n")));
+        assert!(!briefing_needs_install(Some("My own briefing.\n")));
+        assert_eq!(briefing_version(BRIEFING), Some(BRIEFING_VERSION));
     }
 
     #[test]
@@ -591,7 +746,12 @@ mod tests {
         }
         let settings = std::fs::read_to_string(home.join(".claude/settings.json")).unwrap();
         assert!(settings.contains(SCRIPT_MARKER));
+        assert_eq!(std::fs::read_to_string(home.join(BRIEFING_MARKER)).unwrap(), BRIEFING);
         assert!(!install_local_in(&home).unwrap());
+        // A briefing the user made their own is left alone.
+        std::fs::write(home.join(BRIEFING_MARKER), "mine\n").unwrap();
+        assert!(!install_local_in(&home).unwrap());
+        assert_eq!(std::fs::read_to_string(home.join(BRIEFING_MARKER)).unwrap(), "mine\n");
         std::fs::remove_dir_all(&home).unwrap();
     }
 
@@ -678,12 +838,15 @@ mod tests {
 
     #[test]
     fn split_remote_read_handles_missing_files() {
-        let (script, settings) = split_remote_read(&format!("{REMOTE_SEPARATOR}\n"));
-        assert_eq!(script, None);
-        assert_eq!(settings, None);
-        let (script, settings) = split_remote_read(&format!("#!/bin/sh\n# SWARMZ_HOOK_VERSION=1\n{REMOTE_SEPARATOR}\n{{\"a\":1}}\n"));
+        let (script, settings, briefing) = split_remote_read(&format!("{REMOTE_SEPARATOR}\n\n{REMOTE_SEPARATOR}\n"));
+        assert_eq!((script, settings, briefing), (None, None, None));
+        let (script, settings, briefing) = split_remote_read(&format!("#!/bin/sh\n# SWARMZ_HOOK_VERSION=1\n{REMOTE_SEPARATOR}\n{{\"a\":1}}\n{REMOTE_SEPARATOR}\n<!-- SWARMZ_BRIEFING_VERSION=1 -->\nhi\n"));
         assert_eq!(script_version(script.as_deref().unwrap()), Some(1));
-        assert_eq!(settings.as_deref(), Some("{\"a\":1}\n"));
+        assert_eq!(settings.as_deref(), Some("{\"a\":1}"));
+        assert_eq!(briefing_version(briefing.as_deref().unwrap()), Some(1));
+        // An older Mac's reply, with one separator, still splits.
+        let (script, settings, briefing) = split_remote_read(&format!("x\n{REMOTE_SEPARATOR}\n{{}}\n"));
+        assert_eq!((script.as_deref(), settings.as_deref(), briefing), (Some("x"), Some("{}\n"), None));
     }
 
     #[test]
@@ -701,9 +864,8 @@ mod tests {
         let output = cmd.output().unwrap();
         assert!(output.status.success(), "remote_read_command failed with missing files: {}", String::from_utf8_lossy(&output.stderr));
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let (script, settings) = split_remote_read(&stdout);
-        assert_eq!(script, None);
-        assert_eq!(settings, None);
+        let (script, settings, briefing) = split_remote_read(&stdout);
+        assert_eq!((script, settings, briefing), (None, None, None));
 
         // Second run: create both files and verify they are read
         std::fs::create_dir_all(home.join(".swarmz/hooks")).unwrap();
@@ -720,7 +882,7 @@ mod tests {
         let output = cmd.output().unwrap();
         assert!(output.status.success(), "remote_read_command failed with files present: {}", String::from_utf8_lossy(&output.stderr));
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let (script, settings) = split_remote_read(&stdout);
+        let (script, settings, _briefing) = split_remote_read(&stdout);
         assert!(script.is_some(), "script should be read");
         assert!(settings.is_some(), "settings should be read");
         assert_eq!(script.as_deref(), Some(HOOK_SCRIPT));

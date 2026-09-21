@@ -21,8 +21,8 @@ const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_
 /// The most lines `output --follow` watches.
 const MAX_FOLLOW_LINES: usize = 1000;
 
-const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary"];
-const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local"];
+const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap"];
+const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user"];
 
 struct Args {
     positional: Vec<String>,
@@ -311,6 +311,10 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             let tile = cmd::tile_arg(&a.positional[1])?;
             Ok(Some(cmd::key(&cmd::Env::from_process()?, &tile, &a.positional[2])?))
         }
+        Some("card") => {
+            a.expect_positional(1, "card [--tile ID] [--title TEXT] [--recap TEXT] [--user]")?;
+            Ok(Some(cmd::card(&cmd::Env::from_process()?, a.opt("--tile"), a.opt("--title"), a.opt("--recap"), a.flag("--user"))?))
+        }
         Some("pending") => {
             a.expect_positional(2, "pending <tile>")?;
             let tile = cmd::tile_arg(&a.positional[1])?;
@@ -366,7 +370,7 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             a.expect_positional(1, "ssh-gate")?;
             Err(cmd::ssh_gate(&cmd::Env::for_gate()?))
         }
-        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|transcript|image|phone|host-keys|ssh-gate> …")),
+        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|card|transcript|image|phone|host-keys|ssh-gate> …")),
     }
 }
 

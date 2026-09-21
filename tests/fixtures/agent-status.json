@@ -6,7 +6,20 @@
     "events": [
       { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
       { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1" } }],
-    "expect": { "status": "working", "sessionId": "s1", "needs": null, "mode": null, "turnEndedAt": null } },
+    "expect": { "status": "working", "sessionId": "s1", "needs": null, "mode": null, "turnEndedAt": null, "title": null } },
+  { "name": "the first prompt is the fallback title, cut on a word, and a new session clears it",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:01Z", "event": "UserPromptSubmit", "input": { "session_id": "s1", "prompt": "/clear" } },
+      { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1", "prompt": "please look at the phone app and tell me why the question card never shows up on the fold\nthanks" } },
+      { "ts": "2026-09-16T10:00:09Z", "event": "UserPromptSubmit", "input": { "session_id": "s1", "prompt": "a later prompt does not rename it" } }],
+    "expect": { "status": "working", "sessionId": "s1", "needs": null, "mode": null, "turnEndedAt": null, "title": "please look at the phone app and tell me why the question…" } },
+  { "name": "a new session starts with no title",
+    "events": [
+      { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },
+      { "ts": "2026-09-16T10:00:05Z", "event": "UserPromptSubmit", "input": { "session_id": "s1", "prompt": "fix the build" } },
+      { "ts": "2026-09-16T10:01:00Z", "event": "SessionStart", "input": { "session_id": "s2" } }],
+    "expect": { "status": "idle", "sessionId": "s2", "needs": null, "mode": null, "turnEndedAt": null, "title": null } },
   { "name": "stop ends the turn",
     "events": [
       { "ts": "2026-09-16T10:00:00Z", "event": "SessionStart", "input": { "session_id": "s1" } },

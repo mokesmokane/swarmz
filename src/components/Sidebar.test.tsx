@@ -154,7 +154,7 @@ describe("agent status dot", () => {
     useStore.setState({
       settings: { [ID]: { ssh: null, claude: null, command: null, extra: {} } },
       machines: {},
-      agentState: { [ID]: { status: "blocked", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "Notification", unseen: true } },
+      agentState: { [ID]: { status: "blocked", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "Notification", unseen: true, title: null, firstPrompt: null } },
       agentHooksError: "could not install Claude hooks: nope",
     });
     render(<Sidebar />);

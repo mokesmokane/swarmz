@@ -10,7 +10,7 @@ const ev = (event: string, extra: Partial<AgentEvent> = {}): AgentEvent => ({
 describe("applyAgentEvent", () => {
   it("SessionStart makes an idle state with the session id, never unseen", () => {
     const s = applyAgentEvent(undefined, ev("SessionStart", { source: "startup" }), false)!;
-    expect(s).toEqual<AgentState>({ status: "idle", sessionId: "s1", since: "2026-09-15T10:00:00Z", lastEvent: "SessionStart", unseen: false });
+    expect(s).toEqual<AgentState>({ status: "idle", sessionId: "s1", since: "2026-09-15T10:00:00Z", lastEvent: "SessionStart", unseen: false, title: null, firstPrompt: null });
   });
   it("UserPromptSubmit sets working and clears unseen", () => {
     const idle: AgentState = { ...OFFLINE, status: "idle", unseen: true, sessionId: "s1" };
@@ -98,7 +98,7 @@ describe("dotPresentation", () => {
 
 describe("shared status fixture", () => {
   type FixtureEvent = { ts: string; event: string; input: Record<string, unknown> };
-  type Case = { name: string; events: FixtureEvent[]; expect: { status: string; sessionId: string | null } };
+  type Case = { name: string; events: FixtureEvent[]; expect: { status: string; sessionId: string | null; title?: string | null } };
   const cases: Case[] = JSON.parse(readFileSync(new URL("../../tests/fixtures/agent-status.json", import.meta.url), "utf8"));
   const str = (v: unknown) => (typeof v === "string" ? v : null);
   for (const c of cases) {
@@ -111,6 +111,7 @@ describe("shared status fixture", () => {
             ts: e.ts, terminal: "t1", event: e.event,
             sessionId: str(e.input.session_id), notificationType: str(e.input.notification_type),
             source: str(e.input.source), cwd: str(e.input.cwd), permissionMode: str(e.input.permission_mode),
+            prompt: str(e.input.prompt),
           },
           true,
         );
@@ -118,6 +119,7 @@ describe("shared status fixture", () => {
       }
       expect(state?.status ?? "offline").toBe(c.expect.status);
       expect(state?.sessionId ?? null).toBe(c.expect.sessionId);
+      expect(state?.title ?? null).toBe(c.expect.title ?? null);
     });
   }
 });
