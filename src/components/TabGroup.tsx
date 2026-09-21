@@ -3,6 +3,7 @@ import type { GroupNode, Side } from "../lib/layout";
 import { useStore, terminalColor, type Placement } from "../store";
 import { machineLabel } from "../lib/workspace";
 import { dotPresentation } from "../lib/agentState";
+import { displayTitle } from "../lib/card";
 import { TerminalPane } from "./TerminalPane";
 
 export const DRAG_MIME = "application/x-swarmz-terminal";
@@ -41,6 +42,8 @@ function TabDot({ id, exitCode }: { id: string; exitCode: number | null }) {
 
 export function TabGroup({ group }: { group: GroupNode }) {
   const terminals = useStore((s) => s.terminals);
+  const settings = useStore((s) => s.settings);
+  const agentState = useStore((s) => s.agentState);
   const focusedGroupId = useStore((s) => s.focusedGroupId);
   const dragging = useStore((s) => s.draggingTerminalId);
   const focusTerminal = useStore((s) => s.focusTerminal);
@@ -134,7 +137,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
               }`}
             >
               <TabDot id={id} exitCode={t?.exited ?? null} />
-              <span className="max-w-[160px] truncate">{t?.name ?? id}</span>
+              <span className="max-w-[160px] truncate" title={t?.name ?? id}>{t ? displayTitle(settings[id]?.card, agentState[id], t.name) : id}</span>
               <button
                 className="ml-1 rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"
                 onClick={(e) => {

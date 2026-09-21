@@ -4,6 +4,7 @@ import { useStore, terminalColor } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
 import { dotPresentation } from "../lib/agentState";
+import { displayTitle, hasTitle } from "../lib/card";
 import { SessionHistory } from "./SessionHistory";
 import { PhonesPanel } from "./PhonesPanel";
 import { UpdateNotice, UpdateVersionLine } from "./UpdateNotice";
@@ -20,6 +21,42 @@ function relativeTime(iso: string): string {
   const m = Math.round(s / 60);
   if (m < 60) return `${m}m ago`;
   return `${Math.round(m / 60)}h ago`;
+}
+
+/** How long a row is hovered before its card opens (conversation cards spec §5). */
+export const HOVER_CARD_MS = 400;
+
+/**
+ * The hover card of a row: title; name, machine and folder; the recap, else the first prompt in
+ * full, else "No recap yet"; and when the card was last set and by whom.
+ */
+function HoverCard({ id }: { id: string }) {
+  const t = useStore((s) => s.terminals[id]);
+  const card = useStore((s) => s.settings[id]?.card ?? null);
+  const agent = useStore((s) => s.agentState[id]);
+  const machineName = useStore((s) => s.settings[id]?.ssh?.machine ?? null);
+  const machineCwd = useStore((s) => s.settings[id]?.ssh?.cwd ?? "");
+  const online = useStore((s) => (machineName ? (s.tailscale?.peers.find((p) => p.name === machineName)?.online ?? null) : null));
+  if (!t) return null;
+  const where = machineName
+    ? `${machineName}${online === true ? " · online" : online === false ? " · offline" : ""}${machineCwd ? ` · ${machineCwd}` : ""}`
+    : t.cwd;
+  const body = card?.recap || (card?.title ? null : agent?.firstPrompt) || null;
+  return (
+    <div
+      data-testid={`hover-card-${id}`}
+      role="tooltip"
+      className="absolute left-2 right-2 z-30 mt-1 rounded border border-neutral-700 bg-neutral-900 p-2 text-xs shadow-xl"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="truncate text-sm font-medium text-neutral-100">{displayTitle(card, agent, t.name)}</div>
+      <div className="truncate text-neutral-500">{`${t.name} · ${where}`}</div>
+      <div className="mt-1 whitespace-pre-wrap break-words text-neutral-300">{body ?? "No recap yet"}</div>
+      {card?.updatedAt && (
+        <div className="mt-1 text-neutral-500">{`updated ${relativeTime(card.updatedAt)} by ${card.by === "user" ? "you" : "Claude"}`}</div>
+      )}
+    </div>
+  );
 }
 
 function SyncLine() {
@@ -87,8 +124,13 @@ function Row({ id }: { id: string }) {
   const focusTerminal = useStore((s) => s.focusTerminal);
   const closeTerminal = useStore((s) => s.closeTerminal);
   const renameTerminal = useStore((s) => s.renameTerminal);
-  const [editing, setEditing] = useState(false);
+  const setCardTitle = useStore((s) => s.setCardTitle);
+  const card = useStore((s) => s.settings[id]?.card ?? null);
+  // What is being edited inline: the tile's name, or its card's title (spec §5).
+  const [editing, setEditing] = useState<false | "name" | "title">(false);
   const [draft, setDraft] = useState("");
+  const [hovering, setHovering] = useState(false);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const suppressBlur = useRef(false);
   // Command tiles are never adopted and cannot go back (spec §4), so the button would open an
@@ -101,14 +143,32 @@ function Row({ id }: { id: string }) {
   if (!t) return null;
 
   const commit = async () => {
-    const err = await renameTerminal(id, draft);
-    if (err) {
-      setError(err);
-      return;
+    if (editing === "title") {
+      setCardTitle(id, draft);
+    } else {
+      const err = await renameTerminal(id, draft);
+      if (err) {
+        setError(err);
+        return;
+      }
     }
     setError(null);
     suppressBlur.current = true;
     setEditing(false);
+  };
+
+  const startEditing = (what: "name" | "title") => {
+    suppressBlur.current = false;
+    setDraft(what === "name" ? t.name : (card?.title ?? ""));
+    setEditing(what);
+    setError(null);
+    stopHover();
+  };
+
+  const stopHover = () => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+    setHovering(false);
   };
 
   const row = (
@@ -117,21 +177,19 @@ function Row({ id }: { id: string }) {
       onDragStart={(e) => startTerminalDrag(e, id)}
       onDragEnd={endTerminalDrag}
       onClick={() => focusTerminal(id)}
-      onDoubleClick={() => {
-        suppressBlur.current = false;
-        setDraft(t.name);
-        setEditing(true);
-        setError(null);
+      onDoubleClick={() => startEditing("name")}
+      onMouseEnter={() => {
+        if (editing) return;
+        if (hoverTimer.current) clearTimeout(hoverTimer.current);
+        hoverTimer.current = setTimeout(() => setHovering(true), HOVER_CARD_MS);
       }}
+      onMouseLeave={stopHover}
+      onKeyDown={stopHover}
       className={`group flex cursor-default select-none items-center gap-2 rounded px-2 py-1.5 text-sm ${
         focused ? "bg-neutral-800 text-neutral-100" : "text-neutral-300 hover:bg-neutral-800/60"
       }`}
       style={{ borderLeft: color ? `2px solid ${color}` : undefined }}
-      title={
-        machineName
-          ? `${online === true ? "online on Tailscale" : online === false ? "offline" : "Tailscale status unknown"} · ${t.cwd}`
-          : t.cwd
-      }
+      data-machine-state={machineName ? (online === true ? "online" : online === false ? "offline" : "unknown") : undefined}
     >
       {(() => {
         const dot = dotPresentation(t.exited, agent, color);
@@ -151,6 +209,8 @@ function Row({ id }: { id: string }) {
             <input
               autoFocus
               value={draft}
+              placeholder={editing === "title" ? "Title (empty: back to the agent's)" : "Name"}
+              aria-label={editing === "title" ? "Title" : "Name"}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") void commit();
@@ -175,8 +235,15 @@ function Row({ id }: { id: string }) {
           </div>
         ) : (
           <>
-            <div className="truncate">
-              {t.name}
+            <div
+              className="truncate"
+              data-testid={`title-${id}`}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                startEditing("title");
+              }}
+            >
+              {displayTitle(card, agent, t.name)}
               {settings?.claude?.enabled && settings.claude.skipPermissions && (
                 <span
                   className="ml-1 rounded bg-red-900/60 px-1 text-[10px] font-semibold text-red-300"
@@ -187,6 +254,7 @@ function Row({ id }: { id: string }) {
               )}
             </div>
             <div className="truncate text-xs text-neutral-500">
+              {hasTitle(card, agent) ? `${t.name} · ` : ""}
               {machineName
                 ? `${machineName}${machineCwd ? ` · ${machineCwd}` : ""}`
                 : settings?.ssh?.host
@@ -225,6 +293,7 @@ function Row({ id }: { id: string }) {
   return (
     <div className="relative">
       {row}
+      {hovering && !historyOpen && !editing && <HoverCard id={id} />}
       {historyOpen && (
         <div className="absolute left-2 right-2 z-30 mt-1 rounded border border-neutral-700 bg-neutral-900 p-2 shadow-xl" onClick={(e) => e.stopPropagation()}>
           <SessionHistory id={id} onPick={() => setHistoryOpen(false)} />

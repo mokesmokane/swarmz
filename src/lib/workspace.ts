@@ -1,5 +1,6 @@
 import { addTab, allGroups, removeTerminal, type Layout, type LayoutNode } from "./layout";
 import type { SessionRecord } from "./sessions";
+import { cardOf, type Card } from "./card";
 
 export interface SshConfig {
   host: string;
@@ -24,6 +25,8 @@ export interface TerminalSettings {
   foreign?: { cwd: string } | null;
   /** Claude sessions that ran in this tile, newest first. */
   sessions?: SessionRecord[];
+  /** The conversation's title and recap (conversation cards spec §2); absent when none yet. */
+  card?: Card | null;
   /** Fields carried in workspace.json that this app version does not know about; preserved on save. */
   extra?: Record<string, unknown>;
 }
@@ -355,7 +358,7 @@ export function openingFor(
   knownMachines: Set<string>,
 ): { cwd: string | null; settings: TerminalSettings; note: string | null } {
   const origin = def.origin ?? null;
-  const base: TerminalSettings = { ssh: def.ssh ?? null, claude: def.claude ?? null, command: def.command ?? null, origin };
+  const base: TerminalSettings = { ssh: def.ssh ?? null, claude: def.claude ?? null, command: def.command ?? null, origin, card: cardOf(def.card) };
   // A remote created elsewhere that points at THIS machine is really one of ours: open it as a
   // local in the remote folder. It is then saved as a local def with `origin` = self, which the
   // rule below turns back into a remote on every other machine.
@@ -435,6 +438,7 @@ export function sameWorkspaceContent(a: Workspace, b: Workspace): boolean {
         command: t.command ?? null,
         origin: t.origin ?? null,
         sessions: t.sessions ?? [],
+        card: cardOf(t.card),
       };
     }
     return stableJson({ terminals, layout: ws.layout, machines: ws.machines ?? {} });
@@ -466,6 +470,7 @@ export function toWorkspace(input: {
         command: s.command,
         ...(s.origin ? { origin: s.origin } : {}),
         ...(s.sessions?.length ? { sessions: s.sessions } : {}),
+        ...(s.card ? { card: s.card } : {}),
       };
     });
   const machines = input.machines ?? {};

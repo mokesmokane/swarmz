@@ -309,6 +309,28 @@ describe("toWorkspace", () => {
     expect(ws.machines).toEqual({ m1: { alias: "a", lastUsed: "t" } });
   });
 
+  it("writes a card and drops the key when there is none", () => {
+    const card = { title: "Phone keys", recap: "Done.", updatedAt: "t", by: "agent" as const };
+    const ws = toWorkspace({
+      order: ["a", "b"],
+      terminals: { a: { id: "a", name: "A", cwd: "/a" }, b: { id: "b", name: "B", cwd: "/b" } },
+      settings: { a: { ...EMPTY_SETTINGS, card }, b: { ...EMPTY_SETTINGS, card: null } },
+      layout: null,
+      machines: {},
+    });
+    expect(ws.terminals[0].card).toEqual(card);
+    expect("card" in ws.terminals[1]).toBe(false);
+    // A card change is a content change, so two Macs converge on it.
+    const other = toWorkspace({
+      order: ["a", "b"],
+      terminals: { a: { id: "a", name: "A", cwd: "/a" }, b: { id: "b", name: "B", cwd: "/b" } },
+      settings: { a: { ...EMPTY_SETTINGS, card: { ...card, title: "Renamed" } } },
+      layout: null,
+      machines: {},
+    });
+    expect(sameWorkspaceContent(ws, other)).toBe(false);
+  });
+
   it("omits machines when empty", () => {
     const ws = toWorkspace({
       order: ["a"],

@@ -50,6 +50,7 @@ import {
   type TerminalDef,
   type Workspace,
 } from "./lib/workspace";
+import { withUserTitle } from "./lib/card";
 import { applyAgentEvent as foldAgentEvent, OFFLINE, type AgentState } from "./lib/agentState";
 import type { AgentEventPayload } from "./lib/ipc";
 import { bumpSession, isSafeFolder, promoteSession, removeSession, sanitizeSessions, upsertSession } from "./lib/sessions";
@@ -419,6 +420,8 @@ export interface WorkbenchState {
   refreshOutsideSessions(): Promise<void>;
   closeOutsideSessions(): Promise<string | null>;
   updateSettings(id: string, patch: Partial<TerminalSettings>): void;
+  /** The user typed a title for the tile's card (conversation cards spec §5); empty hands it back. */
+  setCardTitle(id: string, title: string): void;
   runStartup(id: string): Promise<void>;
   runRemoteStep(id: string): Promise<void>;
   /** The remote `swarmz attach` reported it is bridging this tile (`isNew`: it started the
@@ -603,7 +606,7 @@ function machineDropNote(dropped: number): string {
   return `${dropped} machine ${dropped === 1 ? "entry" : "entries"} in workspace.json were invalid and were dropped`;
 }
 
-const KNOWN_DEF_KEYS = new Set(["id", "name", "cwd", "ssh", "claude", "command", "origin", "sessions"]);
+const KNOWN_DEF_KEYS = new Set(["id", "name", "cwd", "ssh", "claude", "command", "origin", "sessions", "card"]);
 
 /** Fields on a loaded def that this app version does not know about; kept so they round-trip on save. */
 function extraFromDef(def: TerminalDef): Record<string, unknown> {
@@ -1723,6 +1726,16 @@ export const useStore = create<WorkbenchState>((set) => ({
     set({ outsideSessions: [] });
     await useStore.getState().refreshOutsideSessions();
     return firstError;
+  },
+
+  setCardTitle(id, title) {
+    set((s) => {
+      if (!s.terminals[id]) return {};
+      const current = s.settings[id] ?? EMPTY_SETTINGS;
+      const card = withUserTitle(current.card ?? null, title, new Date().toISOString());
+      if ((card ?? null) === (current.card ?? null)) return {};
+      return { settings: { ...s.settings, [id]: { ...current, card } } };
+    });
   },
 
   updateSettings(id, patch) {

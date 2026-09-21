@@ -97,12 +97,11 @@ describe("Sidebar", () => {
       const machineLine = screen.getByText("box");
       expect(machineLine).toBeTruthy();
 
-      const row = machineLine.closest("[title]") as HTMLElement;
+      const row = machineLine.closest("[data-machine-state]") as HTMLElement;
       expect(row).toBeTruthy();
       // jsdom normalizes the hex colour in the shorthand to rgb() when it parses the inline style.
       expect(row.style.borderLeft).toContain("rgb(245, 158, 11)");
-      expect(row.title).toContain("online");
-      expect(row.title).toContain("/home/mokes/projects");
+      expect(row.dataset.machineState).toBe("online");
 
       const dot = row.querySelector("span") as HTMLElement;
       expect(dot.style.backgroundColor).toBe("rgb(245, 158, 11)");
@@ -113,6 +112,89 @@ describe("Sidebar", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  it("shows the card's title, then the first prompt, then the name, and the name moves down", () => {
+    render(<Sidebar />);
+    // No card, no prompt: the name.
+    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("desk");
+    // A first prompt names it, and the name joins the second line.
+    act(() => {
+      useStore.setState({ agentState: { [ID]: { ...useStore.getState().agentState[ID], status: "working", sessionId: "s", since: "t", lastEvent: "UserPromptSubmit", unseen: false, title: "fix the build", firstPrompt: "fix the build please" } } });
+    });
+    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("fix the build");
+    expect(screen.getByText("desk · box")).toBeTruthy();
+    // The agent's card wins over the prompt.
+    act(() => {
+      const s = useStore.getState();
+      useStore.setState({ settings: { [ID]: { ...s.settings[ID], card: { title: "Phone: answer questions", recap: "Parsed the dialog.\nNext: the card.", updatedAt: new Date().toISOString(), by: "agent" } } } });
+    });
+    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("Phone: answer questions");
+  });
+
+  it("opens a hover card with the recap after a pause, and closes it on leave", () => {
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        const s = useStore.getState();
+        useStore.setState({ settings: { [ID]: { ...s.settings[ID], card: { title: "Phone keys", recap: "Parsed the dialog.\nNext: the card.", updatedAt: new Date().toISOString(), by: "agent" } } } });
+      });
+      render(<Sidebar />);
+      const row = screen.getByTestId(`title-${ID}`).closest("[data-machine-state]") as HTMLElement;
+      fireEvent.mouseEnter(row);
+      expect(screen.queryByTestId(`hover-card-${ID}`)).toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(400);
+      });
+      const card = screen.getByTestId(`hover-card-${ID}`);
+      expect(card.textContent).toContain("Phone keys");
+      expect(card.textContent).toContain("desk · box · online");
+      expect(card.textContent).toContain("Parsed the dialog.");
+      expect(card.textContent).toContain("by Claude");
+      fireEvent.mouseLeave(row);
+      expect(screen.queryByTestId(`hover-card-${ID}`)).toBeNull();
+      // Without a card the first prompt fills the body; without either it says so.
+      act(() => {
+        const s = useStore.getState();
+        useStore.setState({ settings: { [ID]: { ...s.settings[ID], card: null } }, agentState: { [ID]: { status: "idle", sessionId: "s", since: "t", lastEvent: "Stop", unseen: false, title: "fix the build", firstPrompt: "fix the build please, all of it" } } });
+      });
+      fireEvent.mouseEnter(row);
+      act(() => {
+        vi.advanceTimersByTime(400);
+      });
+      expect(screen.getByTestId(`hover-card-${ID}`).textContent).toContain("fix the build please, all of it");
+      fireEvent.mouseLeave(row);
+      act(() => {
+        useStore.setState({ agentState: {} });
+      });
+      fireEvent.mouseEnter(row);
+      act(() => {
+        vi.advanceTimersByTime(400);
+      });
+      expect(screen.getByTestId(`hover-card-${ID}`).textContent).toContain("No recap yet");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("double-clicking the title edits the card's title as the user's, and an empty one hands it back", () => {
+    render(<Sidebar />);
+    fireEvent.doubleClick(screen.getByTestId(`title-${ID}`));
+    const input = screen.getByLabelText("Title") as HTMLInputElement;
+    expect(input.value).toBe("");
+    fireEvent.change(input, { target: { value: "  Mine  " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(useStore.getState().settings[ID].card).toMatchObject({ title: "Mine", by: "user" });
+    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("Mine");
+    // The name is still edited from the rest of the row.
+    fireEvent.doubleClick(screen.getByText("desk · box"));
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("desk");
+    fireEvent.keyDown(screen.getByLabelText("Name"), { key: "Escape" });
+    fireEvent.doubleClick(screen.getByTestId(`title-${ID}`));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "" } });
+    fireEvent.keyDown(screen.getByLabelText("Title"), { key: "Enter" });
+    expect(useStore.getState().settings[ID].card).toBeNull();
+    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("desk");
   });
 
   it("shows a synced status line when sync is enabled and tailscale is running", () => {
