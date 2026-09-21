@@ -1,7 +1,7 @@
 # swarmz on the phone: sharing images and files with a tile
 
 Date: 2026-09-19
-Status: proposed, not yet implemented
+Status: approved design, not yet implemented
 Amends: `2026-09-16-swarmz-phone-design.md` §1 (the "image attachments from
 the phone" non-goal is lifted), §4.1 (a new `upload` command), §4.7 (the
 gate allows it), §5 (the tool's own files under `~/.swarmz/paste`), §6.6
