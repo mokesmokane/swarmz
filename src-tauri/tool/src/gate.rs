@@ -3,7 +3,7 @@
 /// Subcommands a phone key may run (spec §4.7). `phone` is further limited to `ls` and `revoke`.
 pub const ALLOWED: &[&str] = &[
     "version", "info", "close", "machines", "ls", "watch", "transcript", "image", "output", "send", "key", "pending", "answer",
-    "folders", "new", "restart", "phone", "card",
+    "folders", "new", "restart", "phone", "card", "upload",
 ];
 
 /// POSIX shell word splitting: blanks separate words; single quotes are literal; double quotes
