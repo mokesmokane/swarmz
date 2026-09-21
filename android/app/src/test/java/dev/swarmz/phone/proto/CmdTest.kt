@@ -19,6 +19,9 @@ class CmdTest {
     @Test
     fun commands() {
         assertEquals("swarmz 'ls'", Cmd.ls())
+        assertEquals("swarmz 'card' '--tile' 't1' '--title' 'My title' '--user'", Cmd.cardTitle("t1", "My title"))
+        assertEquals("swarmz 'card' '--tile' 't1' '--title' '' '--user'", Cmd.cardTitle("t1", ""))
+        assertEquals("swarmz 'upload' '--name' 'IMG 1.jpg' '--size' '70000'", Cmd.upload("IMG 1.jpg", 70_000))
         assertEquals("swarmz 'watch'", Cmd.watch())
         assertEquals("swarmz 'folders'", Cmd.folders(null))
         assertEquals("swarmz 'folders' '/Users/me/my dir'", Cmd.folders("/Users/me/my dir"))

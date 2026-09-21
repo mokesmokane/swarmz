@@ -2,6 +2,7 @@ package dev.swarmz.phone.link
 
 import dev.swarmz.phone.ssh.Auth
 import dev.swarmz.phone.ssh.ExecResult
+import dev.swarmz.phone.ssh.Progress
 import dev.swarmz.phone.ssh.SshConnection
 import dev.swarmz.phone.ssh.SshConnector
 import kotlinx.coroutines.channels.Channel
@@ -32,12 +33,20 @@ class FakeConn(
 
     fun stream(command: String): Channel<String> = streams.getOrPut(command) { Channel(Channel.UNLIMITED) }
 
+    /** The bytes each upload command was given on stdin. */
+    val inputs = mutableMapOf<String, ByteArray>()
+
     override val isOpen get() = !closed
     override suspend fun exec(command: String, timeoutMs: Long): ExecResult {
         ran += command
         timeouts[command] = timeoutMs
         beforeExec(command)
         return execs(command)
+    }
+    override suspend fun exec(command: String, input: ByteArray, onProgress: Progress, timeoutMs: Long): ExecResult {
+        inputs[command] = input
+        onProgress(input.size.toLong())
+        return exec(command, timeoutMs)
     }
     override fun lines(command: String): Flow<String> {
         ran += command

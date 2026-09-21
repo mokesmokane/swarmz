@@ -208,6 +208,7 @@ private fun Screen(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boole
             showActions = showBack,
             onPairMac = vm::openAddMac,
             onDismissHint = vm::dismissPairHint,
+            onDismissShare = vm::dismissShare,
         )
         is Route.Tile -> {
             // While the controller is still loading there is no header, so a collapsed list has nothing to reopen it

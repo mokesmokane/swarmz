@@ -86,7 +86,7 @@ fun TileListPane(
                     ) {
                         StatusDot(dotOf(view.row, need))
                         Column(Modifier.weight(1f)) {
-                            Text(view.row.name, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                            Text(view.row.shownTitle, style = MaterialTheme.typography.titleSmall, maxLines = 1)
                             Text(subLine(view, need), style = MonoSmall, maxLines = 1)
                         }
                     }

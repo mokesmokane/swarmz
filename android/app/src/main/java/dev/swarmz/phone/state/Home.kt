@@ -60,13 +60,15 @@ fun folderName(path: String): String {
 
 fun subLine(view: TileView, need: Need?): String {
     val row = view.row
-    return when {
+    val rest = when {
         need == Need.Permission -> "${view.macLabel} · permission"
         need == Need.Question -> "${view.macLabel} · question"
         !row.running && row.exitCode != null && row.exitCode != 0 -> "exited ${row.exitCode}"
         !row.running -> "${folderName(row.cwd)} · stopped"
         else -> "${folderName(row.cwd)} · ${row.status}"
     }
+    // With a title on the first line, the name moves down here (conversation cards spec §6).
+    return if (row.hasTitle) "${row.name} · $rest" else rest
 }
 
 fun dotOf(row: TileRow, need: Need?): Dot = when {

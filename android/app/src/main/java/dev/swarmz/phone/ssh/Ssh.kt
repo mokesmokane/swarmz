@@ -34,9 +34,22 @@ class Unreachable(val host: String, cause: Throwable) : Exception("could not rea
 
 data class ExecResult(val exit: Int?, val stdout: String, val stderr: String)
 
+/** How many bytes of an upload have been written to the channel so far. */
+typealias Progress = (bytesSent: Long) -> Unit
+
+/** An upload's timeout: 20 s plus a second per 256 KiB (phone attachments spec §4.1). */
+fun uploadTimeoutMs(size: Long): Long = 20_000L + (size / (256 * 1024)) * 1_000L
+
 interface SshConnection : Closeable {
     val isOpen: Boolean
     suspend fun exec(command: String, timeoutMs: Long = 20_000): ExecResult
+
+    /**
+     * [exec] with [input] written to the command's stdin (then EOF) on a thread of its own, reporting
+     * [onProgress] as it goes. A cancelled caller closes the channel, which is what makes the tool's
+     * size check fail on the Mac and leave nothing behind.
+     */
+    suspend fun exec(command: String, input: ByteArray, onProgress: Progress = {}, timeoutMs: Long = uploadTimeoutMs(input.size.toLong())): ExecResult
     fun lines(command: String): Flow<String>
 }
 
@@ -101,6 +114,9 @@ private fun closeInBackground(session: Session, vararg streams: java.io.InputStr
     }
 }
 
+/** How much of an upload goes into the channel per write. */
+private const val UPLOAD_CHUNK = 64 * 1024
+
 /** Copies [input] into a buffer on a thread of its own, which the caller may abandon. */
 private class Pump(input: java.io.InputStream, name: String) {
     private val buffer = java.io.ByteArrayOutputStream() // synchronized
@@ -131,7 +147,12 @@ private class SshjConnection(private val client: SSHClient) : SshConnection {
      * at once. Either way the channel is closed in the background. A connection that fails before the exit status
      * arrives throws.
      */
-    override suspend fun exec(command: String, timeoutMs: Long): ExecResult {
+    override suspend fun exec(command: String, timeoutMs: Long): ExecResult = run(command, null, {}, timeoutMs)
+
+    override suspend fun exec(command: String, input: ByteArray, onProgress: Progress, timeoutMs: Long): ExecResult =
+        run(command, input, onProgress, timeoutMs)
+
+    private suspend fun run(command: String, input: ByteArray?, onProgress: Progress, timeoutMs: Long): ExecResult {
         val (s, cmd) = withContext(Dispatchers.IO) {
             val s = client.startSession()
             try {
@@ -143,6 +164,25 @@ private class SshjConnection(private val client: SSHClient) : SshConnection {
         }
         val out = Pump(cmd.inputStream, "ssh-exec-out")
         val err = Pump(cmd.errorStream, "ssh-exec-err")
+        if (input != null) {
+            // The bytes go in on their own thread, in chunks, then the stream is closed for the EOF the
+            // tool reads up to. A failure here is not fatal by itself: the tool's reply says what arrived.
+            thread(name = "ssh-exec-in", isDaemon = true) {
+                try {
+                    cmd.outputStream.use { stdin ->
+                        var sent = 0
+                        while (sent < input.size) {
+                            val n = minOf(UPLOAD_CHUNK, input.size - sent)
+                            stdin.write(input, sent, n)
+                            stdin.flush()
+                            sent += n
+                            onProgress(sent.toLong())
+                        }
+                    }
+                } catch (_: IOException) {
+                }
+            }
+        }
         val done = CompletableDeferred<Unit>()
         thread(name = "ssh-exec-wait", isDaemon = true) {
             try {

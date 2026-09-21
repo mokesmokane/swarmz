@@ -63,6 +63,9 @@ class TileScreenTest {
                 Cmd.answer("t1", "2", "Which colour should the button be?") -> """{"answered":true,"option":{"n":2,"label":"Blue"},"v":1}"""
                 Cmd.answer("t1", "2", "Which shapes do you want?") -> """{"answered":true,"option":{"n":2,"label":"Square"},"toggled":true,"v":1}"""
                 Cmd.answer("t1", "submit", "Which shapes do you want?") -> """{"answered":true,"option":null,"v":1}"""
+                Cmd.upload("photo.jpg", 3) -> """{"path":"/Users/me/.swarmz/paste/paste-1-photo.jpg","size":3,"v":1}"""
+                Cmd.upload("bad.bin", 2) -> """{"code":"short","error":"0 of 2 bytes arrived","v":1}"""
+                Cmd.cardTitle("t1", "Mine") -> """{"card":{"title":"Mine","recap":"Parsed the dialog.","updatedAt":"2026-09-17T10:00:20Z","by":"user"},"v":1}"""
                 Cmd.send("t1", "go on") -> """{"sent":true,"v":1}"""
                 Cmd.send("s1", "ls") -> """{"sent":true,"v":1}"""
                 Cmd.key("t1", Key.Up), Cmd.key("t1", Key.Down), Cmd.key("t1", Key.Enter) -> """{"sent":true,"v":1}"""
@@ -219,6 +222,63 @@ class TileScreenTest {
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("Submit")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Submit").performClick()
         compose.waitUntil(5_000) { Cmd.answer("t1", "submit", "Which shapes do you want?") in conn.ran }
+    }
+
+    @Test
+    fun theHeaderShowsTheTitleAndItsCardOpensWithTheRecapAndATitleEdit() {
+        val row = """{"cwd":"/Users/me/api","id":"t1","kind":"claude","mode":"default","name":"api","running":true,"since":"2026-09-17T10:00:00Z","status":"idle",""" +
+            """"title":"Phone: answer questions","recap":"Parsed the dialog.\nNext: the card.","cardAt":"2026-09-17T10:00:20Z","cardBy":"agent"}"""
+        val c = controller("t1", row)
+        // The screen's own clock, so "updated … ago" is stable.
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}, now = { Instant.parse("2026-09-17T10:00:30Z") }) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Phone: answer questions")).fetchSemanticsNodes().isNotEmpty() }
+        // The name moves into the second line.
+        compose.onNodeWithText("api · Mini · api").assertIsDisplayed()
+        compose.onNodeWithTag("tile-title").performClick()
+        compose.onNodeWithText("Parsed the dialog.", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("updated just now by Claude").assertIsDisplayed()
+        compose.onNodeWithText("Edit title").performClick()
+        // The dialog closes and the title field opens under the header.
+        compose.onNodeWithText("Edit title").assertDoesNotExist()
+        compose.onNodeWithTag("title-edit").performTextInput("Mine")
+        compose.onNodeWithText("Save").performClick()
+        compose.waitUntil(5_000) { Cmd.cardTitle("t1", "Mine") in conn.ran }
+        compose.onNodeWithTag("title-edit").assertDoesNotExist()
+    }
+
+    @Test
+    fun anAttachmentIsSentAndItsPathLandsInTheDraft() {
+        val c = controller("t1", permissionRow)
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("attach").assertIsDisplayed()
+        compose.onNodeWithTag("composer").performTextInput("look at ")
+        c.attach("photo.jpg", byteArrayOf(1, 2, 3))
+        compose.waitUntil(5_000) { Cmd.upload("photo.jpg", 3) in conn.ran }
+        compose.waitUntil(5_000) { c.draft.value.text.contains("paste-1-photo.jpg") }
+        assertEquals("look at /Users/me/.swarmz/paste/paste-1-photo.jpg ", c.draft.value.text)
+        assertTrue(conn.inputs[Cmd.upload("photo.jpg", 3)]!!.contentEquals(byteArrayOf(1, 2, 3)))
+        compose.onNodeWithText("photo.jpg · sent").assertIsDisplayed()
+        // A failed one offers a retry; removing it drops the chip.
+        c.attach("bad.bin", byteArrayOf(9, 9))
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Retry")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("bad.bin · 0 of 2 bytes arrived").assertIsDisplayed()
+        val failed = c.attachments.value.first { it.name == "bad.bin" }
+        c.removeAttachment(failed.id)
+        compose.waitForIdle()
+        compose.onNodeWithText("Retry").assertDoesNotExist()
+    }
+
+    @Test
+    fun aTileWithoutACardShowsItsNameAndNoRecap() {
+        val c = controller("t1", permissionRow)
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Mini · api").assertIsDisplayed()
+        compose.onNodeWithTag("tile-title").performClick()
+        compose.onNodeWithText("No recap yet").assertIsDisplayed()
+        compose.onNodeWithText("Close").performClick()
+        compose.onNodeWithText("No recap yet").assertDoesNotExist()
     }
 
     @Test

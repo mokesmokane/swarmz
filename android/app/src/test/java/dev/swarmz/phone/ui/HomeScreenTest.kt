@@ -34,10 +34,10 @@ import java.time.Instant
 
 fun sampleHome(): HomeUi {
     val now = Instant.parse("2026-09-17T10:10:00Z")
-    fun v(id: String, name: String, needs: String? = null, status: String = "idle", turnEnded: String? = null, last: String? = null, mac: String = "mini", online: Boolean = true) =
+    fun v(id: String, name: String, needs: String? = null, status: String = "idle", turnEnded: String? = null, last: String? = null, mac: String = "mini", online: Boolean = true, title: String? = null) =
         TileView(
             TileKey(mac, id),
-            TileRow(id = id, name = name, cwd = "/p/$name", kind = "claude", running = true, status = status, needs = needs, since = "2026-09-17T10:00:00Z", turnEndedAt = turnEnded, lastMessage = last),
+            TileRow(id = id, name = name, cwd = "/p/$name", kind = "claude", running = true, status = status, needs = needs, since = "2026-09-17T10:00:00Z", turnEndedAt = turnEnded, lastMessage = last, title = title),
             if (mac == "mini") "Mini" else mac,
             online,
         )
@@ -45,7 +45,7 @@ fun sampleHome(): HomeUi {
         v("t1", "api", needs = "permission", status = "blocked"),
         v("t2", "web", turnEnded = "2026-09-17T10:05:00Z", last = "All tests pass."),
         v("t3", "docs", status = "working"),
-        v("t4", "infra", mac = "studio", online = false),
+        v("t4", "infra", mac = "studio", online = false, title = "Infra: rotate the certs"),
     )
     val macs = listOf(MacInfo("mini", "Mini", true, now), MacInfo("studio", "studio", false, now.minusSeconds(7200)))
     return HomeUi(
@@ -89,6 +89,8 @@ class HomeScreenTest {
         compose.onNodeWithText("Deny").performClick()
         compose.onNodeWithTag("reply-web").performTextInput("ship it")
         compose.onNodeWithContentDescription("Send reply to web").performClick()
+        // A tile with a card shows its title where its name would be (conversation cards spec §6).
+        compose.onNodeWithText("Infra: rotate the certs").assertExists()
         compose.onNodeWithText("docs").performClick()
         compose.onNodeWithText("New session").performClick()
         assertEquals(listOf("allow t1", "deny t1", "reply t2 ship it", "open t3", "new"), events)

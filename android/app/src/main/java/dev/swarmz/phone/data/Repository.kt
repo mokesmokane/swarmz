@@ -5,7 +5,11 @@ import dev.swarmz.phone.link.LinkDown
 import dev.swarmz.phone.link.LinkState
 import dev.swarmz.phone.link.MacLink
 import dev.swarmz.phone.proto.AnswerReply
+import dev.swarmz.phone.proto.Card
+import dev.swarmz.phone.proto.CardReply
 import dev.swarmz.phone.proto.Cmd
+import dev.swarmz.phone.ssh.Progress
+import dev.swarmz.phone.proto.UploadReply
 import dev.swarmz.phone.proto.Folders
 import dev.swarmz.phone.proto.ImageReply
 import dev.swarmz.phone.proto.Key
@@ -419,6 +423,20 @@ class Repository(
     }
 
     suspend fun restart(key: TileKey): TileRow = link(key.mac).call<TileReply>(Cmd.restart(key.id)).tile
+
+    /**
+     * Sends a file to [mac] (phone attachments spec §4.2) and returns the path it landed at. A Mac that is
+     * offline is refused before anything is sent.
+     */
+    suspend fun upload(mac: String, name: String, bytes: ByteArray, onProgress: Progress = {}): String {
+        val link = link(mac)
+        if (link.state.value !is LinkState.Online) throw LinkDown("$mac is offline")
+        val text = link.execInput(Cmd.upload(name, bytes.size.toLong()), bytes, onProgress)
+        return ToolJson.decode<UploadReply>(text).path
+    }
+
+    /** The user typed a title for the tile's card; empty hands it back to the agent or the fallback. */
+    suspend fun setTitle(key: TileKey, title: String): Card? = link(key.mac).call<CardReply>(Cmd.cardTitle(key.id, title)).card
 
     suspend fun newTile(mac: String, folder: String, skipPermissions: Boolean): TileKey =
         TileKey(mac, link(mac).call<TileReply>(Cmd.newTile(folder, skipPermissions)).tile.id)

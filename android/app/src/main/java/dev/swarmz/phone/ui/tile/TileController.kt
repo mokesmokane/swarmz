@@ -27,6 +27,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -94,6 +96,18 @@ internal fun mergeTranscript(carried: TranscriptState?, fresh: TranscriptState):
 private data class OpenTrigger(val kind: String?, val running: Boolean, val online: Boolean)
 
 @OptIn(ExperimentalCoroutinesApi::class)
+/** How an attachment is doing (phone attachments spec §4.3). */
+sealed interface AttachState {
+    data class Uploading(val sent: Long) : AttachState
+    data class Done(val path: String) : AttachState
+    data class Failed(val message: String) : AttachState
+}
+
+data class Attachment(val id: Long, val name: String, val size: Long, val state: AttachState)
+
+/** The largest file the phone sends (the tool's own limit). */
+const val MAX_ATTACHMENT = 25L * 1024 * 1024
+
 class TileController(
     val key: TileKey,
     private val repo: Repository,
@@ -340,6 +354,73 @@ class TileController(
 
     private val isShell get() = row.value?.kind == "shell"
 
+    private val _attachments = MutableStateFlow<List<Attachment>>(emptyList())
+    /** Files being sent to the tile's Mac, and the ones sent this session (spec §4.3). */
+    val attachments: StateFlow<List<Attachment>> = _attachments.asStateFlow()
+    private val attachmentBytes = mutableMapOf<Long, ByteArray>()
+    private val attachmentJobs = mutableMapOf<Long, Job>()
+    /** Uploads run one at a time: the Mac's link is not shared between two stdin writers. */
+    private val uploads = Mutex()
+
+    /**
+     * Sends [bytes] to the tile's Mac as [name]; on success the path it landed at is inserted into the
+     * draft at the cursor, followed by a space, so words can be added before sending.
+     */
+    fun attach(name: String, bytes: ByteArray) {
+        val id = ids.incrementAndGet()
+        if (bytes.size > MAX_ATTACHMENT) {
+            _attachments.update { it + Attachment(id, name, bytes.size.toLong(), AttachState.Failed("too large (limit 25 MiB)")) }
+            return
+        }
+        attachmentBytes[id] = bytes
+        _attachments.update { it + Attachment(id, name, bytes.size.toLong(), AttachState.Uploading(0)) }
+        startUpload(id)
+    }
+
+    private fun startUpload(id: Long) {
+        val bytes = attachmentBytes[id] ?: return
+        val name = _attachments.value.firstOrNull { it.id == id }?.name ?: return
+        attachmentJobs[id] = scope.launch {
+            try {
+                val path = uploads.withLock {
+                    repo.upload(key.mac, name, bytes) { sent -> setAttachState(id, AttachState.Uploading(sent)) }
+                }
+                attachmentBytes.remove(id)
+                setAttachState(id, AttachState.Done(path))
+                insertAtCursor("$path ")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                setAttachState(id, AttachState.Failed(e.message ?: "could not send $name"))
+            } finally {
+                attachmentJobs.remove(id)
+            }
+        }
+    }
+
+    private fun setAttachState(id: Long, state: AttachState) {
+        _attachments.update { list -> list.map { if (it.id == id) it.copy(state = state) else it } }
+    }
+
+    fun retryAttachment(id: Long) {
+        if (attachmentJobs.containsKey(id) || !attachmentBytes.containsKey(id)) return
+        setAttachState(id, AttachState.Uploading(0))
+        startUpload(id)
+    }
+
+    /** Cancels an upload in flight (the closed channel makes the Mac keep nothing) or drops a chip. */
+    fun removeAttachment(id: Long) {
+        attachmentJobs.remove(id)?.cancel()
+        attachmentBytes.remove(id)
+        _attachments.update { list -> list.filterNot { it.id == id } }
+    }
+
+    private fun insertAtCursor(text: String) {
+        val cur = draft.value
+        val at = cur.selection.end.coerceIn(0, cur.text.length)
+        draft.value = TextFieldValue(cur.text.substring(0, at) + text + cur.text.substring(at), TextRange(at + text.length))
+    }
+
     private fun fail(e: Exception, prefix: String = "") {
         notify(prefix + (e.message ?: "something went wrong"))
     }
@@ -440,6 +521,19 @@ class TileController(
         scope.launch {
             try {
                 repo.key(key, k)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                fail(e)
+            }
+        }
+    }
+
+    /** The user typed a title for this tile's card (conversation cards spec §6); empty hands it back. */
+    fun setTitle(title: String) {
+        scope.launch {
+            try {
+                repo.setTitle(key, title)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

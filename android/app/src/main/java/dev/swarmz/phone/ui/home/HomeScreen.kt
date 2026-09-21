@@ -78,6 +78,7 @@ fun HomeScreen(
     onReplyRestored: (TileKey) -> Unit = {},
     onPairMac: (String) -> Unit = {},
     onDismissHint: (String) -> Unit = {},
+    onDismissShare: () -> Unit = {},
 ) {
     val needs = ui.model.needs
     val quiet = ui.model.quiet
@@ -104,6 +105,22 @@ fun HomeScreen(
             }
             items(ui.banners, key = { "banner-" + it.mac }) { b ->
                 SwCard { Text(b.text, style = MaterialTheme.typography.bodyMedium, color = Sw.NeedsYou) }
+            }
+            if (ui.pendingShare.isNotEmpty()) {
+                item(key = "share") {
+                    // A share waiting for a tile (phone attachments spec §4.4): the next tile opened takes it.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Choose a tile for ${ui.pendingShare.joinToString(", ")}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Sw.NeedsYou,
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).wrapContentHeight().testTag("pending-share"),
+                        )
+                        IconButton(onClick = onDismissShare) {
+                            Icon(Icons.Default.Close, contentDescription = "Dismiss the share", tint = Sw.Muted, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
             }
             items(ui.pairHints, key = { "hint-" + it.mac }) { hint ->
                 // One quiet line: this Mac has no key of ours, so none of its tiles are here.
@@ -134,7 +151,7 @@ fun HomeScreen(
                         quiet.forEach { view ->
                             Pill(onClick = { onOpen(view.key) }) {
                                 StatusDot(dotOf(view.row, null), size = 6.dp)
-                                Text(view.row.name, style = MaterialTheme.typography.labelMedium)
+                                Text(view.row.shownTitle, style = MaterialTheme.typography.labelMedium)
                             }
                         }
                     }
@@ -153,7 +170,7 @@ fun HomeScreen(
 private fun CardTitle(view: TileView, trailing: @Composable () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         StatusDot(Dot.NeedsYou)
-        Text(view.row.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        Text(view.row.shownTitle, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
         trailing()
     }
 }

@@ -1,7 +1,7 @@
 # swarmz: conversation titles and recaps
 
 Date: 2026-09-21
-Status: approved design, not yet implemented
+Status: approved design, implemented 2026-09-21 (tool, hooks, desktop, phone)
 Amends: `2026-09-10-swarmz-design.md` §5 (the ledger card and its MCP tools
 are replaced by this smaller card, set through the CLI);
 `2026-09-15-agent-state-hooks-design.md` (hook script version 3: the

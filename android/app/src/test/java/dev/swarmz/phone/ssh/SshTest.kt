@@ -63,6 +63,10 @@ class SshTest {
                     0
                 }
                 command == "cut" -> { out.write("x\n".toByteArray()); CUT }
+                command.startsWith("swarmz 'upload'") -> {
+                    val got = mac.inputs[command]?.size ?: -1
+                    out.write("{\"v\":1,\"path\":\"/Users/me/.swarmz/paste/p.bin\",\"size\":$got}\n".toByteArray()); 0
+                }
                 command == "hang" -> {
                     while (!stopped()) Thread.sleep(20)
                     0
@@ -75,6 +79,20 @@ class SshTest {
     @After fun down() = mac.close()
 
     private val password get() = Auth.Password("me", "pw".toCharArray())
+
+    @Test
+    fun execWithInputWritesItAllToStdinAndReportsProgress() = runBlocking {
+        val payload = ByteArray(200_000) { (it % 251).toByte() }
+        val progress = mutableListOf<Long>()
+        SshjConnector(pins).connect("127.0.0.1", mac.port, password).use { c ->
+            val r = c.exec("swarmz 'upload' '--name' 'p.bin' '--size' '200000'", payload, { progress += it })
+            assertEquals(0, r.exit)
+            assertTrue(r.stdout, r.stdout.contains("\"size\":200000"))
+            assertTrue(mac.inputs["swarmz 'upload' '--name' 'p.bin' '--size' '200000'"]!!.contentEquals(payload))
+            assertEquals(200_000L, progress.last())
+            assertTrue(progress.size >= 3)
+        }
+    }
 
     @Test
     fun execReturnsOutputAndExitCode() = runBlocking {
