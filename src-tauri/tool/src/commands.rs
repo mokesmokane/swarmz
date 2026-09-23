@@ -154,7 +154,23 @@ pub fn row(env: &Env, tile: &str) -> Result<Value, CliError> {
 }
 
 pub fn ls(env: &Env) -> Result<Value, CliError> {
-    Ok(json!({"v": 1, "tiles": rows(env)}))
+    let mut v = json!({"v": 1, "tiles": rows(env)});
+    merge_conductor(&mut v, &conductor_state(env));
+    Ok(v)
+}
+
+/// The workspace's conductor and any pending claim, as `ls` and `watch` report them beside the
+/// rows (conductor spec §7): `{"conductor": <id>|null, "claim": {...}|null}`.
+fn conductor_state(env: &Env) -> Value {
+    match env.workspace() {
+        Ok(ws) => crate::conductor::state(&ws.unwrap_or_else(empty_workspace)),
+        Err(_) => json!({"conductor": null, "claim": null}),
+    }
+}
+
+fn merge_conductor(into: &mut Value, state: &Value) {
+    into["conductor"] = state["conductor"].clone();
+    into["claim"] = state["claim"].clone();
 }
 
 /// The folded hook log, re-read only when `events.log.1` or `events.log` changes: the log can
@@ -196,6 +212,7 @@ pub fn watch(env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
         v
     };
     let mut prev: BTreeMap<String, TileRow> = BTreeMap::new();
+    let mut prev_conductor = Value::Null;
     let mut first = true;
     let mut last_ping = Instant::now();
     let mut log = LogCache::default();
@@ -205,7 +222,21 @@ pub fn watch(env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
         // An unreadable workspace keeps the rows we had rather than reporting every tile gone.
         let now = try_tile_rows_with_folds(&env.home, env.machine.as_deref(), folds, &cwd, &|id| dialog_for(env, id), &|p| texts.get(p), &|p| texts.resolve(p))
             .unwrap_or_else(|| prev.values().cloned().collect());
-        let events = if first { vec![json!({"v": 1, "type": "snapshot", "tiles": now})] } else { watch_events(&prev, &now) };
+        let cstate = conductor_state(env);
+        let mut events = if first {
+            let mut snap = json!({"v": 1, "type": "snapshot", "tiles": now});
+            merge_conductor(&mut snap, &cstate);
+            vec![snap]
+        } else {
+            watch_events(&prev, &now)
+        };
+        // The conductor or a claim changed: one event, after the rows it may refer to.
+        if !first && cstate != prev_conductor {
+            let mut ev = json!({"v": 1, "type": "conductor"});
+            merge_conductor(&mut ev, &cstate);
+            events.push(ev);
+        }
+        prev_conductor = cstate;
         for e in &events {
             if !emit(out, e) {
                 return Ok(());

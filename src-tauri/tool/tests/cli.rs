@@ -1177,9 +1177,17 @@ fn the_conductor_is_claimed_approved_and_the_only_tile_that_acts_on_others() {
     assert_eq!((code, c["claimed"].as_bool(), c["pending"].as_bool()), (0, Some(true), Some(true)));
     let (_, st) = tool_env(&h.path, &["conductor"], user);
     assert_eq!((st["conductor"].as_str(), st["claim"]["tile"].as_str(), st["claim"]["title"].as_str()), (None, Some("t2"), Some("web")));
+    // `ls` carries the claim beside the rows (spec §7), and no row is the conductor yet.
+    let (_, ls) = tool_env(&h.path, &["ls"], user);
+    assert_eq!((ls["conductor"].as_str(), ls["claim"]["tile"].as_str()), (None, Some("t2")));
+    assert!(ls["tiles"].as_array().unwrap().iter().all(|t| t.get("conductor").is_none()), "{ls}");
     let (code, st) = tool_env(&h.path, &["conductor", "--set", "t2"], user);
     assert_eq!((code, st["conductor"].as_str()), (0, Some("t2")));
     assert!(st["claim"].is_null());
+    let (_, ls) = tool_env(&h.path, &["ls"], user);
+    assert_eq!((ls["conductor"].as_str(), ls["claim"].is_null()), (Some("t2"), true));
+    let flags: Vec<(&str, bool)> = ls["tiles"].as_array().unwrap().iter().map(|t| (t["id"].as_str().unwrap(), t["conductor"].as_bool() == Some(true))).collect();
+    assert!(flags.contains(&("t2", true)) && flags.contains(&("c1", false)), "{flags:?}");
     assert!(wait_until(|| screen_has(&t2, "you are the conductor")));
     // The conductor's own claim changes nothing.
     let (_, c) = tool_env(&h.path, &["conductor", "--claim"], as_t2);

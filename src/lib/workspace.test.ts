@@ -16,6 +16,8 @@ import {
   machineLabel,
   mergeForFirstSync,
   sameWorkspaceContent,
+  conductorOf,
+  claimOf,
   needsRemoteFolder,
   openingFor,
   pickNewest,
@@ -548,6 +550,32 @@ describe("sameWorkspaceContent", () => {
     expect(sameWorkspaceContent(base, ws([t("a")]))).toBe(false);
     expect(sameWorkspaceContent(base, { ...base, layout: null })).toBe(false);
     expect(sameWorkspaceContent(base, { ...base, machines: { desk: { lastUsed: "t" } } })).toBe(false);
+  });
+  it("sees the conductor and a claim change, and treats absent, null and empty as none", () => {
+    const base = ws([t("a"), t("b")]);
+    expect(sameWorkspaceContent(base, { ...base, conductor: null })).toBe(true);
+    expect(sameWorkspaceContent(base, { ...base, conductor: "" })).toBe(true);
+    expect(sameWorkspaceContent(base, { ...base, conductor: "a" })).toBe(false);
+    expect(sameWorkspaceContent({ ...base, conductor: "a" }, { ...base, conductor: "a" })).toBe(true);
+    expect(sameWorkspaceContent(base, { ...base, conductorClaim: { tile: "b", title: "B", at: "t" } })).toBe(false);
+    expect(sameWorkspaceContent(base, { ...base, conductorClaim: null })).toBe(true);
+  });
+});
+
+describe("conductor fields", () => {
+  it("toWorkspace writes the conductor and the claim only when set, and the readers sanitise", () => {
+    const base = { order: ["a"], terminals: { a: { id: "a", name: "a", cwd: "/a" } }, settings: {}, layout: null, machines: {} };
+    expect("conductor" in toWorkspace(base)).toBe(false);
+    expect("conductorClaim" in toWorkspace({ ...base, conductor: null, conductorClaim: null })).toBe(false);
+    const ws = toWorkspace({ ...base, conductor: "a", conductorClaim: { tile: "b", title: "B", at: "t" } });
+    expect(ws.conductor).toBe("a");
+    expect(ws.conductorClaim).toEqual({ tile: "b", title: "B", at: "t" });
+    expect(conductorOf(ws)).toBe("a");
+    expect(conductorOf({ conductor: 7 })).toBeNull();
+    expect(conductorOf(null)).toBeNull();
+    expect(claimOf(ws)).toEqual({ tile: "b", title: "B", at: "t" });
+    expect(claimOf({ conductorClaim: { title: "no tile" } })).toBeNull();
+    expect(claimOf({ conductorClaim: { tile: "b" } })).toEqual({ tile: "b", title: null, at: "" });
   });
 });
 

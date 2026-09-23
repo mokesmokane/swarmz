@@ -32,6 +32,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import dev.swarmz.phone.data.ClaimView
+import dev.swarmz.phone.proto.CONDUCTOR_MARK
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -84,6 +86,8 @@ fun HomeScreen(
     onDismissShare: () -> Unit = {},
     onStop: (TileKey) -> Unit = {},
     onStart: (TileKey) -> Unit = {},
+    onApproveClaim: (ClaimView) -> Unit = {},
+    onDenyClaim: (ClaimView) -> Unit = {},
 ) {
     var menuFor by remember { mutableStateOf<TileKey?>(null) }
     val needs = ui.model.needs
@@ -111,6 +115,9 @@ fun HomeScreen(
             }
             items(ui.banners, key = { "banner-" + it.mac }) { b ->
                 SwCard { Text(b.text, style = MaterialTheme.typography.bodyMedium, color = Sw.NeedsYou) }
+            }
+            items(ui.claims, key = { "claim-" + it.claim.tile + "/" + (it.claim.at ?: "") }) { view ->
+                ClaimCard(view, onApproveClaim, onDenyClaim)
             }
             if (ui.pendingShare.isNotEmpty()) {
                 item(key = "share") {
@@ -157,7 +164,7 @@ fun HomeScreen(
                         quiet.forEach { view ->
                             Pill(onClick = { onOpen(view.key) }, onLongClick = { menuFor = view.key }, modifier = Modifier.testTag("chip-${view.key.mac}/${view.key.id}")) {
                                 StatusDot(dotOf(view.row, null), size = 6.dp)
-                                Text(view.row.shownTitle, style = MaterialTheme.typography.labelMedium)
+                                Text(view.row.badgedTitle, style = MaterialTheme.typography.labelMedium)
                                 TileMenu(view, expanded = menuFor == view.key, onDismiss = { menuFor = null }, onOpen = { onOpen(view.key) }, onStop = { onStop(view.key) }, onStart = { onStart(view.key) })
                             }
                         }
@@ -177,8 +184,25 @@ fun HomeScreen(
 private fun CardTitle(view: TileView, trailing: @Composable () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         StatusDot(Dot.NeedsYou)
-        Text(view.row.shownTitle, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        Text(view.row.badgedTitle, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
         trailing()
+    }
+}
+
+/** A tile asking to be the conductor (conductor spec §3, §7): Approve makes it so, Deny clears the claim. */
+@Composable
+private fun ClaimCard(view: ClaimView, onApprove: (ClaimView) -> Unit, onDeny: (ClaimView) -> Unit) {
+    SwCard(highlighted = true, modifier = Modifier.testTag("claim-${view.claim.tile}")) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StatusDot(Dot.NeedsYou)
+            Text("$CONDUCTOR_MARK ${view.title}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Badge("conductor", color = Sw.NeedsYou)
+        }
+        Text("asks to be the conductor: the one tile allowed to act on the others, on every Mac.", style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PrimaryButton("Approve", onClick = { onApprove(view) })
+            QuietButton("Deny", onClick = { onDeny(view) })
+        }
     }
 }
 

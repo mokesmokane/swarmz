@@ -67,6 +67,9 @@ object Cmd {
     fun upload(name: String, size: Long) = of("upload", "--name", name, "--size", size.toString())
     fun restart(tile: String) = of("restart", tile(tile))
     fun close(tile: String) = of("close", tile(tile))
+    /** Approves a claim, or makes [tile] the conductor (conductor spec §7); a phone key may. */
+    fun conductorSet(tile: String) = of("conductor", "--set", tile(tile))
+    fun conductorDeny() = of("conductor", "--deny")
     fun phoneLs() = of("phone", "ls")
     fun phoneRevoke(device: String) = of("phone", "revoke", device)
 

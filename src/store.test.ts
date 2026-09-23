@@ -20,6 +20,8 @@ vi.mock("./lib/ipc", () => {
         return info(id, "/tmp/x", name);
       }),
       closeTerminal: vi.fn(async () => {}),
+      conductorAction: vi.fn(async () => ({ conductor: null, claim: null })),
+      conductorDir: vi.fn(async () => "/home/me/.swarmz/conductor"),
       restartTerminal: vi.fn(async (id: string) => info(id, "/tmp/x")),
       onData: vi.fn(async () => () => {}),
       onReplay: vi.fn(async () => () => {}),
@@ -469,6 +471,93 @@ describe("loadWorkspace", () => {
     const s = useStore.getState();
     const ws = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines });
     expect((ws.terminals[0] as unknown as { note: string }).note).toBe("keep");
+  });
+
+  it("loads the conductor and a claim, saves them, and clears the role when its tile closes", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ persistenceReady: false });
+      vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+        version: 1,
+        terminals: [
+          { id: "c", name: "cond", cwd: "/tmp/c", ssh: null, claude: null, command: null },
+          { id: "o", name: "other", cwd: "/tmp/o", ssh: null, claude: null, command: null },
+        ],
+        layout: null,
+        conductor: "c",
+        conductorClaim: { tile: "o", title: "Other", at: "2026-09-23T10:00:00Z" },
+      });
+      await useStore.getState().loadWorkspace();
+      expect(useStore.getState().conductor).toBe("c");
+      expect(useStore.getState().conductorClaim).toEqual({ tile: "o", title: "Other", at: "2026-09-23T10:00:00Z" });
+      vi.mocked(ipc.saveWorkspace).mockClear();
+      // A rename saves; the file carries both fields.
+      await useStore.getState().renameTerminal("o", "other2");
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+      await vi.runAllTimersAsync();
+      const saves = vi.mocked(ipc.saveWorkspace).mock.calls;
+      const saved = saves[saves.length - 1][0] as Workspace;
+      expect(saved.conductor).toBe("c");
+      expect(saved.conductorClaim?.tile).toBe("o");
+      // Closing the conductor's tile leaves nobody in the role, and the save says so.
+      vi.mocked(ipc.saveWorkspace).mockClear();
+      await useStore.getState().closeTerminal("c");
+      expect(useStore.getState().conductor).toBeNull();
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+      await vi.runAllTimersAsync();
+      const later = vi.mocked(ipc.saveWorkspace).mock.calls;
+      const after = later[later.length - 1][0] as Workspace;
+      expect(after.conductor).toBeUndefined();
+      expect(after.conductorClaim?.tile).toBe("o");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("setConductor and decideClaim go through the tool, then adopt the file it wrote", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    // The tool wrote a newer file: it is adopted, so the store's fields come from it.
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [{ id, name: useStore.getState().terminals[id].name, cwd: "/tmp/a", ssh: null, claude: null, command: null }],
+      layout: useStore.getState().layout,
+      conductor: id,
+      sync: { revision: 99, updatedAt: "t", updatedBy: "tool" },
+    });
+    await useStore.getState().setConductor(id);
+    expect(ipc.conductorAction).toHaveBeenLastCalledWith("set", id);
+    expect(useStore.getState().conductor).toBe(id);
+    expect(useStore.getState().syncMeta?.revision).toBe(99);
+    // No readable file: the tool's reply stands in.
+    vi.mocked(ipc.loadWorkspace).mockRejectedValueOnce("gone");
+    vi.mocked(ipc.conductorAction).mockResolvedValueOnce({ conductor: null, claim: null });
+    await useStore.getState().setConductor(null);
+    expect(ipc.conductorAction).toHaveBeenLastCalledWith("clear", undefined);
+    expect(useStore.getState().conductor).toBeNull();
+    await expect(useStore.getState().setConductor("nope")).rejects.toMatch(/not an open tile/);
+    // A claim: Deny tells the tool; with none there is nothing to do.
+    useStore.setState({ conductorClaim: { tile: id, title: "A", at: "t" } });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce(null);
+    await useStore.getState().decideClaim(false);
+    expect(ipc.conductorAction).toHaveBeenLastCalledWith("deny", undefined);
+    expect(useStore.getState().conductorClaim).toBeNull();
+    vi.mocked(ipc.conductorAction).mockClear();
+    await useStore.getState().decideClaim(true);
+    expect(ipc.conductorAction).not.toHaveBeenCalled();
+  });
+
+  it("createConductorTerminal opens a local Claude tile, starts it and makes it the conductor", async () => {
+    vi.mocked(ipc.loadWorkspace).mockResolvedValue(null);
+    vi.mocked(ipc.conductorAction).mockImplementation(async (action, id) => ({ conductor: action === "set" ? (id ?? null) : null, claim: null }));
+    const id = await useStore.getState().createConductorTerminal("/home/me/.swarmz/conductor");
+    const s = useStore.getState();
+    expect(s.settings[id].claude?.enabled).toBe(true);
+    expect(s.settings[id].claude?.skipPermissions).toBe(false);
+    expect(s.conductor).toBe(id);
+    expect(ipc.conductorAction).toHaveBeenCalledWith("set", id);
+    // Claude was started in the fresh shell.
+    const typed = vi.mocked(ipc.writeTerminal).mock.calls.filter((c) => c[0] === id).map((c) => c[1]).join("");
+    expect(typed).toContain("claude");
   });
 
   it("regenerates an unsafe claude session id on restore", async () => {

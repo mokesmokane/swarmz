@@ -37,6 +37,8 @@ vi.mock("../lib/ipc", () => ({
     remoteTileClose: vi.fn(async () => false),
     localSessions: vi.fn(async () => []),
     closeSession: vi.fn(async () => true),
+    conductorAction: vi.fn(async () => ({ conductor: null, claim: null })),
+    conductorDir: vi.fn(async () => "/home/me/.swarmz/conductor"),
     phones: vi.fn(async () => []),
     revokePhone: vi.fn(async () => ({ removed: 1, machines: [] })),
     pasteImageToRemote: vi.fn(async () => null),
@@ -51,7 +53,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true), 
 
 import { __stopAllPolling, useStore } from "../store";
 import { ipc } from "../lib/ipc";
-import { Sidebar } from "./Sidebar";
+import { HOVER_CARD_MS, Sidebar } from "./Sidebar";
 
 const ID = "t1";
 
@@ -257,6 +259,70 @@ describe("Sidebar", () => {
     render(<Sidebar />);
 
     expect(screen.getByRole("button", { name: /Sync off/ }).textContent).toContain("Sync off");
+  });
+});
+
+describe("the conductor", () => {
+  it("marks the conductor's row and hover card, and the role button sets or clears it through the tool", async () => {
+    useStore.setState({ settings: { [ID]: { ...useStore.getState().settings[ID], claude: { enabled: true, sessionId: "s", skipPermissions: false, started: true } } } });
+    render(<Sidebar />);
+    expect(screen.queryByLabelText("Conductor")).toBeNull();
+    // Make conductor on a Claude tile runs the tool; the reply stands in when no newer file exists.
+    vi.mocked(ipc.conductorAction).mockResolvedValueOnce({ conductor: ID, claim: null });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Make conductor"));
+    });
+    expect(ipc.conductorAction).toHaveBeenCalledWith("set", ID);
+    expect(useStore.getState().conductor).toBe(ID);
+    expect(screen.getByTestId(`title-${ID}`).querySelector("[aria-label='Conductor']")).toBeTruthy();
+    expect(screen.getByLabelText("Not the conductor")).toBeTruthy();
+    vi.useFakeTimers();
+    try {
+      fireEvent.mouseEnter(screen.getByTestId(`title-${ID}`).closest("[data-machine-state]") as HTMLElement);
+      act(() => {
+        vi.advanceTimersByTime(HOVER_CARD_MS);
+      });
+      expect(screen.getByTestId(`hover-card-${ID}`).textContent).toContain("Conductor");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a pending claim as a bar whose Approve and Deny answer through the tool", async () => {
+    useStore.setState({ conductorClaim: { tile: ID, title: "Fix the build", at: "2026-09-23T10:00:00Z" } });
+    render(<Sidebar />);
+    const bar = screen.getByTestId("claim-bar");
+    expect(bar.textContent).toContain("Fix the build");
+    expect(bar.textContent).toContain("asks to be the conductor");
+    vi.mocked(ipc.conductorAction).mockResolvedValueOnce({ conductor: ID, claim: null });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Approve"));
+    });
+    expect(ipc.conductorAction).toHaveBeenCalledWith("set", ID);
+    expect(useStore.getState().conductor).toBe(ID);
+    expect(screen.queryByTestId("claim-bar")).toBeNull();
+    // A claim with no title names the tile as the sidebar does; Deny clears it.
+    act(() => {
+      useStore.setState({ conductorClaim: { tile: ID, title: null, at: "t" } });
+    });
+    expect(screen.getByTestId("claim-bar").textContent).toContain("desk");
+    await act(async () => {
+      fireEvent.click(screen.getByText("Deny"));
+    });
+    expect(ipc.conductorAction).toHaveBeenLastCalledWith("deny", undefined);
+    expect(screen.queryByTestId("claim-bar")).toBeNull();
+  });
+
+  it("offers Conductor… in the + menu, which picks a folder from the conductor's default", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValueOnce(null);
+    render(<Sidebar />);
+    fireEvent.click(screen.getByTitle("New terminal"));
+    await act(async () => {
+      fireEvent.click(screen.getByText("🎛 Conductor…"));
+    });
+    expect(ipc.conductorDir).toHaveBeenCalled();
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ directory: true, defaultPath: "/home/me/.swarmz/conductor" }));
   });
 });
 

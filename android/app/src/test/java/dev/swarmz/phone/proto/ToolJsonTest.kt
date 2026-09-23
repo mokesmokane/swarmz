@@ -74,6 +74,15 @@ class ToolJsonTest {
         assertEquals("working", (events[1] as WatchEvent.Tile).tile.status)
         assertEquals(WatchEvent.Ping, events[2])
         assertEquals("t1", (events[3] as WatchEvent.Gone).id)
+        // The conductor and a claim ride with the snapshot (none here) and as their own event (conductor spec §7).
+        assertEquals(ConductorState(), (events[0] as WatchEvent.Snapshot).conductor)
+        val c = (events[4] as WatchEvent.Conductor).state
+        assertEquals("t1", c.conductor)
+        assertEquals(ConductorClaim("t2", "Web", "2026-09-23T10:00:00Z"), c.claim)
+        val snap = ToolJson.watchEvent("""{"tiles":[{"cwd":"/p","id":"t1","kind":"claude","name":"one","running":true,"status":"idle","conductor":true}],"conductor":"t1","claim":null,"type":"snapshot","v":1}""") as WatchEvent.Snapshot
+        assertEquals("t1", snap.conductor.conductor)
+        assertTrue(snap.tiles[0].conductor)
+        assertEquals("$CONDUCTOR_MARK one", snap.tiles[0].badgedTitle)
         assertNull(ToolJson.watchEvent("""{"type":"future-kind","v":1}"""))
     }
 

@@ -3,7 +3,7 @@ import { emit, emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { BREAKOUT_ACTION_EVENT, BREAKOUT_HELLO_EVENT, TILE_STATE_EVENT, type BreakoutAction, type TileState } from "./breakouts";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import type { Workspace } from "./workspace";
+import type { ConductorClaim, Workspace } from "./workspace";
 import type { AgentEvent } from "./agentState";
 
 export interface TerminalInfo {
@@ -158,6 +158,11 @@ export const ipc = {
   localSessions: () => invoke<SessionRow[]>("local_sessions"),
   /** Ends a session that no tile in this window shows. */
   closeSession: (id: string) => invoke<boolean>("close_session", { id }),
+  /** Sets, denies or clears the conductor through the tool, which tells the tiles concerned (conductor spec §6). */
+  conductorAction: (action: "set" | "deny" | "clear", id?: string) =>
+    invoke<{ conductor: string | null; claim: ConductorClaim | null }>("conductor_action", { action, id: id ?? null }),
+  /** Creates `~/.swarmz/conductor` (with its CLAUDE.md) if missing and returns the path. */
+  conductorDir: () => invoke<string>("conductor_dir"),
   /** The phones paired with this Mac. */
   phones: () => invoke<PhoneKey[]>("phones"),
   /** Removes a phone's key here and on every other Mac the tool can reach. */

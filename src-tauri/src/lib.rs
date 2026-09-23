@@ -56,6 +56,8 @@ pub fn run() {
             commands::remote_tile_close,
             commands::local_sessions,
             commands::close_session,
+            commands::conductor_action,
+            commands::conductor_dir,
             commands::phones,
             commands::revoke_phone,
             commands::host_keys,

@@ -1,7 +1,7 @@
 # swarmz: the conductor tile
 
 Date: 2026-09-23
-Status: approved design; step 1 (tool: conductor with claims, the guard, --on, fleet, ask, reply, briefing; hook script v4) implemented 2026-09-23; steps 2 (desktop) and 3 (Telegram) to follow
+Status: approved design; steps 1 (tool: conductor with claims, the guard, --on, fleet, ask, reply, briefing; hook script v4) and 2 (desktop badge, claim bar, Make conductor, Conductor…, the workspace fields; `ls`/`watch` report the conductor and claim; phone mark and claim card) implemented 2026-09-23; step 3 (Telegram) to follow
 Amends: `2026-09-10-swarmz-design.md` §5–§6 (the ledger, MCP tools and
 messaging are replaced: agents do not talk to each other; one tile talks to
 all of them); `2026-09-16-swarmz-phone-design.md` §4.7 (the gate's
@@ -137,9 +137,10 @@ A user-edited `briefing.md` still wins for the common part.
 - A pending claim is a bar at the top of the sidebar (§3): the claimant's
   title, **Approve**, **Deny**. It appears on every Mac (the claim is in the
   workspace); the first answer wins and clears it everywhere.
-- The row's menu gains **Make conductor** (and **Not the conductor** on
-  the current one), which sets `conductor` in the workspace. Only Claude
-  tiles qualify.
+- The row gains **Make conductor** (and **Not the conductor** on the
+  current one; as built, a 🎛 button that shows on hover, since rows have
+  no menu), which sets `conductor` in the workspace through the tool, so
+  the tile is told. Only Claude tiles qualify.
 - The **+** menu gains **Conductor…**: a local terminal in a folder you
   pick (default `~/.swarmz/conductor`, created if missing, with a
   `CLAUDE.md` that says what this folder is for), with Claude enabled, made
@@ -151,7 +152,11 @@ A user-edited `briefing.md` still wins for the common part.
 
 The conductor's row shows the 🎛 badge, and a pending claim is a needs-you
 card on Home with **Approve** and **Deny** (`swarmz conductor --set` /
-`--clear` through the gate, which allows them from a phone key).
+`--deny` through the gate, which allows them from a phone key). For that,
+`ls` and the `watch` snapshot carry `conductor` and `claim` beside the
+rows, `watch` emits a `{"type":"conductor","conductor":…,"claim":…}` event
+when either changes, and each row has `conductor: true` when it is the
+conductor.
 
 ## 8. Testing
 

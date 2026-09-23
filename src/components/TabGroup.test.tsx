@@ -83,6 +83,12 @@ describe("tab dot", () => {
     expect(dot.title).toBe("working · UserPromptSubmit");
   });
 
+  it("marks the conductor's tab", () => {
+    useStore.setState({ conductor: ID });
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
+    expect(screen.getByTestId(`tab-${ID}`).querySelector("[aria-label='Conductor']")).toBeTruthy();
+  });
+
   it("keeps a clean exit grey even with agent state", () => {
     useStore.setState({
       terminals: { [ID]: { id: ID, name: "desk", cwd: "/home/me", exited: 0, error: null } },

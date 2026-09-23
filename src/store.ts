@@ -50,6 +50,9 @@ import {
   type TerminalDef,
   type Workspace,
   validateIcon,
+  claimOf,
+  conductorOf,
+  type ConductorClaim,
 } from "./lib/workspace";
 import { withUserTitle } from "./lib/card";
 import { loadBreakouts, saveBreakouts, type Bounds } from "./lib/breakouts";
@@ -399,6 +402,10 @@ export interface WorkbenchState {
    * holder there (`swarmz attach`). Absent means not asked yet; false falls back to plain ssh. */
   toolReady: Record<string, boolean>;
   machines: Machines;
+  /** The tile allowed to act on the others (conductor spec §3), from the workspace; null when none. */
+  conductor: string | null;
+  /** A tile asking to be the conductor, until Approve or Deny (conductor spec §3). */
+  conductorClaim: ConductorClaim | null;
   tailscale: TailscaleStatus | null;
   tailscaleError: string | null;
   selfMachine: string | null;
@@ -448,6 +455,12 @@ export interface WorkbenchState {
   refreshOutsideSessions(): Promise<void>;
   closeOutsideSessions(): Promise<string | null>;
   updateSettings(id: string, patch: Partial<TerminalSettings>): void;
+  /** Makes `id` the conductor, or clears the role with null (conductor spec §6), through the tool so the tiles concerned are told; the file it wrote is adopted. */
+  setConductor(id: string | null): Promise<void>;
+  /** Answers the pending claim (conductor spec §3): Approve makes the claimant the conductor, Deny clears the claim; either tells the claimant. */
+  decideClaim(approve: boolean): Promise<void>;
+  /** A local Claude tile in `cwd` (the conductor's folder by default), made the conductor at once (conductor spec §6). */
+  createConductorTerminal(cwd: string, placement?: Placement): Promise<string>;
   /** The user typed a title for the tile's card (conversation cards spec §5); empty hands it back. */
   setCardTitle(id: string, title: string): void;
   /** Tiles shown in their own windows on this Mac (breakout windows spec §2); the layout is untouched. */
@@ -1315,6 +1328,7 @@ async function loadWorkspaceOnce(set: SetState): Promise<void> {
     const { machines, dropped } = sanitizeMachines(ws.machines);
     set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
   }
+  set({ conductor: conductorOf(ws), conductorClaim: claimOf(ws) });
   // openDefs sets persistenceReady itself: true when every def opened cleanly, false
   // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
   await openDefs(ws.terminals, ws.layout, set);
@@ -1340,6 +1354,8 @@ export const useStore = create<WorkbenchState>((set) => ({
   sshDropped: {},
   toolReady: {},
   machines: {},
+  conductor: null,
+  conductorClaim: null,
   tailscale: null,
   tailscaleError: null,
   selfMachine: null,
@@ -1474,6 +1490,9 @@ export const useStore = create<WorkbenchState>((set) => ({
         sshConnecting: omit(s.sshConnecting, id),
         sshDropped: omit(s.sshDropped, id),
         agentState: omit(s.agentState, id),
+        // The conductor's tile is gone: nobody holds the role (and a claim by it lapses).
+        ...(s.conductor === id ? { conductor: null } : {}),
+        ...(s.conductorClaim?.tile === id ? { conductorClaim: null } : {}),
         ...focusFor(layout, fallback),
       };
     });
@@ -1821,6 +1840,27 @@ export const useStore = create<WorkbenchState>((set) => ({
       if ((card ?? null) === (current.card ?? null)) return {};
       return { settings: { ...s.settings, [id]: { ...current, card } } };
     });
+  },
+
+  async setConductor(id) {
+    if (id !== null && !useStore.getState().terminals[id]) throw `${id} is not an open tile`;
+    await conductorViaTool(id === null ? ["clear"] : ["set", id]);
+  },
+
+  async decideClaim(approve) {
+    const claim = useStore.getState().conductorClaim;
+    if (!claim) return;
+    await conductorViaTool(approve ? ["set", claim.tile] : ["deny"]);
+  },
+
+  async createConductorTerminal(cwd, placement): Promise<string> {
+    const id: string = await useStore.getState().createTerminal(cwd, placement);
+    useStore.getState().updateSettings(id, { claude: { enabled: true, sessionId: crypto.randomUUID(), skipPermissions: false, started: false } });
+    // Claude starts as any local Claude tile does: the startup line is typed into the fresh shell.
+    set((s) => ({ startupPending: { ...s.startupPending, [id]: true } }));
+    await useStore.getState().runStartup(id);
+    await useStore.getState().setConductor(id);
+    return id;
   },
 
   updateSettings(id, patch) {
@@ -2441,7 +2481,7 @@ export function __resetSyncState() {
  * compares against the file that was adopted. */
 function currentWorkspace(): Workspace {
   const s = useStore.getState();
-  return toWorkspace({ order: s.order, terminals: persistedTerminals(s.terminals), settings: s.settings, layout: s.layout, machines: s.machines });
+  return toWorkspace({ order: s.order, terminals: persistedTerminals(s.terminals), settings: s.settings, layout: s.layout, machines: s.machines, conductor: s.conductor, conductorClaim: s.conductorClaim });
 }
 
 /**
@@ -2473,6 +2513,9 @@ async function applyWorkspace(
     const { machines, dropped } = sanitizeMachines(ws.machines);
     useStore.setState({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
   }
+  // The conductor and a claim are whole-file facts: absent means none (the tool and every save
+  // write the whole file).
+  useStore.setState({ conductor: conductorOf(ws), conductorClaim: claimOf(ws) });
   // What each open terminal was called (as the shared file would spell it) when this operation
   // began — see the rename pass below. `adopt` captures it before its own save, because a user
   // rename made while that save is in flight belongs to the user, not to the file.
@@ -2646,6 +2689,8 @@ function runSave(): Promise<void> {
       settings: s.settings,
       layout: s.layout,
       machines: s.machines,
+      conductor: s.conductor,
+      conductorClaim: s.conductorClaim,
       sync,
     });
     p = ipc
@@ -2664,6 +2709,8 @@ function runSave(): Promise<void> {
       settings: s.settings,
       layout: s.layout,
       machines: s.machines,
+      conductor: s.conductor,
+      conductorClaim: s.conductorClaim,
       sync: s.syncMeta ?? undefined,
     });
     p = ipc.saveWorkspace(ws).catch((e) => {
@@ -2695,6 +2742,26 @@ async function flushPendingSave(): Promise<void> {
   if (savePromise) await savePromise;
 }
 
+/**
+ * The conductor is changed through the tool (`swarmz conductor --set/--deny/--clear`), the one
+ * implementation that also tells the tiles concerned, here or over ssh (conductor spec §3, §6).
+ * The tool writes the workspace with a bumped revision, so a save pending here is flushed first
+ * (it would otherwise land on top with a stale copy) and the file is adopted afterwards, which
+ * is what an external change does anyway; the peers pick it up on their next pull. When the file
+ * cannot be read back the fields are set from the tool's reply so the sidebar is right at once.
+ */
+async function conductorViaTool(args: ["set", string] | ["deny"] | ["clear"]): Promise<void> {
+  await flushPendingSave();
+  const reply = await ipc.conductorAction(args[0], args[0] === "set" ? args[1] : undefined);
+  const ws = await ipc.loadWorkspace().catch(() => null);
+  if (ws && isNewer(ws.sync, useStore.getState().syncMeta)) {
+    lastSeenMtime = await ipc.workspaceStat().catch(() => null);
+    await adoptGuarded(ws);
+    return;
+  }
+  useStore.setState({ conductor: conductorOf(reply), conductorClaim: claimOf({ conductorClaim: reply.claim }) });
+}
+
 function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
@@ -2715,7 +2782,9 @@ useStore.subscribe((s, prev) => {
     s.order !== prev.order ||
     s.layout !== prev.layout ||
     s.settings !== prev.settings ||
-    s.machines !== prev.machines
+    s.machines !== prev.machines ||
+    s.conductor !== prev.conductor ||
+    s.conductorClaim !== prev.conductorClaim
   ) {
     scheduleSave();
   }

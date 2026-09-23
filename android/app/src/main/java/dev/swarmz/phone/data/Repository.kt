@@ -8,6 +8,8 @@ import dev.swarmz.phone.proto.AnswerReply
 import dev.swarmz.phone.proto.Card
 import dev.swarmz.phone.proto.CardReply
 import dev.swarmz.phone.proto.Cmd
+import dev.swarmz.phone.proto.ConductorClaim
+import dev.swarmz.phone.proto.ConductorState
 import dev.swarmz.phone.proto.SessionClosed
 import dev.swarmz.phone.ssh.Progress
 import dev.swarmz.phone.proto.UploadReply
@@ -72,6 +74,15 @@ data class Banner(val mac: String, val text: String)
 /** A Mac that refused this phone's key and has no pairing of its own: Home offers to pair it. */
 data class PairHint(val mac: String, val label: String)
 
+/**
+ * A tile asking to be the conductor (conductor spec §3, §7), as one Mac reports it: the claim is in the shared
+ * workspace, so every Mac reports the same one and Home shows it once; the answer goes to [mac].
+ */
+data class ClaimView(val mac: String, val label: String, val claim: ConductorClaim) {
+    /** What the card names: the claim's title, else the tile id. */
+    val title: String get() = claim.title?.takeIf { it.isNotBlank() } ?: claim.tile
+}
+
 /** A revoke that did not reach every Mac. [revoked] and [failed] are labels, in pairing order. */
 class RevokeFailure(val revoked: List<String>, val failed: List<String>, message: String) : Exception(message)
 
@@ -93,7 +104,7 @@ internal fun userFor(mac: String, pairings: List<Paired>): String? =
 /** Whether [mac] is one of the paired Macs. */
 internal fun isPaired(mac: String, pairings: List<Paired>) = pairings.any { sameMac(it.host, mac) }
 
-private data class LinkSnapshot(val link: MacLink, val state: LinkState, val tiles: Map<String, TileRow>, val lastSeen: Long?)
+private data class LinkSnapshot(val link: MacLink, val state: LinkState, val tiles: Map<String, TileRow>, val lastSeen: Long?, val conductor: ConductorState = ConductorState())
 
 class TranscriptSession internal constructor(scope: CoroutineScope, private val link: MacLink, private val tile: String) {
     private val _state = MutableStateFlow(TranscriptState())
@@ -185,7 +196,7 @@ class Repository(
 
     private val snapshots: StateFlow<List<LinkSnapshot>> = links.flatMapLatest { map ->
         if (map.isEmpty()) flowOf(emptyList())
-        else combine(map.values.map { l -> combine(l.state, l.tiles, l.lastSeen) { s, t, seen -> LinkSnapshot(l, s, t, seen) } }) { it.toList() }
+        else combine(map.values.map { l -> combine(l.state, l.tiles, l.lastSeen, l.conductor) { s, t, seen, c -> LinkSnapshot(l, s, t, seen, c) } }) { it.toList() }
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     val macs: StateFlow<List<MacInfo>> = combine(snapshots, labels, settings.macs) { snaps, names, known ->
@@ -225,6 +236,19 @@ class Repository(
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /** The Macs that refused this phone's key and have no pairing: they can be paired one by one. */
+    /** Pending conductor claims, one per distinct claim (the workspace is shared, so online Macs agree). */
+    val claims: StateFlow<List<ClaimView>> = combine(snapshots, labels) { snaps, names ->
+        snaps.filter { it.state is LinkState.Online }
+            .mapNotNull { s -> s.conductor.claim?.let { ClaimView(s.link.mac, names[s.link.mac] ?: s.link.mac, it) } }
+            .distinctBy { it.claim.tile to it.claim.at }
+    }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** Approves the claim (conductor spec §7): the claimant becomes the conductor and is told. */
+    suspend fun approveClaim(view: ClaimView): ConductorState = link(view.mac).call(Cmd.conductorSet(view.claim.tile))
+
+    /** Denies the claim; the claimant is told. */
+    suspend fun denyClaim(view: ClaimView): ConductorState = link(view.mac).call(Cmd.conductorDeny())
+
     val pairHints: StateFlow<List<PairHint>> = combine(snapshots, labels, settings.pairings) { snaps, names, pairings ->
         snaps.mapNotNull { s ->
             val st = s.state

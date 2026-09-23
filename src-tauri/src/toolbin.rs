@@ -345,6 +345,9 @@ pub fn remote_info(host: &str, id: &str) -> Result<serde_json::Value, String> {
 pub fn run_tool_json(tool: &Path, args: &[&str], timeout: Duration) -> Result<serde_json::Value, String> {
     let mut c = Command::new(tool);
     c.args(args);
+    // The app acts as the user, never as a tile: an app launched from a tile's shell (a dev run)
+    // must not be guarded as that tile (conductor spec §3).
+    c.env_remove("SWARMZ_TERMINAL_ID").env_remove("SWARMZ_TERMINAL_NAME");
     let done = crate::remote::run_with_timeout(c, timeout, "swarmz")?;
     let v: serde_json::Value = serde_json::from_str(done.stdout.trim())
         .map_err(|e| format!("swarmz returned something unreadable ({e}): {}", done.stderr.trim()))?;
