@@ -107,6 +107,9 @@ const SAFE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 fn tool_command(home: &Path) -> Command {
     let mut cmd = Command::new(EXE);
     cmd.env("HOME", home).env("SWARMZ_HOLDER_SHELL", "/bin/sh").env("PATH", SAFE_PATH);
+    // The tests may themselves run inside a swarmz tile: the tool must not take that tile's
+    // identity (the conductor guard reads it). Tests that act as a tile set it explicitly.
+    cmd.env_remove("SWARMZ_TERMINAL_ID").env_remove("SWARMZ_TERMINAL_NAME");
     cmd
 }
 
@@ -1135,6 +1138,100 @@ fn upload_writes_stdin_into_the_paste_folder_and_prune_sweeps_it() {
     let (_, p) = tool_env(&h.path, &["prune"], MINI);
     assert_eq!(p["pasteRemoved"].as_u64(), Some(0));
     assert_eq!(std::fs::read_dir(h.path.join(".swarmz/paste")).unwrap().count(), 2);
+}
+
+#[test]
+fn the_conductor_is_claimed_approved_and_the_only_tile_that_acts_on_others() {
+    let h = home("conductor");
+    let cwd = h.path.to_string_lossy().into_owned();
+    let cs = held(&h, "c1");
+    let ts = held(&h, "t2");
+    let c1 = tool_client(&cs);
+    let t2 = tool_client(&ts);
+    write_ws(&h.path, serde_json::json!([
+        {"id": "c1", "name": "api", "cwd": cwd, "origin": "mini", "claude": {"enabled": true, "sessionId": "s-c1", "skipPermissions": false, "started": true}},
+        {"id": "t2", "name": "web", "cwd": cwd, "origin": "mini", "claude": {"enabled": true, "sessionId": "s-t2", "skipPermissions": false, "started": true}}
+    ]), serde_json::json!({}));
+    let as_c1: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "c1"), ("SWARMZ_TERMINAL_NAME", "api")];
+    let as_t2: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "t2"), ("SWARMZ_TERMINAL_NAME", "web")];
+    let user: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "")];
+
+    // No conductor: a tile may not act on another, nor read it.
+    let (_, none) = tool_env(&h.path, &["conductor"], user);
+    assert!(none["conductor"].is_null() && none["claim"].is_null(), "{none}");
+    let (code, d) = tool_env(&h.path, &["send", "c1", "--", "hi"], as_t2);
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+    let (code, d) = tool_env(&h.path, &["transcript", "c1"], as_t2);
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+    let (code, d) = tool_env(&h.path, &["fleet"], as_t2);
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+    // A tile acts on itself.
+    let (code, ok) = tool_env(&h.path, &["send", "t2", "--", "echo mine"], as_t2);
+    assert_eq!((code, ok["sent"].as_bool()), (0, Some(true)));
+    // Set and clear are the user's.
+    let (code, d) = tool_env(&h.path, &["conductor", "--set", "t2"], as_t2);
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+
+    // A claim, approved by the user: the claimant is told.
+    let (code, c) = tool_env(&h.path, &["conductor", "--claim"], as_t2);
+    assert_eq!((code, c["claimed"].as_bool(), c["pending"].as_bool()), (0, Some(true), Some(true)));
+    let (_, st) = tool_env(&h.path, &["conductor"], user);
+    assert_eq!((st["conductor"].as_str(), st["claim"]["tile"].as_str(), st["claim"]["title"].as_str()), (None, Some("t2"), Some("web")));
+    let (code, st) = tool_env(&h.path, &["conductor", "--set", "t2"], user);
+    assert_eq!((code, st["conductor"].as_str()), (0, Some("t2")));
+    assert!(st["claim"].is_null());
+    assert!(wait_until(|| screen_has(&t2, "you are the conductor")));
+    // The conductor's own claim changes nothing.
+    let (_, c) = tool_env(&h.path, &["conductor", "--claim"], as_t2);
+    assert_eq!((c["pending"].as_bool(), c["conductor"].as_bool()), (Some(false), Some(true)));
+
+    // The conductor speaks to a tile, marked; asks it; sees the fleet; still cannot read it.
+    let (code, ok) = tool_env(&h.path, &["send", "c1", "--", "do the thing"], as_t2);
+    assert_eq!((code, ok["sent"].as_bool()), (0, Some(true)));
+    assert!(wait_until(|| screen_has(&c1, "[conductor web] do the thing")));
+    let (code, ok) = tool_env(&h.path, &["ask", "c1", "--", "how far along?"], as_t2);
+    assert_eq!((code, ok["asked"].as_bool()), (0, Some(true)));
+    assert!(wait_until(|| screen_has(&c1, "[conductor web] how far along?")));
+    assert!(screen_has(&c1, "swarmz reply"));
+    let (code, d) = tool_env(&h.path, &["transcript", "c1"], as_t2);
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+    let (code, f) = tool_env(&h.path, &["fleet"], as_t2);
+    assert_eq!(code, 0, "{f}");
+    let ids: Vec<&str> = f["tiles"].as_array().unwrap().iter().filter_map(|t| t["id"].as_str()).collect();
+    assert!(ids.contains(&"c1") && ids.contains(&"t2"), "{ids:?}");
+    assert_eq!(f["machines"].as_array().unwrap().len(), 0, "no tailnet in tests");
+    // The tile replies; the answer lands in the conductor, marked with the tile's title.
+    let (code, r) = tool_env(&h.path, &["reply", "--", "about half; tests next"], as_c1);
+    assert_eq!((code, r["replied"].as_bool()), (0, Some(true)));
+    assert!(wait_until(|| screen_has(&t2, "[api] about half; tests next")));
+
+    // Another tile's claim, denied: the conductor stays, and the claimant is told.
+    let (_, c) = tool_env(&h.path, &["conductor", "--claim"], as_c1);
+    assert_eq!(c["pending"].as_bool(), Some(true));
+    let (code, st) = tool_env(&h.path, &["conductor", "--deny"], user);
+    assert_eq!((code, st["conductor"].as_str()), (0, Some("t2")));
+    assert!(st["claim"].is_null());
+    assert!(wait_until(|| screen_has(&c1, "claim was denied")));
+
+    // Each tile's briefing: the conductor section for the conductor alone.
+    let out = tool_command(&h.path).args(["briefing"]).envs(as_t2.iter().copied()).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("You are running in a swarmz tile named \"web\""), "{text}");
+    assert!(text.contains("You are the conductor"), "{text}");
+    let out = tool_command(&h.path).args(["briefing"]).envs(as_c1.iter().copied()).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("swarmz reply") && !text.contains("You are the conductor"), "{text}");
+
+    // The phone's gate reads and sets it, and --on refuses what must stay local.
+    let (code, g) = tool_env(&h.path, &["ssh-gate"], &[("SWARMZ_MACHINE", "mini"), ("SSH_ORIGINAL_COMMAND", "swarmz conductor")]);
+    assert_eq!((code, g["conductor"].as_str()), (0, Some("t2")));
+    let (code, d) = tool_env(&h.path, &["--on", "box", "hold", "x"], user);
+    assert_eq!((code, d["code"].as_str()), (1, Some("usage")));
+    let (code, d) = tool_env(&h.path, &["--on", "box", "send", "c1", "--", "x"], as_c1);
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+    let (code, st) = tool_env(&h.path, &["conductor", "--clear"], user);
+    assert_eq!(code, 0);
+    assert!(st["conductor"].is_null());
 }
 
 #[test]

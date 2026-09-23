@@ -1,7 +1,7 @@
 # swarmz: the conductor tile
 
 Date: 2026-09-23
-Status: proposed, not yet implemented
+Status: approved design; step 1 (tool: conductor with claims, the guard, --on, fleet, ask, reply, briefing; hook script v4) implemented 2026-09-23; steps 2 (desktop) and 3 (Telegram) to follow
 Amends: `2026-09-10-swarmz-design.md` §5–§6 (the ledger, MCP tools and
 messaging are replaced: agents do not talk to each other; one tile talks to
 all of them); `2026-09-16-swarmz-phone-design.md` §4.7 (the gate's
@@ -34,7 +34,7 @@ Everything the phone can, on every Mac, from its shell, through the tool:
 |---|---|
 | See every tile: title, machine, status, needs, recap, last message (each cut short) | `swarmz fleet` **(new)**: `ls` on this Mac and, over the shared ssh master, on every online Mac, in one JSON; `recap` and `lastMessage` are capped at 280 characters |
 | Watch for changes | `swarmz fleet --follow` **(new)**: one line per change, as `watch` does per Mac |
-| Ask a tile something | `swarmz ask <tile> -- "…"` **(new)**: types `[conductor <title>] <question> — answer with: swarmz reply "…"` into the tile |
+| Ask a tile something | `swarmz ask <tile> -- "…"` **(new)**: types `[conductor <title>] <question> (answer with: swarmz reply -- "...")` into the tile (ASCII only: a plain shell scrambles wide characters in a pasted line) |
 | Tell a tile to do something | `swarmz [--on <mac>] send <tile> -- "…"`, the same line with `[conductor <title>]` in front so the tile knows who is speaking |
 | Answer a tile's question or permission | `swarmz [--on <mac>] pending <tile>`, `answer <tile> …` |
 | Start, stop, restart a tile | `new`, `close`, `restart` |

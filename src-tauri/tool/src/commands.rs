@@ -431,6 +431,188 @@ pub fn card(env: &Env, tile: Option<&str>, title: Option<&str>, recap: Option<&s
     Ok(json!({"v": 1, "card": next}))
 }
 
+/// `swarmz conductor [--claim | --set <tile> | --clear | --deny]` (conductor spec §3). Reading
+/// needs no tile; a claim is by the calling tile; set, clear and deny are the user's (the guard
+/// in `main` keeps tiles from them) and tell the claimant the outcome as a prompt.
+pub fn conductor(env: &Env, action: ConductorAction) -> Result<Value, CliError> {
+    let now = now_iso_ms();
+    let by = env.machine.clone().unwrap_or_else(|| "swarmz".to_string());
+    match action {
+        ConductorAction::Read => Ok(crate::conductor::state(&env.workspace()?.unwrap_or_else(empty_workspace))),
+        ConductorAction::Claim(tile) => {
+            let mut ws = env.workspace_to_write()?.unwrap_or_else(empty_workspace);
+            let changed = crate::conductor::claim(&mut ws, &tile, &by, &now)?;
+            if changed {
+                save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
+            }
+            let already = crate::conductor::conductor_of(&ws).as_deref() == Some(tile.as_str());
+            Ok(json!({"v": 1, "claimed": true, "pending": !already, "conductor": already}))
+        }
+        ConductorAction::Set(tile) => {
+            let mut ws = env.workspace_to_write()?.unwrap_or_else(empty_workspace);
+            let claimant = crate::conductor::claim_of(&ws).and_then(|c| c["tile"].as_str().map(str::to_string));
+            let changed = crate::conductor::set(&mut ws, &tile, &by, &now)?;
+            if changed {
+                save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
+                tell(env, &tile, crate::conductor::outcome_line(true));
+                if let Some(c) = claimant.filter(|c| c != &tile) {
+                    tell(env, &c, crate::conductor::outcome_line(false));
+                }
+            }
+            Ok(crate::conductor::state(&ws))
+        }
+        ConductorAction::Deny => {
+            let mut ws = env.workspace_to_write()?.unwrap_or_else(empty_workspace);
+            if let Some(c) = crate::conductor::deny(&mut ws, &by, &now) {
+                save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
+                tell(env, &c, crate::conductor::outcome_line(false));
+            }
+            Ok(crate::conductor::state(&ws))
+        }
+        ConductorAction::Clear => {
+            let mut ws = env.workspace_to_write()?.unwrap_or_else(empty_workspace);
+            if crate::conductor::clear(&mut ws, &by, &now) {
+                save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
+            }
+            Ok(crate::conductor::state(&ws))
+        }
+    }
+}
+
+/// The workspace's conductor, for the guard.
+pub fn conductor_of(env: &Env) -> Result<Option<String>, CliError> {
+    Ok(crate::conductor::conductor_of(&env.workspace()?.unwrap_or_else(empty_workspace)))
+}
+
+/// A tile's title for prompts.
+pub fn title_of(env: &Env, tile: &str) -> Result<String, CliError> {
+    Ok(crate::conductor::title_of(&env.workspace()?.unwrap_or_else(empty_workspace), tile))
+}
+
+pub enum ConductorAction {
+    Read,
+    Claim(String),
+    Set(String),
+    Deny,
+    Clear,
+}
+
+/// Types `line` into `tile` where it is: locally when it runs here, else over ssh to its home
+/// Mac. Best effort: a tile that is not running, or a Mac that does not answer, is skipped.
+fn tell(env: &Env, tile: &str, line: &str) {
+    let _ = deliver(env, tile, line);
+}
+
+/// `send` to a tile wherever its home is. Errors when neither the local holder nor the home
+/// Mac takes it.
+fn deliver(env: &Env, tile: &str, line: &str) -> Result<(), CliError> {
+    let ws = env.workspace()?.unwrap_or_else(empty_workspace);
+    let def = crate::conductor::def_of(&ws, tile).ok_or_else(|| CliError::new("unknown_tile", format!("no tile {tile} in the workspace")))?;
+    let origin = def.extra.get("origin").and_then(|o| o.as_str()).map(str::to_string);
+    let here = origin.is_none() || origin.as_deref() == env.machine.as_deref();
+    if here {
+        return send(env, tile, line).map(|_| ());
+    }
+    let machine = origin.unwrap();
+    let host = crate::conductor::host_for(&ws, env.machine.as_deref(), &default_user(), &machine)
+        .ok_or_else(|| CliError::new("failed", format!("no ssh host for {machine}")))?;
+    let c = crate::conductor::remote_command(&host, &["send".into(), tile.into(), "--".into(), line.into()]);
+    let done = run_with_timeout(c, Duration::from_secs(15), "ssh").map_err(failed)?;
+    if done.status.success() {
+        Ok(())
+    } else {
+        Err(failed(crate::util::last_non_blank(&done.stderr).unwrap_or_else(|| format!("ssh exited with {:?}", done.status.code()))))
+    }
+}
+
+/// `ask <tile> -- <question>` (spec §2): the conductor's question, marked, typed into the tile.
+pub fn ask(env: &Env, caller: &str, tile: &str, question: &str) -> Result<Value, CliError> {
+    let ws = env.workspace()?.unwrap_or_else(empty_workspace);
+    let line = crate::conductor::ask_line(&crate::conductor::title_of(&ws, caller), question);
+    deliver(env, tile, &line)?;
+    Ok(json!({"v": 1, "asked": true}))
+}
+
+/// `reply -- <text>` (spec §2.1): the calling tile's answer, marked with its title, typed into
+/// the conductor wherever it runs.
+pub fn reply(env: &Env, caller: &str, text: &str) -> Result<Value, CliError> {
+    let ws = env.workspace()?.unwrap_or_else(empty_workspace);
+    let conductor = crate::conductor::conductor_of(&ws).ok_or_else(|| CliError::new("denied", "no conductor is set to reply to"))?;
+    let line = crate::conductor::reply_line(&crate::conductor::title_of(&ws, caller), text);
+    deliver(env, &conductor, &line)?;
+    Ok(json!({"v": 1, "replied": true}))
+}
+
+/// `fleet [--follow]` (spec §2): every tile on every reachable Mac. `--follow` polls and prints
+/// a row whenever it changes, and a `ping` every 25 s.
+pub fn fleet(env: &Env, follow: bool, out: &mut dyn Write) -> Result<(), CliError> {
+    let hosts = || -> Vec<(String, String)> {
+        let ws = env.workspace().ok().flatten().unwrap_or_else(empty_workspace);
+        let peers = if env.uses_tailscale() { crate::tailscale::status().map(|s| s.online_macs()).unwrap_or_default() } else { vec![] };
+        machine_hosts(&ws, env.machine.as_deref(), &default_user(), &peers)
+    };
+    let snapshot = |hosts: &[(String, String)]| -> Value {
+        let local = ls(env).ok().and_then(|v| v["tiles"].as_array().cloned()).unwrap_or_default();
+        crate::conductor::fleet(local, hosts, Duration::from_secs(8))
+    };
+    if !follow {
+        writeln!(out, "{}", snapshot(&hosts())).map_err(failed)?;
+        return Ok(());
+    }
+    let mut prev: BTreeMap<String, Value> = BTreeMap::new();
+    let mut last_ping = Instant::now();
+    let mut first = true;
+    loop {
+        let snap = snapshot(&hosts());
+        let rows: BTreeMap<String, Value> = snap["tiles"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|r| {
+                let id = r["id"].as_str()?.to_string();
+                Some((id, r))
+            })
+            .collect();
+        if first {
+            writeln!(out, "{}", json!({"v": 1, "type": "snapshot", "tiles": snap["tiles"], "machines": snap["machines"]})).map_err(failed)?;
+            first = false;
+        } else {
+            for (id, row) in &rows {
+                if prev.get(id) != Some(row) {
+                    writeln!(out, "{}", json!({"v": 1, "type": "tile", "tile": row})).map_err(failed)?;
+                }
+            }
+            for id in prev.keys() {
+                if !rows.contains_key(id) {
+                    writeln!(out, "{}", json!({"v": 1, "type": "gone", "id": id})).map_err(failed)?;
+                }
+            }
+        }
+        prev = rows;
+        if last_ping.elapsed() >= Duration::from_secs(25) {
+            writeln!(out, "{}", json!({"v": 1, "type": "ping"})).map_err(failed)?;
+            last_ping = Instant::now();
+        }
+        out.flush().map_err(failed)?;
+        std::thread::sleep(Duration::from_secs(3));
+    }
+}
+
+/// `briefing` (spec §4): what the `SessionStart` hook returns for the calling tile.
+pub fn briefing(env: &Env, tile: Option<&str>, name: &str) -> Result<String, CliError> {
+    let ws = env.workspace()?.unwrap_or_else(empty_workspace);
+    let is_conductor = tile.is_some() && crate::conductor::conductor_of(&ws).as_deref() == tile;
+    Ok(crate::briefing::briefing_for(&env.home, name, is_conductor))
+}
+
+/// The other Macs as ssh destinations, for `--on` (spec §2).
+pub fn host_for(env: &Env, machine: &str) -> Result<String, CliError> {
+    let ws = env.workspace()?.unwrap_or_else(empty_workspace);
+    crate::conductor::host_for(&ws, env.machine.as_deref(), &default_user(), machine)
+        .ok_or_else(|| CliError::new("invalid", format!("no ssh host for {machine}: not a known machine, or no valid username")))
+}
+
 /// How long, and how often, a new tile's def is watched after `new` (spec §4.5).
 const KEEP_DEF_FOR: Duration = Duration::from_secs(30);
 const KEEP_DEF_EVERY: Duration = Duration::from_secs(1);

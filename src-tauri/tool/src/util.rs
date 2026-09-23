@@ -47,6 +47,11 @@ pub fn self_machine() -> Option<String> {
 }
 
 /// One word for a POSIX shell.
+/// The last non-blank line of `s`, trimmed.
+pub fn last_non_blank(s: &str) -> Option<String> {
+    s.lines().rev().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
+}
+
 pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }

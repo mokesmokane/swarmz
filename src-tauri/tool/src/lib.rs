@@ -1,8 +1,10 @@
 pub mod agent;
 pub mod attach;
+pub mod briefing;
 pub mod card;
 pub mod client;
 pub mod commands;
+pub mod conductor;
 pub mod dialog;
 pub mod gate;
 pub mod hold;

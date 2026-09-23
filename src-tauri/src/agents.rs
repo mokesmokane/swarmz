@@ -7,7 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-pub const HOOK_VERSION: u32 = 3;
+pub const HOOK_VERSION: u32 = 4;
 
 pub const HOOK_EVENTS: [&str; 8] = [
     "SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "Notification", "SessionEnd", "PermissionRequest", "PostToolUse",
@@ -15,30 +15,8 @@ pub const HOOK_EVENTS: [&str; 8] = [
 
 pub const SCRIPT_MARKER: &str = ".swarmz/hooks/claude.sh";
 
-pub const BRIEFING_VERSION: u32 = 2;
+pub use swarmz_tool::briefing::{briefing_version, BRIEFING, BRIEFING_VERSION};
 pub const BRIEFING_MARKER: &str = ".swarmz/briefing.md";
-
-/// What every Claude session in a swarmz tile is told at start (conversation cards spec §4.1):
-/// the `SessionStart` hook returns it as additional context, with `<name>` filled in. Installed
-/// beside the hook script; a user who edits it keeps their version by removing the first line.
-pub const BRIEFING: &str = r#"<!-- SWARMZ_BRIEFING_VERSION=2 -->
-You are running in a swarmz tile named "<name>", alongside other agents the user watches from a sidebar and a phone. Keep your tile's card current with the swarmz command:
-
-    ~/.swarmz/bin/swarmz card --title "…" --recap "…"
-
-- Title: a few plain words for what this conversation is about, the way a chat client names a thread (at most 60 characters; no ticket codes or file names). Set it after your first reply.
-- Recap: a status line a colleague could read cold, in the shape of a /recap: what this conversation is about and where it stands, then "Next: …". One or two sentences, under 280 characters. Not a changelog: never a list of everything done, no step-by-step detail. Example: "Shipping swarmz 0.3.0 (phone question cards, conversation titles, file uploads); the release is published. Next: click Check for updates so this Mac shows titles."
-- Update the recap when the work changes direction, finishes, or is about to wait on the user, not after every step. Both flags may be given together or alone.
-- Do not change a title the user typed themselves unless asked; a recap-only update keeps it.
-"#;
-
-/// The `SWARMZ_BRIEFING_VERSION=<n>` header of an installed briefing, or None when absent (a
-/// user-edited briefing has no header and is never overwritten).
-pub fn briefing_version(text: &str) -> Option<u32> {
-    let first = text.lines().next()?.trim();
-    let inner = first.strip_prefix("<!--")?.strip_suffix("-->")?.trim();
-    inner.strip_prefix("SWARMZ_BRIEFING_VERSION=")?.trim().parse().ok()
-}
 
 /// The two Bash rules that let an agent run `swarmz card` without a prompt in modes that ask
 /// (spec §4.2): as the briefing types it, and as a bare `swarmz` on a PATH that has it.
@@ -46,7 +24,7 @@ pub const CARD_PERMISSIONS: [&str; 2] = ["Bash(~/.swarmz/bin/swarmz card:*)", "B
 
 pub const HOOK_SCRIPT: &str = r#"#!/bin/sh
 # installed by swarmz; reinstalling overwrites this file.
-# SWARMZ_HOOK_VERSION=3
+# SWARMZ_HOOK_VERSION=4
 set -u
 id="${SWARMZ_TERMINAL_ID:-}"
 [ -n "$id" ] || exit 0
@@ -69,15 +47,24 @@ if [ -f "$log" ] && [ "$(wc -c < "$log" | tr -d ' ')" -gt 2097152 ]; then
 fi
 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '%s\t%s\t%s\t%s\n' "$ts" "$id" "$event" "$input" >> "$log"
-# A new session is told about its tile (conversation cards spec §4.1): the briefing, with
-# <name> filled in, goes back to Claude Code as additional context. JSON-escaped by awk; the
-# version comment on its first line is left out.
+# A new session is told about its tile (conversation cards spec §4.1, conductor spec §4): the
+# tool prints the briefing for this tile (the common file with <name> filled in, plus the
+# conductor section when this tile is the conductor); without the tool, the file alone. Either
+# way it goes back to Claude Code as additional context, JSON-escaped by awk.
 briefing="$HOME/.swarmz/briefing.md"
-if [ "$event" = "SessionStart" ] && [ -f "$briefing" ]; then
-  ctx=$(awk -v name="${SWARMZ_TERMINAL_NAME:-$id}" 'BEGIN{ORS=""}
-    /^<!-- SWARMZ_BRIEFING_VERSION=/ && NR==1 {next}
-    { n=split($0, p, "<name>"); line=p[1]; for (i=2; i<=n; i++) line=line name p[i];
-      gsub(/\\/, "\\\\", line); gsub(/"/, "\\\"", line); gsub(/\t/, "\\t", line); print line "\\n" }' "$briefing")
+tool="$HOME/.swarmz/bin/swarmz"
+escape='BEGIN{ORS=""} { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); print $0 "\\n" }'
+if [ "$event" = "SessionStart" ]; then
+  if [ -x "$tool" ]; then
+    ctx=$(SWARMZ_TERMINAL_ID="$id" "$tool" briefing 2>/dev/null | awk "$escape")
+  elif [ -f "$briefing" ]; then
+    ctx=$(awk -v name="${SWARMZ_TERMINAL_NAME:-$id}" 'BEGIN{ORS=""}
+      /^<!-- SWARMZ_BRIEFING_VERSION=/ && NR==1 {next}
+      { n=split($0, p, "<name>"); line=p[1]; for (i=2; i<=n; i++) line=line name p[i];
+        gsub(/\\/, "\\\\", line); gsub(/"/, "\\\"", line); gsub(/\t/, "\\t", line); print line "\\n" }' "$briefing")
+  else
+    ctx=""
+  fi
   [ -n "$ctx" ] && printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' "$ctx"
 fi
 exit 0
@@ -594,7 +581,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".swarmz")).unwrap();
         let script = dir.join("claude.sh");
         std::fs::write(&script, HOOK_SCRIPT).unwrap();
-        std::fs::write(dir.join(".swarmz/briefing.md"), "<!-- SWARMZ_BRIEFING_VERSION=2 -->\nTile \"<name>\" says \\ hi\tthere.\nLine two & more.\n").unwrap();
+        std::fs::write(dir.join(".swarmz/briefing.md"), "<!-- SWARMZ_BRIEFING_VERSION=3 -->\nTile \"<name>\" says \\ hi\tthere.\nLine two & more.\n").unwrap();
         let run = |event: &str, name: Option<&str>| -> String {
             let mut cmd = std::process::Command::new("sh");
             cmd.arg(&script).arg(event).env("HOME", &dir).env("SWARMZ_TERMINAL_ID", "t-1");
@@ -642,8 +629,8 @@ mod tests {
     fn the_briefing_is_installed_once_and_a_users_own_is_kept() {
         assert!(briefing_needs_install(None));
         assert!(!briefing_needs_install(Some(BRIEFING)));
-        assert!(briefing_needs_install(Some("<!-- SWARMZ_BRIEFING_VERSION=1 -->\nold\n")));
-        assert!(briefing_needs_install(Some("<!-- SWARMZ_BRIEFING_VERSION=2 -->\nedited but still headed\n")));
+        assert!(briefing_needs_install(Some("<!-- SWARMZ_BRIEFING_VERSION=2 -->\nold\n")));
+        assert!(briefing_needs_install(Some("<!-- SWARMZ_BRIEFING_VERSION=3 -->\nedited but still headed\n")));
         assert!(!briefing_needs_install(Some("My own briefing.\n")));
         assert_eq!(briefing_version(BRIEFING), Some(BRIEFING_VERSION));
     }

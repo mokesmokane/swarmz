@@ -21,8 +21,20 @@ const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_
 /// The most lines `output --follow` watches.
 const MAX_FOLLOW_LINES: usize = 1000;
 
-const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size"];
-const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user"];
+const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set"];
+const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny"];
+
+/// The conductor guard (conductor spec §3) for a command run from a tile: `sub` against
+/// `target`. The desktop and the phone's gate carry no tile and pass.
+fn guard(sub: &str, target: Option<&str>) -> Result<(), CliError> {
+    let caller = swarmz_tool::conductor::caller_tile();
+    if caller.is_none() {
+        return Ok(());
+    }
+    let env = cmd::Env::from_process()?;
+    let conductor = cmd::conductor_of(&env)?;
+    swarmz_tool::conductor::allowed(conductor.as_deref(), caller.as_deref(), sub, target)
+}
 
 struct Args {
     positional: Vec<String>,
@@ -147,7 +159,69 @@ fn exe() -> Result<PathBuf, CliError> {
 
 fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
     let a = Args::parse(raw)?;
+    // `--on <machine>`: the same command on another Mac (conductor spec §2), the conductor's
+    // alone from a tile. The guard checks the target as this Mac would; the remote checks again.
+    if let Some(machine) = a.opt("--on") {
+        let sub = a.positional.first().cloned().unwrap_or_default();
+        if matches!(sub.as_str(), "" | "hold" | "attach" | "ssh-gate" | "phone" | "conductor") || sub.starts_with("__") {
+            return Err(CliError::new("usage", format!("{sub:?} cannot run with --on")));
+        }
+        guard("on", None)?;
+        let env = cmd::Env::from_process()?;
+        let host = cmd::host_for(&env, machine)?;
+        let args: Vec<String> = strip_on(raw);
+        let status = swarmz_tool::conductor::remote_command(&host, &args)
+            .stdin(std::process::Stdio::null())
+            .status()
+            .map_err(|e| CliError::new("failed", format!("could not run ssh: {e}")))?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
     match a.positional.first().map(String::as_str) {
+        Some("conductor") => {
+            a.expect_positional(1, "conductor [--claim | --set <tile> | --deny | --clear]")?;
+            let env = cmd::Env::from_process()?;
+            let action = if a.flag("--claim") {
+                let tile = swarmz_tool::conductor::caller_tile().ok_or_else(|| CliError::new("usage", "--claim is run from a tile (SWARMZ_TERMINAL_ID is not set)"))?;
+                cmd::ConductorAction::Claim(tile)
+            } else if let Some(t) = a.opt("--set") {
+                guard("conductor-set", None)?;
+                cmd::ConductorAction::Set(cmd::tile_arg(t)?)
+            } else if a.flag("--deny") {
+                guard("conductor-set", None)?;
+                cmd::ConductorAction::Deny
+            } else if a.flag("--clear") {
+                guard("conductor-clear", None)?;
+                cmd::ConductorAction::Clear
+            } else {
+                cmd::ConductorAction::Read
+            };
+            Ok(Some(cmd::conductor(&env, action)?))
+        }
+        Some("fleet") => {
+            a.expect_positional(1, "fleet [--follow]")?;
+            guard("fleet", None)?;
+            cmd::fleet(&cmd::Env::from_process()?, a.flag("--follow"), &mut std::io::stdout())?;
+            Ok(None)
+        }
+        Some("ask") => {
+            a.expect_positional(3, "ask <tile> [--] <question>")?;
+            let tile = cmd::tile_arg(&a.positional[1])?;
+            guard("ask", Some(&tile))?;
+            let caller = swarmz_tool::conductor::caller_tile().ok_or_else(|| CliError::new("usage", "ask is run from the conductor tile"))?;
+            Ok(Some(cmd::ask(&cmd::Env::from_process()?, &caller, &tile, &a.positional[2])?))
+        }
+        Some("reply") => {
+            a.expect_positional(2, "reply [--] <text>")?;
+            let caller = swarmz_tool::conductor::caller_tile().ok_or_else(|| CliError::new("usage", "reply is run from a tile (SWARMZ_TERMINAL_ID is not set)"))?;
+            Ok(Some(cmd::reply(&cmd::Env::from_process()?, &caller, &a.positional[1])?))
+        }
+        Some("briefing") => {
+            a.expect_positional(1, "briefing")?;
+            let tile = swarmz_tool::conductor::caller_tile();
+            let name = std::env::var("SWARMZ_TERMINAL_NAME").ok().filter(|n| !n.is_empty()).or_else(|| tile.clone()).unwrap_or_else(|| "this tile".to_string());
+            print!("{}", cmd::briefing(&cmd::Env::from_process()?, tile.as_deref(), &name)?);
+            Ok(None)
+        }
         Some("version") => {
             a.expect_positional(1, "version")?;
             Ok(Some(json!({ "v": 1, "tool": env!("CARGO_PKG_VERSION"), "protocol": PROTOCOL_VERSION, "build": build_id() })))
@@ -189,6 +263,7 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         Some("close") => {
             a.expect_positional(2, "close <tile>")?;
             let tile = tile_arg(&a)?;
+            guard("close", Some(&tile))?;
             let paths = session_paths(&sessions_dir(), &tile).map_err(|e| CliError::new("invalid", e))?;
             if live_session(&paths).is_none() {
                 return Ok(Some(json!({ "v": 1, "closed": false })));
@@ -303,22 +378,34 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         }
         Some("new") => {
             a.expect_positional(1, "new --folder <dir> [--skip-permissions] [--name <name>]")?;
+            guard("new", None)?;
             let folder = a.opt("--folder").ok_or_else(|| CliError::new("usage", "missing --folder"))?;
             Ok(Some(cmd::new_tile(&cmd::Env::from_process()?, folder, a.flag("--skip-permissions"), a.opt("--name"))?))
         }
         Some("restart") => {
             a.expect_positional(2, "restart <tile>")?;
             let tile = cmd::tile_arg(&tile_arg(&a)?)?;
+            guard("restart", Some(&tile))?;
             Ok(Some(cmd::restart(&cmd::Env::from_process()?, &tile)?))
         }
         Some("send") => {
             a.expect_positional(3, "send <tile> [--] <text>")?;
             let tile = cmd::tile_arg(&a.positional[1])?;
-            Ok(Some(cmd::send(&cmd::Env::from_process()?, &tile, &a.positional[2])?))
+            guard("send", Some(&tile))?;
+            // A line from the conductor to another tile says who is speaking (conductor spec §2).
+            let text = match swarmz_tool::conductor::caller_tile() {
+                Some(c) if c != tile => {
+                    let env = cmd::Env::from_process()?;
+                    format!("[conductor {}] {}", cmd::title_of(&env, &c)?, a.positional[2])
+                }
+                _ => a.positional[2].clone(),
+            };
+            Ok(Some(cmd::send(&cmd::Env::from_process()?, &tile, &text)?))
         }
         Some("key") => {
             a.expect_positional(3, "key <tile> <esc|ctrl-c|tab|shift-tab|up|down|enter>")?;
             let tile = cmd::tile_arg(&a.positional[1])?;
+            guard("key", Some(&tile))?;
             Ok(Some(cmd::key(&cmd::Env::from_process()?, &tile, &a.positional[2])?))
         }
         Some("card") => {
@@ -328,16 +415,19 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         Some("pending") => {
             a.expect_positional(2, "pending <tile>")?;
             let tile = cmd::tile_arg(&a.positional[1])?;
+            guard("pending", Some(&tile))?;
             Ok(Some(cmd::pending(&cmd::Env::from_process()?, &tile)?))
         }
         Some("answer") => {
             a.expect_positional(3, "answer <tile> <yes|always|no|deny|n> [--summary S]")?;
             let tile = cmd::tile_arg(&a.positional[1])?;
+            guard("answer", Some(&tile))?;
             Ok(Some(cmd::answer(&cmd::Env::from_process()?, &tile, &a.positional[2], a.opt("--summary"))?))
         }
         Some("output") => {
             a.expect_positional(2, "output <tile> [--lines N] [--follow]")?;
             let tile = cmd::tile_arg(&a.positional[1])?;
+            guard("output", Some(&tile))?;
             // A follower re-reads its lines every 300 ms: keep that cheap.
             let lines = count(&a, "--lines", 200, if a.flag("--follow") { MAX_FOLLOW_LINES } else { 5000 })?;
             cmd::output(&cmd::Env::from_process()?, &tile, lines, a.flag("--follow"), &mut std::io::stdout())?;
@@ -346,6 +436,7 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         Some("transcript") => {
             a.expect_positional(2, "transcript <tile> [--before ID] [--after ID] [--limit N] [--follow]")?;
             let tile = cmd::tile_arg(&a.positional[1])?;
+            guard("transcript", Some(&tile))?;
             let limit = count(&a, "--limit", 50, 500)?;
             cmd::transcript(&cmd::Env::from_process()?, &tile, a.opt("--before"), a.opt("--after"), limit, a.flag("--follow"), &mut std::io::stdout())?;
             Ok(None)
@@ -353,6 +444,7 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         Some("image") => {
             a.expect_positional(3, "image <tile> <imageId>")?;
             let tile = cmd::tile_arg(&a.positional[1])?;
+            guard("image", Some(&tile))?;
             Ok(Some(cmd::image(&cmd::Env::from_process()?, &tile, &a.positional[2])?))
         }
         Some("phone") => match a.positional.get(1).map(String::as_str) {
@@ -380,7 +472,7 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             a.expect_positional(1, "ssh-gate")?;
             Err(cmd::ssh_gate(&cmd::Env::for_gate()?))
         }
-        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|card|upload|transcript|image|phone|host-keys|ssh-gate> …")),
+        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|card|upload|conductor|fleet|ask|reply|briefing|transcript|image|phone|host-keys|ssh-gate> …")),
     }
 }
 
@@ -402,4 +494,23 @@ fn main() {
             std::process::exit(if is_gate { 126 } else { 1 });
         }
     }
+}
+
+/// `raw` without its `--on <machine>` pair, for the remote side.
+fn strip_on(raw: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == "--on" {
+            i += 2;
+            continue;
+        }
+        if raw[i] == "--" {
+            out.extend(raw[i..].iter().cloned());
+            break;
+        }
+        out.push(raw[i].clone());
+        i += 1;
+    }
+    out
 }
