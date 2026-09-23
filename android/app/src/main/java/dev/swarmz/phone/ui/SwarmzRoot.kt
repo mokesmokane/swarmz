@@ -118,6 +118,7 @@ fun SwarmzRoot(vm: AppViewModel) {
 private fun PairedContent(vm: AppViewModel) {
     val route by vm.route.collectAsStateWithLifecycle()
     val home by vm.home.collectAsStateWithLifecycle()
+    val tileNotice by vm.tileNotice.collectAsStateWithLifecycle()
     BackHandler(enabled = route != Route.Home) { vm.back() }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val available = maxWidth
@@ -141,6 +142,10 @@ private fun PairedContent(vm: AppViewModel) {
                         onSettings = vm::openSettings,
                         onCollapse = { vm.setListCollapsed(true) },
                         modifier = Modifier.width(dragged.coerceAtMost(ceiling)),
+                        onStop = vm::stopTile,
+                        onStart = vm::startTile,
+                        notice = tileNotice,
+                        onDismissNotice = vm::dismissTileNotice,
                     )
                     ResizeHandle(
                         onDrag = { by -> dragged = (dragged + by).coerceIn(LIST_MIN_DP.dp, widest) },
@@ -209,6 +214,8 @@ private fun Screen(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boole
             onPairMac = vm::openAddMac,
             onDismissHint = vm::dismissPairHint,
             onDismissShare = vm::dismissShare,
+            onStop = vm::stopTile,
+            onStart = vm::startTile,
         )
         is Route.Tile -> {
             // While the controller is still loading there is no header, so a collapsed list has nothing to reopen it

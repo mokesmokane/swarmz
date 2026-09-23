@@ -9,6 +9,10 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.onLast
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.geometry.Offset
 import dev.swarmz.phone.data.MemorySettings
@@ -45,15 +49,51 @@ class RootTest {
 
     @After fun tearDown() = scope.cancel()
 
-    private fun vm(paired: Boolean): AppViewModel {
+    private lateinit var conn: FakeConn
+
+    private fun vm(paired: Boolean, snapshot: String = SNAPSHOT): AppViewModel {
         installBouncyCastle()
         val key = PhoneKey(Ed25519.generate())
-        val conn = FakeConn { if (it == Cmd.machines()) """{"machines":[],"v":1}""" else VERSION_OK }
-        runBlocking { conn.stream(Cmd.watch()).send(SNAPSHOT) }
+        conn = FakeConn {
+            when (it) {
+                Cmd.machines() -> """{"machines":[],"v":1}"""
+                Cmd.close("t3") -> """{"closed":true,"v":1}"""
+                Cmd.restart("t4") -> """{"tile":{"cwd":"/p/web","id":"t4","kind":"claude","name":"web","running":true,"status":"idle"},"v":1}"""
+                else -> VERSION_OK
+            }
+        }
+        runBlocking { conn.stream(Cmd.watch()).send(snapshot) }
         val settings = MemorySettings().also { if (paired) runBlocking { it.setPaired(Paired("mini", "me", "Fold")) } }
         val repo = Repository(settings, { key }, HostConnector(mapOf("mini" to ArrayDeque(listOf(conn)))), scope)
         repo.start()
         return AppViewModel(repo, settings, pairing = null, scope = scope)
+    }
+
+    @Test
+    @Config(qualifiers = "w700dp-h800dp")
+    fun aLongPressOnARowOffersStopOrStart() {
+        val two = """{"tiles":[{"cwd":"/p/docs","id":"t3","kind":"claude","name":"docs","running":true,"status":"working"},""" +
+            """{"cwd":"/p/web","id":"t4","kind":"claude","name":"web","running":false,"status":"offline","exitCode":0}],"type":"snapshot","v":1}"""
+        val vm = vm(paired = true, snapshot = two)
+        compose.setContent { SwarmzRoot(vm) }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasTestTag("tile-row-mini/t4")).fetchSemanticsNodes().isNotEmpty() }
+        // A running tile: Stop, behind a confirm, ends its session.
+        compose.onNodeWithTag("tile-row-mini/t3").performTouchInput { longClick() }
+        compose.onNodeWithText("Stop").performClick()
+        compose.onNodeWithText("Stop docs?").assertIsDisplayed()
+        compose.onNodeWithText("Cancel").performClick()
+        assertTrue(conn.ran.none { it == Cmd.close("t3") })
+        compose.onNodeWithTag("tile-row-mini/t3").performTouchInput { longClick() }
+        compose.onNodeWithText("Stop").performClick()
+        compose.onAllNodesWithText("Stop").onLast().performClick()
+        compose.waitUntil(5_000) { Cmd.close("t3") in conn.ran }
+        // A stopped tile: Start, at once.
+        compose.onNodeWithTag("tile-row-mini/t4").performTouchInput { longClick() }
+        compose.onNodeWithText("Start").performClick()
+        compose.waitUntil(5_000) { Cmd.restart("t4") in conn.ran }
+        // Open is still a tap.
+        compose.onNodeWithTag("tile-row-mini/t3").performClick()
+        compose.onNodeWithText("Message docs…").assertIsDisplayed()
     }
 
     @Test

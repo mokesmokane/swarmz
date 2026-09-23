@@ -3,6 +3,7 @@ package dev.swarmz.phone.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -24,13 +25,14 @@ import androidx.compose.ui.unit.dp
 import dev.swarmz.phone.ui.theme.Sw
 
 @Composable
-fun Pill(onClick: () -> Unit, modifier: Modifier = Modifier, filled: Boolean = false, content: @Composable RowScope.() -> Unit) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+fun Pill(onClick: () -> Unit, modifier: Modifier = Modifier, filled: Boolean = false, onLongClick: (() -> Unit)? = null, content: @Composable RowScope.() -> Unit) {
     Row(
         modifier
             .clip(CircleShape)
             .background(if (filled) Sw.Primary else Sw.Card)
             .border(1.dp, if (filled) Sw.Primary else Sw.Border2, CircleShape)
-            .clickable(onClick = onClick)
+            .then(if (onLongClick == null) Modifier.clickable(onClick = onClick) else Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick))
             .heightIn(min = 36.dp)
             .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,

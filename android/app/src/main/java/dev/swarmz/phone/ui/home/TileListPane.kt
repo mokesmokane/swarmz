@@ -2,6 +2,7 @@ package dev.swarmz.phone.ui.home
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,12 +15,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -37,6 +43,7 @@ import dev.swarmz.phone.ui.theme.MonoSmall
 import dev.swarmz.phone.ui.theme.Sw
 
 @Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun TileListPane(
     ui: HomeUi,
     selected: TileKey?,
@@ -45,8 +52,20 @@ fun TileListPane(
     onSettings: () -> Unit,
     onCollapse: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    onStop: (TileKey) -> Unit = {},
+    onStart: (TileKey) -> Unit = {},
+    notice: String? = null,
+    onDismissNotice: () -> Unit = {},
 ) {
+    // The row whose long-press menu is open.
+    var menuFor by remember { mutableStateOf<TileKey?>(null) }
     Column(modifier.fillMaxHeight().background(Sw.Background)) {
+        notice?.let {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = Sw.ErrorLine, modifier = Modifier.weight(1f).testTag("tile-notice"))
+                IconButton(onClick = onDismissNotice) { Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = Sw.Muted) }
+            }
+        }
         Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Tiles", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
             IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Sw.Secondary) }
@@ -78,7 +97,7 @@ fun TileListPane(
                             .clip(RoundedCornerShape(8.dp))
                             .background(if (isSelected) Sw.Card else Sw.Background)
                             .testTag("tile-row-${view.key.mac}/${view.key.id}")
-                            .clickable { onOpen(view.key) }
+                            .combinedClickable(onClick = { onOpen(view.key) }, onLongClick = { menuFor = view.key })
                             .padding(horizontal = 8.dp, vertical = 8.dp)
                             .alpha(if (section.dimmed) 0.5f else 1f),
                         verticalAlignment = Alignment.CenterVertically,
@@ -89,6 +108,14 @@ fun TileListPane(
                             Text(view.row.shownTitle, style = MaterialTheme.typography.titleSmall, maxLines = 1)
                             Text(subLine(view, need), style = MonoSmall, maxLines = 1)
                         }
+                        TileMenu(
+                            view,
+                            expanded = menuFor == view.key,
+                            onDismiss = { menuFor = null },
+                            onOpen = { onOpen(view.key) },
+                            onStop = { onStop(view.key) },
+                            onStart = { onStart(view.key) },
+                        )
                     }
                 }
             }
