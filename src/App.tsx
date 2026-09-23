@@ -43,6 +43,12 @@ export default function App() {
     }, SYNC_PULL_MS);
     const statTimer = setInterval(() => {
       void useStore.getState().checkExternalChange();
+      // The Telegram file can change under the app: pushed from another Mac's Notifications
+      // panel, or written by hand. The follower must follow it (conductor spec §5).
+      ipc.telegramGet().then(
+        (i) => useStore.getState().setTelegramConfigured(i.configured),
+        () => {},
+      );
     }, SYNC_STAT_MS);
     const onFocus = () => {
       void useStore.getState().pullWorkspace();
