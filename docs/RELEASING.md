@@ -7,7 +7,7 @@ Actions run that a tag starts. Nothing is built locally.
 
 ```bash
 npm run version -- 0.2.0        # package.json, src-tauri/tauri.conf.json, android/app/build.gradle.kts
-git add package.json src-tauri/tauri.conf.json android/app/build.gradle.kts
+git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock android/app/build.gradle.kts
 git commit -m "chore: v0.2.0"
 git push
 git tag v0.2.0
@@ -15,7 +15,8 @@ git push origin v0.2.0
 ```
 
 `npm run version` is the only thing that sets a version. It writes the same
-`MAJOR.MINOR.PATCH` into all three files and derives the Android `versionCode` as
+`MAJOR.MINOR.PATCH` into all of them (the Cargo manifest and both lockfiles too, so commit
+those as well: the version test fails on a commit that left any of them behind) and derives the Android `versionCode` as
 `major * 10000 + minor * 100 + patch` (so `0.2.0` is `200`, `1.0.0` is `10000`). Minor and patch
 must stay under 100 or that number stops increasing; the script refuses anything else, as it
 refuses pre-release suffixes. A test in `scripts/version.test.mjs` fails if the three files ever
