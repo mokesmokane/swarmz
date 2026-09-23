@@ -31,9 +31,10 @@ shared workspace:
 
 - The tile **stays in the layout tree** on every Mac. Only this Mac hides
   it from the workbench while it is out, and only this Mac knows.
-- The set of broken-out tiles and each window's bounds live in
-  `~/.swarmz/windows.json` on this Mac (never synced, never in
-  `workspace.json`), so a relaunch restores the windows.
+- The set of broken-out tiles and each window's bounds live in this Mac's
+  `localStorage` (`swarmz.breakouts`; as built, in place of a
+  `~/.swarmz/windows.json` file: never synced, never in `workspace.json`),
+  so a relaunch restores the windows.
 - In the main window the tile's tab stays in its group, drawn as a
   placeholder: dimmed title, `↗ own window`, and a click that brings the
   window forward. Its pane is not rendered there (the holder has one
@@ -53,9 +54,9 @@ only its own replay, its own size, and a home for its writes:
 - `open_view(id)` (new command, called by the breakout window on load):
   connects a second `HolderClient` to `~/.swarmz/sessions/<id>.sock` for
   the calling window (viewer label `window:<label>`), kept in
-  `AppState.views: HashMap<(String /*window*/, String /*id*/), Arc<PtySession>>`,
-  and emits the replay on `pty:replay:<id>:<label>` so the main window's
-  pane does not reset. Data from either viewer goes to `pty:data:<id>` as
+  `AppState.views: HashMap<(String /*window*/, String /*id*/), Arc<dyn TerminalSession>>`,
+  and emits the replay on `pty:replay:<id>` **to that window only**
+  (`emit_to`), so the main window's pane does not reset. Data from either viewer goes to `pty:data:<id>` as
   now (the holder broadcasts to every viewer; the core forwards the first
   viewer's stream only, so nothing is doubled).
 - `write_terminal` and `resize_terminal` take the calling window's viewer
@@ -73,13 +74,12 @@ only its own replay, its own size, and a home for its writes:
 - A second Vite entry, `breakout.html` → `src/breakout.tsx`, rendering
   `BreakoutApp` for the tile named in the URL (`?tile=<id>`). It does not
   run `loadWorkspace`, sync, agent watchers or the updater; it reads what
-  it needs from the main window through two new commands, `tile_snapshot(id)`
-  (name, cwd, settings, card, agent state) and a `tile:changed:<id>` event
-  the main window's store emits when any of those change. Writes that
-  change settings (title edit, folder) go through the main window: the
-  breakout window invokes them via `main_window_action`, a small command
-  that forwards to the main window with an event, so the store stays in one
-  place.
+  it needs from the main window through events (as built): it emits
+  `breakout:hello` on load and the main window answers, and re-sends on
+  every change, a `tile:state:<id>` snapshot (terminal, settings, agent
+  state, machines, the sidebar's second line, the title). Anything that
+  changes the store (return, restart) goes back as a `breakout:action`
+  event the main window acts on, so the store stays in one place.
 - Chrome: a 28 px header with the machine chip, title, name and folder
   (the sidebar's second line), the status dot, and **Return to workspace**.
   Below it the same `TerminalPane` (xterm registry entry keyed by tile id,
