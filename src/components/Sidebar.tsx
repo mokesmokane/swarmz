@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { GROUP_BY_OPTIONS, groupRows, loadGroupBy, relativeActivity, rowInfo, saveGroupBy, type GroupBy, type RowInfo } from "../lib/sidebarGroups";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { useStore, terminalColor } from "../store";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
@@ -21,6 +22,31 @@ function relativeTime(iso: string): string {
   const m = Math.round(s / 60);
   if (m < 60) return `${m}m ago`;
   return `${Math.round(m / 60)}h ago`;
+}
+
+/** A clock that ticks every `everyMs`, for the relative times in the list (sidebar groups spec §2). */
+function useNow(everyMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), everyMs);
+    return () => clearInterval(t);
+  }, [everyMs]);
+  return now;
+}
+
+/** The machine chip of a row or a group header: a dot in the machine's colour (hollow when the remote is offline) and its label. */
+function MachineChip({ label, alias, color, online }: { label: string; alias?: string | null; color: string | null; online: boolean | null }) {
+  const hollow = online === false;
+  const state = online === false ? " · offline" : online === true ? " · online" : "";
+  return (
+    <span className="inline-flex items-center gap-1" title={`${alias ? `${alias} · ` : ""}${label}${state}`}>
+      <span
+        className={`inline-block h-2 w-2 rounded-full ${hollow ? "border" : ""} ${color ? "" : hollow ? "border-neutral-500" : "bg-neutral-500"}`}
+        style={color ? (hollow ? { borderColor: color } : { backgroundColor: color }) : undefined}
+      />
+      <span>{label}</span>
+    </span>
+  );
 }
 
 /** How long a row is hovered before its card opens (conversation cards spec §5). */
@@ -106,7 +132,7 @@ function OutsideSessionsLine() {
   );
 }
 
-function Row({ id }: { id: string }) {
+function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: number }) {
   const t = useStore((s) => s.terminals[id]);
   const settings = useStore((s) => s.settings[id]);
   const focused = useStore((s) => s.focusedTerminalId === id);
@@ -117,7 +143,6 @@ function Row({ id }: { id: string }) {
   const color = useStore((s) => terminalColor(s, id));
   const agent = useStore((s) => s.agentState[id]);
   const machineName = useStore((s) => s.settings[id]?.ssh?.machine ?? null);
-  const machineCwd = useStore((s) => s.settings[id]?.ssh?.cwd ?? "");
   const online = useStore((s) =>
     machineName ? (s.tailscale?.peers.find((p) => p.name === machineName)?.online ?? null) : null,
   );
@@ -253,13 +278,17 @@ function Row({ id }: { id: string }) {
                 </span>
               )}
             </div>
-            <div className="truncate text-xs text-neutral-500">
+            <div className="truncate text-xs text-neutral-500" data-testid={`line2-${id}`}>
               {hasTitle(card, agent) ? `${t.name} · ` : ""}
-              {machineName
-                ? `${machineName}${machineCwd ? ` · ${machineCwd}` : ""}`
-                : settings?.ssh?.host
-                  ? `ssh ${settings.ssh.host}`
-                  : basename(t.cwd)}
+              {info ? (
+                <>
+                  <MachineChip label={info.machine.label} alias={info.machine.alias} color={info.machine.color} online={info.machine.online} />
+                  {` · ${info.folder} · ${info.status}`}
+                  {info.since ? ` · ${relativeActivity(info.since, now)}` : ""}
+                </>
+              ) : (
+                basename(t.cwd)
+              )}
             </div>
           </>
         )}
@@ -317,6 +346,25 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<"closed" | "open" | "ssh">("closed");
   const [phonesOpen, setPhonesOpen] = useState(false);
+  // The list's grouping (sidebar groups spec §3), a per-machine preference.
+  const [groupBy, setGroupBy] = useState<GroupBy>(() => loadGroupBy());
+  const now = useNow(30_000);
+  const terminals = useStore((s) => s.terminals);
+  const settings = useStore((s) => s.settings);
+  const agentState = useStore((s) => s.agentState);
+  const selfMachine = useStore((s) => s.selfMachine);
+  const machines = useStore((s) => s.machines);
+  const peers = useStore((s) => s.tailscale?.peers ?? null);
+  const online: Record<string, boolean> = {};
+  for (const p of peers ?? []) online[p.name] = p.online;
+  const infos = new Map<string, RowInfo>();
+  for (const id of order) {
+    const t = terminals[id];
+    if (!t) continue;
+    const s = settings[id];
+    infos.set(id, rowInfo({ id, name: t.name, cwd: t.cwd, exited: t.exited, ssh: s?.ssh ?? null, foreign: s?.foreign ?? null, sessions: s?.sessions, agent: agentState[id] }, { selfMachine, machines, online }));
+  }
+  const groups = groupRows(order, infos, groupBy);
 
   const addTerminal = async () => {
     setMenu("closed");
@@ -395,9 +443,39 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
         </div>
       )}
       <OutsideSessionsLine />
+      {order.length > 1 && (
+        <div className="flex items-center gap-2 border-b border-neutral-800 px-3 py-1 text-xs text-neutral-500">
+          <label htmlFor="sidebar-group-by">Group by</label>
+          <select
+            id="sidebar-group-by"
+            className="rounded border border-neutral-800 bg-neutral-900 px-1 py-0.5 text-neutral-300"
+            value={groupBy}
+            onChange={(e) => {
+              const v = e.target.value as GroupBy;
+              setGroupBy(v);
+              saveGroupBy(v);
+            }}
+          >
+            {GROUP_BY_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
       <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
-        {order.map((id) => (
-          <Row key={id} id={id} />
+        {groups.map((g) => (
+          <div key={g.key}>
+            {g.title && (
+              <div className="flex items-center gap-1 px-2 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-neutral-500" data-testid={`group-${g.key}`}>
+                {groupBy === "machine" ? <MachineChip label={g.title} color={g.color ?? null} online={g.online ?? null} /> : <span>{g.title}</span>}
+                <span className="text-neutral-600">{g.ids.length}</span>
+                {groupBy === "machine" && g.online === false && <span className="text-neutral-600">· offline</span>}
+              </div>
+            )}
+            {g.ids.map((id) => (
+              <Row key={id} id={id} info={infos.get(id)} now={now} />
+            ))}
+          </div>
         ))}
         {order.length === 0 && <div className="px-2 py-4 text-xs text-neutral-500">No terminals</div>}
       </div>

@@ -123,7 +123,7 @@ describe("Sidebar", () => {
       useStore.setState({ agentState: { [ID]: { ...useStore.getState().agentState[ID], status: "working", sessionId: "s", since: "t", lastEvent: "UserPromptSubmit", unseen: false, title: "fix the build", firstPrompt: "fix the build please" } } });
     });
     expect(screen.getByTestId(`title-${ID}`).textContent).toBe("fix the build");
-    expect(screen.getByText("desk · box")).toBeTruthy();
+    expect(screen.getByTestId(`line2-${ID}`).textContent).toBe("desk · box · projects · working · now");
     // The agent's card wins over the prompt.
     act(() => {
       const s = useStore.getState();
@@ -187,7 +187,7 @@ describe("Sidebar", () => {
     expect(useStore.getState().settings[ID].card).toMatchObject({ title: "Mine", by: "user" });
     expect(screen.getByTestId(`title-${ID}`).textContent).toBe("Mine");
     // The name is still edited from the rest of the row.
-    fireEvent.doubleClick(screen.getByText("desk · box"));
+    fireEvent.doubleClick(screen.getByTestId(`line2-${ID}`));
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("desk");
     fireEvent.keyDown(screen.getByLabelText("Name"), { key: "Escape" });
     fireEvent.doubleClick(screen.getByTestId(`title-${ID}`));
@@ -195,6 +195,33 @@ describe("Sidebar", () => {
     fireEvent.keyDown(screen.getByLabelText("Title"), { key: "Enter" });
     expect(useStore.getState().settings[ID].card).toBeNull();
     expect(screen.getByTestId(`title-${ID}`).textContent).toBe("desk");
+  });
+
+  it("groups by machine with a header, and by status in order", () => {
+    act(() => {
+      const s = useStore.getState();
+      useStore.setState({
+        terminals: { ...s.terminals, local: { id: "local", name: "here", cwd: "/home/mokes/other", exited: null, error: null } },
+        order: [ID, "local"],
+        settings: { ...s.settings, local: { ssh: null, claude: null, command: null, extra: {} } },
+        selfMachine: "mini",
+        agentState: { [ID]: { status: "blocked", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "PermissionRequest", unseen: true, title: null, firstPrompt: null } },
+      });
+    });
+    render(<Sidebar />);
+    // The chip names the machine on every row, remote and local alike.
+    expect(screen.getByTestId(`line2-${ID}`).textContent).toContain("box · projects · needs you");
+    expect(screen.getByTestId("line2-local").textContent).toBe("mini · other · stopped");
+    fireEvent.change(screen.getByLabelText("Group by"), { target: { value: "machine" } });
+    expect(screen.getByTestId("group-mini").textContent).toContain("mini");
+    expect(screen.getByTestId("group-box").textContent).toContain("box");
+    // This Mac's group comes first.
+    const headers = screen.getAllByTestId(/^group-/).map((h) => h.getAttribute("data-testid"));
+    expect(headers).toEqual(["group-mini", "group-box"]);
+    fireEvent.change(screen.getByLabelText("Group by"), { target: { value: "status" } });
+    expect(screen.getAllByTestId(/^group-/).map((h) => h.getAttribute("data-testid"))).toEqual(["group-needs you", "group-stopped"]);
+    expect(localStorage.getItem("swarmz.sidebarGroupBy")).toBe("status");
+    localStorage.removeItem("swarmz.sidebarGroupBy");
   });
 
   it("shows a synced status line when sync is enabled and tailscale is running", () => {
