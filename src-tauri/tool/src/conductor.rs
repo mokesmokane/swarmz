@@ -147,9 +147,22 @@ pub fn outcome_line(approved: bool) -> &'static str {
     }
 }
 
-/// The ssh command that runs the tool on another Mac over the shared master (spec §2, `--on`).
+/// The ssh command that runs the tool on another Mac over the shared master (spec §2, `--on`),
+/// anonymously: the local guard has decided, and `deliver`'s `send` must not be re-guarded there
+/// as the replying tile.
 pub fn remote_command(host: &str, args: &[String]) -> std::process::Command {
-    let remote = std::iter::once("~/.swarmz/bin/swarmz".to_string()).chain(args.iter().map(|a| sh_quote(a))).collect::<Vec<_>>().join(" ");
+    remote_command_as(host, args, None)
+}
+
+/// [`remote_command`] with the caller's tile identity carried across (`--on`): the remote
+/// shell inherits nothing, and `ask` needs to know which tile asks (its title marks the line),
+/// as the remote guard needs to know who acts.
+pub fn remote_command_as(host: &str, args: &[String], identity: Option<(&str, &str)>) -> std::process::Command {
+    let prefix = match identity {
+        Some((id, name)) => format!("SWARMZ_TERMINAL_ID={} SWARMZ_TERMINAL_NAME={} ", sh_quote(id), sh_quote(name)),
+        None => String::new(),
+    };
+    let remote = std::iter::once(format!("{prefix}~/.swarmz/bin/swarmz")).chain(args.iter().map(|a| sh_quote(a))).collect::<Vec<_>>().join(" ");
     let mut c = std::process::Command::new("ssh");
     c.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ControlPath=~/.swarmz/ssh/%C", "-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "--", host, &remote]);
     c
@@ -290,6 +303,10 @@ mod tests {
         let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(args.last().unwrap(), "~/.swarmz/bin/swarmz 'send' 't2' '--' 'it'\\''s done'");
         assert_eq!(args[args.len() - 2], "me@box");
+        // `--on` carries the caller across, quoted, so the remote `ask` knows who asks.
+        let c = remote_command_as("me@box", &["ask".into(), "t2".into(), "--".into(), "how far?".into()], Some(("c1", "the swarm's tile")));
+        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args.last().unwrap(), "SWARMZ_TERMINAL_ID='c1' SWARMZ_TERMINAL_NAME='the swarm'\\''s tile' ~/.swarmz/bin/swarmz 'ask' 't2' '--' 'how far?'");
     }
 
     #[test]

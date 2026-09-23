@@ -170,7 +170,12 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         let env = cmd::Env::from_process()?;
         let host = cmd::host_for(&env, machine)?;
         let args: Vec<String> = strip_on(raw);
-        let status = swarmz_tool::conductor::remote_command(&host, &args)
+        // The remote shell inherits no environment: the caller's tile goes with the command, so
+        // `ask` there knows who asks and the remote guard checks the same caller.
+        let caller = swarmz_tool::conductor::caller_tile();
+        let name = std::env::var("SWARMZ_TERMINAL_NAME").ok().filter(|n| !n.is_empty()).or_else(|| caller.clone());
+        let identity = caller.as_deref().zip(name.as_deref());
+        let status = swarmz_tool::conductor::remote_command_as(&host, &args, identity)
             .stdin(std::process::Stdio::null())
             .status()
             .map_err(|e| CliError::new("failed", format!("could not run ssh: {e}")))?;
