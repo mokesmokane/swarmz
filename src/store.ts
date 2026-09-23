@@ -52,6 +52,33 @@ import {
   validateIcon,
 } from "./lib/workspace";
 import { withUserTitle } from "./lib/card";
+import { loadBreakouts, saveBreakouts, type Bounds } from "./lib/breakouts";
+
+/**
+ * What the window module (`breakoutWindows.ts`) does for the store: opening, focusing and
+ * closing a tile's own window, and reading the main window's bounds for the drag-out check. It
+ * fills these in at module load so the store never imports the window API (tests mock nothing).
+ */
+export const breakoutHooks: {
+  open: (id: string, at: { x: number; y: number } | null) => Promise<void>;
+  focus: (id: string) => void;
+  close: (id: string) => void;
+  mainBounds: () => Promise<Bounds | null>;
+} = {
+  open: async () => {},
+  focus: () => {},
+  close: () => {},
+  mainBounds: async () => null,
+};
+
+/** The per-Mac record of which tiles are out; bounds are kept by the window module. */
+function persistBreakouts(): void {
+  const saved = loadBreakouts();
+  const now = useStore.getState().breakouts;
+  const next: ReturnType<typeof loadBreakouts> = {};
+  for (const id of Object.keys(now)) next[id] = saved[id] ?? { bounds: null };
+  saveBreakouts(next);
+}
 import { applyAgentEvent as foldAgentEvent, OFFLINE, type AgentState } from "./lib/agentState";
 import type { AgentEventPayload } from "./lib/ipc";
 import { bumpSession, isSafeFolder, promoteSession, removeSession, sanitizeSessions, upsertSession } from "./lib/sessions";
@@ -423,6 +450,14 @@ export interface WorkbenchState {
   updateSettings(id: string, patch: Partial<TerminalSettings>): void;
   /** The user typed a title for the tile's card (conversation cards spec §5); empty hands it back. */
   setCardTitle(id: string, title: string): void;
+  /** Tiles shown in their own windows on this Mac (breakout windows spec §2); the layout is untouched. */
+  breakouts: Record<string, true>;
+  /** Opens the tile in its own window, at `at` (screen, logical px) or where it was last. */
+  breakoutTerminal(id: string, at: { x: number; y: number } | null): Promise<void>;
+  /** Brings the tile back into the workbench (its window closes). */
+  returnTerminal(id: string): void;
+  /** The breakouts this Mac had when it last ran, for `restoreBreakouts`. */
+  restoreBreakouts(): Promise<void>;
   runStartup(id: string): Promise<void>;
   runRemoteStep(id: string): Promise<void>;
   /** The remote `swarmz attach` reported it is bridging this tile (`isNew`: it started the
@@ -1398,6 +1433,11 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   async closeTerminal(id) {
+    if (useStore.getState().breakouts[id]) {
+      set((st) => ({ breakouts: omit(st.breakouts, id) as Record<string, true> }));
+      persistBreakouts();
+      breakoutHooks.close(id);
+    }
     stopPolling(id);
     forgetAttach(id);
     // A tile whose home is another Mac has a session holder there too (§3.6): end it alongside
@@ -1731,6 +1771,46 @@ export const useStore = create<WorkbenchState>((set) => ({
     set({ outsideSessions: [] });
     await useStore.getState().refreshOutsideSessions();
     return firstError;
+  },
+
+  breakouts: {},
+
+  async breakoutTerminal(id, at) {
+    const s = useStore.getState();
+    if (!s.terminals[id] || s.terminals[id].exited !== null) return;
+    if (s.breakouts[id]) {
+      breakoutHooks.focus(id);
+      return;
+    }
+    // The group shows another tab meanwhile, so it is never blank.
+    set((st) => {
+      const group = findGroupOf(st.layout, id);
+      const next = group?.tabs.find((t) => t !== id && !st.breakouts[t]);
+      const layout = group && group.active === id && next ? setActive(st.layout, group.id, next) : st.layout;
+      return { breakouts: { ...st.breakouts, [id]: true }, layout };
+    });
+    persistBreakouts();
+    try {
+      await breakoutHooks.open(id, at);
+    } catch (e) {
+      set((st) => ({ breakouts: omit(st.breakouts, id) as Record<string, true>, persistError: `could not open a window: ${typeof e === "string" ? e : String(e)}` }));
+      persistBreakouts();
+    }
+  },
+
+  returnTerminal(id) {
+    if (!useStore.getState().breakouts[id]) return;
+    set((st) => ({ breakouts: omit(st.breakouts, id) as Record<string, true> }));
+    persistBreakouts();
+    breakoutHooks.close(id);
+    useStore.getState().focusTerminal(id);
+  },
+
+  async restoreBreakouts() {
+    const saved = loadBreakouts();
+    for (const id of Object.keys(saved)) {
+      if (useStore.getState().terminals[id]) await useStore.getState().breakoutTerminal(id, null);
+    }
   },
 
   setCardTitle(id, title) {

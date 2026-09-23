@@ -22,6 +22,71 @@ pub struct AppState {
     /// Ids closed before their start had registered them, with when (see `close_terminal`).
     pub closed_early: Mutex<HashMap<String, Instant>>,
     pub watchers: Mutex<HashMap<Option<String>, (u64, crate::agents::Watcher)>>,
+    /// Second viewers of tiles shown in their own windows (breakout windows spec §3), by
+    /// (window label, tile id). Their replay goes to that window alone; data still arrives on
+    /// `pty:data:<id>`, which every window receives from the main viewer.
+    pub views: Mutex<HashMap<(String, String), Arc<dyn TerminalSession>>>,
+}
+
+/// The session a window's writes and resizes go to: its own viewer of the tile when it has one
+/// (a breakout window), else the main viewer.
+fn session_for(state: &AppState, label: &str, id: &str) -> Option<Arc<dyn TerminalSession>> {
+    if let Some(v) = state.views.lock().unwrap().get(&(label.to_string(), id.to_string())) {
+        return Some(v.clone());
+    }
+    state.sessions.lock().unwrap().get(id).map(|(_, s)| s.clone())
+}
+
+/// Drops every viewer a window held (its close, or a tile's return to the workbench).
+pub fn drop_views(state: &AppState, label: &str, id: Option<&str>) {
+    state.views.lock().unwrap().retain(|(l, i), _| l != label || id.is_some_and(|want| want != i));
+}
+
+/// Opens a breakout window's own viewer of a running tile's holder (spec §3): a sizeless Hello,
+/// so the pane keeps the size the last typist set until something is typed here, and the replay
+/// delivered to this window only. Errors: an unknown tile, or a holder that does not answer.
+#[tauri::command]
+pub async fn open_view(app: AppHandle, window: tauri::Window, id: String) -> Result<(), String> {
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        if state.registry.lock().unwrap().get(&id).is_none() {
+            return Err(format!("no terminal with id {id}"));
+        }
+        if !state.sessions.lock().unwrap().contains_key(&id) {
+            return Err(format!("terminal {id} is not running"));
+        }
+        let socket = swarmz_tool::paths::session_paths(&swarmz_tool::paths::sessions_dir(), &id)?.socket;
+        let hello = Hello { v: PROTOCOL_VERSION, cols: 0, rows: 0, viewer: format!("window:{label}") };
+        let replay_topic = format!("pty:replay:{id}");
+        let emit_app = app.clone();
+        let target = tauri::EventTarget::labeled(label.clone());
+        let replay_size = Arc::new(Mutex::new((0u16, 0u16)));
+        let welcome_size = replay_size.clone();
+        let client = HolderClient::connect_with(
+            &socket,
+            &hello,
+            move |welcome| *welcome_size.lock().unwrap() = (welcome.cols, welcome.rows),
+            move |bytes, replay| {
+                if replay {
+                    let size = *replay_size.lock().unwrap();
+                    let _ = emit_app.emit_to(target.clone(), &replay_topic, replay_payload(&bytes, size));
+                }
+            },
+            |_| {},
+        )?;
+        let client: Arc<dyn TerminalSession> = Arc::new(client);
+        state.views.lock().unwrap().insert((label, id), client);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Closes the calling window's viewer of a tile (the tile returned to the workbench).
+#[tauri::command]
+pub fn close_view(state: State<'_, AppState>, window: tauri::Window, id: String) {
+    drop_views(&state, window.label(), Some(&id));
 }
 
 /// Removes the session for `id` only if its recorded generation matches `gen`.
@@ -263,21 +328,14 @@ pub fn list_terminals(state: State<'_, AppState>) -> Vec<TerminalInfo> {
 }
 
 #[tauri::command]
-pub fn write_terminal(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
-    let session = state
-        .sessions
-        .lock()
-        .unwrap()
-        .get(&id)
-        .map(|(_, s)| s.clone())
-        .ok_or_else(|| format!("terminal {id} is not running"))?;
+pub fn write_terminal(state: State<'_, AppState>, window: tauri::Window, id: String, data: String) -> Result<(), String> {
+    let session = session_for(&state, window.label(), &id).ok_or_else(|| format!("terminal {id} is not running"))?;
     session.write(data.as_bytes())
 }
 
 #[tauri::command]
-pub fn resize_terminal(state: State<'_, AppState>, id: String, cols: u16, rows: u16) -> Result<(), String> {
-    let session = state.sessions.lock().unwrap().get(&id).map(|(_, s)| s.clone());
-    match session {
+pub fn resize_terminal(state: State<'_, AppState>, window: tauri::Window, id: String, cols: u16, rows: u16) -> Result<(), String> {
+    match session_for(&state, window.label(), &id) {
         Some(s) => s.resize(cols, rows),
         None => Ok(()),
     }

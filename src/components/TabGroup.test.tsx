@@ -92,3 +92,66 @@ describe("tab dot", () => {
     expect(screen.getByTestId(`tab-dot-${ID}`).className).toContain("bg-neutral-600");
   });
 });
+
+describe("breakout windows", () => {
+  it("a broken-out tab is a placeholder that brings its window forward, and the pane stands in", async () => {
+    const { breakoutHooks } = await import("../store");
+    const { TabGroup } = await import("./TabGroup");
+    const calls: string[] = [];
+    breakoutHooks.open = async (id) => void calls.push(`open ${id}`);
+    breakoutHooks.focus = (id) => void calls.push(`focus ${id}`);
+    breakoutHooks.close = () => {};
+    useStore.setState({
+      terminals: {
+        a: { id: "a", name: "alpha", cwd: "/a", exited: null, error: null },
+        b: { id: "b", name: "beta", cwd: "/b", exited: null, error: null },
+      },
+      order: ["a", "b"],
+      layout: { kind: "group", id: "g1", tabs: ["a", "b"], active: "b" },
+      focusedGroupId: "g1",
+      focusedTerminalId: "b",
+      settings: {},
+      agentState: {},
+      breakouts: { b: true },
+    });
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: ["a", "b"], active: "b" }} />);
+    expect(screen.getByTestId("placeholder-b").textContent).toContain("beta is in its own window");
+    expect(screen.getByTestId("tab-b").dataset.breakout).toBe("true");
+    // Clicking the placeholder tab focuses the window rather than the pane.
+    screen.getByTestId("tab-b").click();
+    await vi.waitFor(() => expect(calls).toEqual(["focus b"]));
+    // The other tab's hover button breaks it out.
+    screen.getByLabelText("Open in its own window").click();
+    await vi.waitFor(() => expect(calls).toEqual(["focus b", "open a"]));
+    expect(useStore.getState().breakouts).toEqual({ a: true, b: true });
+    localStorage.removeItem("swarmz.breakouts");
+    breakoutHooks.open = async () => {};
+    breakoutHooks.focus = () => {};
+  });
+
+  it("a drag that ends outside the window breaks the tile out; inside does not", async () => {
+    const { breakoutHooks } = await import("../store");
+    const { endTabDrag } = await import("./TabGroup");
+    const calls: string[] = [];
+    breakoutHooks.open = async (id, at) => void calls.push(`open ${id} ${at?.x},${at?.y}`);
+    breakoutHooks.mainBounds = async () => ({ x: 100, y: 100, width: 800, height: 600 });
+    useStore.setState({
+      terminals: { a: { id: "a", name: "alpha", cwd: "/a", exited: null, error: null } },
+      order: ["a"],
+      layout: { kind: "group", id: "g1", tabs: ["a"], active: "a" },
+      breakouts: {},
+    });
+    const drag = (dropEffect: string, screenX: number, screenY: number) =>
+      endTabDrag("a", { dataTransfer: { dropEffect } as DataTransfer, screenX, screenY });
+    await drag("move", 2000, 300);
+    expect(calls).toEqual([]);
+    await drag("none", 300, 300);
+    expect(calls).toEqual([]);
+    await drag("none", 2000, 300);
+    expect(calls).toEqual(["open a 2000,300"]);
+    expect(useStore.getState().breakouts).toEqual({ a: true });
+    localStorage.removeItem("swarmz.breakouts");
+    breakoutHooks.open = async () => {};
+    breakoutHooks.mainBounds = async () => null;
+  });
+});
