@@ -32,8 +32,8 @@ android {
         applicationId = "dev.swarmz.phone"
         minSdk = 31
         targetSdk = 35
-        versionCode = 304
-        versionName = "0.3.4"
+        versionCode = 400
+        versionName = "0.4.0"
     }
 
     signingConfigs {
