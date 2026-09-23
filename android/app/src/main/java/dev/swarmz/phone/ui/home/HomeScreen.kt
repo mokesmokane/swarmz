@@ -23,6 +23,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -79,7 +82,10 @@ fun HomeScreen(
     onPairMac: (String) -> Unit = {},
     onDismissHint: (String) -> Unit = {},
     onDismissShare: () -> Unit = {},
+    onStop: (TileKey) -> Unit = {},
+    onStart: (TileKey) -> Unit = {},
 ) {
+    var menuFor by remember { mutableStateOf<TileKey?>(null) }
     val needs = ui.model.needs
     val quiet = ui.model.quiet
     Column(Modifier.fillMaxSize()) {
@@ -149,9 +155,10 @@ fun HomeScreen(
                 item {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         quiet.forEach { view ->
-                            Pill(onClick = { onOpen(view.key) }) {
+                            Pill(onClick = { onOpen(view.key) }, onLongClick = { menuFor = view.key }, modifier = Modifier.testTag("chip-${view.key.mac}/${view.key.id}")) {
                                 StatusDot(dotOf(view.row, null), size = 6.dp)
                                 Text(view.row.shownTitle, style = MaterialTheme.typography.labelMedium)
+                                TileMenu(view, expanded = menuFor == view.key, onDismiss = { menuFor = null }, onOpen = { onOpen(view.key) }, onStop = { onStop(view.key) }, onStart = { onStart(view.key) })
                             }
                         }
                     }

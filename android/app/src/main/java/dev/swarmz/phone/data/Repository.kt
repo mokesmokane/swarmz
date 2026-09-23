@@ -8,6 +8,7 @@ import dev.swarmz.phone.proto.AnswerReply
 import dev.swarmz.phone.proto.Card
 import dev.swarmz.phone.proto.CardReply
 import dev.swarmz.phone.proto.Cmd
+import dev.swarmz.phone.proto.SessionClosed
 import dev.swarmz.phone.ssh.Progress
 import dev.swarmz.phone.proto.UploadReply
 import dev.swarmz.phone.proto.Folders
@@ -423,6 +424,9 @@ class Repository(
     }
 
     suspend fun restart(key: TileKey): TileRow = link(key.mac).call<TileReply>(Cmd.restart(key.id)).tile
+
+    /** Ends the tile's session on its Mac (`close`); false when none was running. */
+    suspend fun stop(key: TileKey): Boolean = link(key.mac).call<SessionClosed>(Cmd.close(key.id)).closed
 
     /**
      * Sends a file to [mac] (phone attachments spec §4.2) and returns the path it landed at. A Mac that is

@@ -645,7 +645,13 @@ plain width check (§6.3), not material3-adaptive.
 label), then one section per Mac (alias, uppercase). Rows: dot (halo when it
 needs you), name, and a sub-line "<Mac> · permission" / "<folder> ·
 working" / "exited 1". The open tile's row is highlighted. Offline Macs'
-sections are dimmed with "last seen …".
+sections are dimmed with "last seen …". **Long-press a row** (or a Home
+chip; amended 2026-09-23) for a menu: **Open**; **Stop** on a running tile,
+behind a confirm, which ends its session on the Mac (`close`: the shell and
+any Claude in it), after which the row reads stopped; **Start** on a stopped
+tile (`restart`: a fresh shell, Claude resuming its conversation). Both are
+disabled while the Mac is offline; a failure shows one dismissible line at
+the top of the list.
 
 ### 6.6 Tile screen
 

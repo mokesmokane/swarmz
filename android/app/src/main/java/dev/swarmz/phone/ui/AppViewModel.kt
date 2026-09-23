@@ -213,6 +213,38 @@ class AppViewModel(
         pendingShare.value = null
     }
 
+    private val _tileNotice = MutableStateFlow<String?>(null)
+    /** What the last Stop or Start from the list had to say when it failed. */
+    val tileNotice: StateFlow<String?> = _tileNotice.asStateFlow()
+
+    fun dismissTileNotice() {
+        _tileNotice.value = null
+    }
+
+    /** Ends a running tile's session on its Mac (list menu, spec §6.5). Its row shows it stopped. */
+    fun stopTile(key: TileKey) {
+        viewModelScope.launch {
+            try {
+                if (!repo.stop(key)) _tileNotice.value = "${nameOf(key)} was not running"
+            } catch (e: Exception) {
+                _tileNotice.value = "could not stop ${nameOf(key)}: ${e.message}"
+            }
+        }
+    }
+
+    /** Starts a stopped tile again (`restart`: a fresh shell, and Claude resumes its conversation). */
+    fun startTile(key: TileKey) {
+        viewModelScope.launch {
+            try {
+                repo.restart(key)
+            } catch (e: Exception) {
+                _tileNotice.value = "could not start ${nameOf(key)}: ${e.message}"
+            }
+        }
+    }
+
+    private fun nameOf(key: TileKey): String = repo.tiles.value.firstOrNull { it.key == key }?.row?.shownTitle ?: key.id
+
     private fun apply(c: TileController, share: Shared) {
         // Text first, then the files: each path lands after it once its upload is done.
         share.text?.let { t ->
