@@ -49,6 +49,7 @@ import {
   type TerminalSettings,
   type TerminalDef,
   type Workspace,
+  validateIcon,
 } from "./lib/workspace";
 import { withUserTitle } from "./lib/card";
 import { applyAgentEvent as foldAgentEvent, OFFLINE, type AgentState } from "./lib/agentState";
@@ -432,7 +433,7 @@ export interface WorkbenchState {
   skipStartup(id: string): void;
   dismissPersistError(): void;
   refreshTailscale(): Promise<void>;
-  updateMachine(name: string, patch: { alias?: string | null; user?: string | null; color?: string | null }): Promise<string | null>;
+  updateMachine(name: string, patch: { alias?: string | null; user?: string | null; color?: string | null; icon?: string | null }): Promise<string | null>;
   applyAgentEvent(payload: AgentEventPayload): void;
   setWindowFocused(focused: boolean): void;
   flashCopied(id: string): void;
@@ -496,7 +497,11 @@ function sanitizeMachines(input: unknown): { machines: Machines; dropped: number
       continue;
     }
     const strOrNullOk = (k: string) => v[k] === undefined || v[k] === null || typeof v[k] === "string";
-    if (!strOrNullOk("alias") || !strOrNullOk("user") || !strOrNullOk("cwd")) {
+    if (!strOrNullOk("alias") || !strOrNullOk("user") || !strOrNullOk("cwd") || !strOrNullOk("icon")) {
+      dropped += 1;
+      continue;
+    }
+    if (typeof v.icon === "string" && v.icon.trim() !== "" && validateIcon(v.icon) !== null) {
       dropped += 1;
       continue;
     }
@@ -1893,12 +1898,17 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (err) return err;
     }
     if (patch.color !== undefined && !isMachineColor(patch.color)) return "unsupported colour";
+    if (patch.icon !== undefined && patch.icon !== null && patch.icon.trim() !== "") {
+      const err = validateIcon(patch.icon);
+      if (err) return err;
+    }
     const before = useStore.getState();
     const oldLabel = machineLabel(name, before.machines[name]);
     const cleaned = {
       ...(patch.alias !== undefined ? { alias: patch.alias?.trim() || null } : {}),
       ...(patch.user !== undefined ? { user: patch.user?.trim() || null } : {}),
       ...(patch.color !== undefined ? { color: patch.color } : {}),
+      ...(patch.icon !== undefined ? { icon: patch.icon?.trim() || null } : {}),
     };
     set((s) => ({ machines: touchMachine(s.machines, name, cleaned, undefined, { bump: false }) }));
     const after = useStore.getState();

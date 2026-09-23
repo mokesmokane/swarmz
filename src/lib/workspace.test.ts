@@ -33,6 +33,8 @@ import {
   toWorkspace,
   touchMachine,
   validateAlias,
+  validateIcon,
+  machineGlyph,
   validateHost,
   validateUser,
   type ClaudeConfig,
@@ -344,6 +346,22 @@ describe("toWorkspace", () => {
 });
 
 describe("machines", () => {
+  it("a badge glyph is the icon, else a monogram of the name", () => {
+    expect(machineGlyph("martins-mac-mini", undefined)).toBe("M");
+    expect(machineGlyph("martins-mac-mini-2", undefined)).toBe("M2");
+    expect(machineGlyph("martins-mac-mini-13", undefined)).toBe("M13");
+    expect(machineGlyph("box", { lastUsed: "t" })).toBe("B");
+    expect(machineGlyph("box", { icon: " 🦊 ", lastUsed: "t" })).toBe("🦊");
+    expect(machineGlyph("box", { icon: "M2", lastUsed: "t" })).toBe("M2");
+    // An invalid stored icon falls back rather than showing.
+    expect(machineGlyph("box", { icon: "toolong", lastUsed: "t" })).toBe("B");
+    expect(validateIcon("")).toBeNull();
+    expect(validateIcon("🦊")).toBeNull();
+    expect(validateIcon("M2")).toBeNull();
+    expect(validateIcon("abc")).toMatch(/two characters/);
+    expect(validateIcon("a\"")).toMatch(/quotes/);
+  });
+
   it("label and host", () => {
     expect(machineLabel("martins-mac-mini", undefined)).toBe("martins-mac-mini");
     expect(machineLabel("martins-mac-mini", { alias: " desk mini ", lastUsed: "t" })).toBe("desk mini");

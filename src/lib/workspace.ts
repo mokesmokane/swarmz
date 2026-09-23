@@ -193,6 +193,8 @@ export interface MachineConfig {
   alias?: string | null;
   user?: string | null;
   color?: string | null;
+  /** A glyph for the machine's badge (an emoji or up to two characters); the monogram when absent. */
+  icon?: string | null;
   cwd?: string | null;
   lastUsed: string;
 }
@@ -230,6 +232,35 @@ export function validateAlias(alias: string): string | null {
   if (!a) return "alias cannot be empty";
   if (a.length > 64 || UNSUPPORTED_ALIAS.test(a)) return "alias may not contain quotes, backslash, $ or control characters, and must be at most 64 characters";
   return null;
+}
+
+const UNSUPPORTED_ICON = /["'`\\$\x00-\x1f\x7f]/;
+/** A badge glyph: up to two visible characters (one emoji counts as one), none of the shell-unsafe ones. */
+export function validateIcon(icon: string): string | null {
+  const s = icon.trim();
+  if (!s) return null;
+  if (UNSUPPORTED_ICON.test(s)) return "icon may not contain quotes, backslash, $ or control characters";
+  if (graphemes(s) > 2) return "icon is at most two characters";
+  return null;
+}
+
+function graphemes(s: string): number {
+  const Seg = (Intl as unknown as { Segmenter?: new (l?: string, o?: { granularity: string }) => { segment(s: string): Iterable<unknown> } }).Segmenter;
+  if (Seg) return Array.from(new Seg(undefined, { granularity: "grapheme" }).segment(s)).length;
+  return Array.from(s).length;
+}
+
+/**
+ * What a machine's badge shows: its icon when set, else a monogram from its name, the first
+ * letter and any trailing number (`martins-mac-mini-2` → `M2`, `box` → `B`), so several Macs
+ * with one naming scheme stay apart.
+ */
+export function machineGlyph(name: string, cfg: MachineConfig | undefined): string {
+  const icon = cfg?.icon?.trim();
+  if (icon && validateIcon(icon) === null) return icon;
+  const letter = (name.match(/[A-Za-z]/)?.[0] ?? name[0] ?? "?").toUpperCase();
+  const number = name.match(/(\d+)$/)?.[1] ?? "";
+  return `${letter}${number}`.slice(0, 3);
 }
 
 export function isMachineColor(c: string | null | undefined): boolean {

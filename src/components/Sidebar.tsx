@@ -45,16 +45,24 @@ function useNow(everyMs: number): number {
   return now;
 }
 
-/** The machine chip of a row or a group header: a dot in the machine's colour (hollow when the remote is offline) and its label. */
-function MachineChip({ label, alias, color, online }: { label: string; alias?: string | null; color: string | null; online: boolean | null }) {
+/**
+ * The machine badge of a row or a group header: a small square in the machine's colour carrying
+ * its glyph (the icon from its settings, else a monogram of its name), hollow when the remote is
+ * offline, then the machine's name.
+ */
+function MachineChip({ glyph, label, alias, color, online }: { glyph: string; label: string; alias?: string | null; color: string | null; online: boolean | null }) {
   const hollow = online === false;
   const state = online === false ? " · offline" : online === true ? " · online" : "";
+  const bg = color ?? "#525252";
   return (
     <span className="inline-flex items-center gap-1" title={`${alias ? `${alias} · ` : ""}${label}${state}`}>
       <span
-        className={`inline-block h-2 w-2 rounded-full ${hollow ? "border" : ""} ${color ? "" : hollow ? "border-neutral-500" : "bg-neutral-500"}`}
-        style={color ? (hollow ? { borderColor: color } : { backgroundColor: color }) : undefined}
-      />
+        className="inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center rounded-sm px-0.5 text-[9px] font-bold leading-none"
+        style={hollow ? { border: `1px solid ${bg}`, color: bg } : { backgroundColor: bg, color: "#0f1115" }}
+        data-testid="machine-glyph"
+      >
+        {glyph}
+      </span>
       <span>{label}</span>
     </span>
   );
@@ -296,7 +304,7 @@ function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: nu
             <div className="flex items-center gap-1.5 truncate text-xs text-neutral-500" data-testid={`line2-${id}`}>
               {info ? (
                 <>
-                  <MachineChip label={info.machine.label} alias={info.machine.alias} color={info.machine.color} online={info.machine.online} />
+                  <MachineChip glyph={info.machine.glyph} label={info.machine.label} alias={info.machine.alias} color={info.machine.color} online={info.machine.online} />
                   <span className="text-neutral-700">·</span>
                   <span className="min-w-0 truncate">{info.folder}</span>
                   <span className="text-neutral-700">·</span>
@@ -489,7 +497,7 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
           <div key={g.key}>
             {g.title && (
               <div className="flex items-center gap-1 px-2 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-neutral-500" data-testid={`group-${g.key}`}>
-                {groupBy === "machine" ? <MachineChip label={g.title} color={g.color ?? null} online={g.online ?? null} /> : <span>{g.title}</span>}
+                {groupBy === "machine" ? <MachineChip glyph={g.glyph ?? "?"} label={g.title} color={g.color ?? null} online={g.online ?? null} /> : <span>{g.title}</span>}
                 <span className="text-neutral-600">{g.ids.length}</span>
                 {groupBy === "machine" && g.online === false && <span className="text-neutral-600">· offline</span>}
               </div>

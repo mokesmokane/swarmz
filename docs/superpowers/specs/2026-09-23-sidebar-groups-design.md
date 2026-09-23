@@ -20,8 +20,13 @@ into the workbench); grouping on the phone (its list already groups by Mac).
 Each row keeps its title line (card title, else first prompt, else name;
 conversation cards spec §5) and gets a second line built from:
 
-- **Machine chip.** A dot in the machine's colour and the machine's
-  Tailscale name (a remote's, or this Mac's; "this Mac" when that is not
+- **Machine chip.** A small square badge in the machine's colour carrying
+  a **glyph** that tells machines apart (amended 2026-09-23: a dot only
+  carried the colour): the icon set in the machine's settings (an emoji or
+  up to two characters, `icon` on the machine entry, synced like the alias
+  and colour), else a monogram of the name, its first letter and any
+  trailing number (`martins-mac-mini-2` → `M2`; `⌂` for this Mac when its
+  name is unknown). Then the machine's Tailscale name (a remote's, or this Mac's; "this Mac" when that is not
   known). The alias is not the label, since it is usually the tile's own
   name already; it goes in the chip's tooltip and, in brackets, in a Machine
   group's header. Offline remotes get a hollow dot. The chip is always
