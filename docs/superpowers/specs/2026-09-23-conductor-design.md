@@ -39,10 +39,11 @@ Everything the phone can, on every Mac, from its shell, through the tool:
 | Answer a tile's question or permission | `swarmz [--on <mac>] pending <tile>`, `answer <tile> …` |
 | Start, stop, restart a tile | `new`, `close`, `restart` |
 | Tell the user | `swarmz notify "…"` **(new)**: Telegram |
+| Glance at a tile's screen | `swarmz [--on <mac>] output <tile> --lines N`: the last N lines (at most 200 from another tile, no `--follow`), to see what it is doing or whether a sent line landed (amended 2026-09-23: the hook state lags, and a glance is bounded) |
 
-**Not** `transcript` or `output` on another tile: the conductor never
-reads a conversation or a screen. What it knows about a tile is its card,
-its status and its answers.
+**Not** `transcript` or `image` on another tile: the conductor never
+reads a conversation. What it knows about a tile is its card, its status,
+its answers, and a screenful at a time.
 
 ### 2.1 Replies
 
@@ -83,8 +84,10 @@ fan-out already does.
   tile other than the caller's own (`send`, `ask`, `key`, `answer`,
   `pending`, `close`, `restart`, `new`, `fleet`, `--on`, `notify`) is
   refused with `denied` unless `SWARMZ_TERMINAL_ID` equals the workspace's
-  conductor; `transcript`, `output` and `image` on another tile are refused
-  for every tile, the conductor included. A tile may always act on itself
+  conductor; `transcript` and `image` on another tile are refused for every
+  tile, the conductor included, and `output` on another tile is the
+  conductor's alone, capped at 200 lines and never followed. A tile may
+  always act on itself
   (`card`, `reply`, `conductor --claim`). The phone's key is not a tile: it
   keeps its access through the gate as today.
 - This is a guardrail, not a sandbox: an agent with a shell could reach a
@@ -175,8 +178,8 @@ conductor.
 - **Tool:** `conductor` set/clear/read bumps the revision; `--claim`
   records a claim and is a no-op for the conductor; the guard denies
   cross-tile commands for a non-conductor tile, allows them for the
-  conductor and for a phone key, and refuses `transcript`/`output` on
-  another tile for everyone; `ask` types the prefixed line and `reply` types
+  conductor and for a phone key, refuses `transcript` on another tile for
+  everyone and allows a capped `output` there to the conductor alone; `ask` types the prefixed line and `reply` types
   `[<title>] …` into the conductor, locally and over `--on`, cut at 1000
   characters, `denied` with no conductor; `--on` builds the ssh line and passes the
   reply through (fixture, no real ssh); `fleet` merges rows from several
