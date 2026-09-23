@@ -33,7 +33,11 @@ pub fn caller_tile() -> Option<String> {
 
 /// Commands that read another tile's conversation or screen: refused for every tile, the
 /// conductor included (spec §2).
-const READ_OTHER: &[&str] = &["transcript", "output", "image"];
+const READ_OTHER: &[&str] = &["transcript", "image"];
+/// A screenful of another tile is the conductor's to see (spec §2, capped in `main`).
+const SCREEN: &[&str] = &["output"];
+/// The most lines the conductor may read of another tile's screen.
+pub const SCREEN_MAX: usize = 200;
 /// Commands that act on another tile, or on the fleet: the conductor's alone (spec §3).
 const CROSS: &[&str] = &["send", "ask", "key", "answer", "pending", "close", "restart", "new", "fleet", "notify", "telegram-follow", "on"];
 /// Set and clear are the user's (desktop, phone) and never a tile's.
@@ -50,9 +54,9 @@ pub fn allowed(conductor: Option<&str>, caller: Option<&str>, sub: &str, target:
         return denied("only the user can set or clear the conductor; run `swarmz conductor --claim` to ask");
     }
     if READ_OTHER.contains(&sub) && !own {
-        return denied("a tile's conversation and screen are its own; ask it with `swarmz ask` instead");
+        return denied("a tile's conversation is its own; ask it with `swarmz ask` instead");
     }
-    if CROSS.contains(&sub) && !own && conductor != Some(caller) {
+    if (CROSS.contains(&sub) || SCREEN.contains(&sub)) && !own && conductor != Some(caller) {
         return denied(match conductor {
             Some(_) => "only the conductor acts on other tiles; run `swarmz conductor --claim` to ask for the role",
             None => "no conductor is set; run `swarmz conductor --claim` to ask for the role",
@@ -248,9 +252,13 @@ mod tests {
         // A tile acts on itself.
         assert!(ok(None, Some("t2"), "send", Some("t2")));
         assert!(ok(None, Some("t2"), "transcript", Some("t2")));
-        // Nobody reads another tile's conversation, the conductor included.
+        // Nobody reads another tile's conversation, the conductor included; a glance at its
+        // screen is the conductor's alone.
         assert!(!ok(Some("c1"), Some("c1"), "transcript", Some("t2")));
-        assert!(!ok(Some("c1"), Some("c1"), "output", Some("t2")));
+        assert!(!ok(Some("c1"), Some("c1"), "image", Some("t2")));
+        assert!(ok(Some("c1"), Some("c1"), "output", Some("t2")));
+        assert!(!ok(Some("c1"), Some("t2"), "output", Some("c1")));
+        assert!(ok(Some("c1"), Some("t2"), "output", Some("t2")));
         // Only the conductor acts on others, and on the fleet.
         assert!(!ok(Some("c1"), Some("t2"), "send", Some("c1")));
         assert!(!ok(None, Some("t2"), "fleet", None));

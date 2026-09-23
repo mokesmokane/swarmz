@@ -1163,6 +1163,8 @@ fn the_conductor_is_claimed_approved_and_the_only_tile_that_acts_on_others() {
     assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
     let (code, d) = tool_env(&h.path, &["transcript", "c1"], as_t2);
     assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+    let (code, d) = tool_env(&h.path, &["output", "c1", "--lines", "10"], as_t2);
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
     let (code, d) = tool_env(&h.path, &["fleet"], as_t2);
     assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
     // A tile acts on itself.
@@ -1202,6 +1204,14 @@ fn the_conductor_is_claimed_approved_and_the_only_tile_that_acts_on_others() {
     assert!(wait_until(|| screen_has(&c1, "[conductor web] how far along?")));
     assert!(screen_has(&c1, "swarmz reply"));
     let (code, d) = tool_env(&h.path, &["transcript", "c1"], as_t2);
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+    // A glance at another tile's screen is the conductor's, capped and never followed.
+    let (code, o) = tool_env(&h.path, &["output", "c1", "--lines", "10"], as_t2);
+    assert_eq!(code, 0, "{o}");
+    assert!(o["lines"].is_array(), "{o}");
+    let (code, d) = tool_env(&h.path, &["output", "c1", "--lines", "201"], as_t2);
+    assert_eq!((code, d["code"].as_str()), (1, Some("usage")));
+    let (code, d) = tool_env(&h.path, &["output", "c1", "--follow"], as_t2);
     assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
     let (code, f) = tool_env(&h.path, &["fleet"], as_t2);
     assert_eq!(code, 0, "{f}");
