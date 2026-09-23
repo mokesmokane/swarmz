@@ -1,7 +1,7 @@
 # swarmz: a tile in its own window
 
 Date: 2026-09-23
-Status: proposed, not yet implemented
+Status: approved design, implemented 2026-09-23 (steps 1–3; deferred from §5: dragging a breakout window's header back onto the main window, and the ⌘⇧W shortcut — the Return button, the placeholder's Return here, and closing the window return a tile)
 Amends: `2026-09-10-swarmz-design.md` §4.2 (the split tree stays the one
 layout; a breakout is a per-Mac view, not a layout change),
 `2026-09-14-shared-workspace-design.md` (nothing about a breakout window is

@@ -77,9 +77,8 @@ import {
   beforeSpawn,
   machineFor,
   terminalColor,
-  useStore,
-} from "./store";
-import { findGroup, findGroupOf, type GroupNode, type Layout, type SplitNode } from "./lib/layout";
+  useStore, breakoutHooks } from "./store";
+import { allGroups, findGroup, findGroupOf, type GroupNode, type Layout, type SplitNode } from "./lib/layout";
 import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, sshMasterLine, shellQuote, toWorkspace, type TerminalDef, type Workspace } from "./lib/workspace";
 
 const omitKey = <T,>(o: Record<string, T>, k: string): Record<string, T> => {
@@ -3542,5 +3541,75 @@ describe("sessions outside the workspace", () => {
     vi.mocked(ipc.localSessions).mockRejectedValueOnce("broken");
     await useStore.getState().refreshOutsideSessions();
     expect(useStore.getState().outsideSessions).toEqual(["x"]);
+  });
+});
+
+describe("breakout windows", () => {
+  // The store suite runs in node: the per-Mac record needs a localStorage to land in.
+  beforeEach(() => {
+    const store = new Map<string, string>();
+    (globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    };
+  });
+  afterEach(() => {
+    delete (globalThis as { localStorage?: unknown }).localStorage;
+  });
+
+  it("breaking out keeps the layout, activates another tab, and returning brings it back", async () => {
+    const calls: string[] = [];
+    breakoutHooks.open = async (id) => void calls.push(`open ${id}`);
+    breakoutHooks.close = (id) => void calls.push(`close ${id}`);
+    breakoutHooks.focus = (id) => void calls.push(`focus ${id}`);
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    useStore.getState().focusTerminal(b);
+    await useStore.getState().breakoutTerminal(b, { x: 10, y: 10 });
+    const s = useStore.getState();
+    expect(s.breakouts).toEqual({ [b]: true });
+    // The tile is still in the (shared) layout; the group shows the other tab meanwhile.
+    expect(allGroups(s.layout)[0].tabs).toEqual([a, b]);
+    expect(allGroups(s.layout)[0].active).toBe(a);
+    expect(calls).toEqual([`open ${b}`]);
+    expect(JSON.parse(localStorage.getItem("swarmz.breakouts") ?? "{}")).toEqual({ [b]: { bounds: null } });
+    // A second breakout of the same tile only focuses its window.
+    await useStore.getState().breakoutTerminal(b, null);
+    expect(calls).toEqual([`open ${b}`, `focus ${b}`]);
+    useStore.getState().returnTerminal(b);
+    expect(useStore.getState().breakouts).toEqual({});
+    expect(useStore.getState().focusedTerminalId).toBe(b);
+    expect(calls).toEqual([`open ${b}`, `focus ${b}`, `close ${b}`]);
+    expect(JSON.parse(localStorage.getItem("swarmz.breakouts") ?? "{}")).toEqual({});
+    // A window that fails to open leaves nothing behind.
+    breakoutHooks.open = async () => {
+      throw "no window";
+    };
+    await useStore.getState().breakoutTerminal(a, null);
+    expect(useStore.getState().breakouts).toEqual({});
+    expect(useStore.getState().persistError).toContain("no window");
+    breakoutHooks.open = async () => {};
+    breakoutHooks.close = () => {};
+    breakoutHooks.focus = () => {};
+  });
+
+  it("closing a broken-out tile closes its window, and restore reopens the saved ones", async () => {
+    const calls: string[] = [];
+    breakoutHooks.open = async (id) => void calls.push(`open ${id}`);
+    breakoutHooks.close = (id) => void calls.push(`close ${id}`);
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    await useStore.getState().breakoutTerminal(a, null);
+    await useStore.getState().closeTerminal(a);
+    expect(useStore.getState().breakouts).toEqual({});
+    expect(calls).toEqual([`open ${a}`, `close ${a}`]);
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    localStorage.setItem("swarmz.breakouts", JSON.stringify({ [b]: { bounds: null }, gone: { bounds: null } }));
+    await useStore.getState().restoreBreakouts();
+    expect(useStore.getState().breakouts).toEqual({ [b]: true });
+    expect(calls).toEqual([`open ${a}`, `close ${a}`, `open ${b}`]);
+    localStorage.removeItem("swarmz.breakouts");
+    breakoutHooks.open = async () => {};
+    breakoutHooks.close = () => {};
   });
 });

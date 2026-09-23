@@ -15,6 +15,8 @@ export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
   clearScreen: false,
   define: { __APP_VERSION__: JSON.stringify(appVersion) },
+  // Two pages: the workbench, and a tile's own window (breakout windows spec §4).
+  build: { rollupOptions: { input: { main: "index.html", breakout: "breakout.html" } } },
   server: {
     port: 1420,
     strictPort: true,

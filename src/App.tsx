@@ -7,6 +7,7 @@ import { findGroup } from "./lib/layout";
 import { ipc } from "./lib/ipc";
 import { SYNC_PULL_MS, SYNC_STAT_MS, useStore } from "./store";
 import "./lib/xtermRegistry";
+import "./lib/breakoutWindows";
 
 export default function App() {
   useEffect(() => {
@@ -17,6 +18,8 @@ export default function App() {
         await useStore.getState().refreshTailscale();
         await useStore.getState().pullWorkspace();
         await useStore.getState().refreshOutsideSessions();
+        // The windows this Mac had last time, once their tiles are open.
+        await useStore.getState().restoreBreakouts();
       });
   }, []);
 

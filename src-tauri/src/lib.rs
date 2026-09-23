@@ -62,7 +62,17 @@ pub fn run() {
             commands::agents_watch,
             commands::agents_unwatch,
             commands::paste_image_to_remote,
+            commands::open_view,
+            commands::close_view,
         ])
+        .on_window_event(|window, event| {
+            // A breakout window closing drops its viewer; the main viewer is untouched.
+            if let tauri::WindowEvent::Destroyed = event {
+                if let Some(state) = window.try_state::<AppState>() {
+                    commands::drop_views(&state, window.label(), None);
+                }
+            }
+        })
         .setup(|_app| {
             let _ = remote::ensure_ssh_dir();
             // Install the tool in the background so a slow disk never delays the window.
