@@ -2,3 +2,4 @@
 {"tile":{"cwd":"/p","exitCode":null,"id":"t1","kind":"claude","lastEvent":"UserPromptSubmit","lastMessage":"done","machine":"mini","mode":"default","name":"one","needs":null,"running":true,"sessionId":"s1","since":"2026-09-17T08:01:00Z","status":"working","summary":null,"turnEndedAt":"2026-09-17T08:00:00Z"},"type":"tile","v":1}
 {"type":"ping","v":1}
 {"id":"t1","type":"gone","v":1}
+{"claim":{"at":"2026-09-23T10:00:00Z","tile":"t2","title":"Web"},"conductor":"t1","type":"conductor","v":1}

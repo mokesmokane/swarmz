@@ -30,13 +30,25 @@ data class TileRow(
     val recap: String? = null,
     val cardAt: String? = null,
     val cardBy: String? = null,
+    /** True for the workspace's conductor (conductor spec §7). */
+    val conductor: Boolean = false,
 ) {
     /** What rows and headers show: the title when there is one, else the name. */
     val shownTitle: String get() = title?.takeIf { it.isNotBlank() } ?: name
     val hasTitle: Boolean get() = !title.isNullOrBlank()
+    /** [shownTitle] with the conductor's mark in front when this tile is the conductor. */
+    val badgedTitle: String get() = if (conductor) "$CONDUCTOR_MARK $shownTitle" else shownTitle
 }
 
-@Serializable data class TileList(val tiles: List<TileRow>)
+const val CONDUCTOR_MARK = "\uD83C\uDF9B"
+
+@Serializable data class TileList(val tiles: List<TileRow>, val conductor: String? = null, val claim: ConductorClaim? = null)
+
+/** A tile asking to be the conductor (conductor spec §3), until the user answers. */
+@Serializable data class ConductorClaim(val tile: String, val title: String? = null, val at: String? = null)
+
+/** The workspace's conductor and any pending claim, as `ls`, `watch` and `conductor` report them. */
+@Serializable data class ConductorState(val conductor: String? = null, val claim: ConductorClaim? = null)
 
 /** A tile's card as `card` returns it (spec §2). */
 @Serializable data class Card(val title: String? = null, val recap: String? = null, val updatedAt: String? = null, val by: String? = null)

@@ -11,9 +11,11 @@ import kotlinx.serialization.json.jsonPrimitive
 class ToolFailure(val code: String, override val message: String) : Exception(message)
 
 sealed interface WatchEvent {
-    data class Snapshot(val tiles: List<TileRow>) : WatchEvent
+    data class Snapshot(val tiles: List<TileRow>, val conductor: ConductorState = ConductorState()) : WatchEvent
     data class Tile(val tile: TileRow) : WatchEvent
     data class Gone(val id: String) : WatchEvent
+    /** The conductor or a claim changed (conductor spec §7). */
+    data class Conductor(val state: ConductorState) : WatchEvent
     data object Ping : WatchEvent
 }
 
@@ -57,9 +59,10 @@ object ToolJson {
     fun watchEvent(line: String): WatchEvent? {
         val o = obj(line)
         return when (type(o)) {
-            "snapshot" -> WatchEvent.Snapshot(json.decodeFromJsonElement<TileList>(o).tiles)
+            "snapshot" -> json.decodeFromJsonElement<TileList>(o).let { WatchEvent.Snapshot(it.tiles, ConductorState(it.conductor, it.claim)) }
             "tile" -> WatchEvent.Tile(json.decodeFromJsonElement(o["tile"]!!))
             "gone" -> WatchEvent.Gone(o["id"]!!.jsonPrimitive.content)
+            "conductor" -> WatchEvent.Conductor(json.decodeFromJsonElement(o))
             "ping" -> WatchEvent.Ping
             else -> null
         }

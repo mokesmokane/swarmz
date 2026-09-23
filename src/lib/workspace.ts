@@ -43,12 +43,37 @@ export interface SyncMeta {
   updatedBy: string;
 }
 
+/** A tile asking to be the conductor (conductor spec §3), until the user answers. */
+export interface ConductorClaim {
+  tile: string;
+  title?: string | null;
+  at: string;
+}
+
 export interface Workspace {
   version: 1;
   terminals: TerminalDef[];
   layout: Layout;
   machines?: Machines;
+  /** The one tile allowed to act on the others (conductor spec §3); absent or null when none. */
+  conductor?: string | null;
+  conductorClaim?: ConductorClaim | null;
   sync?: SyncMeta;
+}
+
+/** The workspace's conductor as a tile id, or null: anything but a non-empty string is none. */
+export function conductorOf(ws: { conductor?: unknown } | null | undefined): string | null {
+  const c = ws?.conductor;
+  return typeof c === "string" && c.length > 0 ? c : null;
+}
+
+/** The pending claim, or null when there is none or it is malformed. */
+export function claimOf(ws: { conductorClaim?: unknown } | null | undefined): ConductorClaim | null {
+  const c = ws?.conductorClaim;
+  if (!c || typeof c !== "object") return null;
+  const { tile, title, at } = c as Record<string, unknown>;
+  if (typeof tile !== "string" || !tile) return null;
+  return { tile, title: typeof title === "string" ? title : null, at: typeof at === "string" ? at : "" };
 }
 
 export const EMPTY_SETTINGS: TerminalSettings = { ssh: null, claude: null, command: null, extra: {} };
@@ -472,7 +497,7 @@ export function sameWorkspaceContent(a: Workspace, b: Workspace): boolean {
         card: cardOf(t.card),
       };
     }
-    return stableJson({ terminals, layout: ws.layout, machines: ws.machines ?? {} });
+    return stableJson({ terminals, layout: ws.layout, machines: ws.machines ?? {}, conductor: conductorOf(ws), conductorClaim: claimOf(ws) });
   };
   return key(a) === key(b);
 }
@@ -483,6 +508,8 @@ export function toWorkspace(input: {
   settings: Record<string, TerminalSettings>;
   layout: Layout;
   machines: Machines;
+  conductor?: string | null;
+  conductorClaim?: ConductorClaim | null;
   sync?: SyncMeta | null;
 }): Workspace {
   const terminals: TerminalDef[] = input.order
@@ -510,6 +537,8 @@ export function toWorkspace(input: {
     terminals,
     layout: input.layout,
     ...(Object.keys(machines).length ? { machines } : {}),
+    ...(input.conductor ? { conductor: input.conductor } : {}),
+    ...(input.conductorClaim ? { conductorClaim: input.conductorClaim } : {}),
     ...(input.sync ? { sync: input.sync } : {}),
   };
 }

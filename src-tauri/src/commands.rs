@@ -654,6 +654,43 @@ pub async fn local_sessions() -> Result<Vec<swarmz_tool::tiles::SessionRow>, Str
     .map_err(|e| e.to_string())
 }
 
+/// Sets, denies or clears the conductor through the tool (conductor spec §3, §6), which writes
+/// the workspace, bumps its revision and tells the tiles concerned; the reply is the tool's
+/// `{conductor, claim}`. The store adopts the file afterwards.
+#[tauri::command]
+pub async fn conductor_action(action: String, id: Option<String>) -> Result<serde_json::Value, String> {
+    let args: Vec<String> = match (action.as_str(), id) {
+        ("set", Some(id)) if swarmz_tool::paths::valid_tile_id(&id) => vec!["conductor".into(), "--set".into(), id],
+        ("set", _) => return Err("a valid tile id is needed".to_string()),
+        ("deny", _) => vec!["conductor".into(), "--deny".into()],
+        ("clear", _) => vec!["conductor".into(), "--clear".into()],
+        (other, _) => return Err(format!("unknown conductor action {other:?}")),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let tool = crate::toolbin::ensure_installed()?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        // Telling a claimant on another Mac goes over ssh, so allow for that.
+        crate::toolbin::run_tool_json(&tool, &args, Duration::from_secs(20))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The conductor's default folder, `~/.swarmz/conductor`, created with a `CLAUDE.md` that says
+/// what it is for (conductor spec §6); returns its path.
+#[tauri::command]
+pub fn conductor_dir() -> Result<String, String> {
+    let dir = swarmz_tool::paths::home_dir().join(".swarmz").join("conductor");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let claude_md = dir.join("CLAUDE.md");
+    if !claude_md.exists() {
+        std::fs::write(&claude_md, CONDUCTOR_CLAUDE_MD).map_err(|e| format!("could not write {}: {e}", claude_md.display()))?;
+    }
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+const CONDUCTOR_CLAUDE_MD: &str = "# The conductor\n\nThis folder is the home of the swarmz conductor: the one Claude session allowed to act on the other tiles in the workspace, on every Mac. There is no code here to work on. The user asks the conductor what the other tiles are doing, hands work to them through it, and is reached by it on Telegram when away.\n\nWhat you may do and how is told to you at the start of every session (`~/.swarmz/bin/swarmz briefing` prints it again). Keep notes you want to survive between sessions in this folder.\n";
+
 /// Ends a session that no tile in this window shows.
 #[tauri::command]
 pub async fn close_session(app: AppHandle, id: String) -> Result<bool, String> {

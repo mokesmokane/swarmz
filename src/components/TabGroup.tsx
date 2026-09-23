@@ -6,6 +6,7 @@ import { machineLabel } from "../lib/workspace";
 import { dotPresentation } from "../lib/agentState";
 import { displayTitle } from "../lib/card";
 import { TerminalPane } from "./TerminalPane";
+import { ConductorBadge } from "./ConductorBadge";
 
 export const DRAG_MIME = "application/x-swarmz-terminal";
 
@@ -59,6 +60,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
   const terminals = useStore((s) => s.terminals);
   const settings = useStore((s) => s.settings);
   const agentState = useStore((s) => s.agentState);
+  const conductor = useStore((s) => s.conductor);
   const breakouts = useStore((s) => s.breakouts);
   const breakoutTerminal = useStore((s) => s.breakoutTerminal);
   const returnTerminal = useStore((s) => s.returnTerminal);
@@ -159,6 +161,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
               } ${out ? "italic opacity-60" : ""}`}
             >
               <TabDot id={id} exitCode={t?.exited ?? null} />
+              {conductor === id && <ConductorBadge />}
               <span className="max-w-[160px] truncate" title={t?.name ?? id}>{t ? displayTitle(settings[id]?.card, agentState[id], t.name) : id}</span>
               {out && <span className="text-[10px] text-neutral-500">↗ own window</span>}
               {!out && (

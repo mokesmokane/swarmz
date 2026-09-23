@@ -37,6 +37,9 @@ pub struct TileRow {
     pub recap: Option<String>,
     pub card_at: Option<String>,
     pub card_by: Option<String>,
+    /// True for the workspace's conductor (conductor spec §3, §7).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub conductor: bool,
 }
 
 fn origin(def: &TerminalDef) -> Option<&str> {
@@ -178,6 +181,7 @@ fn rows_from(
         Err(_) => return None,
     };
     let dir = sessions_dir_in(home);
+    let conductor = crate::conductor::conductor_of(&ws);
     let rows = homed_defs(&ws, self_machine)
         .into_iter()
         .map(|def| {
@@ -230,6 +234,7 @@ fn rows_from(
                 session_id: moved.or(fold.session_id).or_else(|| claude.map(|c| c.session_id.clone())),
                 summary: fold.summary,
                 machine: self_machine.map(str::to_string),
+                conductor: conductor.as_deref() == Some(def.id.as_str()),
                 id: def.id,
                 name: def.name,
             }

@@ -216,6 +216,8 @@ private fun Screen(vm: AppViewModel, home: HomeUi, route: Route, showBack: Boole
             onDismissShare = vm::dismissShare,
             onStop = vm::stopTile,
             onStart = vm::startTile,
+            onApproveClaim = vm::approveClaim,
+            onDenyClaim = vm::denyClaim,
         )
         is Route.Tile -> {
             // While the controller is still loading there is no header, so a collapsed list has nothing to reopen it

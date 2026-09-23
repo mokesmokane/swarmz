@@ -141,7 +141,7 @@ pub fn reply_line(tile_title: &str, text: &str) -> String {
 /// The line the desktop or the tool types into a claimant once the user has decided.
 pub fn outcome_line(approved: bool) -> &'static str {
     if approved {
-        "[swarmz] you are the conductor now: run ~/.swarmz/bin/swarmz fleet to see every tile"
+        "[swarmz] you are the conductor now: run ~/.swarmz/bin/swarmz briefing to see what you can do, and ~/.swarmz/bin/swarmz fleet to see every tile"
     } else {
         "[swarmz] the conductor claim was denied; carry on with your own work"
     }

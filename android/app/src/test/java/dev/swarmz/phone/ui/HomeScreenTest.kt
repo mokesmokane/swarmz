@@ -9,7 +9,10 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.assertTextContains
+import dev.swarmz.phone.data.ClaimView
 import dev.swarmz.phone.data.PairHint
+import dev.swarmz.phone.proto.CONDUCTOR_MARK
+import dev.swarmz.phone.proto.ConductorClaim
 import dev.swarmz.phone.proto.Opt
 import dev.swarmz.phone.proto.Pending
 import dev.swarmz.phone.proto.TileRow
@@ -94,6 +97,37 @@ class HomeScreenTest {
         compose.onNodeWithText("docs").performClick()
         compose.onNodeWithText("New session").performClick()
         assertEquals(listOf("allow t1", "deny t1", "reply t2 ship it", "open t3", "new"), events)
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h780dp")
+    fun aConductorClaimIsACardWithApproveAndDenyAndTheConductorIsMarked() {
+        val events = mutableListOf<String>()
+        val base = sampleHome()
+        // Only the quiet chips, so the claim card and the marked chip both fit on a phone screen.
+        val marked = base.model.quiet.map { v -> if (v.key.id == "t3") v.copy(row = v.row.copy(conductor = true)) else v }
+        val ui = base.copy(
+            model = base.model.copy(needs = emptyList(), quiet = marked),
+            claims = listOf(ClaimView("mini", "Mini", ConductorClaim("t2", "Web: ship it", "2026-09-23T10:00:00Z"))),
+        )
+        compose.setContent {
+            SwarmzTheme {
+                HomeScreen(
+                    ui,
+                    onOpen = {}, onAllow = {}, onDeny = {}, onReply = { _, _ -> }, onNew = {}, onSettings = {},
+                    onApproveClaim = { events += "approve ${it.mac} ${it.claim.tile}" },
+                    onDenyClaim = { events += "deny ${it.mac} ${it.claim.tile}" },
+                )
+            }
+        }
+        compose.onNodeWithTag("claim-t2").assertIsDisplayed()
+        compose.onNodeWithText("Web: ship it", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("asks to be the conductor", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Approve").performClick()
+        compose.onNodeWithText("Deny").performClick()
+        assertEquals(listOf("approve mini t2", "deny mini t2"), events)
+        // The conductor's chip carries the mark.
+        compose.onNodeWithText("$CONDUCTOR_MARK docs").assertExists()
     }
 
     @Test

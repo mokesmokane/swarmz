@@ -107,7 +107,7 @@ fun TileScreen(
             // The title opens the tile's card: its recap, and a way to retitle it (conversation cards spec §6).
             val titleTap = if (r != null && r.kind != "shell") Modifier.clickable { recapOpen = true } else Modifier
             Column(Modifier.weight(1f).padding(start = 6.dp).then(titleTap).testTag("tile-title")) {
-                Text(r?.shownTitle ?: c.key.id, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                Text(r?.badgedTitle ?: c.key.id, style = MaterialTheme.typography.titleMedium, maxLines = 1)
                 val where = "$macLabel · ${r?.let { folderName(it.cwd) } ?: ""}"
                 Text(if (r?.hasTitle == true) "${r.name} · $where" else where, style = MonoSmall, maxLines = 1)
             }

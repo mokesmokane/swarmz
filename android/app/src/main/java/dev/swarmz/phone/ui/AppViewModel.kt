@@ -3,6 +3,7 @@ package dev.swarmz.phone.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.swarmz.phone.data.Banner
+import dev.swarmz.phone.data.ClaimView
 import dev.swarmz.phone.data.PairHint
 import dev.swarmz.phone.data.userFor
 import dev.swarmz.phone.data.Paired
@@ -76,6 +77,8 @@ data class HomeUi(
     val pairHints: List<PairHint> = emptyList(),
     /** Names of shared files waiting for a tile to be chosen (phone attachments spec §4.4). */
     val pendingShare: List<String> = emptyList(),
+    /** Tiles asking to be the conductor (conductor spec §7), each a card with Approve and Deny. */
+    val claims: List<ClaimView> = emptyList(),
 )
 
 /** A Home reply that did not send: its [text] goes back into the card's field once ([restored] after that). */
@@ -188,7 +191,11 @@ class AppViewModel(
             )
         },
         pendingShare,
-    ) { ui, share -> if (share == null) ui else ui.copy(pendingShare = share.items.map { it.name } + listOfNotNull(share.text?.let { "text" })) }
+        repo.claims,
+    ) { ui, share, claims ->
+        val withClaims = ui.copy(claims = claims)
+        if (share == null) withClaims else withClaims.copy(pendingShare = share.items.map { it.name } + listOfNotNull(share.text?.let { "text" }))
+    }
         .stateIn(viewModelScope, SharingStarted.Eagerly, HomeUi(HomeModel(emptyList(), emptyList()), emptyList(), emptyMap(), emptyList(), emptyList(), now()))
 
     /** What a share intent brought: files already read, and any text. */
@@ -219,6 +226,27 @@ class AppViewModel(
 
     fun dismissTileNotice() {
         _tileNotice.value = null
+    }
+
+    /** Approves a conductor claim (conductor spec §7); a failure shows as a notice. */
+    fun approveClaim(view: ClaimView) {
+        viewModelScope.launch {
+            try {
+                repo.approveClaim(view)
+            } catch (e: Exception) {
+                _tileNotice.value = "could not approve ${view.title}: ${e.message}"
+            }
+        }
+    }
+
+    fun denyClaim(view: ClaimView) {
+        viewModelScope.launch {
+            try {
+                repo.denyClaim(view)
+            } catch (e: Exception) {
+                _tileNotice.value = "could not deny ${view.title}: ${e.message}"
+            }
+        }
     }
 
     /** Ends a running tile's session on its Mac (list menu, spec §6.5). Its row shows it stopped. */

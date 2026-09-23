@@ -2,6 +2,7 @@ package dev.swarmz.phone.link
 
 import dev.swarmz.phone.proto.APP_PROTOCOL
 import dev.swarmz.phone.proto.Cmd
+import dev.swarmz.phone.proto.ConductorState
 import dev.swarmz.phone.proto.TileRow
 import dev.swarmz.phone.proto.ToolFailure
 import dev.swarmz.phone.proto.ToolJson
@@ -84,6 +85,9 @@ class MacLink(
     val tiles: StateFlow<Map<String, TileRow>> = _tiles.asStateFlow()
     private val _lastSeen = MutableStateFlow<Long?>(null)
     val lastSeen: StateFlow<Long?> = _lastSeen.asStateFlow()
+    private val _conductor = MutableStateFlow(ConductorState())
+    /** The workspace's conductor and any claim, as this Mac's `watch` reports them (conductor spec §7). */
+    val conductor: StateFlow<ConductorState> = _conductor.asStateFlow()
 
     private val current = MutableStateFlow<SshConnection?>(null)
     private val kick = Channel<Unit>(Channel.CONFLATED)
@@ -186,9 +190,13 @@ class MacLink(
                 }
                 _lastSeen.value = now()
                 when (val ev = ToolJson.watchEvent(next.getOrThrow())) {
-                    is WatchEvent.Snapshot -> _tiles.value = ev.tiles.associateBy { it.id }
+                    is WatchEvent.Snapshot -> {
+                        _tiles.value = ev.tiles.associateBy { it.id }
+                        _conductor.value = ev.conductor
+                    }
                     is WatchEvent.Tile -> _tiles.update { it + (ev.tile.id to ev.tile) }
                     is WatchEvent.Gone -> _tiles.update { it - ev.id }
+                    is WatchEvent.Conductor -> _conductor.value = ev.state
                     WatchEvent.Ping, null -> Unit
                 }
             }
