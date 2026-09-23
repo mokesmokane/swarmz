@@ -829,7 +829,29 @@ pub fn send(env: &Env, tile: &str, text: &str) -> Result<Value, CliError> {
     // Enter separately, so the paste has been taken in before the line is submitted.
     std::thread::sleep(Duration::from_millis(50));
     c.write(b"\r").map_err(failed)?;
-    Ok(json!({"v": 1, "sent": true}))
+    // Claude Code can still take that Enter as part of the paste (a newline in the box); when
+    // the screen shows the text still in the box, press Enter again, a few times with growing
+    // pauses. A holder without a screen, or a program without a box, ends this at once.
+    let mut resent = 0;
+    for pause in [200u64, 500, 1000] {
+        std::thread::sleep(Duration::from_millis(pause));
+        if !text_still_in_box(&c, text) {
+            break;
+        }
+        c.write(b"\r").map_err(failed)?;
+        resent += 1;
+    }
+    Ok(json!({"v": 1, "sent": true, "resent": resent}))
+}
+
+/// Whether the tile's visible screen still shows `text` in Claude's input box (`still_in_box`);
+/// false when the holder answers no screen.
+fn text_still_in_box(c: &HolderClient, text: &str) -> bool {
+    let rows = c.welcome().rows as usize;
+    let Some(snap) = c.screen(if rows == 0 { 200 } else { rows }, Duration::from_secs(2)) else { return false };
+    let texts: Vec<String> = snap.lines.iter().map(line_text).collect();
+    let start = snap.visible_start.unwrap_or_else(|| texts.len().saturating_sub(snap.rows as usize));
+    crate::input::still_in_box(&texts[start.min(texts.len())..], text)
 }
 
 pub fn key(env: &Env, tile: &str, name: &str) -> Result<Value, CliError> {

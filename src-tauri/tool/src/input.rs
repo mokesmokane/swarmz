@@ -41,6 +41,24 @@ pub fn paste_bytes(text: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Whether `text`, just sent, is still sitting in Claude Code's input box on the visible
+/// `lines`: the last line that starts with the box's `>` prompt still begins with the text's
+/// first line. Claude groups bytes that arrive close together as one paste, and an Enter that
+/// lands inside that window is a newline in the box, not a submit; `send` checks this and
+/// presses Enter again. A submitted prompt is echoed as `> text` too, but above an emptied
+/// box, so the last `>` line decides. A shell has no such line and reads as false.
+pub fn still_in_box(lines: &[String], text: &str) -> bool {
+    let head: String = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(24).collect();
+    if head.is_empty() {
+        return false;
+    }
+    let box_line = lines.iter().rev().map(|l| l.trim()).find(|l| l.starts_with("> ") || l.starts_with("❯ ") || *l == ">" || *l == "❯");
+    match box_line {
+        Some(l) => l[l.chars().next().unwrap().len_utf8()..].trim_start().starts_with(&head),
+        None => false,
+    }
+}
+
 /// What `send` types: a bracketed paste unless the program has said it does not take one
 /// (`Some(false)`); a holder that cannot say (`None`) gets the paste.
 pub fn send_bytes(text: &str, bracketed_paste: Option<bool>) -> Result<Vec<u8>, String> {
@@ -61,6 +79,26 @@ mod tests {
         assert_eq!(key_bytes("down"), Some(&b"\x1b[B"[..]));
         assert_eq!(key_bytes("enter"), Some(&b"\r"[..]));
         assert_eq!(key_bytes("f1"), None);
+    }
+
+    #[test]
+    fn a_sent_text_still_in_the_box_is_told_from_a_submitted_one() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let text = "[conductor swarmz] The user wants a short summary of where this stands.";
+        // Before the submit: the box holds the text (wrapped), under the transcript.
+        let before = s(&["● Still in progress.", "", "> [conductor swarmz] The user wants a short summary of where", "  this stands.", "  ↑/↓ to select · Enter to view", "  ● main"]);
+        assert!(still_in_box(&before, text));
+        // After: the prompt is echoed above, and the box below it is empty.
+        let after = s(&["> [conductor swarmz] The user wants a short summary of where this stands.", "", "● Working on it…", "", "> ", "  ? for shortcuts"]);
+        assert!(!still_in_box(&after, text));
+        let placeholder = s(&["> [conductor swarmz] The user wants a short summary", "", "> Try \"fix the build\""]);
+        assert!(!still_in_box(&placeholder, text));
+        // A shell, or nothing that looks like a box.
+        assert!(!still_in_box(&s(&["$ echo mine", "mine", "$ "]), "echo mine"));
+        assert!(!still_in_box(&s(&[]), text));
+        assert!(!still_in_box(&before, "   "));
+        // Another text in the box is not this one.
+        assert!(!still_in_box(&before, "something else entirely"));
     }
 
     #[test]
