@@ -1,7 +1,7 @@
 # swarmz: a more informative terminal list
 
 Date: 2026-09-23
-Status: approved design, not yet implemented
+Status: approved design, implemented 2026-09-23
 Amends: `2026-09-10-swarmz-design.md` §4.1 (sidebar rows), `2026-09-21-conversation-cards-design.md` §5 (the row's second line).
 
 ## 1. Purpose
@@ -20,10 +20,12 @@ into the workbench); grouping on the phone (its list already groups by Mac).
 Each row keeps its title line (card title, else first prompt, else name;
 conversation cards spec §5) and gets a second line built from:
 
-- **Machine chip.** A dot in the machine's colour and its label: the alias
-  (else the Tailscale name) for a remote tile; for a local tile the self
-  machine's alias or name, else "this Mac". Offline remotes get a hollow
-  dot. The chip is always shown, so local and remote rows read alike.
+- **Machine chip.** A dot in the machine's colour and the machine's
+  Tailscale name (a remote's, or this Mac's; "this Mac" when that is not
+  known). The alias is not the label, since it is usually the tile's own
+  name already; it goes in the chip's tooltip and, in brackets, in a Machine
+  group's header. Offline remotes get a hollow dot. The chip is always
+  shown, so local and remote rows read alike.
 - **Folder.** The basename of the tile's folder (`ssh.cwd` or `foreign.cwd`
   for a remote, `cwd` for a local).
 - **Status.** From the agent state and exit code: `needs you` (blocked, or
