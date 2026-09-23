@@ -22,7 +22,7 @@ const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_
 const MAX_FOLLOW_LINES: usize = 1000;
 
 const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set"];
-const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny"];
+const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once"];
 
 /// The conductor guard (conductor spec §3) for a command run from a tile: `sub` against
 /// `target`. The desktop and the phone's gate carry no tile and pass.
@@ -220,6 +220,18 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             let tile = swarmz_tool::conductor::caller_tile();
             let name = std::env::var("SWARMZ_TERMINAL_NAME").ok().filter(|n| !n.is_empty()).or_else(|| tile.clone()).unwrap_or_else(|| "this tile".to_string());
             print!("{}", cmd::briefing(&cmd::Env::from_process()?, tile.as_deref(), &name)?);
+            Ok(None)
+        }
+        Some("notify") => {
+            a.expect_positional(2, "notify [--tile <id>] [--] <text>")?;
+            guard("notify", None)?;
+            let tile = a.opt("--tile").map(cmd::tile_arg).transpose()?;
+            Ok(Some(cmd::notify(&cmd::Env::from_process()?, tile.as_deref(), &a.positional[1])?))
+        }
+        Some("telegram-follow") => {
+            a.expect_positional(1, "telegram-follow [--once]")?;
+            guard("telegram-follow", None)?;
+            cmd::telegram_follow(&cmd::Env::from_process()?, a.flag("--once"), &mut std::io::stdout())?;
             Ok(None)
         }
         Some("version") => {

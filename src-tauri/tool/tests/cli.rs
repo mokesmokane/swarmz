@@ -1294,6 +1294,146 @@ fn card_sets_reads_and_keeps_a_user_title() {
     assert_eq!(gated["card"]["recap"].as_str(), Some("More."));
 }
 
+/// A stand-in for api.telegram.org on 127.0.0.1: records every request's path and JSON body;
+/// `sendMessage` is always accepted, and each `getUpdates` hands out the next canned batch (then
+/// none). `SWARMZ_TELEGRAM_API` points the tool at it.
+struct FakeTelegram {
+    base: String,
+    seen: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+}
+
+impl FakeTelegram {
+    fn start(batches: Vec<serde_json::Value>) -> FakeTelegram {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(vec![]));
+        let record = seen.clone();
+        std::thread::spawn(move || {
+            let mut batches = batches.into_iter();
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line.is_empty() {
+                    continue;
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).is_err() || h.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; len];
+                reader.read_exact(&mut body).unwrap();
+                let json: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+                let reply = if path.ends_with("/getUpdates") {
+                    serde_json::json!({"ok": true, "result": batches.next().unwrap_or_else(|| serde_json::json!([]))})
+                } else {
+                    serde_json::json!({"ok": true, "result": {"message_id": 1}})
+                };
+                record.lock().unwrap().push((path, json));
+                let text = reply.to_string();
+                let mut stream = reader.into_inner();
+                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len()).as_bytes());
+            }
+        });
+        FakeTelegram { base, seen }
+    }
+
+    fn requests(&self) -> Vec<(String, serde_json::Value)> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+fn borrow(env: &[(String, String)]) -> Vec<(&str, &str)> {
+    env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+}
+
+#[test]
+fn telegram_notifies_the_user_and_follows_their_replies_into_the_conductor() {
+    let h = home("telegram");
+    let cwd = h.path.to_string_lossy().into_owned();
+    let cs = held(&h, "c1");
+    let ts = held(&h, "t2");
+    let c1 = tool_client(&cs);
+    let t2 = tool_client(&ts);
+    write_ws(&h.path, serde_json::json!([
+        {"id": "c1", "name": "api", "cwd": cwd, "origin": "mini", "claude": {"enabled": true, "sessionId": "s-c1", "skipPermissions": false, "started": true}},
+        {"id": "t2", "name": "web", "cwd": cwd, "origin": "mini", "claude": {"enabled": true, "sessionId": "s-t2", "skipPermissions": false, "started": true}}
+    ]), serde_json::json!({}));
+    let as_t2: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "t2"), ("SWARMZ_TERMINAL_NAME", "web")];
+    let user: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "")];
+
+    // Nothing set up: notify says so, whoever asks.
+    let (code, d) = tool_env(&h.path, &["notify", "--", "hi"], user);
+    assert_eq!((code, d["code"].as_str()), (1, Some("not_configured")));
+
+    let updates = serde_json::json!([
+        {"update_id": 10, "message": {"chat": {"id": 4242}, "text": "approve"}},
+        {"update_id": 11, "message": {"chat": {"id": 9999}, "text": "not you"}},
+        {"update_id": 12, "message": {"chat": {"id": 4242}, "text": "how is it going?"}}
+    ]);
+    let fake = FakeTelegram::start(vec![updates]);
+    swarmz_tool::telegram::write(&h.path, &swarmz_tool::telegram::Config { token: "123:abc".into(), chat_id: "4242".into() }).unwrap();
+    // Each caller's environment plus the fake API's address.
+    let base = fake.base.clone();
+    let api_env = |env: &[(&str, &str)]| -> Vec<(String, String)> {
+        env.iter().map(|(k, v)| (k.to_string(), v.to_string())).chain(std::iter::once(("SWARMZ_TELEGRAM_API".to_string(), base.clone()))).collect()
+    };
+    let with_api = |env: &[(&str, &str)]| -> Vec<(String, String)> { api_env(env) };
+
+    // The user (no tile) may notify; a tile that is not the conductor may not.
+    let (code, n) = tool_env(&h.path, &["notify", "--tile", "c1", "--", "tests <pass> & ship"], &borrow(&with_api(user)));
+    assert_eq!((code, n["notified"].as_bool()), (0, Some(true)), "{n}");
+    let (code, d) = tool_env(&h.path, &["notify", "--", "hi"], &borrow(&with_api(as_t2)));
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+    let reqs = fake.requests();
+    assert_eq!(reqs.len(), 1, "{reqs:?}");
+    assert_eq!(reqs[0].0, "/bot123:abc/sendMessage");
+    assert_eq!(reqs[0].1["chat_id"], "4242");
+    assert_eq!(reqs[0].1["parse_mode"], "HTML");
+    assert_eq!(reqs[0].1["text"], "<b>api</b>\ntests &lt;pass&gt; &amp; ship");
+
+    // A claim goes to Telegram too.
+    let (code, c) = tool_env(&h.path, &["conductor", "--claim"], &borrow(&with_api(as_t2)));
+    assert_eq!((code, c["pending"].as_bool()), (0, Some(true)));
+    let reqs = fake.requests();
+    assert_eq!(reqs.len(), 2);
+    assert!(reqs[1].1["text"].as_str().unwrap().contains("<b>web</b> asks to be the conductor"), "{reqs:?}");
+
+    // Following once: "approve" answers the claim (and Telegram hears back), another chat's
+    // message is dropped, and plain text lands in the conductor as a [telegram] prompt.
+    let (code, t) = tool_env(&h.path, &["conductor", "--set", "c1"], user);
+    assert_eq!((code, t["conductor"].as_str()), (0, Some("c1")));
+    let (_, c) = tool_env(&h.path, &["conductor", "--claim"], &borrow(&with_api(as_t2)));
+    assert_eq!(c["pending"].as_bool(), Some(true));
+    let n_before = fake.requests().len();
+    // Only the conductor or the user may follow.
+    let (code, d) = tool_env(&h.path, &["telegram-follow", "--once"], &borrow(&with_api(as_t2)));
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+    let out = tool_command(&h.path).args(["telegram-follow", "--once"]).envs(with_api(user)).stderr(Stdio::piped()).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect();
+    let outcomes: Vec<&str> = lines.iter().filter_map(|l| l["outcome"].as_str()).collect();
+    assert_eq!(outcomes, vec!["approved", "delivered"], "{lines:?}");
+    let (_, st) = tool_env(&h.path, &["conductor"], user);
+    assert_eq!((st["conductor"].as_str(), st["claim"].is_null()), (Some("t2"), true));
+    let reqs = fake.requests();
+    let after: Vec<&(String, serde_json::Value)> = reqs[n_before..].iter().collect();
+    assert_eq!(after[0].0, "/bot123:abc/getUpdates");
+    assert_eq!(after[0].1["offset"], 0);
+    assert!(after.iter().any(|(p, b)| p.ends_with("sendMessage") && b["text"].as_str().unwrap().contains("<b>web</b> is the conductor now")), "{after:?}");
+    // The new conductor (t2) got the text; c1, replaced, did not.
+    assert!(wait_until(|| screen_has(&t2, "[telegram] how is it going?")));
+    assert!(!screen_has(&c1, "[telegram]"));
+}
+
 #[test]
 fn a_dialog_that_is_not_live_is_never_answered() {
     let h = home("stale-dialog");

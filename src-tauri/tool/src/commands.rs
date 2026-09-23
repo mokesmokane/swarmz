@@ -475,6 +475,10 @@ pub fn conductor(env: &Env, action: ConductorAction) -> Result<Value, CliError> 
             let changed = crate::conductor::claim(&mut ws, &tile, &by, &now)?;
             if changed {
                 save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
+                // The user may be away: the claim goes to Telegram too, when it is set up (spec §3).
+                if let Some(cfg) = crate::telegram::read(&env.home) {
+                    let _ = crate::telegram::send_message(&cfg, &crate::telegram::claim_message(&crate::conductor::title_of(&ws, &tile)));
+                }
             }
             let already = crate::conductor::conductor_of(&ws).as_deref() == Some(tile.as_str());
             Ok(json!({"v": 1, "claimed": true, "pending": !already, "conductor": already}))
@@ -572,6 +576,90 @@ pub fn reply(env: &Env, caller: &str, text: &str) -> Result<Value, CliError> {
     let line = crate::conductor::reply_line(&crate::conductor::title_of(&ws, caller), text);
     deliver(env, &conductor, &line)?;
     Ok(json!({"v": 1, "replied": true}))
+}
+
+/// `notify [--tile <id>] -- <text>` (spec §5): a Telegram message to the user, the tile's title
+/// in bold first when given. Only the conductor (or the user) may; `not_configured` without a
+/// `~/.swarmz/telegram.json`.
+pub fn notify(env: &Env, tile: Option<&str>, text: &str) -> Result<Value, CliError> {
+    let cfg = crate::telegram::read(&env.home).ok_or_else(|| CliError::new("not_configured", "Telegram is not set up on this Mac (swarmz → Notifications)"))?;
+    let title = match tile {
+        Some(t) => Some(crate::conductor::title_of(&env.workspace()?.unwrap_or_else(empty_workspace), t)),
+        None => None,
+    };
+    crate::telegram::send_message(&cfg, &crate::telegram::message_text(title.as_deref(), text))?;
+    Ok(json!({"v": 1, "notified": true}))
+}
+
+/// `telegram-follow [--once]` (spec §5): the user's Telegram messages, typed into the conductor
+/// as `[telegram] <text>`; `approve`/`deny` answer a pending claim instead. One JSON line per
+/// message handled; `--once` polls a single time (tests). A poll that fails is retried after a
+/// pause, since the desktop keeps this running while the conductor runs here.
+pub fn telegram_follow(env: &Env, once: bool, out: &mut dyn Write) -> Result<(), CliError> {
+    let cfg = crate::telegram::read(&env.home).ok_or_else(|| CliError::new("not_configured", "Telegram is not set up on this Mac"))?;
+    let mut offset: i64 = 0;
+    loop {
+        let updates = match crate::telegram::get_updates(&cfg, offset, if once { 0 } else { 25 }) {
+            Ok(u) => u,
+            Err(e) if once => return Err(e),
+            Err(e) => {
+                let _ = emit(out, &json!({"v": 1, "type": "error", "error": e.message}));
+                std::thread::sleep(Duration::from_secs(10));
+                continue;
+            }
+        };
+        for u in updates {
+            if let Some(id) = u["update_id"].as_i64() {
+                offset = offset.max(id + 1);
+            }
+            let Some(text) = crate::telegram::text_from_chat(&u, &cfg.chat_id) else { continue };
+            let outcome = telegram_inbound(env, &cfg, &text);
+            if !emit(out, &json!({"v": 1, "type": "message", "text": text, "outcome": outcome})) {
+                return Ok(());
+            }
+        }
+        if once {
+            return Ok(());
+        }
+    }
+}
+
+/// One message from the user's chat: an answer to a pending claim, else a line for the
+/// conductor. What was done, for the follow output. Telegram is told when nothing could be.
+fn telegram_inbound(env: &Env, cfg: &crate::telegram::Config, text: &str) -> &'static str {
+    let ws = env.workspace().ok().flatten().unwrap_or_else(empty_workspace);
+    let claim = crate::conductor::claim_of(&ws);
+    let word = text.trim().to_ascii_lowercase();
+    if let Some(c) = claim.filter(|_| word == "approve" || word == "deny") {
+        let tile = c["tile"].as_str().unwrap_or_default().to_string();
+        let title = crate::conductor::title_of(&ws, &tile);
+        let action = if word == "approve" { ConductorAction::Set(tile) } else { ConductorAction::Deny };
+        return match conductor(env, action) {
+            Ok(_) if word == "approve" => {
+                let _ = crate::telegram::send_message(cfg, &format!("🎛 <b>{}</b> is the conductor now.", crate::telegram::escape_html(&title)));
+                "approved"
+            }
+            Ok(_) => {
+                let _ = crate::telegram::send_message(cfg, &format!("The claim by <b>{}</b> was denied.", crate::telegram::escape_html(&title)));
+                "denied"
+            }
+            Err(e) => {
+                let _ = crate::telegram::send_message(cfg, &format!("Could not answer the claim: {}", crate::telegram::escape_html(&e.message)));
+                "failed"
+            }
+        };
+    }
+    let Some(conductor) = crate::conductor::conductor_of(&ws) else {
+        let _ = crate::telegram::send_message(cfg, "No conductor is set, so there is nobody to tell. Make a tile the conductor in swarmz first.");
+        return "no_conductor";
+    };
+    match deliver(env, &conductor, &format!("[telegram] {}", text.trim())) {
+        Ok(()) => "delivered",
+        Err(e) => {
+            let _ = crate::telegram::send_message(cfg, &format!("Could not reach the conductor: {}", crate::telegram::escape_html(&e.message)));
+            "failed"
+        }
+    }
 }
 
 /// `fleet [--follow]` (spec §2): every tile on every reachable Mac. `--follow` polls and prints

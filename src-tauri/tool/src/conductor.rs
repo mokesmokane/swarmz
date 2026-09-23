@@ -35,7 +35,7 @@ pub fn caller_tile() -> Option<String> {
 /// conductor included (spec §2).
 const READ_OTHER: &[&str] = &["transcript", "output", "image"];
 /// Commands that act on another tile, or on the fleet: the conductor's alone (spec §3).
-const CROSS: &[&str] = &["send", "ask", "key", "answer", "pending", "close", "restart", "new", "fleet", "notify", "on"];
+const CROSS: &[&str] = &["send", "ask", "key", "answer", "pending", "close", "restart", "new", "fleet", "notify", "telegram-follow", "on"];
 /// Set and clear are the user's (desktop, phone) and never a tile's.
 const USER_ONLY: &[&str] = &["conductor-set", "conductor-clear"];
 

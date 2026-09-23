@@ -26,6 +26,8 @@ pub struct AppState {
     /// (window label, tile id). Their replay goes to that window alone; data still arrives on
     /// `pty:data:<id>`, which every window receives from the main viewer.
     pub views: Mutex<HashMap<(String, String), Arc<dyn TerminalSession>>>,
+    /// The Telegram follower (conductor spec §5) while the conductor runs on this Mac.
+    pub telegram: Mutex<Option<crate::telegram::Follower>>,
 }
 
 /// The session a window's writes and resizes go to: its own viewer of the tile when it has one
@@ -690,6 +692,65 @@ pub fn conductor_dir() -> Result<String, String> {
 }
 
 const CONDUCTOR_CLAUDE_MD: &str = "# The conductor\n\nThis folder is the home of the swarmz conductor: the one Claude session allowed to act on the other tiles in the workspace, on every Mac. There is no code here to work on. The user asks the conductor what the other tiles are doing, hands work to them through it, and is reached by it on Telegram when away.\n\nWhat you may do and how is told to you at the start of every session (`~/.swarmz/bin/swarmz briefing` prints it again). Keep notes you want to survive between sessions in this folder.\n";
+
+/// Whether Telegram is set up on this Mac, and with which chat (conductor spec §5).
+#[tauri::command]
+pub fn telegram_get() -> crate::telegram::TelegramInfo {
+    crate::telegram::info_in(&swarmz_tool::paths::home_dir())
+}
+
+/// Writes `~/.swarmz/telegram.json` (mode 0600); both fields empty removes it, and an empty
+/// token with a chat id keeps the token already set (the panel never shows it).
+#[tauri::command]
+pub fn telegram_set(token: String, chat_id: String) -> Result<crate::telegram::TelegramInfo, String> {
+    let home = swarmz_tool::paths::home_dir();
+    if token.trim().is_empty() && chat_id.trim().is_empty() {
+        swarmz_tool::telegram::remove(&home)?;
+    } else {
+        let token = if token.trim().is_empty() { swarmz_tool::telegram::read(&home).map(|c| c.token).unwrap_or_default() } else { token };
+        let cfg = crate::telegram::validate(&token, &chat_id)?;
+        swarmz_tool::telegram::write(&home, &cfg)?;
+    }
+    Ok(crate::telegram::info_in(&home))
+}
+
+/// Makes `host`'s Telegram setup match this Mac's, over the shared ssh master; true when it changed.
+#[tauri::command]
+pub async fn telegram_push(host: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::telegram::push(&host)).await.map_err(|e| e.to_string())?
+}
+
+/// Sends a test message through the tool (`swarmz notify`), as the conductor would.
+#[tauri::command]
+pub async fn telegram_test() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let tool = crate::toolbin::ensure_installed()?;
+        let machine = swarmz_tool::tailscale::status().ok().and_then(|s| s.self_machine.map(|m| m.name)).unwrap_or_else(|| "this Mac".to_string());
+        let text = format!("Test message from swarmz on {machine}. The conductor can reach you here.");
+        crate::toolbin::run_tool_json(&tool, &["notify", "--", &text], Duration::from_secs(30)).map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Starts or stops the follower that types Telegram messages into the conductor (spec §5):
+/// the store asks for it while the conductor is a running local tile and Telegram is set up.
+#[tauri::command]
+pub fn telegram_follow(state: State<AppState>, enabled: bool) -> Result<bool, String> {
+    let mut slot = state.telegram.lock().unwrap();
+    match (enabled, slot.is_some()) {
+        (true, false) => {
+            let tool = crate::toolbin::ensure_installed()?;
+            *slot = Some(crate::telegram::Follower::start(tool));
+            Ok(true)
+        }
+        (false, true) => {
+            *slot = None;
+            Ok(false)
+        }
+        (on, _) => Ok(on),
+    }
+}
 
 /// Ends a session that no tile in this window shows.
 #[tauri::command]
