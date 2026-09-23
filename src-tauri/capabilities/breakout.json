@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "breakout",
+  "description": "Capability for a tile's own window (breakout windows spec §4)",
+  "windows": ["tile-*"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-title",
+    "core:window:allow-set-focus",
+    "clipboard-manager:allow-write-text"
+  ]
+}
