@@ -36,7 +36,13 @@ conversation cards spec §5) and gets a second line built from:
   relative time (`now`, `3m`, `2h`, `1d`), refreshed every 30 s. Absent when
   neither exists.
 
-Rendered as `⬤ mini2 · certifyIP · working · 2m`, truncated from the right.
+Rendered as `⬤ mini2 · certifyIP · working · 2m`, always in that order,
+truncated from the right; the status word is amber for `needs you`, green
+for `working`, red for a failing exit, muted otherwise. The tile's **name**
+is not on this line (amended 2026-09-23: it was prepended when a title was
+shown, which pushed the machine off the front): when the title has taken
+the name's place and the folder does not already say it, the name is a
+small mono tag at the end of the title line.
 
 ## 3. Grouping
 

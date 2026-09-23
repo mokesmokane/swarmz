@@ -24,6 +24,17 @@ function relativeTime(iso: string): string {
   return `${Math.round(m / 60)}h ago`;
 }
 
+/** The status word's colour: attention amber, working green, the rest muted. */
+function statusClass(status: string): string {
+  if (status === "needs you") return "text-amber-300";
+  if (status === "working") return "text-emerald-400";
+  if (status.startsWith("exited")) return "text-red-400";
+  return "text-neutral-500";
+}
+
+// Tailwind class inventory (scanned, never executed):
+// text-amber-300 text-emerald-400 text-red-400 text-neutral-500
+
 /** A clock that ticks every `everyMs`, for the relative times in the list (sidebar groups spec §2). */
 function useNow(everyMs: number): number {
   const [now, setNow] = useState(() => Date.now());
@@ -261,14 +272,18 @@ function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: nu
         ) : (
           <>
             <div
-              className="truncate"
+              className="flex items-baseline gap-1.5"
               data-testid={`title-${id}`}
               onDoubleClick={(e) => {
                 e.stopPropagation();
                 startEditing("title");
               }}
             >
-              {displayTitle(card, agent, t.name)}
+              <span className="min-w-0 truncate">{displayTitle(card, agent, t.name)}</span>
+              {hasTitle(card, agent) && info && t.name !== info.folder && (
+                // The tile's name, when the title has taken its place and the folder does not already say it.
+                <span className="shrink-0 rounded bg-neutral-800/80 px-1 font-mono text-[10px] text-neutral-400" title="Tile name">{t.name}</span>
+              )}
               {settings?.claude?.enabled && settings.claude.skipPermissions && (
                 <span
                   className="ml-1 rounded bg-red-900/60 px-1 text-[10px] font-semibold text-red-300"
@@ -278,13 +293,20 @@ function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: nu
                 </span>
               )}
             </div>
-            <div className="truncate text-xs text-neutral-500" data-testid={`line2-${id}`}>
-              {hasTitle(card, agent) ? `${t.name} · ` : ""}
+            <div className="flex items-center gap-1.5 truncate text-xs text-neutral-500" data-testid={`line2-${id}`}>
               {info ? (
                 <>
                   <MachineChip label={info.machine.label} alias={info.machine.alias} color={info.machine.color} online={info.machine.online} />
-                  {` · ${info.folder} · ${info.status}`}
-                  {info.since ? ` · ${relativeActivity(info.since, now)}` : ""}
+                  <span className="text-neutral-700">·</span>
+                  <span className="min-w-0 truncate">{info.folder}</span>
+                  <span className="text-neutral-700">·</span>
+                  <span className={`shrink-0 ${statusClass(info.status)}`}>{info.status}</span>
+                  {info.since && (
+                    <>
+                      <span className="text-neutral-700">·</span>
+                      <span className="shrink-0 text-neutral-600">{relativeActivity(info.since, now)}</span>
+                    </>
+                  )}
                 </>
               ) : (
                 basename(t.cwd)

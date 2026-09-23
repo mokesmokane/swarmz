@@ -118,18 +118,20 @@ describe("Sidebar", () => {
     render(<Sidebar />);
     // No card, no prompt: the name.
     expect(screen.getByTestId(`title-${ID}`).textContent).toBe("desk");
-    // A first prompt names it, and the name joins the second line.
+    // A first prompt names it; the name becomes a tag beside the title.
     act(() => {
       useStore.setState({ agentState: { [ID]: { ...useStore.getState().agentState[ID], status: "working", sessionId: "s", since: "t", lastEvent: "UserPromptSubmit", unseen: false, title: "fix the build", firstPrompt: "fix the build please" } } });
     });
-    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("fix the build");
-    expect(screen.getByTestId(`line2-${ID}`).textContent).toBe("desk · box · projects · working · now");
+    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("fix the builddesk");
+    // Machine first, always; the name moves to a tag on the title line since the folder does not say it.
+    expect(screen.getByTestId(`line2-${ID}`).textContent).toBe("box·projects·working·now");
+    expect(screen.getByTitle("Tile name").textContent).toBe("desk");
     // The agent's card wins over the prompt.
     act(() => {
       const s = useStore.getState();
       useStore.setState({ settings: { [ID]: { ...s.settings[ID], card: { title: "Phone: answer questions", recap: "Parsed the dialog.\nNext: the card.", updatedAt: new Date().toISOString(), by: "agent" } } } });
     });
-    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("Phone: answer questions");
+    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("Phone: answer questionsdesk");
   });
 
   it("opens a hover card with the recap after a pause, and closes it on leave", () => {
@@ -185,7 +187,7 @@ describe("Sidebar", () => {
     fireEvent.change(input, { target: { value: "  Mine  " } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(useStore.getState().settings[ID].card).toMatchObject({ title: "Mine", by: "user" });
-    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("Mine");
+    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("Minedesk");
     // The name is still edited from the rest of the row.
     fireEvent.doubleClick(screen.getByTestId(`line2-${ID}`));
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("desk");
@@ -210,8 +212,8 @@ describe("Sidebar", () => {
     });
     render(<Sidebar />);
     // The chip names the machine on every row, remote and local alike.
-    expect(screen.getByTestId(`line2-${ID}`).textContent).toContain("box · projects · needs you");
-    expect(screen.getByTestId("line2-local").textContent).toBe("mini · other · stopped");
+    expect(screen.getByTestId(`line2-${ID}`).textContent).toContain("box·projects·needs you");
+    expect(screen.getByTestId("line2-local").textContent).toBe("mini·other·stopped");
     fireEvent.change(screen.getByLabelText("Group by"), { target: { value: "machine" } });
     expect(screen.getByTestId("group-mini").textContent).toContain("mini");
     expect(screen.getByTestId("group-box").textContent).toContain("box");
