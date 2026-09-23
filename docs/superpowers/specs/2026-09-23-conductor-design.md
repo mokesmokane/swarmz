@@ -17,8 +17,10 @@ and it does that by reading the other tiles and typing into them. It can
 also reach you when you are away, on Telegram, and you can reach it from
 Telegram.
 
-Every other tile stays as it is: it may keep its own card, and nothing
-else. Agents never message each other.
+Every other tile stays as it is: it keeps its own card, and answers the
+conductor when asked. Agents never message each other; the conductor never
+reads a tile's conversation (it would drown in it): it asks, and the tile
+answers in a few lines.
 
 Non-goals: several conductors; conductors on the phone (the phone already
 does what a conductor does, for a human); a queue or inbox between agents;
@@ -30,14 +32,27 @@ Everything the phone can, on every Mac, from its shell, through the tool:
 
 | Need | Command (existing unless marked) |
 |---|---|
-| See every tile: title, machine, status, needs, recap, last message | `swarmz fleet` **(new)**: `ls` on this Mac and, over the shared ssh master, on every online Mac, in one JSON |
+| See every tile: title, machine, status, needs, recap, last message (each cut short) | `swarmz fleet` **(new)**: `ls` on this Mac and, over the shared ssh master, on every online Mac, in one JSON; `recap` and `lastMessage` are capped at 280 characters |
 | Watch for changes | `swarmz fleet --follow` **(new)**: one line per change, as `watch` does per Mac |
-| Read a conversation | `swarmz [--on <mac>] transcript <tile>` |
-| See the screen | `swarmz [--on <mac>] output <tile>` |
-| Say something to a tile | `swarmz [--on <mac>] send <tile> -- "…"` |
-| Answer its question or permission | `swarmz [--on <mac>] pending <tile>`, `answer <tile> …` |
+| Ask a tile something | `swarmz ask <tile> -- "…"` **(new)**: types `[conductor <title>] <question> — answer with: swarmz reply "…"` into the tile |
+| Tell a tile to do something | `swarmz [--on <mac>] send <tile> -- "…"`, the same line with `[conductor <title>]` in front so the tile knows who is speaking |
+| Answer a tile's question or permission | `swarmz [--on <mac>] pending <tile>`, `answer <tile> …` |
 | Start, stop, restart a tile | `new`, `close`, `restart` |
 | Tell the user | `swarmz notify "…"` **(new)**: Telegram |
+
+**Not** `transcript` or `output` on another tile: the conductor never
+reads a conversation or a screen. What it knows about a tile is its card,
+its status and its answers.
+
+### 2.1 Replies
+
+Any tile may run `swarmz reply -- "…"` **(new)**. It types
+`[<tile title>] <text>` into the conductor tile (over ssh when the
+conductor is on another Mac), at most 1000 characters, so an answer arrives
+as a prompt the conductor reads like any other. A reply with no conductor
+set is `denied`. The ordinary briefing tells every tile: when a line
+starting `[conductor` asks you something, answer it with `swarmz reply`, in
+a few lines, and carry on.
 
 `--on <mac>` **(new)** runs the same command on another Mac over the shared
 ssh master (`BatchMode`, like `workspace_pull`); the reply comes back as
@@ -48,16 +63,30 @@ fan-out already does.
 
 - `workspace.json` gains a top-level `conductor: "<tile id>"` (through
   `extra`, synced like everything else), so every Mac and the phone know.
-  At most one. It is set from the desktop (§6) or the tool
-  (`swarmz conductor --set <tile>` / `--clear` / no flag to read), which
-  bumps the revision like `card` does.
+  At most one. It is set from the desktop (§6), or **claimed**:
+- **Any Claude may claim the role**, and only the user can grant it.
+  `swarmz conductor --claim` (from a tile; the id from
+  `SWARMZ_TERMINAL_ID`) writes `conductorClaim: {tile, title, at}` into the
+  workspace and returns `{claimed: true, pending: true}`; a claim by the
+  current conductor is a no-op. The desktop shows the claim as a bar at the
+  top of the sidebar, **"<title> asks to be the conductor" · Approve ·
+  Deny**, and the phone as a needs-you card with the same two buttons; once
+  Telegram is set up the user gets a message too, with the same choice by
+  reply (`approve` / `deny`). Approve sets `conductor` and clears the claim;
+  Deny clears it; a newer claim replaces an older one. The tile that
+  claimed is told the outcome as a prompt (`[swarmz] you are the
+  conductor` / `[swarmz] the conductor claim was denied`) so it can carry
+  on either way. `swarmz conductor` (no flag) reads the current conductor
+  and any pending claim; `--set` and `--clear` exist for the desktop and
+  tests, not for agents (the guard refuses them from a tile).
 - **Enforcement is in the tool, on every Mac.** A command that acts on a
-  tile other than the caller's own (`send`, `key`, `answer`, `transcript`,
-  `output`, `pending`, `image`, `close`, `restart`, `new`, `fleet`,
-  `--on`, `notify`) is refused with `denied` unless `SWARMZ_TERMINAL_ID`
-  equals the workspace's conductor. A tile may always act on itself
-  (`card`, and its own `transcript`/`output`). The phone's key is not a
-  tile: it keeps its access through the gate as today.
+  tile other than the caller's own (`send`, `ask`, `key`, `answer`,
+  `pending`, `close`, `restart`, `new`, `fleet`, `--on`, `notify`) is
+  refused with `denied` unless `SWARMZ_TERMINAL_ID` equals the workspace's
+  conductor; `transcript`, `output` and `image` on another tile are refused
+  for every tile, the conductor included. A tile may always act on itself
+  (`card`, `reply`, `conductor --claim`). The phone's key is not a tile: it
+  keeps its access through the gate as today.
 - This is a guardrail, not a sandbox: an agent with a shell could reach a
   holder's socket or ssh by hand. The briefing tells ordinary tiles the
   rule; the tool enforces the ordinary path. That is the same standing as
@@ -70,12 +99,16 @@ The `SessionStart` hook stops printing a fixed file and instead runs
 `~/.swarmz/briefing.md` as today, plus, when the tile is the conductor, a
 **conductor section**: what it may do (§2 as prose, with the command
 lines), how to answer "what's everyone doing" (run `fleet`, summarise by
-machine, lead with what needs the user), how to hand work to a tile (`send`
-a clear instruction, then `fleet --follow` or check back), when to use
-`notify` (the user asked to be told; a tile has waited on a question for
-more than a few minutes; something failed), and never to type into a tile
-that is blocked on a permission unless the user said so. A user-edited
-`briefing.md` still wins for the common part.
+machine, lead with what needs the user), how to find out more (`ask` the
+tile and wait for its `[<title>]` reply as a prompt; never try to read its
+conversation), how to hand work to a tile (`send` a clear instruction,
+then `fleet --follow` or check back), when to use `notify` (the user asked
+to be told; a tile has waited on a question for more than a few minutes;
+something failed), and never to type into a tile that is blocked on a
+permission unless the user said so. The **ordinary section** gains two
+lines: how to answer a `[conductor …]` ask with `swarmz reply`, and that
+`swarmz conductor --claim` asks the user to make this tile the conductor.
+A user-edited `briefing.md` still wins for the common part.
 
 ## 5. Telegram
 
@@ -101,6 +134,9 @@ that is blocked on a permission unless the user said so. A user-edited
 
 - A tile's row and tab carry a 🎛 badge when it is the conductor; the
   hover card says "Conductor".
+- A pending claim is a bar at the top of the sidebar (§3): the claimant's
+  title, **Approve**, **Deny**. It appears on every Mac (the claim is in the
+  workspace); the first answer wins and clears it everywhere.
 - The row's menu gains **Make conductor** (and **Not the conductor** on
   the current one), which sets `conductor` in the workspace. Only Claude
   tiles qualify.
@@ -113,28 +149,35 @@ that is blocked on a permission unless the user said so. A user-edited
 
 ## 7. Phone
 
-The conductor's row shows the 🎛 badge. Nothing else changes.
+The conductor's row shows the 🎛 badge, and a pending claim is a needs-you
+card on Home with **Approve** and **Deny** (`swarmz conductor --set` /
+`--clear` through the gate, which allows them from a phone key).
 
 ## 8. Testing
 
-- **Tool:** `conductor` set/clear/read bumps the revision; the guard denies
-  cross-tile commands for a non-conductor tile and allows them for the
-  conductor and for a phone key; `--on` builds the ssh line and passes the
+- **Tool:** `conductor` set/clear/read bumps the revision; `--claim`
+  records a claim and is a no-op for the conductor; the guard denies
+  cross-tile commands for a non-conductor tile, allows them for the
+  conductor and for a phone key, and refuses `transcript`/`output` on
+  another tile for everyone; `ask` types the prefixed line and `reply` types
+  `[<title>] …` into the conductor, locally and over `--on`, cut at 1000
+  characters, `denied` with no conductor; `--on` builds the ssh line and passes the
   reply through (fixture, no real ssh); `fleet` merges rows from several
   Macs and marks each with its machine; `notify` posts the right JSON to a
   fake endpoint (URL overridable for tests) and refuses without a config;
   `telegram-follow` types only the configured chat's messages, with the
   prefix; `briefing` prints the conductor section only for the conductor.
-- **Desktop:** the badge; Make conductor; the + menu; the panel writes the
-  file and fans out; a test send.
+- **Desktop:** the badge; Make conductor; the + menu; the claim bar's
+  Approve and Deny set and clear the field and tell the claimant; the panel
+  writes the file and fans out; a test send.
 - **By hand:** make a tile the conductor, ask it what everyone is doing,
   have it tell another tile to do something, and send yourself a Telegram
   message; reply from Telegram and see it land in the conductor.
 
 ## 9. Build order
 
-1. Tool: `conductor`, the guard, `--on`, `fleet`, `briefing`; the hook
-   script calls `briefing` (version 4).
+1. Tool: `conductor` with `--claim`, the guard, `--on`, `fleet`, `ask`,
+   `reply`, `briefing`; the hook script calls `briefing` (version 4).
 2. Desktop: badge, Make conductor, Conductor…, the workspace field.
 3. Telegram: config file and panel with fan-out, `notify`, `telegram-follow`
    and its watcher.
