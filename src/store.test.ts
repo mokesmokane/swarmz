@@ -529,6 +529,8 @@ describe("loadWorkspace", () => {
     expect(ipc.conductorAction).toHaveBeenLastCalledWith("set", id);
     expect(useStore.getState().conductor).toBe(id);
     expect(useStore.getState().syncMeta?.revision).toBe(99);
+    // Written by "tool" on another name: not ours to announce (the test's file is a stand-in).
+    expect(ipc.workspacePush).not.toHaveBeenCalled();
     // No readable file: the tool's reply stands in.
     vi.mocked(ipc.loadWorkspace).mockRejectedValueOnce("gone");
     vi.mocked(ipc.conductorAction).mockResolvedValueOnce({ conductor: null, claim: null });
@@ -1353,7 +1355,8 @@ describe("shared workspace", () => {
   });
 
   it("checkExternalChange adopts a newer file written by another machine and ignores our own write", async () => {
-    useStore.setState({ selfMachine: "here", syncMeta: { revision: 2, updatedAt: "t", updatedBy: "here" }, sync: { ...useStore.getState().sync, enabled: true } });
+    useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), syncMeta: { revision: 2, updatedAt: "t", updatedBy: "here" }, sync: { ...useStore.getState().sync, enabled: true } });
+    noPendingSave();
     vi.mocked(ipc.workspaceStat).mockResolvedValueOnce(1000);
     await useStore.getState().checkExternalChange();
     expect(ipc.loadWorkspace).not.toHaveBeenCalled();
@@ -1361,6 +1364,27 @@ describe("shared workspace", () => {
     vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({ version: 1, layout: null, terminals: [], sync: { revision: 3, updatedAt: "t3", updatedBy: "desk" } });
     await useStore.getState().checkExternalChange();
     expect(useStore.getState().syncMeta?.revision).toBe(3);
+    // A peer's copy is not pushed back at the peers.
+    expect(ipc.workspacePush).not.toHaveBeenCalled();
+  });
+
+  it("checkExternalChange announces a file the tool wrote here to the peers at once", async () => {
+    useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), syncMeta: { revision: 2, updatedAt: "t", updatedBy: "here" }, sync: { ...useStore.getState().sync, enabled: true } });
+    noPendingSave();
+    vi.mocked(ipc.workspaceStat).mockResolvedValueOnce(1000);
+    await useStore.getState().checkExternalChange();
+    // `swarmz conductor --claim` wrote revision 3 as this machine: adopted, and pushed so a
+    // peer's next save starts from it rather than overwriting it.
+    vi.mocked(ipc.workspaceStat).mockResolvedValueOnce(2000);
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1, layout: null, terminals: [], conductorClaim: { tile: "t", title: "T", at: "t3" },
+      sync: { revision: 3, updatedAt: "t3", updatedBy: "here" },
+    });
+    await useStore.getState().checkExternalChange();
+    expect(useStore.getState().conductorClaim?.tile).toBe("t");
+    expect(ipc.workspacePush).toHaveBeenCalledTimes(1);
+    expect(ipc.workspacePush).toHaveBeenCalledWith("mokes@desk", expect.stringContaining('"revision": 3'));
+    expect(vi.mocked(ipc.workspacePush).mock.calls[0][1]).toContain('"conductorClaim"');
   });
 
   it("pull flushes a pending local save before adopting", async () => {

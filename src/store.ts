@@ -1750,6 +1750,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     if (isNewer(ws.sync, useStore.getState().syncMeta)) {
       lastSeenMtime = mtime;
       await adoptGuarded(ws);
+      await announceLocalWrite(ws);
       return;
     }
     // The file on disk is OLDER than what we hold: something (a peer pushing a stale copy, a
@@ -2668,6 +2669,19 @@ function adopt(ws: Workspace): Promise<void> {
 
 /** `adopt` with its failures reported in the sync line instead of thrown: a peer's copy that we
  * cannot save or open must not take down the polling loop that called us. */
+/**
+ * A file the tool wrote on this Mac (a claim, an approval, a card: `sync.updatedBy` is this
+ * machine) is known to nobody else until pushed: the peers would only see it on their next
+ * pull, and any save they make before that starts from the old revision and overwrites it.
+ * So it is announced right after it is adopted, as a save of ours would be. A peer's copy
+ * (another name) is theirs to announce.
+ */
+async function announceLocalWrite(ws: Workspace) {
+  const self = useStore.getState().selfMachine;
+  if (!self || !ws.sync || ws.sync.updatedBy !== self) return;
+  await pushWorkspace(JSON.stringify(ws, null, 2));
+}
+
 async function adoptGuarded(ws: Workspace) {
   try {
     await adopt(ws);
@@ -2766,6 +2780,7 @@ async function conductorViaTool(args: ["set", string] | ["deny"] | ["clear"]): P
   if (ws && isNewer(ws.sync, useStore.getState().syncMeta)) {
     lastSeenMtime = await ipc.workspaceStat().catch(() => null);
     await adoptGuarded(ws);
+    await announceLocalWrite(ws);
     return;
   }
   useStore.setState({ conductor: conductorOf(reply), conductorClaim: claimOf({ conductorClaim: reply.claim }) });
