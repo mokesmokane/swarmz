@@ -833,25 +833,33 @@ pub fn send(env: &Env, tile: &str, text: &str) -> Result<Value, CliError> {
     // the screen shows the text still in the box, press Enter again, a few times with growing
     // pauses. A holder without a screen, or a program without a box, ends this at once.
     let mut resent = 0;
-    for pause in [200u64, 500, 1000] {
+    let mut in_box = None;
+    for pause in [200u64, 500, 1000, 1500] {
         std::thread::sleep(Duration::from_millis(pause));
-        if !text_still_in_box(&c, text) {
+        in_box = text_still_in_box(&c, text);
+        if in_box != Some(true) || resent == 3 {
             break;
         }
         c.write(b"\r").map_err(failed)?;
         resent += 1;
     }
-    Ok(json!({"v": 1, "sent": true, "resent": resent}))
+    // `submitted` is the screen's word: false means the text is still in the box after every
+    // Enter, for the sender to act on; absent when the holder has no screen to ask.
+    let mut reply = json!({"v": 1, "sent": true, "resent": resent});
+    if let Some(still) = in_box {
+        reply["submitted"] = json!(!still);
+    }
+    Ok(reply)
 }
 
 /// Whether the tile's visible screen still shows `text` in Claude's input box (`still_in_box`);
-/// false when the holder answers no screen.
-fn text_still_in_box(c: &HolderClient, text: &str) -> bool {
+/// None when the holder answers no screen.
+fn text_still_in_box(c: &HolderClient, text: &str) -> Option<bool> {
     let rows = c.welcome().rows as usize;
-    let Some(snap) = c.screen(if rows == 0 { 200 } else { rows }, Duration::from_secs(2)) else { return false };
+    let snap = c.screen(if rows == 0 { 200 } else { rows }, Duration::from_secs(2))?;
     let texts: Vec<String> = snap.lines.iter().map(line_text).collect();
     let start = snap.visible_start.unwrap_or_else(|| texts.len().saturating_sub(snap.rows as usize));
-    crate::input::still_in_box(&texts[start.min(texts.len())..], text)
+    Some(crate::input::still_in_box(&texts[start.min(texts.len())..], text))
 }
 
 pub fn key(env: &Env, tile: &str, name: &str) -> Result<Value, CliError> {
