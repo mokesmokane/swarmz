@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useStore } from "../store";
-import { MACHINE_COLORS } from "../lib/workspace";
+import { MACHINE_COLORS, machineGlyph } from "../lib/workspace";
 
 const field = "w-full rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-xs text-neutral-100 outline-none focus:border-blue-500";
 const label = "mt-2 block text-[10px] uppercase tracking-wide text-neutral-500";
@@ -12,10 +12,11 @@ export function MachineSettings({ name, onClose }: { name: string; onClose: () =
   const [alias, setAlias] = useState(cfg?.alias ?? "");
   const [user, setUser] = useState(cfg?.user ?? "");
   const [color, setColor] = useState<string | null>(cfg?.color ?? null);
+  const [icon, setIcon] = useState(cfg?.icon ?? "");
   const [error, setError] = useState<string | null>(null);
 
   const save = async () => {
-    const err = await updateMachine(name, { alias: alias.trim() || null, user: user.trim() || null, color });
+    const err = await updateMachine(name, { alias: alias.trim() || null, user: user.trim() || null, color, icon: icon.trim() || null });
     if (err) {
       setError(err);
       return;
@@ -30,6 +31,15 @@ export function MachineSettings({ name, onClose }: { name: string; onClose: () =
       <input className={field} placeholder={name} value={alias} onChange={(e) => setAlias(e.target.value)} />
       <label className={label}>Username</label>
       <input className={field} placeholder={defaultUser || "user"} value={user} onChange={(e) => setUser(e.target.value)} />
+      <label className={label}>Icon</label>
+      <input
+        className={field}
+        placeholder={`${machineGlyph(name, undefined)} (an emoji or two characters)`}
+        value={icon}
+        maxLength={8}
+        onChange={(e) => setIcon(e.target.value)}
+        aria-label="Icon"
+      />
       <label className={label}>Colour</label>
       <div className="flex flex-wrap gap-1">
         <button

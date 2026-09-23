@@ -15,10 +15,13 @@ const remote = (id: string, machine: string | null, extra: Partial<RowSource> = 
 describe("row info", () => {
   it("names the machine for local, remote, aliased and unknown tiles", () => {
     // The chip is the machine's name; an alias (usually also the tile's name) goes in the tooltip.
-    expect(rowInfo(local("a"), ctx).machine).toEqual({ key: "mini", label: "mini", alias: "desk", color: "#3b82f6", self: true, online: true });
-    expect(rowInfo(local("a"), { ...ctx, selfMachine: null }).machine).toEqual({ key: "this-mac", label: "this Mac", alias: null, color: null, self: true, online: true });
-    expect(rowInfo(remote("b", "box"), ctx).machine).toEqual({ key: "box", label: "box", alias: null, color: "#f59e0b", self: false, online: false });
-    expect(rowInfo(remote("c", null), ctx).machine).toEqual({ key: "elsewhere", label: "elsewhere", alias: null, color: null, self: false, online: null });
+    expect(rowInfo(local("a"), ctx).machine).toEqual({ key: "mini", glyph: "M", label: "mini", alias: "desk", color: "#3b82f6", self: true, online: true });
+    expect(rowInfo(local("a"), { ...ctx, selfMachine: null }).machine).toEqual({ key: "this-mac", glyph: "⌂", label: "this Mac", alias: null, color: null, self: true, online: true });
+    expect(rowInfo(remote("b", "box"), ctx).machine).toEqual({ key: "box", glyph: "B", label: "box", alias: null, color: "#f59e0b", self: false, online: false });
+    expect(rowInfo(remote("c", null), ctx).machine).toEqual({ key: "elsewhere", glyph: "E", label: "elsewhere", alias: null, color: null, self: false, online: null });
+    // A chosen icon replaces the monogram.
+    const iconCtx = { ...ctx, machines: { ...ctx.machines, box: { ...ctx.machines.box, icon: "🦊" } } };
+    expect(rowInfo(remote("b", "box"), iconCtx).machine.glyph).toBe("🦊");
   });
 
   it("takes the folder from the remote or foreign folder before the local one", () => {
@@ -78,6 +81,7 @@ describe("grouping", () => {
       ["box", ["r1", "r2"], false],
     ]);
     expect(g[0].color).toBe("#3b82f6");
+    expect(g.map((x) => x.glyph)).toEqual(["M", "B"]);
   });
 
   it("status orders needs you, working, idle, stopped and hides empty groups", () => {

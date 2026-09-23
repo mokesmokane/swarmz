@@ -124,7 +124,7 @@ describe("Sidebar", () => {
     });
     expect(screen.getByTestId(`title-${ID}`).textContent).toBe("fix the builddesk");
     // Machine first, always; the name moves to a tag on the title line since the folder does not say it.
-    expect(screen.getByTestId(`line2-${ID}`).textContent).toBe("box·projects·working·now");
+    expect(screen.getByTestId(`line2-${ID}`).textContent).toBe("Bbox·projects·working·now");
     expect(screen.getByTitle("Tile name").textContent).toBe("desk");
     // The agent's card wins over the prompt.
     act(() => {
@@ -212,8 +212,8 @@ describe("Sidebar", () => {
     });
     render(<Sidebar />);
     // The chip names the machine on every row, remote and local alike.
-    expect(screen.getByTestId(`line2-${ID}`).textContent).toContain("box·projects·needs you");
-    expect(screen.getByTestId("line2-local").textContent).toBe("mini·other·stopped");
+    expect(screen.getByTestId(`line2-${ID}`).textContent).toContain("Bbox·projects·needs you");
+    expect(screen.getByTestId("line2-local").textContent).toBe("Mmini·other·stopped");
     fireEvent.change(screen.getByLabelText("Group by"), { target: { value: "machine" } });
     expect(screen.getByTestId("group-mini").textContent).toContain("mini");
     expect(screen.getByTestId("group-box").textContent).toContain("box");

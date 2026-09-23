@@ -1,7 +1,7 @@
 import type { AgentState } from "./agentState";
 import { needsYou } from "./agentState";
 import type { SessionRecord } from "./sessions";
-import { hostLabel, machineLabel, type Machines } from "./workspace";
+import { hostLabel, machineGlyph, machineLabel, type Machines } from "./workspace";
 
 /** How the sidebar lists tiles (sidebar groups spec §3), a per-machine preference. */
 export type GroupBy = "workspace" | "machine" | "status" | "folder";
@@ -31,8 +31,8 @@ export type RowStatus = "needs you" | "working" | "idle" | "stopped" | `exited $
 /** What a row's second line and the groupings are built from (spec §2). */
 export interface RowInfo {
   id: string;
-  /** The machine chip: the machine's name, its alias (for the tooltip), colour, and whether a remote is known offline. */
-  machine: { key: string; label: string; alias: string | null; color: string | null; self: boolean; online: boolean | null };
+  /** The machine badge: its glyph (icon or monogram), the machine's name, its alias (for the tooltip), colour, and whether a remote is known offline. */
+  machine: { key: string; glyph: string; label: string; alias: string | null; color: string | null; self: boolean; online: boolean | null };
   folder: string;
   status: RowStatus;
   /** ISO time of the last hook event, else the newest session's activity; null when neither. */
@@ -76,6 +76,7 @@ export function rowInfo(t: RowSource, ctx: RowContext): RowInfo {
     const alias = remote ? machineLabel(remote, ctx.machines[remote]) : null;
     machine = {
       key,
+      glyph: machineGlyph(key, remote ? ctx.machines[remote] : undefined),
       label: key,
       alias: alias && alias !== key ? alias : null,
       color: remote ? (ctx.machines[remote]?.color ?? null) : null,
@@ -87,6 +88,7 @@ export function rowInfo(t: RowSource, ctx: RowContext): RowInfo {
     const alias = self ? machineLabel(self, ctx.machines[self]) : null;
     machine = {
       key: self ?? "this-mac",
+      glyph: self ? machineGlyph(self, ctx.machines[self]) : "⌂",
       label: self ?? "this Mac",
       alias: alias && alias !== self ? alias : null,
       color: self ? (ctx.machines[self]?.color ?? null) : null,
@@ -114,7 +116,8 @@ export function relativeActivity(iso: string | null, now: number): string {
 export interface Group {
   key: string;
   title: string;
-  /** For a Machine group: the chip's colour and a remote's state, for the header. */
+  /** For a Machine group: the badge's glyph and colour and a remote's state, for the header. */
+  glyph?: string;
   color?: string | null;
   online?: boolean | null;
   ids: string[];
@@ -148,7 +151,7 @@ export function groupRows(order: string[], infos: Map<string, RowInfo>, groupBy:
     if (groupBy === "machine") {
       key = info.machine.key;
       title = info.machine.alias ? `${info.machine.label} (${info.machine.alias})` : info.machine.label;
-      extra = { color: info.machine.color, online: info.machine.self ? null : info.machine.online };
+      extra = { glyph: info.machine.glyph, color: info.machine.color, online: info.machine.self ? null : info.machine.online };
     } else if (groupBy === "status") {
       key = statusBucket(info.status);
       title = key;
