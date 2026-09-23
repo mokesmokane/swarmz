@@ -22,6 +22,7 @@ vi.mock("./lib/ipc", () => {
       closeTerminal: vi.fn(async () => {}),
       conductorAction: vi.fn(async () => ({ conductor: null, claim: null })),
       conductorDir: vi.fn(async () => "/home/me/.swarmz/conductor"),
+      telegramFollow: vi.fn(async (on: boolean) => on),
       restartTerminal: vi.fn(async (id: string) => info(id, "/tmp/x")),
       onData: vi.fn(async () => () => {}),
       onReplay: vi.fn(async () => () => {}),
@@ -79,7 +80,7 @@ import {
   beforeSpawn,
   machineFor,
   terminalColor,
-  useStore, breakoutHooks } from "./store";
+  useStore, breakoutHooks, telegramFollowWanted } from "./store";
 import { allGroups, findGroup, findGroupOf, type GroupNode, type Layout, type SplitNode } from "./lib/layout";
 import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, sshMasterLine, shellQuote, toWorkspace, type TerminalDef, type Workspace } from "./lib/workspace";
 
@@ -544,6 +545,33 @@ describe("loadWorkspace", () => {
     vi.mocked(ipc.conductorAction).mockClear();
     await useStore.getState().decideClaim(true);
     expect(ipc.conductorAction).not.toHaveBeenCalled();
+  });
+
+  it("runs the Telegram follower only while the conductor is a running local tile here and Telegram is set up", async () => {
+    vi.mocked(ipc.loadWorkspace).mockResolvedValue(null);
+    vi.mocked(ipc.conductorAction).mockImplementation(async (action, id) => ({ conductor: action === "set" ? (id ?? null) : null, claim: null }));
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(id, { claude: { enabled: true, sessionId: "s", skipPermissions: false, started: true } });
+    expect(telegramFollowWanted(useStore.getState())).toBe(false);
+    await useStore.getState().setConductor(id);
+    expect(ipc.telegramFollow).not.toHaveBeenCalled();
+    useStore.getState().setTelegramConfigured(true);
+    expect(telegramFollowWanted(useStore.getState())).toBe(true);
+    expect(ipc.telegramFollow).toHaveBeenLastCalledWith(true);
+    // The tile exits: the follower stops; a restart brings it back.
+    useStore.getState().markExited(id, 0);
+    expect(ipc.telegramFollow).toHaveBeenLastCalledWith(false);
+    // An ssh conductor is another Mac's to follow.
+    useStore.setState({ terminals: { ...useStore.getState().terminals, [id]: { ...useStore.getState().terminals[id], exited: null } } });
+    expect(ipc.telegramFollow).toHaveBeenLastCalledWith(true);
+    useStore.getState().updateSettings(id, { ssh: { host: "me@box", cwd: null, machine: "box" } });
+    expect(telegramFollowWanted(useStore.getState())).toBe(false);
+    expect(ipc.telegramFollow).toHaveBeenLastCalledWith(false);
+    // No conductor at all: nothing to follow for.
+    useStore.getState().updateSettings(id, { ssh: null });
+    expect(ipc.telegramFollow).toHaveBeenLastCalledWith(true);
+    await useStore.getState().setConductor(null);
+    expect(ipc.telegramFollow).toHaveBeenLastCalledWith(false);
   });
 
   it("createConductorTerminal opens a local Claude tile, starts it and makes it the conductor", async () => {

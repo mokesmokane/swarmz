@@ -81,6 +81,12 @@ export interface HostKeys {
   fingerprints: string[];
 }
 
+export interface TelegramInfo {
+  configured: boolean;
+  chatId: string;
+  tokenEnd: string;
+}
+
 export interface MachineResult {
   machine: string;
   ok: boolean;
@@ -163,6 +169,16 @@ export const ipc = {
     invoke<{ conductor: string | null; claim: ConductorClaim | null }>("conductor_action", { action, id: id ?? null }),
   /** Creates `~/.swarmz/conductor` (with its CLAUDE.md) if missing and returns the path. */
   conductorDir: () => invoke<string>("conductor_dir"),
+  /** Whether Telegram is set up on this Mac (conductor spec §5), the chat id and the token's end. */
+  telegramGet: () => invoke<TelegramInfo>("telegram_get"),
+  /** Writes `~/.swarmz/telegram.json`; both empty removes it. */
+  telegramSet: (token: string, chatId: string) => invoke<TelegramInfo>("telegram_set", { token, chatId }),
+  /** Makes `host`'s Telegram setup match this Mac's; true when it changed. */
+  telegramPush: (host: string) => invoke<boolean>("telegram_push", { host }),
+  /** Sends a test message through `swarmz notify`. */
+  telegramTest: () => invoke<void>("telegram_test"),
+  /** Starts or stops the follower that types the user's Telegram messages into the conductor; resolves with its state. */
+  telegramFollow: (enabled: boolean) => invoke<boolean>("telegram_follow", { enabled }),
   /** The phones paired with this Mac. */
   phones: () => invoke<PhoneKey[]>("phones"),
   /** Removes a phone's key here and on every other Mac the tool can reach. */

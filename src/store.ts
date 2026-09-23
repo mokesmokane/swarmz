@@ -406,6 +406,8 @@ export interface WorkbenchState {
   conductor: string | null;
   /** A tile asking to be the conductor, until Approve or Deny (conductor spec §3). */
   conductorClaim: ConductorClaim | null;
+  /** Whether `~/.swarmz/telegram.json` is set up here (conductor spec §5); null until asked. */
+  telegramConfigured: boolean | null;
   tailscale: TailscaleStatus | null;
   tailscaleError: string | null;
   selfMachine: string | null;
@@ -461,6 +463,8 @@ export interface WorkbenchState {
   decideClaim(approve: boolean): Promise<void>;
   /** A local Claude tile in `cwd` (the conductor's folder by default), made the conductor at once (conductor spec §6). */
   createConductorTerminal(cwd: string, placement?: Placement): Promise<string>;
+  /** Records whether Telegram is set up on this Mac (the Notifications panel and startup tell it). */
+  setTelegramConfigured(configured: boolean): void;
   /** The user typed a title for the tile's card (conversation cards spec §5); empty hands it back. */
   setCardTitle(id: string, title: string): void;
   /** Tiles shown in their own windows on this Mac (breakout windows spec §2); the layout is untouched. */
@@ -1356,6 +1360,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   machines: {},
   conductor: null,
   conductorClaim: null,
+  telegramConfigured: null,
   tailscale: null,
   tailscaleError: null,
   selfMachine: null,
@@ -1840,6 +1845,10 @@ export const useStore = create<WorkbenchState>((set) => ({
       if ((card ?? null) === (current.card ?? null)) return {};
       return { settings: { ...s.settings, [id]: { ...current, card } } };
     });
+  },
+
+  setTelegramConfigured(configured) {
+    set({ telegramConfigured: configured });
   },
 
   async setConductor(id) {
@@ -2804,4 +2813,28 @@ useStore.subscribe((s, prev) => {
 useStore.subscribe((s, prev) => {
   if (s.terminals === prev.terminals) return;
   for (const id of Object.keys(prev.terminals)) if (!(id in s.terminals)) forgetAttach(id);
+});
+
+/**
+ * Whether this Mac should run the Telegram follower (conductor spec §5): Telegram is set up,
+ * and the conductor is a tile whose shell runs here (not ssh, not a foreign local) and has not
+ * exited. Every other Mac leaves it to the conductor's home.
+ */
+export function telegramFollowWanted(s: Pick<WorkbenchState, "telegramConfigured" | "conductor" | "terminals" | "settings">): boolean {
+  if (!s.telegramConfigured || !s.conductor) return false;
+  const t = s.terminals[s.conductor];
+  const st = s.settings[s.conductor];
+  if (!t || t.exited !== null || !st) return false;
+  return !st.ssh && !st.foreign;
+}
+
+let telegramFollowing = false;
+useStore.subscribe((s, prev) => {
+  if (s.telegramConfigured === prev.telegramConfigured && s.conductor === prev.conductor && s.terminals === prev.terminals && s.settings === prev.settings) return;
+  const wanted = telegramFollowWanted(s);
+  if (wanted === telegramFollowing) return;
+  telegramFollowing = wanted;
+  ipc.telegramFollow(wanted).catch(() => {
+    telegramFollowing = !wanted;
+  });
 });

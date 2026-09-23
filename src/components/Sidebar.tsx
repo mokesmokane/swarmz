@@ -10,6 +10,7 @@ import { displayTitle, hasTitle } from "../lib/card";
 import { SessionHistory } from "./SessionHistory";
 import { ConductorBadge } from "./ConductorBadge";
 import { PhonesPanel } from "./PhonesPanel";
+import { NotificationsPanel } from "./NotificationsPanel";
 import { UpdateNotice, UpdateVersionLine } from "./UpdateNotice";
 
 function basename(p: string): string {
@@ -434,6 +435,7 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<"closed" | "open" | "ssh">("closed");
   const [phonesOpen, setPhonesOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   // The list's grouping (sidebar groups spec §3), a per-machine preference.
   const [groupBy, setGroupBy] = useState<GroupBy>(() => loadGroupBy());
   const now = useNow(30_000);
@@ -499,6 +501,13 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
           </button>
           <button
             className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
+            onClick={() => setNotificationsOpen((o) => !o)}
+            title="Notifications (Telegram)"
+          >
+            🔔
+          </button>
+          <button
+            className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
             onClick={() => void reloadWorkspace()}
             title="Reload ~/.swarmz/workspace.json"
           >
@@ -518,6 +527,7 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
       <UpdateNotice />
       <ClaimBar />
       {phonesOpen && <PhonesPanel onClose={() => setPhonesOpen(false)} />}
+      {notificationsOpen && <NotificationsPanel onClose={() => setNotificationsOpen(false)} />}
       {menu === "open" && (
         <div className="flex gap-1 border-b border-neutral-800 p-2 text-xs">
           <button

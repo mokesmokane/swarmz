@@ -6,6 +6,7 @@ pub mod registry;
 pub mod remote;
 pub mod session;
 pub mod sync;
+pub mod telegram;
 pub mod toolbin;
 pub use swarmz_tool::{tailscale, workspace};
 
@@ -58,6 +59,11 @@ pub fn run() {
             commands::close_session,
             commands::conductor_action,
             commands::conductor_dir,
+            commands::telegram_get,
+            commands::telegram_set,
+            commands::telegram_push,
+            commands::telegram_test,
+            commands::telegram_follow,
             commands::phones,
             commands::revoke_phone,
             commands::host_keys,

@@ -27,6 +27,11 @@ export default function App() {
   // wait for it, and `checkForUpdates` never rejects whatever the endpoint does.
   useEffect(() => {
     void useStore.getState().checkForUpdates();
+    // Whether Telegram is set up decides if the conductor's follower runs here (conductor spec §5).
+    ipc.telegramGet().then(
+      (i) => useStore.getState().setTelegramConfigured(i.configured),
+      () => {},
+    );
   }, []);
 
   useEffect(() => {

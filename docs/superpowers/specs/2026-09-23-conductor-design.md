@@ -1,7 +1,7 @@
 # swarmz: the conductor tile
 
 Date: 2026-09-23
-Status: approved design; steps 1 (tool: conductor with claims, the guard, --on, fleet, ask, reply, briefing; hook script v4) and 2 (desktop badge, claim bar, Make conductor, Conductor…, the workspace fields; `ls`/`watch` report the conductor and claim; phone mark and claim card) implemented 2026-09-23; step 3 (Telegram) to follow
+Status: approved design; steps 1 (tool: conductor with claims, the guard, --on, fleet, ask, reply, briefing; hook script v4) and 2 (desktop badge, claim bar, Make conductor, Conductor…, the workspace fields; `ls`/`watch` report the conductor and claim; phone mark and claim card) and 3 (Telegram: the per-Mac file, `notify`, `telegram-follow` with claim answers, the Notifications panel with fan-out and a test, the follower on the conductor's Mac) implemented 2026-09-23
 Amends: `2026-09-10-swarmz-design.md` §5–§6 (the ledger, MCP tools and
 messaging are replaced: agents do not talk to each other; one tile talks to
 all of them); `2026-09-16-swarmz-phone-design.md` §4.7 (the gate's
@@ -116,18 +116,27 @@ A user-edited `briefing.md` still wins for the common part.
   mode 0600, never in `workspace.json`. Set from the desktop's
   **Notifications** panel (§6), which writes it here and, like the hooks,
   on every online Mac over ssh, so the conductor can run anywhere.
-- `swarmz notify [--tile <id>] <text>` **(new)**: `sendMessage` to `chatId`
-  with the text (4000 characters max, cut), prefixed by the tile's title in
-  bold when `--tile` is given. Only the conductor may call it. Errors:
-  `not_configured`, `failed` (with Telegram's description).
-- **Inbound** `swarmz telegram-follow` **(new)**: long-polls `getUpdates`
-  and, for each message from `chatId` (any other sender is dropped), types
-  it into the conductor tile as `[telegram] <text>` with `send`. The
-  desktop app runs it as a watcher on the conductor's home Mac while the
-  conductor is running there (one instance; a watcher like the agent log
-  tails). A reply from the conductor comes back only if the conductor runs
-  `notify`, which its briefing tells it to do for messages that arrived
-  with the `[telegram]` prefix.
+- `swarmz notify [--tile <id>] -- <text>` **(new)**: `sendMessage` to `chatId`
+  with the text (4000 characters max, cut; HTML parse mode, escaped),
+  prefixed by the tile's title in bold when `--tile` is given. Only the
+  conductor (or the user: the desktop and the phone's gate) may call it.
+  Errors: `not_configured`, `failed` (with Telegram's description). Requests
+  go through `curl` with the token in a config on stdin, so it is in no
+  argument list; `SWARMZ_TELEGRAM_API` overrides the base URL for tests.
+- **Inbound** `swarmz telegram-follow [--once]` **(new)**: long-polls
+  `getUpdates` and, for each message from `chatId` (any other sender is
+  dropped), types it into the conductor tile as `[telegram] <text>`
+  (wherever the conductor runs, as `reply` does); `approve` / `deny` while
+  a claim is pending answer it instead, and Telegram hears the outcome.
+  With no conductor set, Telegram is told so. One JSON line per message
+  (`outcome`: `delivered`, `approved`, `denied`, `no_conductor`, `failed`);
+  `--once` polls a single time (tests). The desktop app keeps it running
+  on the conductor's home Mac while the conductor is a running local tile
+  there (one instance, restarted after it ends). A reply from the
+  conductor comes back only if the conductor runs `notify`, which its
+  briefing tells it to do for messages that arrived with the `[telegram]`
+  prefix. A claim is also sent to Telegram by `conductor --claim` when the
+  file is set up.
 - The desktop panel has a **Send test** button.
 
 ## 6. Desktop
@@ -146,7 +155,10 @@ A user-edited `briefing.md` still wins for the common part.
   `CLAUDE.md` that says what this folder is for), with Claude enabled, made
   the conductor at once.
 - A **Notifications** panel (a 🔔 button beside 📱) with the Telegram token
-  and chat id, Send test, and the per-Mac install state.
+  (never shown back; an empty field keeps it) and chat id, Save (which
+  also pushes the file to every Mac with a connected tile; the rest get it
+  when their tiles connect, alongside the hooks), Send test, Remove, and a
+  line saying whether this Mac listens for messages.
 
 ## 7. Phone
 
