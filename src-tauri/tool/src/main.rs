@@ -445,8 +445,14 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             a.expect_positional(2, "output <tile> [--lines N] [--follow]")?;
             let tile = cmd::tile_arg(&a.positional[1])?;
             guard("output", Some(&tile))?;
+            // The conductor gets a glance at another tile, not a feed (conductor spec §2).
+            let other = swarmz_tool::conductor::caller_tile().is_some_and(|c| c != tile);
+            if other && a.flag("--follow") {
+                return Err(CliError::new("denied", "another tile's screen is a glance, not a feed: leave off --follow"));
+            }
             // A follower re-reads its lines every 300 ms: keep that cheap.
-            let lines = count(&a, "--lines", 200, if a.flag("--follow") { MAX_FOLLOW_LINES } else { 5000 })?;
+            let max = if other { swarmz_tool::conductor::SCREEN_MAX } else if a.flag("--follow") { MAX_FOLLOW_LINES } else { 5000 };
+            let lines = count(&a, "--lines", 200.min(max), max)?;
             cmd::output(&cmd::Env::from_process()?, &tile, lines, a.flag("--follow"), &mut std::io::stdout())?;
             Ok(None)
         }
