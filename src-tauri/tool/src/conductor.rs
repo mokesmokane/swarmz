@@ -207,7 +207,20 @@ pub fn def_of<'a>(ws: &'a Workspace, tile: &str) -> Option<&'a TerminalDef> {
 pub fn state(ws: &Workspace) -> Value {
     let tree = Tree::of(ws);
     let subs: serde_json::Map<String, Value> = tree.subs.iter().map(|(id, s)| (id.clone(), json!({"parent": s.parent, "tiles": s.tiles}))).collect();
-    json!({"v": 1, "conductor": conductor_of(ws), "conductors": subs, "claim": claim_of(ws)})
+    json!({"v": 1, "conductor": conductor_of(ws), "conductors": subs, "claim": claim_of(ws), "conductorAt": conductor_at(ws)})
+}
+
+/// When the conductor fields (`conductor`, `conductors`, `conductorClaim`) last changed: the
+/// desktop keeps whichever copy of them is newer, whatever the whole file's revision says, so a
+/// Mac saving from an older copy cannot write old roles over a new one (tree spec §7).
+pub fn conductor_at(ws: &Workspace) -> Option<String> {
+    ws.extra.get("conductorAt").and_then(|v| v.as_str()).map(str::to_string)
+}
+
+/// Marks a change to the conductor fields: the revision, and their own stamp.
+fn touched(ws: &mut Workspace, by: &str, now: &str) {
+    ws.extra.insert("conductorAt".into(), json!(now));
+    bump_revision(ws, by, now);
 }
 
 /// Records a claim by `tile` (spec §3): `{tile, title, at}`, and with `sub` a claim to be a
@@ -236,7 +249,7 @@ pub fn claim(ws: &mut Workspace, tile: &str, sub: bool, by: &str, now: &str) -> 
         json!({"tile": tile, "title": title, "at": now, "sub": true, "parent": parent})
     };
     ws.extra.insert("conductorClaim".into(), record);
-    bump_revision(ws, by, now);
+    touched(ws, by, now);
     Ok(true)
 }
 
@@ -266,7 +279,7 @@ pub fn set(ws: &mut Workspace, tile: &str, by: &str, now: &str) -> Result<bool, 
         }
     }
     unlist(ws, tile);
-    bump_revision(ws, by, now);
+    touched(ws, by, now);
     Ok(true)
 }
 
@@ -318,7 +331,7 @@ pub fn set_sub(ws: &mut Workspace, tile: &str, parent: &str, by: &str, now: &str
             ws.extra.insert("conductors".into(), json!({ tile: entry }));
         }
     }
-    bump_revision(ws, by, now);
+    touched(ws, by, now);
     Ok(true)
 }
 
@@ -350,7 +363,7 @@ pub fn assign(ws: &mut Workspace, tile: &str, to: &str, by: &str, now: &str) -> 
             a.push(json!(tile));
         }
     }
-    bump_revision(ws, by, now);
+    touched(ws, by, now);
     Ok(true)
 }
 
@@ -375,7 +388,7 @@ pub fn remove_sub(ws: &mut Workspace, tile: &str, by: &str, now: &str) -> bool {
             ws.extra.remove("conductors");
         }
     }
-    bump_revision(ws, by, now);
+    touched(ws, by, now);
     true
 }
 
@@ -383,7 +396,7 @@ pub fn remove_sub(ws: &mut Workspace, tile: &str, by: &str, now: &str) -> bool {
 pub fn clear(ws: &mut Workspace, by: &str, now: &str) -> bool {
     let had = ws.extra.remove("conductor").is_some() | ws.extra.remove("conductorClaim").is_some();
     if had {
-        bump_revision(ws, by, now);
+        touched(ws, by, now);
     }
     had
 }
@@ -392,7 +405,7 @@ pub fn clear(ws: &mut Workspace, by: &str, now: &str) -> bool {
 pub fn deny(ws: &mut Workspace, by: &str, now: &str) -> Option<String> {
     let tile = claim_of(ws).and_then(|c| c.get("tile").and_then(|t| t.as_str()).map(str::to_string))?;
     ws.extra.remove("conductorClaim");
-    bump_revision(ws, by, now);
+    touched(ws, by, now);
     Some(tile)
 }
 
@@ -694,6 +707,8 @@ mod tests {
     fn claims_are_recorded_and_resolved() {
         let mut w = ws(None);
         assert!(claim(&mut w, "t2", false, "mini", "t1").unwrap());
+        assert_eq!(conductor_at(&w).as_deref(), Some("t1"), "every conductor write stamps the fields");
+        assert_eq!(state(&w)["conductorAt"], "t1");
         assert_eq!(claim_of(&w).unwrap()["title"], "web");
         assert_eq!(w.extra["sync"]["revision"], 1);
         assert!(claim(&mut w, "nope", false, "mini", "t1").is_err());

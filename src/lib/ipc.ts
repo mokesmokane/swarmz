@@ -179,13 +179,15 @@ export const ipc = {
   closeSession: (id: string) => invoke<boolean>("close_session", { id }),
   /** Sets, denies or clears the conductor through the tool, which tells the tiles concerned (conductor spec §6). */
   conductorAction: (action: "set" | "deny" | "clear" | "sub" | "assign" | "remove", id?: string, parent?: string) =>
-    invoke<{ conductor: string | null; conductors?: SubConductors; claim: ConductorClaim | null }>("conductor_action", {
+    invoke<{ conductor: string | null; conductors?: SubConductors; claim: ConductorClaim | null; conductorAt?: string | null }>("conductor_action", {
       action,
       id: id ?? null,
       parent: parent ?? null,
     }),
   /** Creates `~/.swarmz/conductor` (with its CLAUDE.md) if missing and returns the path. */
   conductorDir: () => invoke<string>("conductor_dir"),
+  /** The conductor fields of the workspace file on disk, or null with no file (read before every save). */
+  workspaceRoles: () => invoke<{ conductor?: unknown; conductors?: unknown; conductorClaim?: unknown; conductorAt?: unknown } | null>("workspace_roles"),
   /** A URL from a pane, in the browser (file viewing spec §2). */
   openUrl: (url: string) => invoke<void>("open_url", { url }),
   /** Opens `path` outside swarmz (spec §4): the default app, or Finder with `reveal`; a remote file is copied here first. Resolves with the path opened. */

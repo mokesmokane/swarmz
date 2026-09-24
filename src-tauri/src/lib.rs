@@ -66,6 +66,7 @@ pub fn run() {
             commands::telegram_test,
             commands::telegram_follow,
             commands::read_file,
+            commands::workspace_roles,
             commands::open_url,
             commands::open_path,
             commands::code_available,

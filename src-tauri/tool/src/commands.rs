@@ -478,7 +478,16 @@ pub fn conductor(env: &Env, action: ConductorAction) -> Result<Value, CliError> 
                 save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
                 // The user may be away: the claim goes to Telegram too, when it is set up (spec §3).
                 if let Some(cfg) = crate::telegram::read(&env.home) {
-                    let _ = crate::telegram::send_message(&cfg, &crate::telegram::claim_message(&crate::conductor::title_of(&ws, &tile)));
+                    let c = crate::conductor::claim_of(&ws).unwrap_or_default();
+                    let top = crate::conductor::conductor_of(&ws);
+                    let what = if c["sub"] == json!(true) {
+                        format!("a conductor under {}", crate::conductor::title_of(&ws, c["parent"].as_str().unwrap_or_default()))
+                    } else if let Some(t) = top.filter(|t| t != &tile) {
+                        format!("the top conductor, replacing {}", crate::conductor::title_of(&ws, &t))
+                    } else {
+                        "the conductor".to_string()
+                    };
+                    let _ = crate::telegram::send_message(&cfg, &crate::telegram::claim_message(&crate::conductor::title_of(&ws, &tile), &what));
                 }
             }
             let pending = crate::conductor::claim_of(&ws).is_some_and(|c| c["tile"].as_str() == Some(tile.as_str()));

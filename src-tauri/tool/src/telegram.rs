@@ -178,8 +178,8 @@ pub fn text_from_chat(update: &Value, chat_id: &str) -> Option<String> {
 }
 
 /// The message `conductor --claim` sends when Telegram is set up (spec §3, §5).
-pub fn claim_message(title: &str) -> String {
-    format!("🎛 <b>{}</b> asks to be the conductor. Reply <b>approve</b> or <b>deny</b>.", escape_html(title))
+pub fn claim_message(title: &str, what: &str) -> String {
+    format!("🎛 <b>{}</b> asks to be {}. Reply <b>approve</b> or <b>deny</b>.", escape_html(title), escape_html(what))
 }
 
 #[cfg(test)]
@@ -216,7 +216,8 @@ mod tests {
         let out = message_text(None, &long);
         assert_eq!(out.chars().count(), TEXT_MAX);
         assert!(out.ends_with('…'));
-        assert!(claim_message("a<b").contains("<b>a&lt;b</b>"));
+        assert!(claim_message("a<b", "the conductor").contains("<b>a&lt;b</b> asks to be the conductor"));
+        assert!(claim_message("x", "a conductor under Ops").contains("asks to be a conductor under Ops"));
     }
 
     #[test]

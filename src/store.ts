@@ -50,9 +50,8 @@ import {
   type TerminalDef,
   type Workspace,
   validateIcon,
-  claimOf,
-  conductorOf,
-  conductorsOf,
+  conductorFieldsOf,
+  newerRoles,
   conductorOwner,
   liveSubs,
   workspaceExtra,
@@ -413,6 +412,8 @@ export interface WorkbenchState {
   conductorClaim: ConductorClaim | null;
   /** Sub-conductors by tile id (conductor tree spec §2), from the workspace. */
   conductors: SubConductors;
+  /** When the conductor fields last changed (tree spec §7); the newer copy of them always wins. */
+  conductorAt: string | null;
   /** Top-level workspace fields this app does not know, written back through every save. */
   workspaceExtra: Record<string, unknown>;
   /** Whether the Conductors dialog (the tree, arranged by hand) is open. */
@@ -1355,7 +1356,7 @@ async function loadWorkspaceOnce(set: SetState): Promise<void> {
     const { machines, dropped } = sanitizeMachines(ws.machines);
     set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
   }
-  set({ conductor: conductorOf(ws), conductorClaim: claimOf(ws), conductors: conductorsOf(ws), workspaceExtra: workspaceExtra(ws) });
+  set({ ...conductorFieldsOf(ws), workspaceExtra: workspaceExtra(ws) });
   // openDefs sets persistenceReady itself: true when every def opened cleanly, false
   // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
   await openDefs(ws.terminals, ws.layout, set);
@@ -1384,6 +1385,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   conductor: null,
   conductorClaim: null,
   conductors: {},
+  conductorAt: null,
   workspaceExtra: {},
   conductorsPanel: false,
   setConductorsPanel(open) {
@@ -1530,6 +1532,9 @@ export const useStore = create<WorkbenchState>((set) => ({
         ...(s.conductorClaim?.tile === id ? { conductorClaim: null } : {}),
         // A closed sub-conductor's tiles go back to its parent (conductor tree spec §2).
         ...(Object.keys(s.conductors).length ? { conductors: withoutTile(s.conductors, id) } : {}),
+        ...(s.conductor === id || s.conductorClaim?.tile === id || s.conductors[id] || Object.values(s.conductors).some((c) => c.tiles.includes(id))
+          ? { conductorAt: new Date().toISOString() }
+          : {}),
         ...focusFor(layout, fallback),
       };
     });
@@ -2545,7 +2550,7 @@ export function __resetSyncState() {
  * compares against the file that was adopted. */
 function currentWorkspace(): Workspace {
   const s = useStore.getState();
-  return toWorkspace({ order: s.order, terminals: persistedTerminals(s.terminals), settings: s.settings, layout: s.layout, machines: s.machines, conductor: s.conductor, conductorClaim: s.conductorClaim, conductors: s.conductors, extra: s.workspaceExtra });
+  return toWorkspace({ order: s.order, terminals: persistedTerminals(s.terminals), settings: s.settings, layout: s.layout, machines: s.machines, conductor: s.conductor, conductorClaim: s.conductorClaim, conductors: s.conductors, conductorAt: s.conductorAt, extra: s.workspaceExtra });
 }
 
 /**
@@ -2579,7 +2584,12 @@ async function applyWorkspace(
   }
   // The conductor and a claim are whole-file facts: absent means none (the tool and every save
   // write the whole file).
-  useStore.setState({ conductor: conductorOf(ws), conductorClaim: claimOf(ws), conductors: conductorsOf(ws), workspaceExtra: workspaceExtra(ws) });
+  // Roles newer here than in the file (a tool write this Mac made, or one it took from disk before
+  // a peer's older copy arrived) are kept; `adopt`'s drift check then saves them back out, so the
+  // peers converge on the newest roles whatever the file's revision says (tree spec §7).
+  const incoming = conductorFieldsOf(ws);
+  const keepRoles = newerRoles(useStore.getState().conductorAt, incoming.conductorAt);
+  useStore.setState({ ...(keepRoles ? {} : incoming), workspaceExtra: workspaceExtra(ws) });
   // What each open terminal was called (as the shared file would spell it) when this operation
   // began — see the rename pass below. `adopt` captures it before its own save, because a user
   // rename made while that save is in flight belongs to the user, not to the file.
@@ -2751,6 +2761,41 @@ async function adoptGuarded(ws: Workspace) {
  * implementation to keep in sync with `toWorkspace`/`bumpSync`/`pushWorkspace`. */
 function runSave(): Promise<void> {
   if (!useStore.getState().persistenceReady) return Promise.resolve();
+  const p = takeNewerRolesFromDisk().then(() => runSaveNow());
+  savePromise = p.finally(() => {
+    savePromise = null;
+  });
+  return savePromise;
+}
+
+/** Set while roles read from disk are put in the store, so that change schedules no second save. */
+let takingDiskRoles = false;
+
+/**
+ * The file on disk may hold newer roles than this app (the tool wrote them here, or a peer's push
+ * landed, since the last adoption): take them before saving, so a save never writes older roles
+ * over newer ones (tree spec §7). A failed read changes nothing.
+ */
+async function takeNewerRolesFromDisk(): Promise<void> {
+  let disk: Awaited<ReturnType<typeof ipc.workspaceRoles>> = null;
+  try {
+    disk = await ipc.workspaceRoles();
+  } catch {
+    return;
+  }
+  if (!disk) return;
+  const fields = conductorFieldsOf(disk);
+  if (!newerRoles(fields.conductorAt, useStore.getState().conductorAt)) return;
+  takingDiskRoles = true;
+  try {
+    useStore.setState(fields);
+  } finally {
+    takingDiskRoles = false;
+  }
+}
+
+function runSaveNow(): Promise<void> {
+  if (!useStore.getState().persistenceReady) return Promise.resolve();
   const s = useStore.getState();
   let p: Promise<void>;
   if (s.sync.enabled) {
@@ -2769,6 +2814,7 @@ function runSave(): Promise<void> {
       conductor: s.conductor,
       conductorClaim: s.conductorClaim,
       conductors: s.conductors,
+      conductorAt: s.conductorAt,
       extra: s.workspaceExtra,
       sync,
     });
@@ -2791,6 +2837,7 @@ function runSave(): Promise<void> {
       conductor: s.conductor,
       conductorClaim: s.conductorClaim,
       conductors: s.conductors,
+      conductorAt: s.conductorAt,
       extra: s.workspaceExtra,
       sync: s.syncMeta ?? undefined,
     });
@@ -2798,10 +2845,7 @@ function runSave(): Promise<void> {
       useStore.setState({ persistError: `could not save workspace: ${typeof e === "string" ? e : String(e)}` });
     });
   }
-  savePromise = p.finally(() => {
-    savePromise = null;
-  });
-  return savePromise;
+  return p;
 }
 
 /** If a debounced save is scheduled, cancel the timer and run it right now instead (awaiting
@@ -2837,14 +2881,26 @@ async function conductorViaTool(args: ["set", string] | ["deny"] | ["clear"] | [
     args[0] === "sub" || args[0] === "assign"
       ? await ipc.conductorAction(args[0], args[1], args[2])
       : await ipc.conductorAction(args[0], args[0] === "set" || args[0] === "remove" ? args[1] : undefined);
+  // The reply first: if the file on disk has meanwhile been overwritten by a peer's older copy,
+  // adopting that file keeps these newer roles rather than the file's (tree spec §7).
+  applyRolesReply(reply);
   const ws = await ipc.loadWorkspace().catch(() => null);
   if (ws && isNewer(ws.sync, useStore.getState().syncMeta)) {
     lastSeenMtime = await ipc.workspaceStat().catch(() => null);
     await adoptGuarded(ws);
     await announceLocalWrite(ws);
-    return;
   }
-  useStore.setState({ conductor: conductorOf(reply), conductorClaim: claimOf({ conductorClaim: reply.claim }), conductors: conductorsOf(reply) });
+}
+
+/**
+ * The tool's reply is the roles it just wrote: newer than the store's unless something newer has
+ * arrived since, in which case the store's stand. Taking them schedules a save, which carries them
+ * to the peers even if the file on disk has meanwhile been overwritten by an older copy.
+ */
+function applyRolesReply(reply: { conductor: string | null; conductors?: unknown; claim: unknown; conductorAt?: unknown }) {
+  const fields = conductorFieldsOf({ conductor: reply.conductor, conductors: reply.conductors, conductorClaim: reply.claim, conductorAt: reply.conductorAt });
+  const local = useStore.getState().conductorAt;
+  if (fields.conductorAt ? newerRoles(fields.conductorAt, local) || fields.conductorAt === local : !local) useStore.setState(fields);
 }
 
 function scheduleSave() {
@@ -2861,7 +2917,7 @@ useStore.subscribe((s, prev) => {
   // `settings`/`terminals`/etc. references) to a file that's already durable — scheduling a
   // save here would re-bump the revision and push it right back to the peer we just adopted
   // from, which would adopt that and do the same, forever.
-  if (s.sync.adopting) return;
+  if (s.sync.adopting || takingDiskRoles) return;
   if (
     s.terminals !== prev.terminals ||
     s.order !== prev.order ||

@@ -62,8 +62,10 @@ and pass everything.
 
 ## 4. Making one
 
-- **Claim:** `swarmz conductor --claim --sub` asks to be a sub-conductor under the conductor the
-  claimant answers to now (the claim, `conductorClaim`, gains `sub: true` and `parent`). The user
+- **Claim:** `swarmz conductor --claim` asks to be a sub-conductor under the conductor the
+  claimant answers to now (the claim, `conductorClaim`, gains `sub: true` and `parent`) whenever
+  a top conductor exists; replacing the top takes `--claim --top`, and with no top a plain claim
+  is for the top. The claim bar and Telegram say which (a claim to replace the top says so). The user
   approves or denies it exactly as today (the claim bar, the phone card, Telegram); approving a
   sub claim makes a sub-conductor with no tiles yet, a plain claim the top conductor.
 - **Directly:** `swarmz conductor --set <tile> --parent <id>` (the user's) makes a sub-conductor;
@@ -103,14 +105,24 @@ through them. An ordinary tile's briefing is unchanged.
 - The sidebar's **Group by** gains **Conductor**: one group per conductor, in tree order, headed
   by the conductor and holding the tiles directly under it.
 
-## 7. Compatibility
+## 7. Roles survive other Macs' saves
+
+Every Mac saves the whole workspace every few seconds, and last-writer-wins on the file revision
+meant a Mac saving from a copy made before a role change wrote the old roles back over it (a
+sub-conductor made, told, and gone within seconds). The conductor fields therefore carry their
+own stamp, `conductorAt`, written by every change to them, and the newer set of roles wins
+independently of the file's revision: an adopted file with older roles leaves the store's roles
+in place (and the next save carries them back out), a save first takes newer roles from the file
+on disk, and the desktop applies the tool's reply to a role change before adopting anything.
+
+## 8. Compatibility
 
 A Mac on an older tool sees sub-conductors as ordinary tiles, so it refuses them what they may
 not do anyway; it would drop `conductors` on its next save, so every Mac is updated together, as
 for the conductor itself. The desktop keeps top-level workspace fields it does not know through
 a save, so the next field added here cannot be lost this way.
 
-## 8. Testing
+## 9. Testing
 
 - **Tool:** owner resolution (the list, a sub-conductor answers to its parent, loops and orphans
   ignored, a tile in one list only); the guard table row by row, including a grandchild refused to act
@@ -121,7 +133,7 @@ a save, so the next field added here cannot be lost this way.
 - **By hand:** make a certifyIP sub-conductor; from the top, ask it for a status; try to send to a
   certifyIP tile directly and be refused; glance at one with `output`.
 
-## 9. Build order
+## 10. Build order
 
 1. Tool: `conductors`, owner resolution, the guard, `reply` routing, `fleet` filter, sub claims,
    `--set --parent`, `--assign`, `--remove`, per-role briefing.

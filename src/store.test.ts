@@ -21,6 +21,7 @@ vi.mock("./lib/ipc", () => {
       }),
       closeTerminal: vi.fn(async () => {}),
       conductorAction: vi.fn(async () => ({ conductor: null, claim: null })),
+      workspaceRoles: vi.fn(async () => null),
       conductorDir: vi.fn(async () => "/home/me/.swarmz/conductor"),
       telegramFollow: vi.fn(async (on: boolean) => on),
       restartTerminal: vi.fn(async (id: string) => info(id, "/tmp/x")),
@@ -114,6 +115,11 @@ beforeEach(async () => {
     sshDropped: {},
     toolReady: {},
     machines: {},
+    conductor: null,
+    conductorClaim: null,
+    conductors: {},
+    conductorAt: null,
+    workspaceExtra: {},
     tailscale: null,
     tailscaleError: null,
     selfMachine: null,
@@ -324,6 +330,8 @@ describe("persistence", () => {
       vi.advanceTimersByTime(SAVE_DEBOUNCE_MS - 1);
       expect(ipc.saveWorkspace).not.toHaveBeenCalled();
       vi.advanceTimersByTime(1);
+      // The save reads the roles on disk first (tree spec §7), one async step.
+      await vi.advanceTimersByTimeAsync(0);
       expect(ipc.saveWorkspace).toHaveBeenCalledTimes(1);
       const ws = vi.mocked(ipc.saveWorkspace).mock.calls[0][0] as Workspace;
       expect(ws.terminals.map((t) => t.id)).toEqual([id]);
@@ -545,6 +553,45 @@ describe("loadWorkspace", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("takes newer roles from disk before saving, so a save never writes older roles over them", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ conductor: "old", conductorAt: "2026-09-24T09:00:00.000Z" });
+      await useStore.getState().createTerminal("/tmp/a");
+      vi.mocked(ipc.workspaceRoles).mockResolvedValueOnce({ conductor: "tool-wrote-this", conductorClaim: null, conductors: {}, conductorAt: "2026-09-24T10:00:00.000Z" });
+      vi.mocked(ipc.saveWorkspace).mockClear();
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+      await vi.runAllTimersAsync();
+      const saves = vi.mocked(ipc.saveWorkspace).mock.calls;
+      expect(saves.length).toBe(1);
+      expect((saves[0][0] as Workspace).conductor).toBe("tool-wrote-this");
+      expect(useStore.getState().conductor).toBe("tool-wrote-this");
+      // Older roles on disk are left there.
+      vi.mocked(ipc.workspaceRoles).mockResolvedValueOnce({ conductor: "stale", conductorAt: "2026-09-24T08:00:00.000Z" });
+      await useStore.getState().renameTerminal(useStore.getState().order[0], "renamed");
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+      await vi.runAllTimersAsync();
+      expect(useStore.getState().conductor).toBe("tool-wrote-this");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a role change survives a disk file a peer overwrote with older roles", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.setState({ conductor: "old", conductorAt: "2026-09-24T09:00:00.000Z", syncMeta: { revision: 5, updatedAt: "t", updatedBy: "here" } });
+    vi.mocked(ipc.conductorAction).mockResolvedValueOnce({ conductor: id, conductors: {}, claim: null, conductorAt: "2026-09-24T10:00:00.000Z" });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1, layout: useStore.getState().layout, conductor: "old", conductorAt: "2026-09-24T09:00:00.000Z",
+      terminals: [{ id, name: useStore.getState().terminals[id].name, cwd: "/tmp/a", ssh: null, claude: null, command: null }],
+      sync: { revision: 9, updatedAt: "2026-09-24T10:00:03.000Z", updatedBy: "peer" },
+    } as Workspace);
+    await useStore.getState().setConductor(id);
+    expect(useStore.getState().syncMeta?.revision).toBe(9);
+    expect(useStore.getState().conductor).toBe(id);
+    expect(useStore.getState().conductorAt).toBe("2026-09-24T10:00:00.000Z");
   });
 
   it("setConductor and decideClaim go through the tool, then adopt the file it wrote", async () => {
@@ -1208,6 +1255,7 @@ describe("machines and tailscale", () => {
       expect(useStore.getState().machines.box.alias).toBe("b");
       await useStore.getState().updateMachine("box", { color: "#22c55e" });
       vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+      await vi.advanceTimersByTimeAsync(0);
       const calls = vi.mocked(ipc.saveWorkspace).mock.calls;
       const ws = calls[calls.length - 1][0] as Workspace;
       expect(ws.machines?.box.color).toBe("#22c55e");
@@ -1384,6 +1432,38 @@ describe("shared workspace", () => {
     expect(s.sync.peersTotal).toBe(2);
     expect(s.sync.peersOk).toBe(1);
     expect(s.sync.error).toContain("desk");
+  });
+
+  it("keeps newer roles when adopting a file with older ones, and saves them back out", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ selfMachine: "here", tailscale: ts(["desk"]), syncMeta: { revision: 10, updatedAt: "t", updatedBy: "here" }, sync: { ...useStore.getState().sync, enabled: true } });
+      noPendingSave();
+      await launchPull();
+      useStore.setState({ conductor: "new-top", conductors: { s: { parent: "new-top", tiles: [] } }, conductorAt: "2026-09-24T10:00:05.000Z" });
+      await vi.runAllTimersAsync();
+      vi.mocked(ipc.saveWorkspace).mockClear();
+      // A peer saved from an older copy: a higher revision, but roles stamped before ours.
+      vi.mocked(ipc.workspaceStat).mockResolvedValueOnce(1000);
+      await useStore.getState().checkExternalChange();
+      vi.mocked(ipc.workspaceStat).mockResolvedValueOnce(2000);
+      vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+        version: 1, layout: null, terminals: [], conductor: "old-top", conductorAt: "2026-09-24T10:00:00.000Z",
+        sync: { revision: 20, updatedAt: "2026-09-24T10:00:09.000Z", updatedBy: "desk" },
+      } as Workspace);
+      await useStore.getState().checkExternalChange();
+      expect(useStore.getState().syncMeta?.revision).toBe(20);
+      expect(useStore.getState().conductor).toBe("new-top");
+      expect(useStore.getState().conductors).toEqual({ s: { parent: "new-top", tiles: [] } });
+      await vi.runAllTimersAsync();
+      const saves = vi.mocked(ipc.saveWorkspace).mock.calls.map((c) => c[0] as Workspace);
+      const last = saves[saves.length - 1];
+      expect((last.sync?.revision ?? 0) > 20).toBe(true);
+      expect(last.conductorAt).toBe("2026-09-24T10:00:05.000Z");
+      expect(last.conductor).toBe("new-top");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("checkExternalChange adopts a newer file written by another machine and ignores our own write", async () => {
