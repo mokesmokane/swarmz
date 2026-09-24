@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { OFFLINE, type AgentState } from "./agentState";
-import { groupRows, loadGroupBy, relativeActivity, rowInfo, rowStatus, saveGroupBy, type RowContext, type RowSource } from "./sidebarGroups";
+import { groupByConductor, groupRows, loadGroupBy, relativeActivity, rowInfo, rowStatus, saveGroupBy, type RowContext, type RowSource } from "./sidebarGroups";
 
 const ctx: RowContext = {
   selfMachine: "mini",
@@ -110,3 +110,26 @@ describe("grouping", () => {
     expect(loadGroupBy(null)).toBe("workspace");
   });
 });
+
+describe("groupByConductor", () => {
+  const info = (id: string, since: string | null = null) =>
+    [id, { id, machine: { key: "m", glyph: "M", label: "m", alias: null, color: null, self: true, online: null }, folder: "f", status: "idle" as const, since }] as const;
+  const infos = new Map([info("top"), info("s1"), info("s2"), info("a", "2026-01-01T00:00:00Z"), info("b", "2026-01-02T00:00:00Z"), info("o")]);
+  const order = ["a", "top", "s1", "b", "s2", "o"];
+  const subs = { s1: { parent: "top", tiles: ["a", "b"] }, s2: { parent: "s1", tiles: [] } };
+  const title = (id: string) => id.toUpperCase();
+
+  it("makes one group per conductor, in tree order, headed by the conductor", () => {
+    const g = groupByConductor(order, infos, "top", subs, title);
+    expect(g.map((x) => [x.title, x.ids])).toEqual([
+      ["🎛 TOP", ["top", "o"]],
+      ["· 🎛 S1", ["s1", "b", "a"]],
+      ["· · 🎛 S2", ["s2"]],
+    ]);
+  });
+
+  it("is one group with no top conductor", () => {
+    expect(groupByConductor(order, infos, null, subs, title)).toEqual([{ key: "none", title: "No conductor", ids: order }]);
+  });
+});
+

@@ -93,6 +93,16 @@ through them. An ordinary tile's briefing is unchanged.
   phone marks them all.
 - The hover card of any tile names the conductor it answers to.
 
+- **The Conductors dialog** (a 🎛 button in the sidebar header, and **Arrange conductors…** in a
+  row's menu) draws the whole tree: the top, each sub-conductor under its parent, and every tile
+  under the conductor it answers to. Dragging a tile onto a conductor puts it under that
+  conductor; dragging a conductor onto another moves it with everything under it; each row also
+  has an **Answers to** select, a button to make a Claude tile a conductor where it stands, and
+  one to turn a conductor back into a tile. With no top yet it lists the Claude tiles to pick
+  one from.
+- The sidebar's **Group by** gains **Conductor**: one group per conductor, in tree order, headed
+  by the conductor and holding the tiles directly under it.
+
 ## 7. Compatibility
 
 A Mac on an older tool sees sub-conductors as ordinary tiles, so it refuses them what they may

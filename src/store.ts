@@ -55,7 +55,6 @@ import {
   conductorsOf,
   conductorOwner,
   liveSubs,
-  scopeFolder,
   workspaceExtra,
   type ConductorClaim,
   type SubConductors,
@@ -416,6 +415,9 @@ export interface WorkbenchState {
   conductors: SubConductors;
   /** Top-level workspace fields this app does not know, written back through every save. */
   workspaceExtra: Record<string, unknown>;
+  /** Whether the Conductors dialog (the tree, arranged by hand) is open. */
+  conductorsPanel: boolean;
+  setConductorsPanel(open: boolean): void;
   /** Whether `~/.swarmz/telegram.json` is set up here (conductor spec §5); null until asked. */
   telegramConfigured: boolean | null;
   /** The file the viewer shows (file viewing spec §3): which tile named it, the resolved path, the line. */
@@ -471,8 +473,10 @@ export interface WorkbenchState {
   updateSettings(id: string, patch: Partial<TerminalSettings>): void;
   /** Makes `id` the conductor, or clears the role with null (conductor spec §6), through the tool so the tiles concerned are told; the file it wrote is adopted. */
   setConductor(id: string | null): Promise<void>;
-  /** Makes `id` a sub-conductor for `folders` under `parent` (conductor tree spec §4), through the tool. */
-  setSubConductor(id: string, parent: string, folders: string[]): Promise<void>;
+  /** Makes `id` a conductor under `parent` (conductor tree spec §4), or moves one, through the tool. */
+  setSubConductor(id: string, parent: string): Promise<void>;
+  /** Puts tile `id` under conductor `to` (a sub-conductor, or the top to take it back), through the tool. */
+  assignTile(id: string, to: string): Promise<void>;
   /** Turns sub-conductor `id` back into an ordinary tile; its tiles go back to its parent. */
   removeSubConductor(id: string): Promise<void>;
   /** Answers the pending claim (conductor spec §3): Approve makes the claimant the conductor, Deny clears the claim; either tells the claimant. */
@@ -1381,6 +1385,10 @@ export const useStore = create<WorkbenchState>((set) => ({
   conductorClaim: null,
   conductors: {},
   workspaceExtra: {},
+  conductorsPanel: false,
+  setConductorsPanel(open) {
+    set({ conductorsPanel: open });
+  },
   telegramConfigured: null,
   fileView: null,
   tailscale: null,
@@ -1521,7 +1529,7 @@ export const useStore = create<WorkbenchState>((set) => ({
         ...(s.conductor === id ? { conductor: null } : {}),
         ...(s.conductorClaim?.tile === id ? { conductorClaim: null } : {}),
         // A closed sub-conductor's tiles go back to its parent (conductor tree spec §2).
-        ...(s.conductors[id] ? { conductors: omit(s.conductors, id) as SubConductors } : {}),
+        ...(Object.keys(s.conductors).length ? { conductors: withoutTile(s.conductors, id) } : {}),
         ...focusFor(layout, fallback),
       };
     });
@@ -1889,14 +1897,14 @@ export const useStore = create<WorkbenchState>((set) => ({
     await conductorViaTool(id === null ? ["clear"] : ["set", id]);
   },
 
-  async setSubConductor(id, parent, folders) {
-    const s = useStore.getState();
-    if (!s.terminals[id]) throw `${id} is not an open tile`;
-    const clean = folders.map((f) => f.trim()).filter(Boolean);
-    if (clean.length === 0) throw "a sub-conductor needs at least one folder";
-    const bad = clean.find((f) => !(f.startsWith("/") || f.startsWith("~/")));
-    if (bad) throw `${bad} is not an absolute folder`;
-    await conductorViaTool(["sub", id, parent, clean]);
+  async setSubConductor(id, parent) {
+    if (!useStore.getState().terminals[id]) throw `${id} is not an open tile`;
+    await conductorViaTool(["sub", id, parent]);
+  },
+
+  async assignTile(id, to) {
+    if (!useStore.getState().terminals[id]) throw `${id} is not an open tile`;
+    await conductorViaTool(["assign", id, to]);
   },
 
   async removeSubConductor(id) {
@@ -2823,11 +2831,11 @@ async function flushPendingSave(): Promise<void> {
  * is what an external change does anyway; the peers pick it up on their next pull. When the file
  * cannot be read back the fields are set from the tool's reply so the sidebar is right at once.
  */
-async function conductorViaTool(args: ["set", string] | ["deny"] | ["clear"] | ["sub", string, string, string[]] | ["remove", string]): Promise<void> {
+async function conductorViaTool(args: ["set", string] | ["deny"] | ["clear"] | ["sub", string, string] | ["assign", string, string] | ["remove", string]): Promise<void> {
   await flushPendingSave();
   const reply =
-    args[0] === "sub"
-      ? await ipc.conductorAction("sub", args[1], args[2], args[3])
+    args[0] === "sub" || args[0] === "assign"
+      ? await ipc.conductorAction(args[0], args[1], args[2])
       : await ipc.conductorAction(args[0], args[0] === "set" || args[0] === "remove" ? args[1] : undefined);
   const ws = await ipc.loadWorkspace().catch(() => null);
   if (ws && isNewer(ws.sync, useStore.getState().syncMeta)) {
@@ -2890,8 +2898,18 @@ export function isConductorTile(s: Pick<WorkbenchState, "conductor" | "conductor
 }
 
 /** The conductor `id` answers to, as the tool decides it; null for the top or with no top. */
-export function conductorFor(s: Pick<WorkbenchState, "conductor" | "conductors" | "settings" | "terminals">, id: string): string | null {
-  return conductorOwner(s.conductor, s.conductors, (t) => scopeFolder(s.settings[t], s.terminals[t]?.cwd), id);
+export function conductorFor(s: Pick<WorkbenchState, "conductor" | "conductors">, id: string): string | null {
+  return conductorOwner(s.conductor, s.conductors, id);
+}
+
+/** The sub-conductors with tile `id` gone: its own entry (its tiles go to the top) and any listing of it. */
+function withoutTile(subs: SubConductors, id: string): SubConductors {
+  const out: SubConductors = {};
+  for (const [sid, sub] of Object.entries(subs)) {
+    if (sid === id) continue;
+    out[sid] = sub.tiles.includes(id) ? { ...sub, tiles: sub.tiles.filter((t) => t !== id) } : sub;
+  }
+  return out;
 }
 
 /**
