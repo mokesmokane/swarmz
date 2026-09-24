@@ -21,8 +21,8 @@ const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_
 /// The most lines `output --follow` watches.
 const MAX_FOLLOW_LINES: usize = 1000;
 
-const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set", "--parent", "--remove"];
-const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once"];
+const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set", "--parent", "--remove", "--assign", "--to"];
+const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once", "--sub"];
 
 /// The conductor guard (conductor spec §3) for a command run from a tile: `sub` against
 /// `target`. The desktop and the phone's gate carry no tile and pass.
@@ -183,19 +183,29 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
     }
     match a.positional.first().map(String::as_str) {
         Some("conductor") => {
-            a.expect_positional(1, "conductor [--claim [--folder F]... | --set <tile> [--parent <tile> --folder F...] | --remove <tile> | --deny | --clear]")?;
+            a.expect_positional(1, "conductor [--claim [--sub] | --set <tile> [--parent <tile>] | --assign <tile> --to <conductor> | --remove <tile> | --deny | --clear]")?;
             let env = cmd::Env::from_process()?;
-            let folders: Vec<String> = a.all("--folder").into_iter().map(str::to_string).collect();
             let action = if a.flag("--claim") {
                 let tile = swarmz_tool::conductor::caller_tile().ok_or_else(|| CliError::new("usage", "--claim is run from a tile (SWARMZ_TERMINAL_ID is not set)"))?;
-                cmd::ConductorAction::Claim(tile, folders)
+                cmd::ConductorAction::Claim(tile, a.flag("--sub"))
             } else if let Some(t) = a.opt("--set") {
                 guard("conductor-set", None)?;
                 match a.opt("--parent") {
-                    Some(p) => cmd::ConductorAction::SetSub { tile: cmd::tile_arg(t)?, parent: cmd::tile_arg(p)?, folders },
-                    None if !folders.is_empty() => return Err(CliError::new("usage", "--folder with --set needs --parent")),
+                    Some(p) => cmd::ConductorAction::SetSub { tile: cmd::tile_arg(t)?, parent: cmd::tile_arg(p)? },
                     None => cmd::ConductorAction::Set(cmd::tile_arg(t)?),
                 }
+            } else if let Some(t) = a.opt("--assign") {
+                let tile = cmd::tile_arg(t)?;
+                let to = cmd::tile_arg(a.opt("--to").ok_or_else(|| CliError::new("usage", "--assign needs --to <conductor>"))?)?;
+                // The user may assign anything; a conductor moves its own tile into a sub-conductor
+                // directly under it (conductor tree spec §4).
+                if let Some(caller) = swarmz_tool::conductor::caller_tile() {
+                    let ws = cmd::guard_workspace(&env)?;
+                    if !swarmz_tool::conductor::Tree::of(&ws).may_assign(&ws, &caller, &tile, &to) {
+                        return Err(CliError::new("denied", "a conductor may only hand a tile that answers to it to a conductor directly under it"));
+                    }
+                }
+                cmd::ConductorAction::Assign { tile, to }
             } else if let Some(t) = a.opt("--remove") {
                 guard("conductor-set", None)?;
                 cmd::ConductorAction::Remove(cmd::tile_arg(t)?)
@@ -405,14 +415,16 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             a.expect_positional(1, "new --folder <dir> [--skip-permissions] [--name <name>]")?;
             guard("new", None)?;
             let folder = a.opt("--folder").ok_or_else(|| CliError::new("usage", "missing --folder"))?;
-            // A sub-conductor starts tiles inside its own folders (conductor tree spec §3).
-            if let Some(caller) = swarmz_tool::conductor::caller_tile() {
-                let ws = cmd::guard_workspace(&cmd::Env::from_process()?)?;
-                if !swarmz_tool::conductor::Tree::of(&ws).may_create_in(&caller, folder) {
-                    return Err(CliError::new("denied", format!("{folder} is outside your folders")));
+            let env = cmd::Env::from_process()?;
+            let made = cmd::new_tile(&env, folder, a.flag("--skip-permissions"), a.opt("--name"))?;
+            // A tile a sub-conductor starts is its own (conductor tree spec §3).
+            if let (Some(caller), Some(id)) = (swarmz_tool::conductor::caller_tile(), made["tile"]["id"].as_str()) {
+                let ws = cmd::guard_workspace(&env)?;
+                if swarmz_tool::conductor::Tree::of(&ws).subs.contains_key(&caller) {
+                    let _ = cmd::conductor(&env, cmd::ConductorAction::Assign { tile: id.to_string(), to: caller });
                 }
             }
-            Ok(Some(cmd::new_tile(&cmd::Env::from_process()?, folder, a.flag("--skip-permissions"), a.opt("--name"))?))
+            Ok(Some(made))
         }
         Some("restart") => {
             a.expect_positional(2, "restart <tile>")?;
