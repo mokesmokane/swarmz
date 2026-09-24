@@ -207,11 +207,13 @@ class TileController(
                     val restarted = before?.kind != null && t.running && !before.running
                     // The tile came (back) into view, or its Mac came back online.
                     val fresh = before == null || before.kind == null || !before.online
-                    // Failed, or finished without an error.
-                    val ended = currentError() != null || openJobs(kind).any { !it.isActive }
                     when {
                         missing(kind) -> open(kind)
-                        t.online && (restarted || (ended && fresh)) -> open(kind)
+                        t.online && restarted -> open(kind)
+                        // Only what failed or finished is reopened: a dropped output must not restart the
+                        // transcript (which would fetch its pages again), and a trigger that arrives while
+                        // everything is still following changes nothing.
+                        t.online && fresh -> reopenEnded(kind)
                     }
                 }
         }
@@ -232,9 +234,6 @@ class TileController(
         }
     }
 
-    private fun currentError(): String? =
-        transcriptSession.value?.error?.value ?: outputSession.value?.error?.value ?: openError.value
-
     /** A Claude tile follows its transcript; a shell, and a Claude tile in screen mode, follows the tile's output. */
     private fun wantsTranscript(kind: String) = kind != "shell"
     private fun wantsOutput(kind: String) = kind == "shell" || screenMode.value
@@ -243,11 +242,39 @@ class TileController(
     private fun missing(kind: String) =
         (wantsTranscript(kind) && transcriptSession.value == null) || (wantsOutput(kind) && outputSession.value == null)
 
-    /** The jobs of the sessions this tile is meant to be following, so a drop of either one counts. */
-    private fun openJobs(kind: String): List<Job> = listOfNotNull(
-        if (wantsTranscript(kind)) transcriptSession.value?.job else null,
-        if (wantsOutput(kind)) outputSession.value?.job else null,
-    )
+    /** Whether a session that should be following has failed or finished. */
+    private fun transcriptEnded(kind: String) = wantsTranscript(kind) && transcriptSession.value?.let { it.error.value != null || !it.job.isActive } == true
+    private fun outputEnded(kind: String) = wantsOutput(kind) && outputSession.value?.let { it.error.value != null || !it.job.isActive } == true
+
+    /** Reopens the sessions of [kind] that have ended, and only those. */
+    private fun reopenEnded(kind: String) {
+        val tEnded = transcriptEnded(kind)
+        val oEnded = outputEnded(kind)
+        if (tEnded && oEnded) {
+            open(kind)
+            return
+        }
+        try {
+            if (tEnded) {
+                transcriptSession.value?.let {
+                    it.close()
+                    carried.value = transcript.value
+                    transcriptSession.value = null
+                }
+                transcriptSession.value = openTranscript(key)
+                openError.value = null
+            }
+            if (oEnded) {
+                closeOutput()
+                outputSession.value = openOutput(key)
+                openError.value = null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            openError.value = e.message ?: "Couldn't open this tile"
+        }
+    }
 
     /** Opens (or reopens) the sessions for [kind], carrying the conversation shown so far across. */
     private fun open(kind: String) {
