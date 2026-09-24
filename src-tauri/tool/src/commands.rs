@@ -170,6 +170,7 @@ fn conductor_state(env: &Env) -> Value {
 
 fn merge_conductor(into: &mut Value, state: &Value) {
     into["conductor"] = state["conductor"].clone();
+    into["conductors"] = state["conductors"].clone();
     into["claim"] = state["claim"].clone();
 }
 
@@ -470,9 +471,9 @@ pub fn conductor(env: &Env, action: ConductorAction) -> Result<Value, CliError> 
     let by = env.machine.clone().unwrap_or_else(|| "swarmz".to_string());
     match action {
         ConductorAction::Read => Ok(crate::conductor::state(&env.workspace()?.unwrap_or_else(empty_workspace))),
-        ConductorAction::Claim(tile) => {
+        ConductorAction::Claim(tile, folders) => {
             let mut ws = env.workspace_to_write()?.unwrap_or_else(empty_workspace);
-            let changed = crate::conductor::claim(&mut ws, &tile, &by, &now)?;
+            let changed = crate::conductor::claim(&mut ws, &tile, &folders, &by, &now)?;
             if changed {
                 save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
                 // The user may be away: the claim goes to Telegram too, when it is set up (spec §3).
@@ -480,8 +481,9 @@ pub fn conductor(env: &Env, action: ConductorAction) -> Result<Value, CliError> 
                     let _ = crate::telegram::send_message(&cfg, &crate::telegram::claim_message(&crate::conductor::title_of(&ws, &tile)));
                 }
             }
-            let already = crate::conductor::conductor_of(&ws).as_deref() == Some(tile.as_str());
-            Ok(json!({"v": 1, "claimed": true, "pending": !already, "conductor": already}))
+            let pending = crate::conductor::claim_of(&ws).is_some_and(|c| c["tile"].as_str() == Some(tile.as_str()));
+            let already = !pending && crate::conductor::Tree::of(&ws).is_conductor(&tile);
+            Ok(json!({"v": 1, "claimed": true, "pending": pending, "conductor": already}))
         }
         ConductorAction::Set(tile) => {
             let mut ws = env.workspace_to_write()?.unwrap_or_else(empty_workspace);
@@ -489,10 +491,26 @@ pub fn conductor(env: &Env, action: ConductorAction) -> Result<Value, CliError> 
             let changed = crate::conductor::set(&mut ws, &tile, &by, &now)?;
             if changed {
                 save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
-                tell(env, &tile, crate::conductor::outcome_line(true));
+                tell_role(env, &ws, &tile);
                 if let Some(c) = claimant.filter(|c| c != &tile) {
                     tell(env, &c, crate::conductor::outcome_line(false));
                 }
+            }
+            Ok(crate::conductor::state(&ws))
+        }
+        ConductorAction::SetSub { tile, parent, folders } => {
+            let mut ws = env.workspace_to_write()?.unwrap_or_else(empty_workspace);
+            if crate::conductor::set_sub(&mut ws, &tile, &parent, &folders, &by, &now)? {
+                save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
+                tell_role(env, &ws, &tile);
+            }
+            Ok(crate::conductor::state(&ws))
+        }
+        ConductorAction::Remove(tile) => {
+            let mut ws = env.workspace_to_write()?.unwrap_or_else(empty_workspace);
+            if crate::conductor::remove_sub(&mut ws, &tile, &by, &now) {
+                save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
+                tell(env, &tile, "[swarmz] you are no longer a conductor; your tiles answer to the conductor above you again");
             }
             Ok(crate::conductor::state(&ws))
         }
@@ -514,9 +532,18 @@ pub fn conductor(env: &Env, action: ConductorAction) -> Result<Value, CliError> 
     }
 }
 
-/// The workspace's conductor, for the guard.
-pub fn conductor_of(env: &Env) -> Result<Option<String>, CliError> {
-    Ok(crate::conductor::conductor_of(&env.workspace()?.unwrap_or_else(empty_workspace)))
+/// Tells `tile` what it has just become: the top conductor, or a sub-conductor for its folders.
+fn tell_role(env: &Env, ws: &Workspace, tile: &str) {
+    let tree = crate::conductor::Tree::of(ws);
+    match tree.subs.get(tile) {
+        Some(s) => tell(env, tile, &crate::conductor::sub_outcome_line(&crate::conductor::title_of(ws, &s.parent), &s.folders)),
+        None => tell(env, tile, crate::conductor::outcome_line(true)),
+    }
+}
+
+/// The workspace as the guard reads it (an unreadable one reads as empty: nobody is a conductor).
+pub fn guard_workspace(env: &Env) -> Result<Workspace, CliError> {
+    Ok(env.workspace()?.unwrap_or_else(empty_workspace))
 }
 
 /// A tile's title for prompts.
@@ -526,8 +553,11 @@ pub fn title_of(env: &Env, tile: &str) -> Result<String, CliError> {
 
 pub enum ConductorAction {
     Read,
-    Claim(String),
+    /// A tile asks for the top role (no folders) or to be a sub-conductor for folders.
+    Claim(String, Vec<String>),
     Set(String),
+    SetSub { tile: String, parent: String, folders: Vec<String> },
+    Remove(String),
     Deny,
     Clear,
 }
@@ -572,7 +602,12 @@ pub fn ask(env: &Env, caller: &str, tile: &str, question: &str) -> Result<Value,
 /// the conductor wherever it runs.
 pub fn reply(env: &Env, caller: &str, text: &str) -> Result<Value, CliError> {
     let ws = env.workspace()?.unwrap_or_else(empty_workspace);
-    let conductor = crate::conductor::conductor_of(&ws).ok_or_else(|| CliError::new("denied", "no conductor is set to reply to"))?;
+    // To the conductor this tile answers to (conductor tree spec §3): a sub-conductor's tiles
+    // reply to it, and a sub-conductor replies to its parent.
+    let tree = crate::conductor::Tree::of(&ws);
+    let conductor = tree.owner(&ws, caller).ok_or_else(|| {
+        CliError::new("denied", if tree.top.as_deref() == Some(caller) { "you are the top conductor: there is nobody above you to reply to; tell the user with `swarmz notify`" } else { "no conductor is set to reply to" })
+    })?;
     let line = crate::conductor::reply_line(&crate::conductor::title_of(&ws, caller), text);
     deliver(env, &conductor, &line)?;
     Ok(json!({"v": 1, "replied": true}))
@@ -664,7 +699,23 @@ fn telegram_inbound(env: &Env, cfg: &crate::telegram::Config, text: &str) -> &'s
 
 /// `fleet [--follow]` (spec §2): every tile on every reachable Mac. `--follow` polls and prints
 /// a row whenever it changes, and a `ping` every 25 s.
+/// Keeps the rows a sub-conductor may see (tree spec §3): itself and every tile below it. The
+/// top, the desktop and the phone see everything.
+fn fleet_filter(env: &Env, caller: Option<&str>, mut snap: Value) -> Value {
+    let Some(caller) = caller else { return snap };
+    let ws = env.workspace().ok().flatten().unwrap_or_else(empty_workspace);
+    let tree = crate::conductor::Tree::of(&ws);
+    if !tree.subs.contains_key(caller) {
+        return snap;
+    }
+    if let Some(rows) = snap["tiles"].as_array_mut() {
+        rows.retain(|r| r["id"].as_str().is_some_and(|id| id == caller || tree.ancestors(&ws, id).iter().any(|a| a == caller)));
+    }
+    snap
+}
+
 pub fn fleet(env: &Env, follow: bool, out: &mut dyn Write) -> Result<(), CliError> {
+    let caller = crate::conductor::caller_tile();
     let hosts = || -> Vec<(String, String)> {
         let ws = env.workspace().ok().flatten().unwrap_or_else(empty_workspace);
         let peers = if env.uses_tailscale() { crate::tailscale::status().map(|s| s.online_macs()).unwrap_or_default() } else { vec![] };
@@ -672,7 +723,7 @@ pub fn fleet(env: &Env, follow: bool, out: &mut dyn Write) -> Result<(), CliErro
     };
     let snapshot = |hosts: &[(String, String)]| -> Value {
         let local = ls(env).ok().and_then(|v| v["tiles"].as_array().cloned()).unwrap_or_default();
-        crate::conductor::fleet(local, hosts, Duration::from_secs(8))
+        fleet_filter(env, caller.as_deref(), crate::conductor::fleet(local, hosts, Duration::from_secs(8)))
     };
     if !follow {
         writeln!(out, "{}", snapshot(&hosts())).map_err(failed)?;
@@ -721,8 +772,23 @@ pub fn fleet(env: &Env, follow: bool, out: &mut dyn Write) -> Result<(), CliErro
 /// `briefing` (spec §4): what the `SessionStart` hook returns for the calling tile.
 pub fn briefing(env: &Env, tile: Option<&str>, name: &str) -> Result<String, CliError> {
     let ws = env.workspace()?.unwrap_or_else(empty_workspace);
-    let is_conductor = tile.is_some() && crate::conductor::conductor_of(&ws).as_deref() == tile;
-    Ok(crate::briefing::briefing_for(&env.home, name, is_conductor))
+    let tree = crate::conductor::Tree::of(&ws);
+    let title = |id: &str| crate::conductor::title_of(&ws, id);
+    let role = match tile {
+        Some(t) if tree.top.as_deref() == Some(t) => crate::briefing::Role::Top {
+            subs: tree.subs.iter().filter(|(_, s)| s.parent == t).map(|(id, s)| (title(id), id.clone(), s.folders.clone())).collect(),
+        },
+        Some(t) => match tree.subs.get(t) {
+            Some(s) => crate::briefing::Role::Sub {
+                parent: title(&s.parent),
+                folders: s.folders.clone(),
+                subs: tree.subs.iter().filter(|(_, c)| c.parent == t).map(|(id, c)| (title(id), id.clone(), c.folders.clone())).collect(),
+            },
+            None => crate::briefing::Role::Tile,
+        },
+        None => crate::briefing::Role::Tile,
+    };
+    Ok(crate::briefing::briefing_for(&env.home, name, &role))
 }
 
 /// The other Macs as ssh destinations, for `--on` (spec §2).
