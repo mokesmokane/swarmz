@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { GROUP_BY_OPTIONS, groupByConductor, groupRows, loadGroupBy, relativeActivity, rowInfo, saveGroupBy, type GroupBy, type RowInfo } from "../lib/sidebarGroups";
+import { GROUP_BY_OPTIONS, groupRows, loadGroupBy, relativeActivity, rowInfo, saveGroupBy, type GroupBy, type RowInfo } from "../lib/sidebarGroups";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { conductorFor, isConductorTile, useStore, terminalColor } from "../store";
 import { ConductorMenu } from "./ConductorMenu";
+import { ConductorTree } from "./ConductorTree";
 import { ipc } from "../lib/ipc";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
@@ -488,15 +489,7 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
     const s = settings[id];
     infos.set(id, rowInfo({ id, name: t.name, cwd: t.cwd, exited: t.exited, ssh: s?.ssh ?? null, foreign: s?.foreign ?? null, sessions: s?.sessions, agent: agentState[id] }, { selfMachine, machines, online }));
   }
-  const conductor = useStore((s) => s.conductor);
-  const conductors = useStore((s) => s.conductors);
-  const groups =
-    groupBy === "conductor"
-      ? groupByConductor(order, infos, conductor, conductors, (id) => {
-          const t = terminals[id];
-          return t ? displayTitle(settings[id]?.card, agentState[id], t.name) : id;
-        })
-      : groupRows(order, infos, groupBy);
+  const groups = groupRows(order, infos, groupBy);
 
   const addTerminal = async () => {
     setMenu("closed");
@@ -636,7 +629,8 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
         </div>
       )}
       <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
-        {groups.map((g) => (
+        {groupBy === "conductor" && <ConductorTree order={order} infos={infos} renderRow={(id) => <Row id={id} info={infos.get(id)} now={now} />} />}
+        {groupBy !== "conductor" && groups.map((g) => (
           <div key={g.key}>
             {g.title && (
               <div className="flex items-center gap-1 px-2 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-neutral-500" data-testid={`group-${g.key}`}>

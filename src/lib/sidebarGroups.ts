@@ -1,7 +1,7 @@
 import type { AgentState } from "./agentState";
 import { needsYou } from "./agentState";
 import type { SessionRecord } from "./sessions";
-import { conductorOwner, hostLabel, liveSubs, machineGlyph, machineLabel, type Machines, type SubConductors } from "./workspace";
+import { hostLabel, machineGlyph, machineLabel, type Machines } from "./workspace";
 
 /** How the sidebar lists tiles (sidebar groups spec §3), a per-machine preference. */
 export type GroupBy = "workspace" | "machine" | "status" | "folder" | "conductor";
@@ -10,7 +10,7 @@ export const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "machine", label: "Machine" },
   { value: "status", label: "Status" },
   { value: "folder", label: "Folder" },
-  { value: "conductor", label: "Conductor" },
+  { value: "conductor", label: "Tree" },
 ];
 const KEY = "swarmz.sidebarGroupBy";
 
@@ -141,6 +141,8 @@ function byActivity(infos: Map<string, RowInfo>) {
 /** The list's groups for `groupBy` (spec §3); a single untitled group in workspace order for "workspace". */
 export function groupRows(order: string[], infos: Map<string, RowInfo>, groupBy: GroupBy): Group[] {
   if (groupBy === "workspace") return [{ key: "all", title: "", ids: order }];
+  // The Tree view draws its own nesting (ConductorTree).
+  if (groupBy === "conductor") return [];
   const sort = byActivity(infos);
   const groups = new Map<string, Group>();
   for (const id of order) {
@@ -174,37 +176,5 @@ export function groupRows(order: string[], infos: Map<string, RowInfo>, groupBy:
   } else {
     out.sort((a, b) => a.title.localeCompare(b.title));
   }
-  return out;
-}
-
-/**
- * The rows grouped by conductor (conductor tree spec §6): one group per conductor, in tree order
- * (the top, then each sub-conductor under its parent, depth first), headed by the conductor and
- * holding the tiles directly under it, newest activity first. With no top conductor, one group.
- */
-export function groupByConductor(
-  order: string[],
-  infos: Map<string, RowInfo>,
-  top: string | null,
-  subs: SubConductors,
-  titleOf: (id: string) => string,
-): Group[] {
-  const present = order.filter((id) => infos.has(id));
-  if (!top || !present.includes(top)) return [{ key: "none", title: "No conductor", ids: present }];
-  const live = liveSubs(top, subs);
-  const direct = new Map<string, string[]>();
-  for (const id of present) {
-    if (id === top || live[id]) continue;
-    const owner = conductorOwner(top, subs, id) ?? top;
-    direct.set(owner, [...(direct.get(owner) ?? []), id]);
-  }
-  const sort = byActivity(infos);
-  const out: Group[] = [];
-  const visit = (c: string, depth: number) => {
-    if (!present.includes(c) || out.some((g) => g.key === c)) return;
-    out.push({ key: c, title: `${"· ".repeat(depth)}🎛 ${titleOf(c)}`, ids: [c, ...(direct.get(c) ?? []).sort(sort)] });
-    for (const sub of Object.keys(live).filter((k) => live[k].parent === c).sort((a, b) => titleOf(a).localeCompare(titleOf(b)))) visit(sub, depth + 1);
-  };
-  visit(top, 0);
   return out;
 }

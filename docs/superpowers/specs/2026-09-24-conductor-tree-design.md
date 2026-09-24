@@ -105,8 +105,13 @@ through them. An ordinary tile's briefing is unchanged.
   has an **Answers to** select, a button to make a Claude tile a conductor where it stands, and
   one to turn a conductor back into a tile. With no top yet it lists the Claude tiles to pick
   one from.
-- The sidebar's **Group by** gains **Conductor**: one group per conductor, in tree order, headed
-  by the conductor and holding the tiles directly under it.
+- The sidebar's **Group by** gains **Tree**: the sidebar's own rows (click, rename, hover card,
+  dragging into a pane all as in every view) nested under the conductor each answers to, with
+  indent guides. A conductor folds shut with its arrow (remembered per Mac) and then says how many
+  tiles are under it and how many need you. Dragging a row onto a conductor puts it there, a
+  conductor onto another moves it with everything under it; the innermost conductor under the
+  pointer decides, and a drop that changes nothing is ignored. An empty conductor shows a
+  "Drag tiles here" slot. With no top yet the view is the plain list and a hint.
 
 ## 7. Roles survive other Macs' saves
 

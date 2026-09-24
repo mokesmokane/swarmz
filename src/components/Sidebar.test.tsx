@@ -376,6 +376,23 @@ describe("the conductor", () => {
     expect(screen.getByTestId("claim-bar").textContent).toContain("setup asks to replace ops as the top conductor");
   });
 
+  it("draws the Tree view with the sidebar's own rows nested under their conductor", () => {
+    const claude = { enabled: true, sessionId: "s", skipPermissions: false, started: true };
+    useStore.setState({
+      terminals: { [ID]: { id: ID, name: "desk", cwd: "/home/mokes/projects", exited: null, error: null }, top: { id: "top", name: "ops", cwd: "/o", exited: null, error: null } },
+      order: ["top", ID],
+      layout: { kind: "group", id: "g1", tabs: ["top", ID], active: "top" },
+      settings: { [ID]: { ...useStore.getState().settings[ID], claude }, top: { ssh: null, claude, command: null, extra: {} } },
+      conductor: "top",
+      conductors: {},
+    });
+    render(<Sidebar />);
+    fireEvent.change(screen.getByLabelText("Group by"), { target: { value: "conductor" } });
+    expect(screen.getByTestId("conductor-tree")).toBeTruthy();
+    expect(screen.getByTestId("tree-node-top").contains(screen.getByTestId(`title-${ID}`))).toBe(true);
+    fireEvent.change(screen.getByLabelText("Group by"), { target: { value: "workspace" } });
+  });
+
   it("shows a pending claim as a bar whose Approve and Deny answer through the tool", async () => {
     useStore.setState({ conductorClaim: { tile: ID, title: "Fix the build", at: "2026-09-23T10:00:00Z" } });
     render(<Sidebar />);
