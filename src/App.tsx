@@ -3,6 +3,7 @@ import { clampSidebarWidth, loadSidebarWidth, saveSidebarWidth, SIDEBAR_DEFAULT 
 import { Sidebar } from "./components/Sidebar";
 import { Workbench } from "./components/Workbench";
 import { FileViewer } from "./components/FileViewer";
+import { ConductorsPanel } from "./components/ConductorsPanel";
 import { splitShortcut } from "./lib/shortcuts";
 import { findGroup } from "./lib/layout";
 import { ipc } from "./lib/ipc";
@@ -135,6 +136,7 @@ export default function App() {
       <main className="min-w-0 flex-1">
         <Workbench />
         <FileViewer />
+        <ConductorsPanel />
       </main>
     </div>
   );

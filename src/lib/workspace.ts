@@ -43,20 +43,21 @@ export interface SyncMeta {
   updatedBy: string;
 }
 
-/** A tile asking to be the conductor (conductor spec §3), until the user answers; with
- * `folders`, asking to be a sub-conductor for them under `parent` (conductor tree spec §4). */
+/** A tile asking to be the conductor (conductor spec §3), until the user answers; with `sub`,
+ * asking to be a conductor under `parent` (conductor tree spec §4). */
 export interface ConductorClaim {
   tile: string;
   title?: string | null;
   at: string;
-  folders?: string[];
+  sub?: boolean;
   parent?: string | null;
 }
 
-/** A sub-conductor (conductor tree spec §2): the conductor it answers to, and its folder prefixes. */
+/** A sub-conductor (conductor tree spec §2, as amended): the conductor it answers to, and the
+ * tiles put under it by hand. */
 export interface SubConductor {
   parent: string;
-  folders: string[];
+  tiles: string[];
 }
 export type SubConductors = Record<string, SubConductor>;
 
@@ -95,53 +96,43 @@ export function conductorOf(ws: { conductor?: unknown } | null | undefined): str
 export function claimOf(ws: { conductorClaim?: unknown } | null | undefined): ConductorClaim | null {
   const c = ws?.conductorClaim;
   if (!c || typeof c !== "object") return null;
-  const { tile, title, at, folders, parent } = c as Record<string, unknown>;
+  const { tile, title, at, sub, parent } = c as Record<string, unknown>;
   if (typeof tile !== "string" || !tile) return null;
   const claim: ConductorClaim = { tile, title: typeof title === "string" ? title : null, at: typeof at === "string" ? at : "" };
-  if (Array.isArray(folders)) {
-    claim.folders = folders.filter((f): f is string => typeof f === "string");
+  if (sub === true) {
+    claim.sub = true;
     claim.parent = typeof parent === "string" ? parent : null;
   }
   return claim;
 }
 
-/** The sub-conductors as written, keeping only entries with a parent and string folders. */
+/** The sub-conductors as written, keeping only entries with a parent and string tile ids. */
 export function conductorsOf(ws: { conductors?: unknown } | null | undefined): SubConductors {
   const raw = ws?.conductors;
   const out: SubConductors = {};
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
   for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
     if (!v || typeof v !== "object") continue;
-    const { parent, folders } = v as Record<string, unknown>;
+    const { parent, tiles } = v as Record<string, unknown>;
     if (typeof parent !== "string" || !parent) continue;
-    out[id] = { parent, folders: Array.isArray(folders) ? folders.filter((f): f is string => typeof f === "string") : [] };
+    out[id] = { parent, tiles: Array.isArray(tiles) ? tiles.filter((f): f is string => typeof f === "string") : [] };
   }
   return out;
 }
 
-const normFolder = (f: string) => (f.trim().length > 1 ? f.trim().replace(/\/+$/, "") : f.trim());
-
 /**
  * The conductor tile `id` answers to (conductor tree spec §2), as the tool decides it: a
- * sub-conductor's parent; any other tile's longest matching folder prefix among the
- * sub-conductors; else the top. Null for the top itself or with no top. Sub-conductors whose
- * chain does not reach the top are left out, as the tool leaves them out.
+ * sub-conductor's parent; any other tile the live sub-conductor whose list names it (the first
+ * by id, should two), else the top. Null for the top itself or with no top.
  */
-export function conductorOwner(top: string | null, subs: SubConductors, folderOf: (id: string) => string | null, id: string): string | null {
+export function conductorOwner(top: string | null, subs: SubConductors, id: string): string | null {
   if (!top || id === top) return null;
   const live = liveSubs(top, subs);
   if (live[id]) return live[id].parent;
-  const folder = folderOf(id);
-  let best: { id: string; len: number } | null = null;
-  if (folder) {
-    const f = normFolder(folder);
-    for (const [sid, s] of Object.entries(live)) {
-      for (const p of s.folders.map(normFolder)) {
-        if (p && f.startsWith(p) && (!best || p.length > best.len)) best = { id: sid, len: p.length };
-      }
-    }
-  }
-  return best ? best.id : top;
+  const holder = Object.keys(live)
+    .sort()
+    .find((sid) => live[sid].tiles.includes(id));
+  return holder ?? top;
 }
 
 /** The sub-conductors whose chain of parents reaches the top without a loop. */
@@ -165,13 +156,6 @@ export function liveSubs(top: string | null, subs: SubConductors): SubConductors
   return out;
 }
 
-/** The folder a tile's scope is decided by: the ssh folder, the foreign folder, else its own. */
-export function scopeFolder(settings: TerminalSettings | undefined, cwd: string | undefined): string | null {
-  const ssh = settings?.ssh?.cwd?.trim();
-  if (settings?.ssh && ssh) return ssh;
-  if (settings?.foreign) return settings.foreign.cwd;
-  return cwd ?? null;
-}
 
 export const EMPTY_SETTINGS: TerminalSettings = { ssh: null, claude: null, command: null, extra: {} };
 

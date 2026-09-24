@@ -178,12 +178,11 @@ export const ipc = {
   /** Ends a session that no tile in this window shows. */
   closeSession: (id: string) => invoke<boolean>("close_session", { id }),
   /** Sets, denies or clears the conductor through the tool, which tells the tiles concerned (conductor spec §6). */
-  conductorAction: (action: "set" | "deny" | "clear" | "sub" | "remove", id?: string, parent?: string, folders?: string[]) =>
+  conductorAction: (action: "set" | "deny" | "clear" | "sub" | "assign" | "remove", id?: string, parent?: string) =>
     invoke<{ conductor: string | null; conductors?: SubConductors; claim: ConductorClaim | null }>("conductor_action", {
       action,
       id: id ?? null,
       parent: parent ?? null,
-      folders: folders ?? null,
     }),
   /** Creates `~/.swarmz/conductor` (with its CLAUDE.md) if missing and returns the path. */
   conductorDir: () => invoke<string>("conductor_dir"),

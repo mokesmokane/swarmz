@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { GROUP_BY_OPTIONS, groupRows, loadGroupBy, relativeActivity, rowInfo, saveGroupBy, type GroupBy, type RowInfo } from "../lib/sidebarGroups";
+import { GROUP_BY_OPTIONS, groupByConductor, groupRows, loadGroupBy, relativeActivity, rowInfo, saveGroupBy, type GroupBy, type RowInfo } from "../lib/sidebarGroups";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { conductorFor, isConductorTile, useStore, terminalColor } from "../store";
 import { ConductorMenu } from "./ConductorMenu";
@@ -109,7 +109,7 @@ function HoverCard({ id }: { id: string }) {
       <div className="truncate text-sm font-medium text-neutral-100">{displayTitle(card, agent, t.name)}</div>
       <div className="truncate text-neutral-500">{`${t.name} · ${where}`}</div>
       {isTop && <div className="text-amber-300">🎛 Conductor · acts on the tiles under it</div>}
-      {sub && <div className="text-amber-300">{`🎛 Conductor for ${sub.folders.join(", ")} · answers to ${ownerTitle}`}</div>}
+      {sub && <div className="text-amber-300">{`🎛 Conductor · answers to ${ownerTitle}`}</div>}
       {!isTop && !sub && owner && <div className="text-neutral-500">{`Answers to 🎛 ${ownerTitle}`}</div>}
       <div className="mt-1 whitespace-pre-wrap break-words text-neutral-300">{body ?? "No recap yet"}</div>
       {card?.updatedAt && (
@@ -173,6 +173,12 @@ function ClaimBar() {
   const claimantCard = useStore((s) => (claim ? s.settings[claim.tile]?.card : undefined));
   const claimantAgent = useStore((s) => (claim ? s.agentState[claim.tile] : undefined));
   const decideClaim = useStore((s) => s.decideClaim);
+  const parentTitle = useStore((s) => {
+    const p = claim?.parent;
+    if (!p) return "";
+    const t = s.terminals[p];
+    return t ? displayTitle(s.settings[p]?.card, s.agentState[p], t.name) : p;
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!claim) return null;
@@ -189,7 +195,7 @@ function ClaimBar() {
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-amber-100">
           🎛 <span className="font-medium">{title}</span>{" "}
-          {claim.folders?.length ? `asks to be the conductor for ${claim.folders.join(", ")}` : "asks to be the conductor"}
+          {claim.sub ? `asks to be a conductor under ${parentTitle}` : "asks to be the conductor"}
         </span>
         <button className="rounded border border-amber-700 px-2 py-0.5 text-amber-100 hover:bg-amber-900/60 disabled:opacity-50" disabled={busy} onClick={() => decide(true)}>
           Approve
@@ -424,7 +430,14 @@ function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: nu
       {hovering && !historyOpen && !roleOpen && !editing && <HoverCard id={id} />}
       {roleOpen && (
         <div className="absolute left-2 right-2 z-30 mt-1 rounded border border-neutral-700 bg-neutral-900 p-1 shadow-xl" onClick={(e) => e.stopPropagation()}>
-          <ConductorMenu id={id} onClose={() => setRoleOpen(false)} />
+          <ConductorMenu
+            id={id}
+            onClose={() => setRoleOpen(false)}
+            onOpenTree={() => {
+              setRoleOpen(false);
+              useStore.getState().setConductorsPanel(true);
+            }}
+          />
         </div>
       )}
       {historyOpen && (
@@ -470,7 +483,15 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
     const s = settings[id];
     infos.set(id, rowInfo({ id, name: t.name, cwd: t.cwd, exited: t.exited, ssh: s?.ssh ?? null, foreign: s?.foreign ?? null, sessions: s?.sessions, agent: agentState[id] }, { selfMachine, machines, online }));
   }
-  const groups = groupRows(order, infos, groupBy);
+  const conductor = useStore((s) => s.conductor);
+  const conductors = useStore((s) => s.conductors);
+  const groups =
+    groupBy === "conductor"
+      ? groupByConductor(order, infos, conductor, conductors, (id) => {
+          const t = terminals[id];
+          return t ? displayTitle(settings[id]?.card, agentState[id], t.name) : id;
+        })
+      : groupRows(order, infos, groupBy);
 
   const addTerminal = async () => {
     setMenu("closed");
@@ -514,6 +535,14 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
             title="Phones"
           >
             📱
+          </button>
+          <button
+            className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
+            onClick={() => useStore.getState().setConductorsPanel(true)}
+            title="Conductors: arrange who answers to whom"
+            aria-label="Conductors"
+          >
+            🎛
           </button>
           <button
             className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"

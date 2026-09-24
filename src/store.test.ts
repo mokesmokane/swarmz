@@ -527,18 +527,18 @@ describe("loadWorkspace", () => {
         ],
         layout: null,
         conductor: "c",
-        conductors: { s: { parent: "c", folders: ["/tmp/s"] } },
+        conductors: { s: { parent: "c", tiles: [] } },
         someFutureField: { keep: true },
       } as unknown as Workspace);
       await useStore.getState().loadWorkspace();
-      expect(useStore.getState().conductors).toEqual({ s: { parent: "c", folders: ["/tmp/s"] } });
+      expect(useStore.getState().conductors).toEqual({ s: { parent: "c", tiles: [] } });
       vi.mocked(ipc.saveWorkspace).mockClear();
       await useStore.getState().renameTerminal("c", "cond2");
       vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
       await vi.runAllTimersAsync();
       const saves = vi.mocked(ipc.saveWorkspace).mock.calls;
       const saved = saves[saves.length - 1][0] as Workspace & { someFutureField?: unknown };
-      expect(saved.conductors).toEqual({ s: { parent: "c", folders: ["/tmp/s"] } });
+      expect(saved.conductors).toEqual({ s: { parent: "c", tiles: [] } });
       expect(saved.someFutureField).toEqual({ keep: true });
       await useStore.getState().closeTerminal("s");
       expect(useStore.getState().conductors).toEqual({});
