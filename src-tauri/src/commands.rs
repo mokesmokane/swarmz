@@ -714,6 +714,46 @@ pub async fn open_url(url: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Opens `path` outside swarmz (file viewing spec §4): the default app, or Finder with
+/// `reveal`. A remote file is copied here first (`~/.swarmz/remote/<host>/…`) and the copy is
+/// what opens; the reply is the path that was opened.
+#[tauri::command]
+pub async fn open_path(host: Option<String>, path: String, reveal: bool) -> Result<String, String> {
+    let path = path.trim().to_string();
+    if !(path.starts_with('/') || path == "~" || path.starts_with("~/")) {
+        return Err("the path must be absolute or start with ~".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let home = swarmz_tool::paths::home_dir();
+        let local = match host {
+            Some(h) => crate::files::fetch_remote(&h, &path, &home)?,
+            None => crate::files::expand_home(&path, &home),
+        };
+        crate::files::open_local(&local, reveal)?;
+        Ok(local.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Whether VS Code's `code` command is on this Mac (spec §4).
+#[tauri::command]
+pub fn code_available() -> bool {
+    crate::files::code_binary().is_some()
+}
+
+/// Opens `path` in VS Code: here, or on `host` through VS Code's Remote SSH.
+#[tauri::command]
+pub async fn open_in_code(host: Option<String>, path: String, line: Option<u32>) -> Result<(), String> {
+    let path = path.trim().to_string();
+    if !(path.starts_with('/') || path == "~" || path.starts_with("~/")) {
+        return Err("the path must be absolute or start with ~".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || crate::files::open_in_code(host.as_deref(), &path, line, &swarmz_tool::paths::home_dir()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// A file a tile talks about (file viewing spec §3): on `host` over the ssh master when given,
 /// else on this Mac. `path` is absolute or `~`-relative; the frontend resolves relative ones.
 #[tauri::command]

@@ -101,7 +101,31 @@ export function FileViewer() {
   const [wrap, setWrap] = useState(false);
   const [raw, setRaw] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [codeReady, setCodeReady] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const openFile = useStore((s) => s.openFile);
+
+  useEffect(() => {
+    if (!view) return;
+    let live = true;
+    ipc.codeAvailable().then(
+      (ok) => live && setCodeReady(ok),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [view]);
+
+  const run = (what: () => Promise<unknown>, done: string | null) => {
+    setBusy(true);
+    setNote(null);
+    what()
+      .then(() => setNote(done))
+      .catch((e) => setNote(message(e)))
+      .finally(() => setBusy(false));
+  };
 
   useEffect(() => {
     setFile(null);
@@ -146,6 +170,8 @@ export function FileViewer() {
 
   if (!view) return null;
   const title = view.path + (view.line ? `:${view.line}` : "");
+  const parent = view.path === "~" || view.path === "/" ? null : view.path.replace(/\/[^/]*$/, "") || "/";
+  const child = (name: string) => (view.path.endsWith("/") ? `${view.path}${name}` : `${view.path}/${name}`);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6" onClick={closeFile} data-testid="file-viewer">
@@ -171,6 +197,34 @@ export function FileViewer() {
             </button>
           )}
           <button
+            className="rounded border border-neutral-700 px-1.5 py-0.5 text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            disabled={busy || connecting}
+            onClick={() => run(() => ipc.openPath(host, view.path, false), host ? "Opened a copy" : "Opened")}
+            title={host ? "Copy it here and open it in the app that owns it" : "Open in the app that owns it"}
+          >
+            Open
+          </button>
+          {!host && (
+            <button
+              className="rounded border border-neutral-700 px-1.5 py-0.5 text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+              disabled={busy}
+              onClick={() => run(() => ipc.openPath(null, view.path, true), null)}
+              title="Show in Finder"
+            >
+              Reveal
+            </button>
+          )}
+          {codeReady && (
+            <button
+              className="rounded border border-neutral-700 px-1.5 py-0.5 text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+              disabled={busy || connecting}
+              onClick={() => run(() => ipc.openInCode(host, view.path, view.line), null)}
+              title={host ? "Edit the real file over VS Code's Remote SSH" : "Open in VS Code"}
+            >
+              Open in VS Code
+            </button>
+          )}
+          <button
             className="rounded border border-neutral-700 px-1.5 py-0.5 text-neutral-300 hover:bg-neutral-800"
             onClick={() => {
               writeText(view.path).then(
@@ -187,6 +241,23 @@ export function FileViewer() {
         <div ref={bodyRef} className="min-h-0 flex-1 overflow-auto" data-testid="file-body">
           {error && <div className="p-3 text-red-400">{error}</div>}
           {!file && !error && <div className="p-3 text-neutral-500">Reading…</div>}
+          {file?.kind === "dir" && (
+            <ul className="p-2 font-mono" data-testid="dir-listing">
+              {parent && (
+                <li>
+                  <button className="w-full rounded px-2 py-0.5 text-left text-neutral-400 hover:bg-neutral-800" onClick={() => openFile(view.id, parent)}>..</button>
+                </li>
+              )}
+              {file.entries?.map((e) => (
+                <li key={e.name}>
+                  <button className="w-full rounded px-2 py-0.5 text-left text-neutral-200 hover:bg-neutral-800" onClick={() => openFile(view.id, child(e.name))}>
+                    {e.dir ? `${e.name}/` : e.name}
+                  </button>
+                </li>
+              ))}
+              {file.entries?.length === 0 && <li className="px-2 text-neutral-500">Empty folder</li>}
+            </ul>
+          )}
           {file?.kind === "binary" && (
             <div className="p-3 text-neutral-400">{`Not a text file (${sizeText(file.size)}). Open it in the app that owns it.`}</div>
           )}

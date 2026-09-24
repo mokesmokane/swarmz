@@ -1,7 +1,7 @@
 # swarmz: opening the files a tile talks about
 
 Date: 2026-09-24
-Status: approved design
+Status: approved design, implemented 2026-09-24 (steps 1–3)
 Amends: `2026-09-10-swarmz-design.md` §4 (panes gain links), `2026-09-16-swarmz-phone-design.md`
 (nothing here reaches the phone yet; §7 names the tool command that would).
 
@@ -49,12 +49,14 @@ in the title with the machine chip when it is not this Mac, and a body by kind:
 Buttons: **Open** (§4), **Reveal** (local only), **Copy path**, **Open in VS Code** when
 `code` is on the PATH (§4). Esc or a click outside closes it.
 
-Reading is one core command, `read_file(id, path, offset?)`, which decides where the file is
-from the tile: a local read for a local tile (`std::fs`, refusing anything that is not a regular
-file), and for an ssh tile `cat` over the shared ssh master (`BatchMode`, like
-`workspace_pull`), with `head -c` for the cap and `file --mime` first to tell text from binary.
-The reply is `{kind: "text"|"image"|"binary", size, truncated, text?|base64?}`. A tile whose
-ssh is not connected gets "not connected", not a prompt.
+Reading is one core command, `read_file(host, path)` (as built: the frontend resolves the
+path and passes the tile's ssh host when it is connected): a local read for a local tile
+(`std::fs`, refusing anything that is not a regular file or a folder), and for an ssh tile one
+shell line over the shared ssh master (`BatchMode`, like `workspace_pull`) that prints what the
+path is, its size and up to the cap base64-encoded, since bytes do not survive ssh's text
+stream. Text is told from binary by content (UTF-8 without a NUL in the first 8 KiB), images by
+extension. The reply is `{kind: "text"|"image"|"binary"|"dir", size, truncated, text?|base64?|entries?}`.
+A tile whose ssh is not connected gets "not connected", not a prompt.
 
 ## 4. Opening outside
 

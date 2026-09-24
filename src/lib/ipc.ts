@@ -83,13 +83,15 @@ export interface HostKeys {
 
 /** A file as `read_file` returns it (file viewing spec §3). */
 export interface FileView {
-  kind: "text" | "image" | "binary";
+  kind: "text" | "image" | "binary" | "dir";
   path: string;
   size: number;
   truncated: boolean;
   text?: string;
   base64?: string;
   mime?: string;
+  /** A folder's entries, folders first (file viewing spec §5). */
+  entries?: Array<{ name: string; dir: boolean }>;
 }
 
 export interface TelegramInfo {
@@ -182,6 +184,12 @@ export const ipc = {
   conductorDir: () => invoke<string>("conductor_dir"),
   /** A URL from a pane, in the browser (file viewing spec §2). */
   openUrl: (url: string) => invoke<void>("open_url", { url }),
+  /** Opens `path` outside swarmz (spec §4): the default app, or Finder with `reveal`; a remote file is copied here first. Resolves with the path opened. */
+  openPath: (host: string | null, path: string, reveal: boolean) => invoke<string>("open_path", { host, path, reveal }),
+  /** Whether VS Code's `code` command is on this Mac. */
+  codeAvailable: () => invoke<boolean>("code_available"),
+  /** Opens `path` in VS Code, here or on `host` through its Remote SSH. */
+  openInCode: (host: string | null, path: string, line: number | null) => invoke<void>("open_in_code", { host, path, line }),
   /** A file a tile talks about: on `host` over the ssh master, else on this Mac; `path` absolute or `~`-relative. */
   readFile: (host: string | null, path: string) => invoke<FileView>("read_file", { host, path }),
   /** Whether Telegram is set up on this Mac (conductor spec §5), the chat id and the token's end. */
