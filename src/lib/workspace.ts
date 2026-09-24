@@ -43,11 +43,33 @@ export interface SyncMeta {
   updatedBy: string;
 }
 
-/** A tile asking to be the conductor (conductor spec §3), until the user answers. */
+/** A tile asking to be the conductor (conductor spec §3), until the user answers; with
+ * `folders`, asking to be a sub-conductor for them under `parent` (conductor tree spec §4). */
 export interface ConductorClaim {
   tile: string;
   title?: string | null;
   at: string;
+  folders?: string[];
+  parent?: string | null;
+}
+
+/** A sub-conductor (conductor tree spec §2): the conductor it answers to, and its folder prefixes. */
+export interface SubConductor {
+  parent: string;
+  folders: string[];
+}
+export type SubConductors = Record<string, SubConductor>;
+
+/** Top-level workspace keys this app reads itself, or has retired on purpose (`sshHistory`, replaced
+ * by `machines`); any other key is carried through a save untouched. */
+const KNOWN_TOP_KEYS = new Set(["version", "terminals", "layout", "machines", "conductor", "conductorClaim", "conductors", "sync", "sshHistory"]);
+
+/** The top-level fields this app does not know (a newer version's), to be written back as they came. */
+export function workspaceExtra(ws: object | null | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (!ws) return out;
+  for (const [k, v] of Object.entries(ws)) if (!KNOWN_TOP_KEYS.has(k)) out[k] = v;
+  return out;
 }
 
 export interface Workspace {
@@ -58,6 +80,8 @@ export interface Workspace {
   /** The one tile allowed to act on the others (conductor spec §3); absent or null when none. */
   conductor?: string | null;
   conductorClaim?: ConductorClaim | null;
+  /** Sub-conductors by tile id (conductor tree spec §2). */
+  conductors?: SubConductors;
   sync?: SyncMeta;
 }
 
@@ -71,9 +95,82 @@ export function conductorOf(ws: { conductor?: unknown } | null | undefined): str
 export function claimOf(ws: { conductorClaim?: unknown } | null | undefined): ConductorClaim | null {
   const c = ws?.conductorClaim;
   if (!c || typeof c !== "object") return null;
-  const { tile, title, at } = c as Record<string, unknown>;
+  const { tile, title, at, folders, parent } = c as Record<string, unknown>;
   if (typeof tile !== "string" || !tile) return null;
-  return { tile, title: typeof title === "string" ? title : null, at: typeof at === "string" ? at : "" };
+  const claim: ConductorClaim = { tile, title: typeof title === "string" ? title : null, at: typeof at === "string" ? at : "" };
+  if (Array.isArray(folders)) {
+    claim.folders = folders.filter((f): f is string => typeof f === "string");
+    claim.parent = typeof parent === "string" ? parent : null;
+  }
+  return claim;
+}
+
+/** The sub-conductors as written, keeping only entries with a parent and string folders. */
+export function conductorsOf(ws: { conductors?: unknown } | null | undefined): SubConductors {
+  const raw = ws?.conductors;
+  const out: SubConductors = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!v || typeof v !== "object") continue;
+    const { parent, folders } = v as Record<string, unknown>;
+    if (typeof parent !== "string" || !parent) continue;
+    out[id] = { parent, folders: Array.isArray(folders) ? folders.filter((f): f is string => typeof f === "string") : [] };
+  }
+  return out;
+}
+
+const normFolder = (f: string) => (f.trim().length > 1 ? f.trim().replace(/\/+$/, "") : f.trim());
+
+/**
+ * The conductor tile `id` answers to (conductor tree spec §2), as the tool decides it: a
+ * sub-conductor's parent; any other tile's longest matching folder prefix among the
+ * sub-conductors; else the top. Null for the top itself or with no top. Sub-conductors whose
+ * chain does not reach the top are left out, as the tool leaves them out.
+ */
+export function conductorOwner(top: string | null, subs: SubConductors, folderOf: (id: string) => string | null, id: string): string | null {
+  if (!top || id === top) return null;
+  const live = liveSubs(top, subs);
+  if (live[id]) return live[id].parent;
+  const folder = folderOf(id);
+  let best: { id: string; len: number } | null = null;
+  if (folder) {
+    const f = normFolder(folder);
+    for (const [sid, s] of Object.entries(live)) {
+      for (const p of s.folders.map(normFolder)) {
+        if (p && f.startsWith(p) && (!best || p.length > best.len)) best = { id: sid, len: p.length };
+      }
+    }
+  }
+  return best ? best.id : top;
+}
+
+/** The sub-conductors whose chain of parents reaches the top without a loop. */
+export function liveSubs(top: string | null, subs: SubConductors): SubConductors {
+  if (!top) return {};
+  const out: SubConductors = {};
+  const n = Object.keys(subs).length;
+  for (const [id, s] of Object.entries(subs)) {
+    if (id === top) continue;
+    let at: string = id;
+    for (let i = 0; i <= n; i++) {
+      const cur: SubConductor | undefined = subs[at];
+      if (!cur) break;
+      if (cur.parent === top) {
+        out[id] = s;
+        break;
+      }
+      at = cur.parent;
+    }
+  }
+  return out;
+}
+
+/** The folder a tile's scope is decided by: the ssh folder, the foreign folder, else its own. */
+export function scopeFolder(settings: TerminalSettings | undefined, cwd: string | undefined): string | null {
+  const ssh = settings?.ssh?.cwd?.trim();
+  if (settings?.ssh && ssh) return ssh;
+  if (settings?.foreign) return settings.foreign.cwd;
+  return cwd ?? null;
 }
 
 export const EMPTY_SETTINGS: TerminalSettings = { ssh: null, claude: null, command: null, extra: {} };
@@ -497,7 +594,7 @@ export function sameWorkspaceContent(a: Workspace, b: Workspace): boolean {
         card: cardOf(t.card),
       };
     }
-    return stableJson({ terminals, layout: ws.layout, machines: ws.machines ?? {}, conductor: conductorOf(ws), conductorClaim: claimOf(ws) });
+    return stableJson({ terminals, layout: ws.layout, machines: ws.machines ?? {}, conductor: conductorOf(ws), conductorClaim: claimOf(ws), conductors: conductorsOf(ws), extra: workspaceExtra(ws) });
   };
   return key(a) === key(b);
 }
@@ -510,6 +607,9 @@ export function toWorkspace(input: {
   machines: Machines;
   conductor?: string | null;
   conductorClaim?: ConductorClaim | null;
+  conductors?: SubConductors;
+  /** Top-level fields this app does not know, written back as they came (`workspaceExtra`). */
+  extra?: Record<string, unknown>;
   sync?: SyncMeta | null;
 }): Workspace {
   const terminals: TerminalDef[] = input.order
@@ -533,10 +633,12 @@ export function toWorkspace(input: {
     });
   const machines = input.machines ?? {};
   return {
+    ...(input.extra ?? {}),
     version: 1,
     terminals,
     layout: input.layout,
     ...(Object.keys(machines).length ? { machines } : {}),
+    ...(input.conductors && Object.keys(input.conductors).length ? { conductors: input.conductors } : {}),
     ...(input.conductor ? { conductor: input.conductor } : {}),
     ...(input.conductorClaim ? { conductorClaim: input.conductorClaim } : {}),
     ...(input.sync ? { sync: input.sync } : {}),

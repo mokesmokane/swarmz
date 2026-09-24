@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { GROUP_BY_OPTIONS, groupRows, loadGroupBy, relativeActivity, rowInfo, saveGroupBy, type GroupBy, type RowInfo } from "../lib/sidebarGroups";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
-import { useStore, terminalColor } from "../store";
+import { conductorFor, isConductorTile, useStore, terminalColor } from "../store";
+import { ConductorMenu } from "./ConductorMenu";
 import { ipc } from "../lib/ipc";
 import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
@@ -85,7 +86,14 @@ function HoverCard({ id }: { id: string }) {
   const machineName = useStore((s) => s.settings[id]?.ssh?.machine ?? null);
   const machineCwd = useStore((s) => s.settings[id]?.ssh?.cwd ?? "");
   const online = useStore((s) => (machineName ? (s.tailscale?.peers.find((p) => p.name === machineName)?.online ?? null) : null));
-  const isConductor = useStore((s) => s.conductor === id);
+  const isTop = useStore((s) => s.conductor === id);
+  const sub = useStore((s) => (s.conductor !== id && isConductorTile(s, id) ? s.conductors[id] : null));
+  const owner = useStore((s) => conductorFor(s, id));
+  const ownerTitle = useStore((s) => {
+    if (!owner) return "";
+    const o = s.terminals[owner];
+    return o ? displayTitle(s.settings[owner]?.card, s.agentState[owner], o.name) : owner;
+  });
   if (!t) return null;
   const where = machineName
     ? `${machineName}${online === true ? " · online" : online === false ? " · offline" : ""}${machineCwd ? ` · ${machineCwd}` : ""}`
@@ -100,7 +108,9 @@ function HoverCard({ id }: { id: string }) {
     >
       <div className="truncate text-sm font-medium text-neutral-100">{displayTitle(card, agent, t.name)}</div>
       <div className="truncate text-neutral-500">{`${t.name} · ${where}`}</div>
-      {isConductor && <div className="text-amber-300">🎛 Conductor · acts on the other tiles</div>}
+      {isTop && <div className="text-amber-300">🎛 Conductor · acts on the tiles under it</div>}
+      {sub && <div className="text-amber-300">{`🎛 Conductor for ${sub.folders.join(", ")} · answers to ${ownerTitle}`}</div>}
+      {!isTop && !sub && owner && <div className="text-neutral-500">{`Answers to 🎛 ${ownerTitle}`}</div>}
       <div className="mt-1 whitespace-pre-wrap break-words text-neutral-300">{body ?? "No recap yet"}</div>
       {card?.updatedAt && (
         <div className="mt-1 text-neutral-500">{`updated ${relativeTime(card.updatedAt)} by ${card.by === "user" ? "you" : "Claude"}`}</div>
@@ -178,7 +188,8 @@ function ClaimBar() {
     <div className="border-b border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs" data-testid="claim-bar">
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-amber-100">
-          🎛 <span className="font-medium">{title}</span> asks to be the conductor
+          🎛 <span className="font-medium">{title}</span>{" "}
+          {claim.folders?.length ? `asks to be the conductor for ${claim.folders.join(", ")}` : "asks to be the conductor"}
         </span>
         <button className="rounded border border-amber-700 px-2 py-0.5 text-amber-100 hover:bg-amber-900/60 disabled:opacity-50" disabled={busy} onClick={() => decide(true)}>
           Approve
@@ -211,8 +222,8 @@ function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: nu
   const renameTerminal = useStore((s) => s.renameTerminal);
   const setCardTitle = useStore((s) => s.setCardTitle);
   const card = useStore((s) => s.settings[id]?.card ?? null);
-  const isConductor = useStore((s) => s.conductor === id);
-  const setConductor = useStore((s) => s.setConductor);
+  const isConductor = useStore((s) => isConductorTile(s, id));
+  const [roleOpen, setRoleOpen] = useState(false);
   // What is being edited inline: the tile's name, or its card's title (spec §5).
   const [editing, setEditing] = useState<false | "name" | "title">(false);
   const [draft, setDraft] = useState("");
@@ -368,15 +379,15 @@ function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: nu
         )}
       </div>
       {settings?.claude?.enabled && (
-        // Conductor spec §6: Make conductor on a Claude tile, Not the conductor on the current one.
+        // Conductor spec §6 and the tree spec §4: the tile's conductor role, as a menu.
         <button
           className={`rounded px-1 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100 ${isConductor ? "text-amber-300" : "text-neutral-500"}`}
           onClick={(e) => {
             e.stopPropagation();
-            setConductor(isConductor ? null : id).catch((err) => setError(typeof err === "string" ? err : String(err)));
+            setRoleOpen((v) => !v);
           }}
-          title={isConductor ? "Not the conductor" : "Make conductor"}
-          aria-label={isConductor ? "Not the conductor" : "Make conductor"}
+          title="Conductor role"
+          aria-label="Conductor role"
         >
           🎛
         </button>
@@ -410,7 +421,12 @@ function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: nu
   return (
     <div className="relative">
       {row}
-      {hovering && !historyOpen && !editing && <HoverCard id={id} />}
+      {hovering && !historyOpen && !roleOpen && !editing && <HoverCard id={id} />}
+      {roleOpen && (
+        <div className="absolute left-2 right-2 z-30 mt-1 rounded border border-neutral-700 bg-neutral-900 p-1 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <ConductorMenu id={id} onClose={() => setRoleOpen(false)} />
+        </div>
+      )}
       {historyOpen && (
         <div className="absolute left-2 right-2 z-30 mt-1 rounded border border-neutral-700 bg-neutral-900 p-2 shadow-xl" onClick={(e) => e.stopPropagation()}>
           <SessionHistory id={id} onPick={() => setHistoryOpen(false)} />

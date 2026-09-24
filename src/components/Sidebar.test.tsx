@@ -269,13 +269,18 @@ describe("the conductor", () => {
     expect(screen.queryByLabelText("Conductor")).toBeNull();
     // Make conductor on a Claude tile runs the tool; the reply stands in when no newer file exists.
     vi.mocked(ipc.conductorAction).mockResolvedValueOnce({ conductor: ID, claim: null });
+    fireEvent.click(screen.getByLabelText("Conductor role"));
+    // With no top conductor yet there is nothing to be a sub-conductor under.
+    expect(screen.queryByText("Make sub-conductor…")).toBeNull();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Make conductor"));
+      fireEvent.click(screen.getByText("Make conductor"));
     });
     expect(ipc.conductorAction).toHaveBeenCalledWith("set", ID);
     expect(useStore.getState().conductor).toBe(ID);
     expect(screen.getByTestId(`title-${ID}`).querySelector("[aria-label='Conductor']")).toBeTruthy();
-    expect(screen.getByLabelText("Not the conductor")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Conductor role"));
+    expect(screen.getByText("Not the conductor")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Conductor role"));
     vi.useFakeTimers();
     try {
       fireEvent.mouseEnter(screen.getByTestId(`title-${ID}`).closest("[data-machine-state]") as HTMLElement);
@@ -286,6 +291,67 @@ describe("the conductor", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("makes a sub-conductor for folders under a conductor, badges it, and says whom other tiles answer to", async () => {
+    const claude = { enabled: true, sessionId: "s", skipPermissions: false, started: true };
+    useStore.setState({
+      terminals: {
+        [ID]: { id: ID, name: "desk", cwd: "/home/mokes/projects", exited: null, error: null },
+        top: { id: "top", name: "ops", cwd: "/home/mokes/ops", exited: null, error: null },
+        a: { id: "a", name: "alpha", cwd: "/v/certifyip_services/a", exited: null, error: null },
+      },
+      order: [ID, "top", "a"],
+      layout: { kind: "group", id: "g1", tabs: [ID, "top", "a"], active: ID },
+      settings: {
+        [ID]: { ssh: { host: "mokes@box", cwd: "/v/certifyip-desktop", machine: "box" }, claude, command: null, extra: {} },
+        top: { ssh: null, claude, command: null, extra: {} },
+        a: { ssh: null, claude, command: null, extra: {} },
+      },
+      conductor: "top",
+      conductors: {},
+    });
+    render(<Sidebar />);
+    fireEvent.click(screen.getAllByLabelText("Conductor role")[0]);
+    expect(screen.getByText("Make top conductor (instead of ops)")).toBeTruthy();
+    fireEvent.click(screen.getByText("Make sub-conductor…"));
+    // The folder defaults to the tile's own (its ssh folder here), the parent to the top.
+    expect((screen.getByLabelText("Folders") as HTMLTextAreaElement).value).toBe("/v/certifyip-desktop");
+    expect((screen.getByLabelText("Answers to") as HTMLSelectElement).value).toBe("top");
+    fireEvent.change(screen.getByLabelText("Folders"), { target: { value: "/v/certifyip\n\n" } });
+    vi.mocked(ipc.conductorAction).mockResolvedValueOnce({ conductor: "top", conductors: { [ID]: { parent: "top", folders: ["/v/certifyip"] } }, claim: null });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Make sub-conductor"));
+    });
+    expect(ipc.conductorAction).toHaveBeenCalledWith("sub", ID, "top", ["/v/certifyip"]);
+    expect(useStore.getState().conductors[ID]).toEqual({ parent: "top", folders: ["/v/certifyip"] });
+    expect(screen.getByTestId(`title-${ID}`).querySelector("[aria-label='Conductor']")).toBeTruthy();
+    // alpha's folder is under the new scope, so it answers to desk now; desk answers to ops.
+    vi.useFakeTimers();
+    try {
+      fireEvent.mouseEnter(screen.getByTestId("title-a").closest("[draggable]") as HTMLElement);
+      act(() => {
+        vi.advanceTimersByTime(HOVER_CARD_MS);
+      });
+      expect(screen.getByTestId("hover-card-a").textContent).toContain("Answers to 🎛 desk");
+    } finally {
+      vi.useRealTimers();
+    }
+    // Its menu offers to undo it.
+    vi.mocked(ipc.conductorAction).mockResolvedValueOnce({ conductor: "top", conductors: {}, claim: null });
+    fireEvent.click(screen.getAllByLabelText("Conductor role")[0]);
+    expect(screen.getByText("🎛 Conductor for /v/certifyip · answers to ops")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Not a conductor"));
+    });
+    expect(ipc.conductorAction).toHaveBeenLastCalledWith("remove", ID);
+    expect(useStore.getState().conductors).toEqual({});
+  });
+
+  it("names the folders of a sub-conductor claim in the bar", () => {
+    useStore.setState({ conductorClaim: { tile: ID, title: "certify", at: "t", folders: ["/v/certifyip"], parent: "top" } });
+    render(<Sidebar />);
+    expect(screen.getByTestId("claim-bar").textContent).toContain("certify asks to be the conductor for /v/certifyip");
   });
 
   it("shows a pending claim as a bar whose Approve and Deny answer through the tool", async () => {

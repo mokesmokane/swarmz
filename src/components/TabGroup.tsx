@@ -1,6 +1,6 @@
 import { useState, type DragEvent } from "react";
 import type { GroupNode, Side } from "../lib/layout";
-import { useStore, terminalColor, breakoutHooks, type Placement } from "../store";
+import { useStore, terminalColor, breakoutHooks, isConductorTile, type Placement } from "../store";
 import { pointerOutside } from "../lib/breakouts";
 import { machineLabel } from "../lib/workspace";
 import { dotPresentation } from "../lib/agentState";
@@ -60,6 +60,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
   const terminals = useStore((s) => s.terminals);
   const settings = useStore((s) => s.settings);
   const agentState = useStore((s) => s.agentState);
+  const conductors = useStore((s) => s.conductors);
   const conductor = useStore((s) => s.conductor);
   const breakouts = useStore((s) => s.breakouts);
   const breakoutTerminal = useStore((s) => s.breakoutTerminal);
@@ -161,7 +162,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
               } ${out ? "italic opacity-60" : ""}`}
             >
               <TabDot id={id} exitCode={t?.exited ?? null} />
-              {conductor === id && <ConductorBadge />}
+              {isConductorTile({ conductor, conductors }, id) && <ConductorBadge />}
               <span className="max-w-[160px] truncate" title={t?.name ?? id}>{t ? displayTitle(settings[id]?.card, agentState[id], t.name) : id}</span>
               {out && <span className="text-[10px] text-neutral-500">↗ own window</span>}
               {!out && (

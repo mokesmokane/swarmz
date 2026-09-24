@@ -515,6 +515,38 @@ describe("loadWorkspace", () => {
     }
   });
 
+  it("keeps sub-conductors and unknown top-level fields through load and save, and drops a closed sub-conductor", async () => {
+    vi.useFakeTimers();
+    try {
+      useStore.setState({ persistenceReady: false });
+      vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+        version: 1,
+        terminals: [
+          { id: "c", name: "cond", cwd: "/tmp/c", ssh: null, claude: null, command: null },
+          { id: "s", name: "sub", cwd: "/tmp/s", ssh: null, claude: null, command: null },
+        ],
+        layout: null,
+        conductor: "c",
+        conductors: { s: { parent: "c", folders: ["/tmp/s"] } },
+        someFutureField: { keep: true },
+      } as unknown as Workspace);
+      await useStore.getState().loadWorkspace();
+      expect(useStore.getState().conductors).toEqual({ s: { parent: "c", folders: ["/tmp/s"] } });
+      vi.mocked(ipc.saveWorkspace).mockClear();
+      await useStore.getState().renameTerminal("c", "cond2");
+      vi.advanceTimersByTime(SAVE_DEBOUNCE_MS);
+      await vi.runAllTimersAsync();
+      const saves = vi.mocked(ipc.saveWorkspace).mock.calls;
+      const saved = saves[saves.length - 1][0] as Workspace & { someFutureField?: unknown };
+      expect(saved.conductors).toEqual({ s: { parent: "c", folders: ["/tmp/s"] } });
+      expect(saved.someFutureField).toEqual({ keep: true });
+      await useStore.getState().closeTerminal("s");
+      expect(useStore.getState().conductors).toEqual({});
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("setConductor and decideClaim go through the tool, then adopt the file it wrote", async () => {
     const id = await useStore.getState().createTerminal("/tmp/a");
     // The tool wrote a newer file: it is adopted, so the store's fields come from it.

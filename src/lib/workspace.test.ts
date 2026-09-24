@@ -18,6 +18,11 @@ import {
   sameWorkspaceContent,
   conductorOf,
   claimOf,
+  conductorOwner,
+  conductorsOf,
+  liveSubs,
+  scopeFolder,
+  workspaceExtra,
   needsRemoteFolder,
   openingFor,
   pickNewest,
@@ -559,6 +564,52 @@ describe("sameWorkspaceContent", () => {
     expect(sameWorkspaceContent({ ...base, conductor: "a" }, { ...base, conductor: "a" })).toBe(true);
     expect(sameWorkspaceContent(base, { ...base, conductorClaim: { tile: "b", title: "B", at: "t" } })).toBe(false);
     expect(sameWorkspaceContent(base, { ...base, conductorClaim: null })).toBe(true);
+  });
+});
+
+describe("the conductor tree", () => {
+  const subs = {
+    s1: { parent: "top", folders: ["/p/certifyip/"] },
+    s2: { parent: "s1", folders: ["/p/certifyip-desktop"] },
+    loop1: { parent: "loop2", folders: ["/x"] },
+    loop2: { parent: "loop1", folders: ["/y"] },
+  };
+  const folders: Record<string, string> = { a: "/p/certifyip_services/a", b: "/p/certifyip-desktop/src", o: "/q", s1: "/p/certifyip_services", x: "/x/in" };
+  const owner = (id: string) => conductorOwner("top", subs, (t) => folders[t] ?? null, id);
+  it("resolves owners by the longest prefix and parents, and ignores loops, as the tool does", () => {
+    expect(owner("top")).toBeNull();
+    expect(owner("s1")).toBe("top");
+    expect(owner("s2")).toBe("s1");
+    expect(owner("a")).toBe("s1");
+    expect(owner("b")).toBe("s2");
+    expect(owner("o")).toBe("top");
+    expect(owner("x")).toBe("top");
+    expect(Object.keys(liveSubs("top", subs)).sort()).toEqual(["s1", "s2"]);
+    expect(liveSubs(null, subs)).toEqual({});
+    expect(conductorOwner(null, subs, () => "/p", "a")).toBeNull();
+  });
+
+  it("reads sub-conductors and claims with folders, sanitising", () => {
+    expect(conductorsOf({ conductors: { s1: { parent: "top", folders: ["/a", 3] }, bad: { folders: [] }, worse: "x" } })).toEqual({ s1: { parent: "top", folders: ["/a"] } });
+    expect(conductorsOf({ conductors: [] })).toEqual({});
+    expect(claimOf({ conductorClaim: { tile: "b", at: "t", folders: ["/p"], parent: "top" } })).toEqual({ tile: "b", title: null, at: "t", folders: ["/p"], parent: "top" });
+    expect(scopeFolder({ ssh: { host: "h", cwd: " /r " }, claude: null, command: null }, "/l")).toBe("/r");
+    expect(scopeFolder({ ssh: null, claude: null, command: null, foreign: { cwd: "/f" } }, "/l")).toBe("/f");
+    expect(scopeFolder(undefined, "/l")).toBe("/l");
+  });
+
+  it("writes sub-conductors, carries unknown top-level fields through, and compares both", () => {
+    const base = { order: ["a"], terminals: { a: { id: "a", name: "a", cwd: "/a" } }, settings: {}, layout: null, machines: {} };
+    const ws = toWorkspace({ ...base, conductors: { a: { parent: "top", folders: ["/p"] } }, extra: { future: { x: 1 }, version: 99 } });
+    expect(ws.conductors).toEqual({ a: { parent: "top", folders: ["/p"] } });
+    expect((ws as unknown as { future: unknown }).future).toEqual({ x: 1 });
+    expect(ws.version).toBe(1);
+    expect("conductors" in toWorkspace({ ...base, conductors: {} })).toBe(false);
+    expect(workspaceExtra({ version: 1, terminals: [], layout: null, sshHistory: {}, future: 2 })).toEqual({ future: 2 });
+    const plain = toWorkspace(base);
+    expect(sameWorkspaceContent(plain, ws)).toBe(false);
+    expect(sameWorkspaceContent(ws, toWorkspace({ ...base, conductors: { a: { parent: "top", folders: ["/p"] } }, extra: { future: { x: 1 } } }))).toBe(true);
+    expect(sameWorkspaceContent(plain, { ...plain, future: 3 } as Workspace)).toBe(false);
   });
 });
 

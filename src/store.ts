@@ -52,7 +52,13 @@ import {
   validateIcon,
   claimOf,
   conductorOf,
+  conductorsOf,
+  conductorOwner,
+  liveSubs,
+  scopeFolder,
+  workspaceExtra,
   type ConductorClaim,
+  type SubConductors,
 } from "./lib/workspace";
 import { withUserTitle } from "./lib/card";
 import { loadBreakouts, saveBreakouts, type Bounds } from "./lib/breakouts";
@@ -406,6 +412,10 @@ export interface WorkbenchState {
   conductor: string | null;
   /** A tile asking to be the conductor, until Approve or Deny (conductor spec §3). */
   conductorClaim: ConductorClaim | null;
+  /** Sub-conductors by tile id (conductor tree spec §2), from the workspace. */
+  conductors: SubConductors;
+  /** Top-level workspace fields this app does not know, written back through every save. */
+  workspaceExtra: Record<string, unknown>;
   /** Whether `~/.swarmz/telegram.json` is set up here (conductor spec §5); null until asked. */
   telegramConfigured: boolean | null;
   /** The file the viewer shows (file viewing spec §3): which tile named it, the resolved path, the line. */
@@ -461,6 +471,10 @@ export interface WorkbenchState {
   updateSettings(id: string, patch: Partial<TerminalSettings>): void;
   /** Makes `id` the conductor, or clears the role with null (conductor spec §6), through the tool so the tiles concerned are told; the file it wrote is adopted. */
   setConductor(id: string | null): Promise<void>;
+  /** Makes `id` a sub-conductor for `folders` under `parent` (conductor tree spec §4), through the tool. */
+  setSubConductor(id: string, parent: string, folders: string[]): Promise<void>;
+  /** Turns sub-conductor `id` back into an ordinary tile; its tiles go back to its parent. */
+  removeSubConductor(id: string): Promise<void>;
   /** Answers the pending claim (conductor spec §3): Approve makes the claimant the conductor, Deny clears the claim; either tells the claimant. */
   decideClaim(approve: boolean): Promise<void>;
   /** A local Claude tile in `cwd` (the conductor's folder by default), made the conductor at once (conductor spec §6). */
@@ -1337,7 +1351,7 @@ async function loadWorkspaceOnce(set: SetState): Promise<void> {
     const { machines, dropped } = sanitizeMachines(ws.machines);
     set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
   }
-  set({ conductor: conductorOf(ws), conductorClaim: claimOf(ws) });
+  set({ conductor: conductorOf(ws), conductorClaim: claimOf(ws), conductors: conductorsOf(ws), workspaceExtra: workspaceExtra(ws) });
   // openDefs sets persistenceReady itself: true when every def opened cleanly, false
   // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
   await openDefs(ws.terminals, ws.layout, set);
@@ -1365,6 +1379,8 @@ export const useStore = create<WorkbenchState>((set) => ({
   machines: {},
   conductor: null,
   conductorClaim: null,
+  conductors: {},
+  workspaceExtra: {},
   telegramConfigured: null,
   fileView: null,
   tailscale: null,
@@ -1504,6 +1520,8 @@ export const useStore = create<WorkbenchState>((set) => ({
         // The conductor's tile is gone: nobody holds the role (and a claim by it lapses).
         ...(s.conductor === id ? { conductor: null } : {}),
         ...(s.conductorClaim?.tile === id ? { conductorClaim: null } : {}),
+        // A closed sub-conductor's tiles go back to its parent (conductor tree spec §2).
+        ...(s.conductors[id] ? { conductors: omit(s.conductors, id) as SubConductors } : {}),
         ...focusFor(layout, fallback),
       };
     });
@@ -1869,6 +1887,20 @@ export const useStore = create<WorkbenchState>((set) => ({
   async setConductor(id) {
     if (id !== null && !useStore.getState().terminals[id]) throw `${id} is not an open tile`;
     await conductorViaTool(id === null ? ["clear"] : ["set", id]);
+  },
+
+  async setSubConductor(id, parent, folders) {
+    const s = useStore.getState();
+    if (!s.terminals[id]) throw `${id} is not an open tile`;
+    const clean = folders.map((f) => f.trim()).filter(Boolean);
+    if (clean.length === 0) throw "a sub-conductor needs at least one folder";
+    const bad = clean.find((f) => !(f.startsWith("/") || f.startsWith("~/")));
+    if (bad) throw `${bad} is not an absolute folder`;
+    await conductorViaTool(["sub", id, parent, clean]);
+  },
+
+  async removeSubConductor(id) {
+    await conductorViaTool(["remove", id]);
   },
 
   async decideClaim(approve) {
@@ -2505,7 +2537,7 @@ export function __resetSyncState() {
  * compares against the file that was adopted. */
 function currentWorkspace(): Workspace {
   const s = useStore.getState();
-  return toWorkspace({ order: s.order, terminals: persistedTerminals(s.terminals), settings: s.settings, layout: s.layout, machines: s.machines, conductor: s.conductor, conductorClaim: s.conductorClaim });
+  return toWorkspace({ order: s.order, terminals: persistedTerminals(s.terminals), settings: s.settings, layout: s.layout, machines: s.machines, conductor: s.conductor, conductorClaim: s.conductorClaim, conductors: s.conductors, extra: s.workspaceExtra });
 }
 
 /**
@@ -2539,7 +2571,7 @@ async function applyWorkspace(
   }
   // The conductor and a claim are whole-file facts: absent means none (the tool and every save
   // write the whole file).
-  useStore.setState({ conductor: conductorOf(ws), conductorClaim: claimOf(ws) });
+  useStore.setState({ conductor: conductorOf(ws), conductorClaim: claimOf(ws), conductors: conductorsOf(ws), workspaceExtra: workspaceExtra(ws) });
   // What each open terminal was called (as the shared file would spell it) when this operation
   // began — see the rename pass below. `adopt` captures it before its own save, because a user
   // rename made while that save is in flight belongs to the user, not to the file.
@@ -2728,6 +2760,8 @@ function runSave(): Promise<void> {
       machines: s.machines,
       conductor: s.conductor,
       conductorClaim: s.conductorClaim,
+      conductors: s.conductors,
+      extra: s.workspaceExtra,
       sync,
     });
     p = ipc
@@ -2748,6 +2782,8 @@ function runSave(): Promise<void> {
       machines: s.machines,
       conductor: s.conductor,
       conductorClaim: s.conductorClaim,
+      conductors: s.conductors,
+      extra: s.workspaceExtra,
       sync: s.syncMeta ?? undefined,
     });
     p = ipc.saveWorkspace(ws).catch((e) => {
@@ -2787,9 +2823,12 @@ async function flushPendingSave(): Promise<void> {
  * is what an external change does anyway; the peers pick it up on their next pull. When the file
  * cannot be read back the fields are set from the tool's reply so the sidebar is right at once.
  */
-async function conductorViaTool(args: ["set", string] | ["deny"] | ["clear"]): Promise<void> {
+async function conductorViaTool(args: ["set", string] | ["deny"] | ["clear"] | ["sub", string, string, string[]] | ["remove", string]): Promise<void> {
   await flushPendingSave();
-  const reply = await ipc.conductorAction(args[0], args[0] === "set" ? args[1] : undefined);
+  const reply =
+    args[0] === "sub"
+      ? await ipc.conductorAction("sub", args[1], args[2], args[3])
+      : await ipc.conductorAction(args[0], args[0] === "set" || args[0] === "remove" ? args[1] : undefined);
   const ws = await ipc.loadWorkspace().catch(() => null);
   if (ws && isNewer(ws.sync, useStore.getState().syncMeta)) {
     lastSeenMtime = await ipc.workspaceStat().catch(() => null);
@@ -2797,7 +2836,7 @@ async function conductorViaTool(args: ["set", string] | ["deny"] | ["clear"]): P
     await announceLocalWrite(ws);
     return;
   }
-  useStore.setState({ conductor: conductorOf(reply), conductorClaim: claimOf({ conductorClaim: reply.claim }) });
+  useStore.setState({ conductor: conductorOf(reply), conductorClaim: claimOf({ conductorClaim: reply.claim }), conductors: conductorsOf(reply) });
 }
 
 function scheduleSave() {
@@ -2822,7 +2861,8 @@ useStore.subscribe((s, prev) => {
     s.settings !== prev.settings ||
     s.machines !== prev.machines ||
     s.conductor !== prev.conductor ||
-    s.conductorClaim !== prev.conductorClaim
+    s.conductorClaim !== prev.conductorClaim ||
+    s.conductors !== prev.conductors
   ) {
     scheduleSave();
   }
@@ -2843,6 +2883,16 @@ useStore.subscribe((s, prev) => {
   if (s.terminals === prev.terminals) return;
   for (const id of Object.keys(prev.terminals)) if (!(id in s.terminals)) forgetAttach(id);
 });
+
+/** Whether `id` is a conductor: the top, or a sub-conductor whose chain reaches it (conductor tree spec §2). */
+export function isConductorTile(s: Pick<WorkbenchState, "conductor" | "conductors">, id: string): boolean {
+  return s.conductor === id || id in liveSubs(s.conductor, s.conductors);
+}
+
+/** The conductor `id` answers to, as the tool decides it; null for the top or with no top. */
+export function conductorFor(s: Pick<WorkbenchState, "conductor" | "conductors" | "settings" | "terminals">, id: string): string | null {
+  return conductorOwner(s.conductor, s.conductors, (t) => scopeFolder(s.settings[t], s.terminals[t]?.cwd), id);
+}
 
 /**
  * Whether this Mac should run the Telegram follower (conductor spec §5): Telegram is set up,
