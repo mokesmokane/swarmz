@@ -181,7 +181,8 @@ fn rows_from(
         Err(_) => return None,
     };
     let dir = sessions_dir_in(home);
-    let conductor = crate::conductor::conductor_of(&ws);
+    // Every conductor, top or sub, is marked (conductor tree spec §6).
+    let tree = crate::conductor::Tree::of(&ws);
     let rows = homed_defs(&ws, self_machine)
         .into_iter()
         .map(|def| {
@@ -234,7 +235,7 @@ fn rows_from(
                 session_id: moved.or(fold.session_id).or_else(|| claude.map(|c| c.session_id.clone())),
                 summary: fold.summary,
                 machine: self_machine.map(str::to_string),
-                conductor: conductor.as_deref() == Some(def.id.as_str()),
+                conductor: tree.is_conductor(&def.id),
                 id: def.id,
                 name: def.name,
             }
