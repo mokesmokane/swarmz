@@ -3,7 +3,7 @@ import { emit, emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { BREAKOUT_ACTION_EVENT, BREAKOUT_HELLO_EVENT, TILE_STATE_EVENT, type BreakoutAction, type TileState } from "./breakouts";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import type { ConductorClaim, Workspace } from "./workspace";
+import type { ConductorClaim, SubConductors, Workspace } from "./workspace";
 import type { AgentEvent } from "./agentState";
 
 export interface TerminalInfo {
@@ -178,8 +178,13 @@ export const ipc = {
   /** Ends a session that no tile in this window shows. */
   closeSession: (id: string) => invoke<boolean>("close_session", { id }),
   /** Sets, denies or clears the conductor through the tool, which tells the tiles concerned (conductor spec §6). */
-  conductorAction: (action: "set" | "deny" | "clear", id?: string) =>
-    invoke<{ conductor: string | null; claim: ConductorClaim | null }>("conductor_action", { action, id: id ?? null }),
+  conductorAction: (action: "set" | "deny" | "clear" | "sub" | "remove", id?: string, parent?: string, folders?: string[]) =>
+    invoke<{ conductor: string | null; conductors?: SubConductors; claim: ConductorClaim | null }>("conductor_action", {
+      action,
+      id: id ?? null,
+      parent: parent ?? null,
+      folders: folders ?? null,
+    }),
   /** Creates `~/.swarmz/conductor` (with its CLAUDE.md) if missing and returns the path. */
   conductorDir: () => invoke<string>("conductor_dir"),
   /** A URL from a pane, in the browser (file viewing spec §2). */

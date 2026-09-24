@@ -660,10 +660,27 @@ pub async fn local_sessions() -> Result<Vec<swarmz_tool::tiles::SessionRow>, Str
 /// the workspace, bumps its revision and tells the tiles concerned; the reply is the tool's
 /// `{conductor, claim}`. The store adopts the file afterwards.
 #[tauri::command]
-pub async fn conductor_action(action: String, id: Option<String>) -> Result<serde_json::Value, String> {
+pub async fn conductor_action(action: String, id: Option<String>, parent: Option<String>, folders: Option<Vec<String>>) -> Result<serde_json::Value, String> {
+    let valid = |t: &Option<String>| t.as_deref().is_some_and(swarmz_tool::paths::valid_tile_id);
     let args: Vec<String> = match (action.as_str(), id) {
         ("set", Some(id)) if swarmz_tool::paths::valid_tile_id(&id) => vec!["conductor".into(), "--set".into(), id],
         ("set", _) => return Err("a valid tile id is needed".to_string()),
+        // A sub-conductor for folders under a parent (conductor tree spec §4).
+        ("sub", Some(id)) if swarmz_tool::paths::valid_tile_id(&id) && valid(&parent) => {
+            let folders = folders.unwrap_or_default();
+            if folders.is_empty() || folders.iter().any(|f| !swarmz_tool::conductor::valid_folder(f)) {
+                return Err("each folder must be absolute".to_string());
+            }
+            let mut a = vec!["conductor".into(), "--set".into(), id, "--parent".into(), parent.unwrap()];
+            for f in folders {
+                a.push("--folder".into());
+                a.push(f);
+            }
+            a
+        }
+        ("sub", _) => return Err("a valid tile and parent are needed".to_string()),
+        ("remove", Some(id)) if swarmz_tool::paths::valid_tile_id(&id) => vec!["conductor".into(), "--remove".into(), id],
+        ("remove", _) => return Err("a valid tile id is needed".to_string()),
         ("deny", _) => vec!["conductor".into(), "--deny".into()],
         ("clear", _) => vec!["conductor".into(), "--clear".into()],
         (other, _) => return Err(format!("unknown conductor action {other:?}")),

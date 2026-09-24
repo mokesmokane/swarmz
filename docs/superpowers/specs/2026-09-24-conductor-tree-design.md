@@ -1,7 +1,7 @@
 # swarmz: a tree of conductors
 
 Date: 2026-09-24
-Status: approved design
+Status: approved design, implemented 2026-09-24 (steps 1–2)
 Amends: `2026-09-23-conductor-design.md` §2 (who may act on whom), §3 (who is a conductor, the
 guard, claims), §4 (the briefing), §6–§7 (the badge). Telegram (§5) is unchanged: it stays the
 top conductor's.
@@ -31,8 +31,10 @@ talking to the user on Telegram (they escalate to their parent, which may).
 - **Sub-conductors** are a new top-level workspace field, synced like the rest:
   `conductors: { "<tile id>": { "parent": "<conductor tile id>", "folders": ["/abs/prefix", …] } }`.
   A sub-conductor's parent is the top conductor or another sub-conductor.
-- A sub-conductor's **scope** is its folder prefixes: a tile belongs to the sub-conductor whose
-  prefix matches the tile's folder longest (the ssh folder for an ssh tile, else the tile's
+- A sub-conductor's **scope** is its folder prefixes, compared as plain string prefixes with a
+  trailing `/` dropped, so `…/projects/certifyip` covers `certifyip_services` and
+  `certifyip-desktop` alike: a tile belongs to the sub-conductor whose prefix matches the tile's
+  folder longest (the ssh folder for an ssh tile, else the tile's
   `cwd`), so a new tile or worktree under the certifyIP folders joins it without anyone listing
   it. A tile in no scope answers to the top conductor.
 - A sub-conductor itself answers to its `parent`, whatever its own folder says. A conductor never
@@ -69,8 +71,10 @@ and pass everything.
 - **Directly:** `swarmz conductor --set <tile> --parent <id> --folder <prefix>…` (the user's) makes
   a sub-conductor; `--set <tile>` alone still sets the top conductor. `swarmz conductor --remove
   <tile>` turns a sub-conductor back into an ordinary tile; its tiles go back to its parent.
-- **Desktop:** **Make sub-conductor…** on a Claude row's 🎛 menu asks for the folders (defaulting
-  to the tile's own folder) and the parent (defaulting to the conductor it answers to now).
+- **Desktop:** the 🎛 button on a Claude row opens a menu: **Make conductor** (the top, replacing
+  any other), **Make sub-conductor…** (only once there is a top), which asks for the folders
+  (defaulting to the tile's own folder) and the parent (defaulting to the conductor it answers to
+  now), and **Not the conductor** / **Not a conductor** on a conductor.
 - `swarmz conductor` reports `{conductor, conductors, claim}`.
 
 ## 5. Telling them
