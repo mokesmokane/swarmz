@@ -33,27 +33,23 @@ You are the conductor: the one agent allowed to act on the other tiles, on every
 - `~/.swarmz/bin/swarmz notify -- "text"` messages the user on Telegram, when it is set up: use it when the user asked to be told, when a tile has waited on a question for more than a few minutes, or when something failed. A prompt starting `[telegram]` came from the user's phone; reply with `notify`.
 "#;
 
-/// What a tile is in the conductor tree (conductor tree spec §5). Sub-conductors are listed as
-/// (title, tile id, folders).
+/// What a tile is in the conductor tree (conductor tree spec §5). Sub-conductors directly under
+/// it are listed as (title, tile id).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Role {
     Tile,
-    Top { subs: Vec<(String, String, Vec<String>)> },
-    Sub { parent: String, folders: Vec<String>, subs: Vec<(String, String, Vec<String>)> },
-}
-
-fn areas(subs: &[(String, String, Vec<String>)]) -> String {
-    subs.iter().map(|(title, id, folders)| format!("- {title} (`{id}`): {}", folders.join(", "))).collect::<Vec<_>>().join("\n")
+    Top { subs: Vec<(String, String)> },
+    Sub { parent: String, subs: Vec<(String, String)> },
 }
 
 /// The tree rule every conductor with sub-conductors under it is told.
-fn below(subs: &[(String, String, Vec<String>)]) -> String {
+fn below(subs: &[(String, String)]) -> String {
     if subs.is_empty() {
         return String::new();
     }
+    let list = subs.iter().map(|(title, id)| format!("- {title} (`{id}`)")).collect::<Vec<_>>().join("\n");
     format!(
-        "\nSome areas have a conductor of their own, which answers to you:\n{}\n\nYou act only on the tiles directly under you, and these conductors are among them: for anything in their areas, `ask` or `send` to that conductor, never to its tiles (the tool refuses). You may still glance at any screen below you with `output`.\n",
-        areas(subs)
+        "\nThese conductors answer to you, each looking after tiles of its own:\n{list}\n\nYou act only on the tiles directly under you, and these conductors are among them: for anything of theirs, `ask` or `send` to that conductor, never to its tiles (the tool refuses; `fleet` and a tile's hover card say whom each tile answers to). You may still glance at any screen below you with `output`. `~/.swarmz/bin/swarmz conductor --assign <tile> --to <conductor>` hands one of your own tiles to one of them.\n"
     )
 }
 
@@ -62,17 +58,16 @@ pub fn conductor_section(role: &Role) -> String {
     match role {
         Role::Tile => String::new(),
         Role::Top { subs } => format!("{CONDUCTOR_SECTION}{}", below(subs)),
-        Role::Sub { parent, folders, subs } => format!(
+        Role::Sub { parent, subs } => format!(
             r#"
-You are a conductor for part of the workspace: the tiles whose folders start with {folders}. You answer to {parent}, the conductor above you. Use the swarmz command when {parent} or the user asks about or for your tiles, and never read their conversations (you cannot; you would drown in them). What you know of a tile is its card, its status, what it replies, and a glance at its screen.
+You are a conductor for part of the workspace: the tiles the user (or {parent}) put under you. You answer to {parent}, the conductor above you. Use the swarmz command when {parent} or the user asks about or for your tiles, and never read their conversations (you cannot; you would drown in them). What you know of a tile is its card, its status, what it replies, and a glance at its screen.
 
 - `~/.swarmz/bin/swarmz fleet` lists your tiles: title, machine, folder, status, what it needs, recap, last message. Summarise by what needs attention first.
 - `~/.swarmz/bin/swarmz output <tile> --lines 60` shows the last lines of any tile's screen below you (at most 200). The hook status can lag; the screen does not.
-- `~/.swarmz/bin/swarmz ask <tile> -- "question"` and `send <tile> -- "instruction"` reach the tiles directly under you; answers arrive later as prompts starting `[<its title>]`. `pending`, `answer`, `restart` and `close` work on them too, and `new --folder <dir>` starts a tile inside your folders. Never answer a permission nobody told you to.
+- `~/.swarmz/bin/swarmz ask <tile> -- "question"` and `send <tile> -- "instruction"` reach the tiles directly under you; answers arrive later as prompts starting `[<its title>]`. `pending`, `answer`, `restart` and `close` work on them too, and a tile you start with `new --folder <dir>` is yours. Never answer a permission nobody told you to.
 - Add `--on <machine>` before the command for a tile on another Mac.
 - A prompt starting `[conductor {parent}]` is the conductor above you: answer it with `~/.swarmz/bin/swarmz reply -- "..."`. Raise anything that needs the user, and finished work worth knowing, the same way. You do not message the user on Telegram; {parent} does.
 {below}"#,
-            folders = folders.join(", "),
             below = below(subs),
         ),
     }
@@ -134,21 +129,22 @@ mod tests {
 
     #[test]
     fn each_conductor_is_told_its_place_in_the_tree() {
-        let area = || vec![("certifyIP".to_string(), "s1".to_string(), vec!["/p/certifyip".to_string()])];
+        let area = || vec![("certifyIP".to_string(), "s1".to_string())];
         let top = conductor_section(&Role::Top { subs: area() });
         assert!(top.contains("You are the conductor"));
-        assert!(top.contains("- certifyIP (`s1`): /p/certifyip"), "{top}");
+        assert!(top.contains("- certifyIP (`s1`)"), "{top}");
         assert!(top.contains("never to its tiles"));
-        assert!(!conductor_section(&Role::Top { subs: vec![] }).contains("area"));
-        let sub = conductor_section(&Role::Sub { parent: "Ops".into(), folders: vec!["/p/certifyip".into(), "/p/x".into()], subs: vec![] });
-        assert!(sub.contains("folders start with /p/certifyip, /p/x"), "{sub}");
+        assert!(top.contains("--assign"));
+        assert!(!conductor_section(&Role::Top { subs: vec![] }).contains("answer to you"));
+        let sub = conductor_section(&Role::Sub { parent: "Ops".into(), subs: vec![] });
+        assert!(sub.contains("put under you"), "{sub}");
         assert!(sub.contains("You answer to Ops"));
         assert!(sub.contains("[conductor Ops]"));
         assert!(sub.contains("swarmz reply"));
         assert!(sub.contains("You do not message the user on Telegram"));
         assert!(!sub.contains("swarmz notify"));
-        let mid = conductor_section(&Role::Sub { parent: "Ops".into(), folders: vec!["/p/certifyip".into()], subs: area() });
-        assert!(mid.contains("which answers to you"));
+        let mid = conductor_section(&Role::Sub { parent: "Ops".into(), subs: area() });
+        assert!(mid.contains("These conductors answer to you"));
         assert_eq!(conductor_section(&Role::Tile), "");
     }
 }

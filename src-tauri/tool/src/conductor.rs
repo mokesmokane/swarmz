@@ -26,26 +26,12 @@ pub fn claim_of(ws: &Workspace) -> Option<Value> {
     ws.extra.get("conductorClaim").filter(|v| v.is_object()).cloned()
 }
 
-/// A sub-conductor (conductor tree spec §2): the conductor it answers to, and the folder
-/// prefixes whose tiles answer to it.
+/// A sub-conductor (conductor tree spec §2, as amended): the conductor it answers to, and the
+/// tiles that answer to it, listed by hand.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sub {
     pub parent: String,
-    pub folders: Vec<String>,
-}
-
-/// A folder prefix as stored and compared: trimmed, no trailing `/` (except the root itself).
-/// It is a string prefix, so `…/projects/certifyip` covers `certifyip_services` and
-/// `certifyip-desktop`.
-pub fn norm_folder(f: &str) -> String {
-    let t = f.trim();
-    if t.len() > 1 { t.trim_end_matches('/').to_string() } else { t.to_string() }
-}
-
-/// A folder a scope may name: absolute or `~/…`, no control characters.
-pub fn valid_folder(f: &str) -> bool {
-    let t = f.trim();
-    (t.starts_with('/') || t.starts_with("~/")) && t.len() <= 1024 && !t.chars().any(|c| c.is_control())
+    pub tiles: Vec<String>,
 }
 
 /// The sub-conductors as written, before the tree drops the ones that do not hang together.
@@ -54,9 +40,9 @@ fn raw_subs(ws: &Workspace) -> BTreeMap<String, Sub> {
     let Some(map) = ws.extra.get("conductors").and_then(|v| v.as_object()) else { return out };
     for (id, v) in map {
         let Some(parent) = v.get("parent").and_then(|p| p.as_str()) else { continue };
-        let folders: Vec<String> = v.get("folders").and_then(|f| f.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).filter(|f| valid_folder(f)).map(norm_folder).collect()).unwrap_or_default();
+        let tiles: Vec<String> = v.get("tiles").and_then(|f| f.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).filter(|t| crate::paths::valid_tile_id(t)).map(str::to_string).collect()).unwrap_or_default();
         if crate::paths::valid_tile_id(id) && crate::paths::valid_tile_id(parent) {
-            out.insert(id.clone(), Sub { parent: parent.to_string(), folders });
+            out.insert(id.clone(), Sub { parent: parent.to_string(), tiles });
         }
     }
     out
@@ -75,8 +61,6 @@ impl Tree {
         let top = conductor_of(ws).filter(|t| def_of(ws, t).is_some());
         let mut subs = raw_subs(ws);
         subs.retain(|id, _| def_of(ws, id).is_some() && Some(id) != top.as_ref());
-        // Keep only the entries whose parents lead to the top within as many steps as there are
-        // entries; anything else is an orphan or a loop.
         let Some(top_id) = top.clone() else { return Tree { top: None, subs: BTreeMap::new() } };
         let reaches = |id: &str, subs: &BTreeMap<String, Sub>| -> bool {
             let mut at = id.to_string();
@@ -99,9 +83,9 @@ impl Tree {
     }
 
     /// The conductor `tile` answers to: a sub-conductor's parent; for any other tile the
-    /// sub-conductor whose folder prefix matches its folder longest, else the top. None for the
-    /// top itself, or when there is no top.
-    pub fn owner(&self, ws: &Workspace, tile: &str) -> Option<String> {
+    /// sub-conductor whose list names it (the first by id, should two), else the top. None for
+    /// the top itself, or when there is no top.
+    pub fn owner(&self, _ws: &Workspace, tile: &str) -> Option<String> {
         let top = self.top.clone()?;
         if tile == top {
             return None;
@@ -109,16 +93,7 @@ impl Tree {
         if let Some(s) = self.subs.get(tile) {
             return Some(s.parent.clone());
         }
-        let folder = def_of(ws, tile).map(tile_folder);
-        let best = folder.and_then(|f| {
-            self.subs
-                .iter()
-                .flat_map(|(id, s)| s.folders.iter().map(move |p| (id, p)))
-                .filter(|(_, p)| f.starts_with(p.as_str()))
-                .max_by_key(|(_, p)| p.len())
-                .map(|(id, _)| id.clone())
-        });
-        Some(best.unwrap_or(top))
+        Some(self.subs.iter().find(|(_, s)| s.tiles.iter().any(|t| t == tile)).map(|(id, _)| id.clone()).unwrap_or(top))
     }
 
     /// The conductors above `tile`, nearest first.
@@ -137,21 +112,11 @@ impl Tree {
         out
     }
 
-    /// Whether a sub-conductor may start a tile in `folder` (spec §3: inside its scope); the
-    /// top may start one anywhere.
-    pub fn may_create_in(&self, caller: &str, folder: &str) -> bool {
-        if self.top.as_deref() == Some(caller) {
-            return true;
-        }
-        let f = norm_folder(folder);
-        self.subs.get(caller).is_some_and(|s| s.folders.iter().any(|p| f.starts_with(p.as_str())))
+    /// Whether `caller` may move `tile` under `to` (spec §4): the tile answers to the caller,
+    /// and `to` is a sub-conductor directly under the caller.
+    pub fn may_assign(&self, ws: &Workspace, caller: &str, tile: &str, to: &str) -> bool {
+        self.owner(ws, tile).as_deref() == Some(caller) && self.subs.get(to).is_some_and(|s| s.parent == caller)
     }
-}
-
-/// The folder a tile's scope is decided by: the ssh folder for an ssh tile, else its cwd.
-pub fn tile_folder(def: &TerminalDef) -> String {
-    let f = def.ssh.as_ref().and_then(|s| s.cwd.clone()).filter(|c| !c.trim().is_empty()).unwrap_or_else(|| def.cwd.clone());
-    norm_folder(&f)
 }
 
 /// The tile the tool was run from: `SWARMZ_TERMINAL_ID`, set in every holder's shell. None from
@@ -170,7 +135,7 @@ pub const SCREEN_MAX: usize = 200;
 /// Commands that act on another tile: its own conductor's alone (conductor tree spec §3).
 const ACT: &[&str] = &["send", "ask", "key", "answer", "pending", "close", "restart"];
 /// Commands with no target tile that any conductor may run (a sub-conductor's `fleet` is
-/// filtered, its `new` held to its scope by the caller).
+/// filtered, and a tile its `new` starts joins its list).
 const CONDUCTING: &[&str] = &["fleet", "new", "on"];
 /// The user's channel: the top conductor's alone.
 const TOP_ONLY: &[&str] = &["notify", "telegram-follow"];
@@ -241,38 +206,34 @@ pub fn def_of<'a>(ws: &'a Workspace, tile: &str) -> Option<&'a TerminalDef> {
 /// sub-conductors that hang together, and a pending claim.
 pub fn state(ws: &Workspace) -> Value {
     let tree = Tree::of(ws);
-    let subs: serde_json::Map<String, Value> = tree.subs.iter().map(|(id, s)| (id.clone(), json!({"parent": s.parent, "folders": s.folders}))).collect();
+    let subs: serde_json::Map<String, Value> = tree.subs.iter().map(|(id, s)| (id.clone(), json!({"parent": s.parent, "tiles": s.tiles}))).collect();
     json!({"v": 1, "conductor": conductor_of(ws), "conductors": subs, "claim": claim_of(ws)})
 }
 
-/// Records a claim by `tile` (spec §3): `{tile, title, at}`, and with `folders` a claim to be a
-/// sub-conductor for them under the conductor `tile` answers to now (tree spec §4). It replaces
-/// an older claim. Claiming what the tile already is changes nothing. Returns whether the
-/// workspace changed.
-pub fn claim(ws: &mut Workspace, tile: &str, folders: &[String], by: &str, now: &str) -> Result<bool, CliError> {
+/// Records a claim by `tile` (spec §3): `{tile, title, at}`, and with `sub` a claim to be a
+/// sub-conductor under the conductor `tile` answers to now (tree spec §4). It replaces an older
+/// claim. Claiming what the tile already is changes nothing. Returns whether the workspace
+/// changed.
+pub fn claim(ws: &mut Workspace, tile: &str, sub: bool, by: &str, now: &str) -> Result<bool, CliError> {
     if def_of(ws, tile).is_none() {
         return Err(CliError::new("unknown_tile", format!("no tile {tile} in the workspace")));
     }
     let tree = Tree::of(ws);
     let title = title_of(ws, tile);
-    let record = if folders.is_empty() {
+    let record = if !sub {
         if tree.top.as_deref() == Some(tile) {
             return Ok(false);
         }
         json!({"tile": tile, "title": title, "at": now})
     } else {
-        if let Some(bad) = folders.iter().find(|f| !valid_folder(f)) {
-            return Err(CliError::new("usage", format!("{bad:?} is not an absolute folder")));
-        }
         if tree.top.as_deref() == Some(tile) {
-            return Err(CliError::new("usage", "the top conductor already covers every folder"));
+            return Err(CliError::new("usage", "the top conductor is above every sub-conductor already"));
         }
-        let parent = tree.owner(ws, tile).ok_or_else(|| CliError::new("denied", "no conductor is set to answer to; claim the top role first (`swarmz conductor --claim`)"))?;
-        let folders: Vec<String> = folders.iter().map(|f| norm_folder(f)).collect();
-        if tree.subs.get(tile).is_some_and(|s| s.parent == parent && s.folders == folders) {
+        if tree.subs.contains_key(tile) {
             return Ok(false);
         }
-        json!({"tile": tile, "title": title, "at": now, "folders": folders, "parent": parent})
+        let parent = tree.owner(ws, tile).ok_or_else(|| CliError::new("denied", "no conductor is set to answer to; claim the top role first (`swarmz conductor --claim`)"))?;
+        json!({"tile": tile, "title": title, "at": now, "sub": true, "parent": parent})
     };
     ws.extra.insert("conductorClaim".into(), record);
     bump_revision(ws, by, now);
@@ -280,17 +241,15 @@ pub fn claim(ws: &mut Workspace, tile: &str, folders: &[String], by: &str, now: 
 }
 
 /// Makes `tile` the top conductor and clears any claim, or, when the pending claim is `tile`'s
-/// and names folders, makes it the sub-conductor it asked to be. Returns whether the workspace
-/// changed.
+/// and asks to be a sub-conductor, makes it one. Returns whether the workspace changed.
 pub fn set(ws: &mut Workspace, tile: &str, by: &str, now: &str) -> Result<bool, CliError> {
     if def_of(ws, tile).is_none() {
         return Err(CliError::new("unknown_tile", format!("no tile {tile} in the workspace")));
     }
-    if let Some(c) = claim_of(ws).filter(|c| c["tile"].as_str() == Some(tile) && c["folders"].is_array()) {
-        let folders: Vec<String> = c["folders"].as_array().unwrap().iter().filter_map(|f| f.as_str().map(str::to_string)).collect();
+    if let Some(c) = claim_of(ws).filter(|c| c["tile"].as_str() == Some(tile) && c["sub"] == json!(true)) {
         let parent = c["parent"].as_str().map(str::to_string).or_else(|| Tree::of(ws).owner(ws, tile)).ok_or_else(|| CliError::new("denied", "no conductor is set to answer to"))?;
         ws.extra.remove("conductorClaim");
-        set_sub(ws, tile, &parent, &folders, by, now)?;
+        set_sub(ws, tile, &parent, by, now)?;
         return Ok(true);
     }
     let same = conductor_of(ws).as_deref() == Some(tile) && claim_of(ws).is_none();
@@ -299,26 +258,43 @@ pub fn set(ws: &mut Workspace, tile: &str, by: &str, now: &str) -> Result<bool, 
     }
     ws.extra.insert("conductor".into(), json!(tile));
     ws.extra.remove("conductorClaim");
-    // The top is nobody's sub-conductor.
-    if let Some(m) = ws.extra.get_mut("conductors").and_then(|v| v.as_object_mut()) {
+    // The top is nobody's sub-conductor, and in nobody's list.
+    if let Some(m) = subs_mut(ws) {
         m.remove(tile);
+        if m.is_empty() {
+            ws.extra.remove("conductors");
+        }
     }
+    unlist(ws, tile);
     bump_revision(ws, by, now);
     Ok(true)
 }
 
-/// Makes `tile` a sub-conductor for `folders` under `parent` (tree spec §4): the parent must be
-/// the top or a sub-conductor, and not `tile` or anything under it. Returns whether the
-/// workspace changed.
-pub fn set_sub(ws: &mut Workspace, tile: &str, parent: &str, folders: &[String], by: &str, now: &str) -> Result<bool, CliError> {
+fn subs_mut(ws: &mut Workspace) -> Option<&mut serde_json::Map<String, Value>> {
+    ws.extra.get_mut("conductors").and_then(|v| v.as_object_mut())
+}
+
+/// Takes `tile` out of every sub-conductor's list. Returns whether any list changed.
+fn unlist(ws: &mut Workspace, tile: &str) -> bool {
+    let mut changed = false;
+    if let Some(m) = subs_mut(ws) {
+        for v in m.values_mut() {
+            if let Some(a) = v.get_mut("tiles").and_then(|t| t.as_array_mut()) {
+                let before = a.len();
+                a.retain(|x| x.as_str() != Some(tile));
+                changed |= a.len() != before;
+            }
+        }
+    }
+    changed
+}
+
+/// Makes `tile` a sub-conductor under `parent` (tree spec §4), keeping its tiles if it is one
+/// already: the parent must be the top or a sub-conductor, and not `tile` or anything under it.
+/// Returns whether the workspace changed.
+pub fn set_sub(ws: &mut Workspace, tile: &str, parent: &str, by: &str, now: &str) -> Result<bool, CliError> {
     if def_of(ws, tile).is_none() {
         return Err(CliError::new("unknown_tile", format!("no tile {tile} in the workspace")));
-    }
-    if folders.is_empty() {
-        return Err(CliError::new("usage", "a sub-conductor needs at least one --folder"));
-    }
-    if let Some(bad) = folders.iter().find(|f| !valid_folder(f)) {
-        return Err(CliError::new("usage", format!("{bad:?} is not an absolute folder")));
     }
     let tree = Tree::of(ws);
     if tree.top.as_deref() == Some(tile) {
@@ -327,12 +303,14 @@ pub fn set_sub(ws: &mut Workspace, tile: &str, parent: &str, folders: &[String],
     if !tree.is_conductor(parent) || parent == tile || tree.ancestors(ws, parent).iter().any(|a| a == tile) {
         return Err(CliError::new("usage", format!("{} cannot be its parent: the parent must be a conductor above it", title_of(ws, parent))));
     }
-    let folders: Vec<String> = folders.iter().map(|f| norm_folder(f)).collect();
-    if tree.subs.get(tile).is_some_and(|s| s.parent == parent && s.folders == folders) {
+    if tree.subs.get(tile).is_some_and(|s| s.parent == parent) {
         return Ok(false);
     }
-    let entry = json!({"parent": parent, "folders": folders});
-    match ws.extra.get_mut("conductors").and_then(|v| v.as_object_mut()) {
+    let tiles = tree.subs.get(tile).map(|s| s.tiles.clone()).unwrap_or_default();
+    // A conductor is placed by its parent, not by a list.
+    unlist(ws, tile);
+    let entry = json!({"parent": parent, "tiles": tiles});
+    match subs_mut(ws) {
         Some(m) => {
             m.insert(tile.to_string(), entry);
         }
@@ -344,17 +322,61 @@ pub fn set_sub(ws: &mut Workspace, tile: &str, parent: &str, folders: &[String],
     Ok(true)
 }
 
-/// Turns sub-conductor `tile` back into an ordinary tile; its tiles go back to its parent.
-/// Returns whether the workspace changed.
+/// Puts `tile` under sub-conductor `to`, or back under the top when `to` is the top (tree spec
+/// §4). A tile is in one list at most, so it leaves any other. Returns whether the workspace
+/// changed.
+pub fn assign(ws: &mut Workspace, tile: &str, to: &str, by: &str, now: &str) -> Result<bool, CliError> {
+    if def_of(ws, tile).is_none() {
+        return Err(CliError::new("unknown_tile", format!("no tile {tile} in the workspace")));
+    }
+    let tree = Tree::of(ws);
+    if tree.is_conductor(tile) {
+        return Err(CliError::new("usage", "a conductor is placed by its parent: use `conductor --set <tile> --parent <conductor>`"));
+    }
+    if tree.top.as_deref() != Some(to) && !tree.subs.contains_key(to) {
+        return Err(CliError::new("usage", format!("{} is not a conductor", title_of(ws, to))));
+    }
+    if tree.owner(ws, tile).as_deref() == Some(to) {
+        return Ok(false);
+    }
+    unlist(ws, tile);
+    if tree.top.as_deref() != Some(to) {
+        if let Some(a) = subs_mut(ws).and_then(|m| m.get_mut(to)).and_then(|v| {
+            if v.get("tiles").and_then(|t| t.as_array()).is_none() {
+                v["tiles"] = json!([]);
+            }
+            v.get_mut("tiles").and_then(|t| t.as_array_mut())
+        }) {
+            a.push(json!(tile));
+        }
+    }
+    bump_revision(ws, by, now);
+    Ok(true)
+}
+
+/// Turns sub-conductor `tile` back into an ordinary tile (tree spec §4): its tiles and the
+/// sub-conductors under it go to its parent. Returns whether the workspace changed.
 pub fn remove_sub(ws: &mut Workspace, tile: &str, by: &str, now: &str) -> bool {
-    let removed = ws.extra.get_mut("conductors").and_then(|v| v.as_object_mut()).is_some_and(|m| m.remove(tile).is_some());
-    if removed {
-        if ws.extra.get("conductors").and_then(|v| v.as_object()).is_some_and(|m| m.is_empty()) {
+    let Some(entry) = subs_mut(ws).and_then(|m| m.remove(tile)) else { return false };
+    let parent = entry.get("parent").and_then(|p| p.as_str()).unwrap_or_default().to_string();
+    let tiles: Vec<Value> = entry.get("tiles").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+    if let Some(m) = subs_mut(ws) {
+        for v in m.values_mut() {
+            if v.get("parent").and_then(|p| p.as_str()) == Some(tile) {
+                v["parent"] = json!(parent);
+            }
+        }
+        // The parent's list takes the tiles when the parent is a sub-conductor; under the top a
+        // tile needs no list.
+        if let Some(a) = m.get_mut(&parent).and_then(|v| v.get_mut("tiles")).and_then(|t| t.as_array_mut()) {
+            a.extend(tiles);
+        }
+        if m.is_empty() {
             ws.extra.remove("conductors");
         }
-        bump_revision(ws, by, now);
     }
-    removed
+    bump_revision(ws, by, now);
+    true
 }
 
 /// Clears the conductor and any claim. Returns whether the workspace changed.
@@ -387,11 +409,8 @@ pub fn reply_line(tile_title: &str, text: &str) -> String {
 }
 
 /// The line a new sub-conductor is told (tree spec §4).
-pub fn sub_outcome_line(parent_title: &str, folders: &[String]) -> String {
-    format!(
-        "[swarmz] you are now the conductor for {} under {parent_title}: run ~/.swarmz/bin/swarmz briefing to see what you can do, and ~/.swarmz/bin/swarmz fleet to see your tiles",
-        folders.join(", ")
-    )
+pub fn sub_outcome_line(parent_title: &str) -> String {
+    format!("[swarmz] you are now a conductor under {parent_title}: run ~/.swarmz/bin/swarmz briefing to see what you can do, and ~/.swarmz/bin/swarmz fleet to see your tiles")
 }
 
 /// The line the desktop or the tool types into a claimant once the user has decided.
@@ -522,65 +541,61 @@ mod tests {
         assert!(allowed(&ws(None), Some("t2"), "send", Some("c1")).unwrap_err().message.contains("--claim"));
     }
 
-    /// top (c1 at /p) → certify (s1 at /p/certifyip_services/a, folders /p/certifyip) → desk
-    /// (s2 at /p/certifyip-desktop, folders /p/certifyip-desktop); ordinary tiles a (in
-    /// certifyip_services), b (in certifyip-desktop), o (elsewhere), r (an ssh tile whose remote
-    /// folder is in certifyip).
+    /// top c1 → certify s1 (tiles a, r, and the stale id "gone") → desk s2 (tile b); o is in no
+    /// list, so it answers to the top.
     fn tree_ws() -> Workspace {
-        let def = |id: &str, cwd: &str| TerminalDef { id: id.into(), name: id.into(), cwd: cwd.into(), ssh: None, claude: None, command: None, extra: Map::new() };
-        let mut r = def("r", "/Users/me");
-        r.ssh = Some(serde_json::from_value(json!({"host": "me@box", "cwd": "/p/certifyip_services/b/"})).unwrap());
+        let def = |id: &str| TerminalDef { id: id.into(), name: id.into(), cwd: "/p".into(), ssh: None, claude: None, command: None, extra: Map::new() };
         let mut w = Workspace {
             version: 1,
-            terminals: vec![def("c1", "/p"), def("s1", "/p/certifyip_services/a"), def("s2", "/p/certifyip-desktop"), def("a", "/p/certifyip_services/a"), def("b", "/p/certifyip-desktop/src"), def("o", "/q"), r],
+            terminals: ["c1", "s1", "s2", "a", "b", "o", "r"].iter().map(|id| def(id)).collect(),
             layout: Value::Null,
             extra: Map::new(),
         };
         w.extra.insert("conductor".into(), json!("c1"));
         w.extra.insert("conductors".into(), json!({
-            "s1": {"parent": "c1", "folders": ["/p/certifyip/"]},
-            "s2": {"parent": "s1", "folders": ["/p/certifyip-desktop"]},
+            "s1": {"parent": "c1", "tiles": ["a", "r", "gone"]},
+            "s2": {"parent": "s1", "tiles": ["b"]},
         }));
         w
     }
 
     #[test]
-    fn owners_follow_the_longest_folder_prefix_and_parents() {
+    fn owners_follow_the_lists_and_parents() {
         let w = tree_ws();
         let t = Tree::of(&w);
         assert_eq!(t.top.as_deref(), Some("c1"));
-        assert_eq!(t.subs["s1"].folders, vec!["/p/certifyip".to_string()]);
         let owner = |id: &str| t.owner(&w, id);
         assert_eq!(owner("c1"), None);
-        assert_eq!(owner("s1").as_deref(), Some("c1"), "a sub answers to its parent, whatever its folder");
+        assert_eq!(owner("s1").as_deref(), Some("c1"));
         assert_eq!(owner("s2").as_deref(), Some("s1"));
-        assert_eq!(owner("a").as_deref(), Some("s1"), "certifyip_services is under the string prefix certifyip");
-        assert_eq!(owner("b").as_deref(), Some("s2"), "the longest prefix wins");
-        assert_eq!(owner("o").as_deref(), Some("c1"), "no scope: the top");
-        assert_eq!(owner("r").as_deref(), Some("s1"), "an ssh tile's remote folder decides");
+        assert_eq!(owner("a").as_deref(), Some("s1"));
+        assert_eq!(owner("r").as_deref(), Some("s1"));
+        assert_eq!(owner("b").as_deref(), Some("s2"));
+        assert_eq!(owner("o").as_deref(), Some("c1"), "in no list: the top");
         assert_eq!(t.ancestors(&w, "b"), vec!["s2", "s1", "c1"]);
         assert_eq!(t.ancestors(&w, "c1"), Vec::<String>::new());
-        assert!(t.may_create_in("s1", "/p/certifyip_x/new"));
-        assert!(!t.may_create_in("s1", "/q/new"));
-        assert!(t.may_create_in("c1", "/anywhere"));
-        assert!(!t.may_create_in("a", "/p/certifyip"));
+        assert!(t.may_assign(&w, "c1", "o", "s1"), "the top hands its own tile to its child");
+        assert!(!t.may_assign(&w, "c1", "a", "s1"), "a is not the top's to move");
+        assert!(!t.may_assign(&w, "c1", "o", "s2"), "s2 is not directly under the top");
+        assert!(t.may_assign(&w, "s1", "a", "s2"));
     }
 
     #[test]
     fn loops_orphans_and_entries_without_a_top_are_ignored() {
         let mut w = tree_ws();
         w.extra.insert("conductors".into(), json!({
-            "s1": {"parent": "s2", "folders": ["/p/certifyip"]},
-            "s2": {"parent": "s1", "folders": ["/p/certifyip-desktop"]},
-            "a": {"parent": "gone", "folders": ["/p/x"]},
-            "zz": {"parent": "c1", "folders": ["/p/y"]},
-            "o": {"parent": "c1", "folders": ["relative/not/allowed"]},
+            "s1": {"parent": "s2", "tiles": ["a"]},
+            "s2": {"parent": "s1", "tiles": ["b"]},
+            "o": {"parent": "gone", "tiles": []},
+            "zz": {"parent": "c1", "tiles": []},
+            "r": {"parent": "c1", "tiles": ["bad id!", "a"]},
         }));
         let t = Tree::of(&w);
         assert!(!t.subs.contains_key("s1") && !t.subs.contains_key("s2"), "a loop never reaches the top");
-        assert!(!t.subs.contains_key("a"), "an orphan");
+        assert!(!t.subs.contains_key("o"), "an orphan");
         assert!(!t.subs.contains_key("zz"), "no such tile");
-        assert_eq!(t.subs["o"].folders, Vec::<String>::new(), "bad folders are dropped, the entry stays");
+        assert_eq!(t.subs["r"].tiles, vec!["a".to_string()], "bad ids are dropped");
+        assert_eq!(t.owner(&w, "a").as_deref(), Some("r"), "the looped entries' lists count for nothing");
         assert_eq!(t.owner(&w, "b").as_deref(), Some("c1"));
         w.extra.remove("conductor");
         assert_eq!(Tree::of(&w), Tree::default());
@@ -590,19 +605,14 @@ mod tests {
     fn a_conductor_acts_on_its_children_and_glances_at_any_descendant() {
         let w = tree_ws();
         let ok = |caller: &str, sub: &str, target: Option<&str>| allowed(&w, Some(caller), sub, target);
-        // The top acts on its children (a sub-conductor, a tile outside every scope) ...
         assert!(ok("c1", "send", Some("s1")).is_ok());
         assert!(ok("c1", "ask", Some("o")).is_ok());
-        // ... not on a grandchild, and is told whom to go through.
         let e = ok("c1", "send", Some("a")).unwrap_err();
         assert_eq!(e.code, "denied");
         assert!(e.message.contains("answers to s1"), "{}", e.message);
         assert!(ok("c1", "send", Some("b")).unwrap_err().message.contains("answers to s1"));
-        // A glance reaches every depth.
         assert!(ok("c1", "output", Some("b")).is_ok());
         assert!(ok("s1", "output", Some("b")).is_ok());
-        // A sub-conductor acts on its own tiles and its sub-conductor, not on its parent or a
-        // sibling area, and glances only below itself.
         assert!(ok("s1", "send", Some("a")).is_ok());
         assert!(ok("s1", "restart", Some("s2")).is_ok());
         assert!(ok("s1", "send", Some("b")).unwrap_err().message.contains("answers to s2"));
@@ -610,11 +620,8 @@ mod tests {
         assert!(ok("s1", "send", Some("c1")).is_err());
         assert!(ok("s2", "output", Some("a")).is_err());
         assert!(ok("s1", "output", Some("o")).is_err());
-        // Conversations stay closed at every level.
         assert!(ok("c1", "transcript", Some("b")).is_err());
         assert!(ok("s1", "image", Some("a")).is_err());
-        // Any conductor may run the fleet, start tiles and reach another Mac; only the top
-        // talks to the user.
         assert!(ok("s2", "fleet", None).is_ok());
         assert!(ok("s1", "new", None).is_ok());
         assert!(ok("s1", "on", None).is_ok());
@@ -622,69 +629,83 @@ mod tests {
         assert!(ok("c1", "notify", None).is_ok());
         assert!(ok("s1", "notify", None).unwrap_err().message.contains("swarmz reply"));
         assert!(ok("s1", "telegram-follow", None).is_err());
-        // An ordinary tile under a sub-conductor still acts on itself only.
         assert!(ok("a", "send", Some("a")).is_ok());
         assert!(ok("a", "send", Some("o")).is_err());
         assert!(ok("s1", "conductor-set", None).is_err());
     }
 
     #[test]
-    fn a_folder_claim_becomes_a_sub_conductor_under_the_claimants_conductor() {
+    fn subs_are_claimed_set_assigned_and_removed() {
         let mut w = tree_ws();
         w.extra.remove("conductors");
-        let folders = vec!["/p/certifyip/".to_string()];
-        assert!(claim(&mut w, "a", &folders, "mini", "t1").unwrap());
+        // A sub claim, under the claimant's conductor; approving it makes an empty sub-conductor.
+        assert!(claim(&mut w, "s1", true, "mini", "t1").unwrap());
         let c = claim_of(&w).unwrap();
-        assert_eq!((c["parent"].as_str(), c["folders"][0].as_str()), (Some("c1"), Some("/p/certifyip")));
-        // Approving it (the desktop's `--set <tile>`) makes the sub-conductor, not a new top.
-        assert!(set(&mut w, "a", "mini", "t2").unwrap());
+        assert_eq!((c["sub"].as_bool(), c["parent"].as_str()), (Some(true), Some("c1")));
+        assert!(set(&mut w, "s1", "mini", "t2").unwrap());
         assert_eq!(conductor_of(&w).as_deref(), Some("c1"));
         assert!(claim_of(&w).is_none());
-        let t = Tree::of(&w);
-        assert_eq!(t.subs["a"], Sub { parent: "c1".into(), folders: vec!["/p/certifyip".into()] });
-        assert_eq!(t.owner(&w, "s1").as_deref(), Some("a"), "s1 is now an ordinary tile in a's scope");
-        // The same claim again changes nothing; a bad folder or no top is refused.
-        assert!(!claim(&mut w, "a", &folders, "mini", "t3").unwrap());
-        assert!(claim(&mut w, "o", &["rel".to_string()], "mini", "t4").is_err());
-        assert!(claim(&mut w, "c1", &folders, "mini", "t4").is_err());
+        assert_eq!(Tree::of(&w).subs["s1"], Sub { parent: "c1".into(), tiles: vec![] });
+        assert!(!claim(&mut w, "s1", true, "mini", "t3").unwrap(), "already a sub-conductor");
+        assert!(claim(&mut w, "c1", true, "mini", "t3").is_err());
         let mut none = tree_ws();
         none.extra.remove("conductor");
-        assert_eq!(claim(&mut none, "a", &folders, "mini", "t5").unwrap_err().code, "denied");
-        // Set directly, with a parent below the top; a parent under the tile itself is refused.
-        assert!(set_sub(&mut w, "b", "a", &["/p/certifyip-desktop".to_string()], "mini", "t6").unwrap());
-        assert_eq!(Tree::of(&w).owner(&w, "b").as_deref(), Some("a"));
-        assert!(set_sub(&mut w, "a", "b", &folders, "mini", "t7").is_err(), "a loop");
-        assert!(set_sub(&mut w, "o", "o", &folders, "mini", "t7").is_err());
-        assert!(set_sub(&mut w, "o", "c1", &[], "mini", "t7").is_err());
-        assert!(set_sub(&mut w, "c1", "a", &folders, "mini", "t7").is_err(), "the top is not a sub");
-        // Removing a sub-conductor hands its tiles back to its parent.
-        assert!(remove_sub(&mut w, "a", "mini", "t8"));
-        assert!(!remove_sub(&mut w, "a", "mini", "t9"));
-        assert!(!Tree::of(&w).subs.contains_key("b"), "b's parent is gone, so b drops out too");
-        // Making a sub the top removes its sub entry.
-        set_sub(&mut w, "b", "c1", &["/p/certifyip-desktop".to_string()], "mini", "t10").unwrap();
-        set(&mut w, "b", "mini", "t11").unwrap();
-        assert_eq!(conductor_of(&w).as_deref(), Some("b"));
-        assert!(w.extra["conductors"].get("b").is_none());
+        assert_eq!(claim(&mut none, "a", true, "mini", "t4").unwrap_err().code, "denied");
+        // Assign tiles; a tile is in one list at most; the top's id takes it back.
+        assert!(assign(&mut w, "a", "s1", "mini", "t5").unwrap());
+        assert!(!assign(&mut w, "a", "s1", "mini", "t6").unwrap());
+        assert!(set_sub(&mut w, "s2", "s1", "mini", "t7").unwrap());
+        assert!(assign(&mut w, "a", "s2", "mini", "t8").unwrap());
+        let t = Tree::of(&w);
+        assert_eq!((t.subs["s1"].tiles.clone(), t.subs["s2"].tiles.clone()), (vec![], vec!["a".to_string()]));
+        assert!(assign(&mut w, "a", "c1", "mini", "t9").unwrap());
+        assert_eq!(Tree::of(&w).owner(&w, "a").as_deref(), Some("c1"));
+        assert!(assign(&mut w, "s2", "s1", "mini", "t10").is_err(), "a conductor is placed by --parent");
+        assert!(assign(&mut w, "a", "o", "mini", "t10").is_err(), "not a conductor");
+        // Parents: no loops, not the top, a conductor only.
+        assert!(set_sub(&mut w, "s1", "s2", "mini", "t11").is_err(), "a loop");
+        assert!(set_sub(&mut w, "o", "o", "mini", "t11").is_err());
+        assert!(set_sub(&mut w, "o", "a", "mini", "t11").is_err());
+        assert!(set_sub(&mut w, "c1", "s1", "mini", "t11").is_err(), "the top is not a sub");
+        // Becoming a sub-conductor takes a tile out of any list, and keeps its own on a move.
+        assign(&mut w, "o", "s1", "mini", "t12").unwrap();
+        assign(&mut w, "b", "s2", "mini", "t12").unwrap();
+        assert!(set_sub(&mut w, "o", "s1", "mini", "t13").unwrap());
+        assert!(Tree::of(&w).subs["s1"].tiles.is_empty());
+        assert!(set_sub(&mut w, "s2", "c1", "mini", "t14").unwrap());
+        assert_eq!(Tree::of(&w).subs["s2"].tiles, vec!["b".to_string()]);
+        // Removing one hands its tiles and sub-conductors to its parent.
+        set_sub(&mut w, "s2", "s1", "mini", "t15").unwrap();
+        assert!(remove_sub(&mut w, "s2", "mini", "t16"));
+        assert!(!remove_sub(&mut w, "s2", "mini", "t17"));
+        assert_eq!(Tree::of(&w).owner(&w, "b").as_deref(), Some("s1"));
+        assert!(remove_sub(&mut w, "s1", "mini", "t18"));
+        let t = Tree::of(&w);
+        assert_eq!(t.owner(&w, "b").as_deref(), Some("c1"));
+        assert_eq!(t.subs["o"].parent, "c1", "a child sub-conductor moves up");
+        // Making a sub the top removes its entry and its listing.
+        set(&mut w, "o", "mini", "t19").unwrap();
+        assert_eq!(conductor_of(&w).as_deref(), Some("o"));
+        assert!(w.extra.get("conductors").is_none());
         assert_eq!(state(&w)["conductors"], json!({}));
     }
 
     #[test]
     fn claims_are_recorded_and_resolved() {
         let mut w = ws(None);
-        assert!(claim(&mut w, "t2", &[], "mini", "t1").unwrap());
+        assert!(claim(&mut w, "t2", false, "mini", "t1").unwrap());
         assert_eq!(claim_of(&w).unwrap()["title"], "web");
         assert_eq!(w.extra["sync"]["revision"], 1);
-        assert!(claim(&mut w, "nope", &[], "mini", "t1").is_err());
+        assert!(claim(&mut w, "nope", false, "mini", "t1").is_err());
         // Approve: the claim becomes the conductor.
         assert!(set(&mut w, "t2", "mini", "t2").unwrap());
         assert_eq!(conductor_of(&w).as_deref(), Some("t2"));
         assert!(claim_of(&w).is_none());
         assert!(!set(&mut w, "t2", "mini", "t3").unwrap(), "already so: nothing to write");
         // The conductor's own claim changes nothing.
-        assert!(!claim(&mut w, "t2", &[], "mini", "t4").unwrap());
+        assert!(!claim(&mut w, "t2", false, "mini", "t4").unwrap());
         // A new claim, denied, keeps the conductor.
-        claim(&mut w, "c1", &[], "mini", "t5").unwrap();
+        claim(&mut w, "c1", false, "mini", "t5").unwrap();
         assert_eq!(deny(&mut w, "mini", "t6").as_deref(), Some("c1"));
         assert_eq!(conductor_of(&w).as_deref(), Some("t2"));
         assert!(clear(&mut w, "mini", "t7"));

@@ -1307,51 +1307,45 @@ fn card_sets_reads_and_keeps_a_user_title() {
 #[test]
 fn a_tree_of_conductors_acts_on_children_and_glances_below() {
     let h = home("ctree");
-    let base = h.path.to_string_lossy().into_owned();
-    let top_dir = format!("{base}/top");
-    let cert = format!("{base}/certifyip_services");
-    let desk = format!("{base}/certifyip-desktop");
-    for d in [&top_dir, &cert, &desk] {
-        std::fs::create_dir_all(d).unwrap();
-    }
-    let hold_in = |tile: &str, dir: &str| -> String {
-        let (code, v) = tool_env(&h.path, &["hold", tile, "--cwd", dir, "--name", tile], MINI);
+    let dir = h.path.to_string_lossy().into_owned();
+    let hold_in = |tile: &str| -> String {
+        let (code, v) = tool_env(&h.path, &["hold", tile, "--cwd", &dir, "--name", tile], MINI);
         if let Some(s) = v["socket"].as_str() {
             h.track(s);
         }
         assert_eq!(code, 0, "{v}");
         v["socket"].as_str().unwrap().to_string()
     };
-    let top_s = hold_in("top", &top_dir);
-    let sub_s = hold_in("sub", &cert);
-    let a_s = hold_in("a", &cert);
-    let b_s = hold_in("b", &desk);
-    let top = tool_client(&top_s);
-    let sub = tool_client(&sub_s);
-    let a = tool_client(&a_s);
-    let _b = tool_client(&b_s);
+    let top = tool_client(&hold_in("top"));
+    let sub = tool_client(&hold_in("sub"));
+    let a = tool_client(&hold_in("a"));
+    let _b = tool_client(&hold_in("b"));
     let claude = serde_json::json!({"enabled": true, "sessionId": "s", "skipPermissions": false, "started": true});
     write_ws(&h.path, serde_json::json!([
-        {"id": "top", "name": "ops", "cwd": top_dir, "origin": "mini", "claude": claude},
-        {"id": "sub", "name": "certify", "cwd": cert, "origin": "mini", "claude": claude},
-        {"id": "a", "name": "alpha", "cwd": cert, "origin": "mini", "claude": claude},
-        {"id": "b", "name": "bravo", "cwd": desk, "origin": "mini", "claude": claude}
+        {"id": "top", "name": "ops", "cwd": dir, "origin": "mini", "claude": claude},
+        {"id": "sub", "name": "certify", "cwd": dir, "origin": "mini", "claude": claude},
+        {"id": "a", "name": "alpha", "cwd": dir, "origin": "mini", "claude": claude},
+        {"id": "b", "name": "bravo", "cwd": dir, "origin": "mini", "claude": claude}
     ]), serde_json::json!({}));
     let as_ = |id: &'static str, name: &'static str| -> Vec<(&'static str, &'static str)> { vec![("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", id), ("SWARMZ_TERMINAL_NAME", name)] };
     let user: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "")];
-    let prefix = format!("{base}/certifyip");
 
-    // The user makes `top` the top conductor and `sub` a conductor for every certifyip folder.
-    let (code, _) = tool_env(&h.path, &["conductor", "--set", "top"], user);
-    assert_eq!(code, 0);
-    let (code, st) = tool_env(&h.path, &["conductor", "--set", "sub", "--parent", "top", "--folder", &prefix], user);
+    // The user makes `top` the top conductor and `sub` a conductor under it, and gives it a and b.
+    assert_eq!(tool_env(&h.path, &["conductor", "--set", "top"], user).0, 0);
+    let (code, st) = tool_env(&h.path, &["conductor", "--set", "sub", "--parent", "top"], user);
     assert_eq!(code, 0, "{st}");
     assert_eq!(st["conductors"]["sub"]["parent"], "top");
-    assert!(wait_until(|| screen_has(&sub, "you are now the conductor for")));
-    // A tile may not set one, and --folder without --parent is a usage error.
-    let (code, d) = tool_env(&h.path, &["conductor", "--set", "a", "--parent", "top", "--folder", &prefix], &as_("sub", "certify"));
+    assert!(wait_until(|| screen_has(&sub, "you are now a conductor under ops")));
+    for t in ["a", "b"] {
+        let (code, st) = tool_env(&h.path, &["conductor", "--assign", t, "--to", "sub"], user);
+        assert_eq!(code, 0, "{st}");
+    }
+    let (_, st) = tool_env(&h.path, &["conductor"], user);
+    assert_eq!(st["conductors"]["sub"]["tiles"], serde_json::json!(["a", "b"]));
+    // A tile may not set one; --assign needs --to.
+    let (code, d) = tool_env(&h.path, &["conductor", "--set", "a", "--parent", "top"], &as_("sub", "certify"));
     assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
-    let (code, d) = tool_env(&h.path, &["conductor", "--set", "a", "--folder", &prefix], user);
+    let (code, d) = tool_env(&h.path, &["conductor", "--assign", "a"], user);
     assert_eq!((code, d["code"].as_str()), (1, Some("usage")));
 
     // The top reaches its child conductor, not the tiles under it; it can still glance at them.
@@ -1363,69 +1357,62 @@ fn a_tree_of_conductors_acts_on_children_and_glances_below() {
     assert!(d["error"].as_str().unwrap().contains("answers to certify"), "{d}");
     let (code, o) = tool_env(&h.path, &["output", "b", "--lines", "5"], &as_("top", "ops"));
     assert_eq!(code, 0, "{o}");
-    // The sub-conductor acts on its own tiles (b too: certifyip-desktop is under its prefix).
+    // The sub-conductor acts on its own tiles, not on its parent, and does not notify the user.
     let (code, ok) = tool_env(&h.path, &["send", "a", "--", "echo from-certify"], &as_("sub", "certify"));
     assert_eq!((code, ok["sent"].as_bool()), (0, Some(true)));
     assert!(wait_until(|| screen_has(&a, "[conductor certify] echo from-certify")));
-    let (code, d) = tool_env(&h.path, &["send", "top", "--", "x"], &as_("sub", "certify"));
-    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
-    let (code, d) = tool_env(&h.path, &["notify", "--", "x"], &as_("sub", "certify"));
-    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+    assert_eq!(tool_env(&h.path, &["send", "top", "--", "x"], &as_("sub", "certify")).1["code"], "denied");
+    assert_eq!(tool_env(&h.path, &["notify", "--", "x"], &as_("sub", "certify")).1["code"], "denied");
     // Replies go to the conductor each tile answers to.
-    let (code, _) = tool_env(&h.path, &["reply", "--", "alpha is green"], &as_("a", "alpha"));
-    assert_eq!(code, 0);
+    assert_eq!(tool_env(&h.path, &["reply", "--", "alpha is green"], &as_("a", "alpha")).0, 0);
     assert!(wait_until(|| screen_has(&sub, "[alpha] alpha is green")));
     assert!(!screen_has(&top, "alpha is green"));
-    let (code, _) = tool_env(&h.path, &["reply", "--", "all green"], &as_("sub", "certify"));
-    assert_eq!(code, 0);
+    assert_eq!(tool_env(&h.path, &["reply", "--", "all green"], &as_("sub", "certify")).0, 0);
     assert!(wait_until(|| screen_has(&top, "[certify] all green")));
-    let (code, d) = tool_env(&h.path, &["reply", "--", "x"], &as_("top", "ops"));
-    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
-    // A sub-conductor's fleet is its own area; the top's is everything.
+    assert_eq!(tool_env(&h.path, &["reply", "--", "x"], &as_("top", "ops")).1["code"], "denied");
+    // A sub-conductor's fleet is its own tiles; the top's is everything.
     let ids = |f: &serde_json::Value| -> Vec<String> {
         let mut v: Vec<String> = f["tiles"].as_array().unwrap().iter().filter_map(|t| t["id"].as_str().map(str::to_string)).collect();
         v.sort();
         v
     };
-    let (_, f) = tool_env(&h.path, &["fleet"], &as_("sub", "certify"));
-    assert_eq!(ids(&f), vec!["a", "b", "sub"]);
-    let (_, f) = tool_env(&h.path, &["fleet"], &as_("top", "ops"));
-    assert_eq!(ids(&f), vec!["a", "b", "sub", "top"]);
-    // `new` from a sub-conductor stays inside its folders.
-    let (code, d) = tool_env(&h.path, &["new", "--folder", &top_dir], &as_("sub", "certify"));
-    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
-    // Every conductor's row is marked.
+    assert_eq!(ids(&tool_env(&h.path, &["fleet"], &as_("sub", "certify")).1), vec!["a", "b", "sub"]);
+    assert_eq!(ids(&tool_env(&h.path, &["fleet"], &as_("top", "ops")).1), vec!["a", "b", "sub", "top"]);
+    // Every conductor's row is marked, and `ls` carries the tree.
     let (_, ls) = tool_env(&h.path, &["ls"], user);
     let marked: Vec<&str> = ls["tiles"].as_array().unwrap().iter().filter(|t| t["conductor"] == true).filter_map(|t| t["id"].as_str()).collect();
     assert_eq!(marked.len(), 2, "{marked:?}");
-    assert_eq!(ls["conductors"]["sub"]["folders"][0], prefix.as_str());
-    // Briefings: the top hears about the area under it, the sub-conductor about its place.
+    assert_eq!(ls["conductors"]["sub"]["tiles"][0], "a");
+    // Briefings: the top hears about the conductor under it, the sub-conductor about its place.
     let brief = |id: &'static str, name: &'static str| String::from_utf8(tool_command(&h.path).args(["briefing"]).envs(as_(id, name)).output().unwrap().stdout).unwrap();
     assert!(brief("top", "ops").contains("- certify (`sub`)"));
     assert!(brief("sub", "certify").contains("You answer to ops"));
     let plain = brief("a", "alpha");
     assert!(!plain.contains("You are the conductor") && !plain.contains("You answer to"), "{plain}");
 
-    // b claims its own area under sub; the user approves; b's tiles answer to b now.
-    let (code, c) = tool_env(&h.path, &["conductor", "--claim", "--folder", &desk], &as_("b", "bravo"));
+    // A conductor hands only its own tiles to a conductor directly under it.
+    let (code, d) = tool_env(&h.path, &["conductor", "--assign", "a", "--to", "top"], &as_("sub", "certify"));
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+
+    // b asks to be a conductor under sub; the user approves; sub acts on b, the top does not.
+    let (code, c) = tool_env(&h.path, &["conductor", "--claim", "--sub"], &as_("b", "bravo"));
     assert_eq!((code, c["pending"].as_bool()), (0, Some(true)), "{c}");
     let (_, st) = tool_env(&h.path, &["conductor"], user);
-    assert_eq!((st["claim"]["parent"].as_str(), st["claim"]["folders"][0].as_str()), (Some("sub"), Some(desk.as_str())));
+    assert_eq!((st["claim"]["sub"].as_bool(), st["claim"]["parent"].as_str()), (Some(true), Some("sub")));
     let (code, st) = tool_env(&h.path, &["conductor", "--set", "b"], user);
     assert_eq!(code, 0, "{st}");
     assert_eq!((st["conductor"].as_str(), st["conductors"]["b"]["parent"].as_str()), (Some("top"), Some("sub")));
-    // b is sub's child now: the guard lets sub act on it (restart itself refuses a running tile).
+    assert_eq!(st["conductors"]["sub"]["tiles"], serde_json::json!(["a"]), "a conductor leaves the list it was in");
     let (_, r) = tool_env(&h.path, &["restart", "b"], &as_("sub", "certify"));
     assert_ne!(r["code"].as_str(), Some("denied"), "{r}");
-    let (_, r) = tool_env(&h.path, &["restart", "b"], &as_("top", "ops"));
-    assert_eq!(r["code"].as_str(), Some("denied"), "{r}");
+    assert_eq!(tool_env(&h.path, &["restart", "b"], &as_("top", "ops")).1["code"], "denied");
 
-    // Removing sub hands a back to the top.
+    // Removing sub hands a and b back to the top.
     let (code, st) = tool_env(&h.path, &["conductor", "--remove", "sub"], user);
     assert_eq!(code, 0);
     assert!(st["conductors"].get("sub").is_none());
-    let (code, _) = tool_env(&h.path, &["send", "a", "--", "echo back-to-top"], &as_("top", "ops"));
-    assert_eq!(code, 0);
+    assert_eq!(st["conductors"]["b"]["parent"], "top");
+    assert_eq!(tool_env(&h.path, &["send", "a", "--", "echo back-to-top"], &as_("top", "ops")).0, 0);
 }
 
 /// A stand-in for api.telegram.org on 127.0.0.1: records every request's path and JSON body;

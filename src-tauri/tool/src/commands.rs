@@ -471,9 +471,9 @@ pub fn conductor(env: &Env, action: ConductorAction) -> Result<Value, CliError> 
     let by = env.machine.clone().unwrap_or_else(|| "swarmz".to_string());
     match action {
         ConductorAction::Read => Ok(crate::conductor::state(&env.workspace()?.unwrap_or_else(empty_workspace))),
-        ConductorAction::Claim(tile, folders) => {
+        ConductorAction::Claim(tile, sub) => {
             let mut ws = env.workspace_to_write()?.unwrap_or_else(empty_workspace);
-            let changed = crate::conductor::claim(&mut ws, &tile, &folders, &by, &now)?;
+            let changed = crate::conductor::claim(&mut ws, &tile, sub, &by, &now)?;
             if changed {
                 save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
                 // The user may be away: the claim goes to Telegram too, when it is set up (spec §3).
@@ -498,11 +498,21 @@ pub fn conductor(env: &Env, action: ConductorAction) -> Result<Value, CliError> 
             }
             Ok(crate::conductor::state(&ws))
         }
-        ConductorAction::SetSub { tile, parent, folders } => {
+        ConductorAction::SetSub { tile, parent } => {
             let mut ws = env.workspace_to_write()?.unwrap_or_else(empty_workspace);
-            if crate::conductor::set_sub(&mut ws, &tile, &parent, &folders, &by, &now)? {
+            let was_sub = crate::conductor::Tree::of(&ws).subs.contains_key(&tile);
+            if crate::conductor::set_sub(&mut ws, &tile, &parent, &by, &now)? {
                 save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
-                tell_role(env, &ws, &tile);
+                if !was_sub {
+                    tell_role(env, &ws, &tile);
+                }
+            }
+            Ok(crate::conductor::state(&ws))
+        }
+        ConductorAction::Assign { tile, to } => {
+            let mut ws = env.workspace_to_write()?.unwrap_or_else(empty_workspace);
+            if crate::conductor::assign(&mut ws, &tile, &to, &by, &now)? {
+                save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
             }
             Ok(crate::conductor::state(&ws))
         }
@@ -536,7 +546,7 @@ pub fn conductor(env: &Env, action: ConductorAction) -> Result<Value, CliError> 
 fn tell_role(env: &Env, ws: &Workspace, tile: &str) {
     let tree = crate::conductor::Tree::of(ws);
     match tree.subs.get(tile) {
-        Some(s) => tell(env, tile, &crate::conductor::sub_outcome_line(&crate::conductor::title_of(ws, &s.parent), &s.folders)),
+        Some(s) => tell(env, tile, &crate::conductor::sub_outcome_line(&crate::conductor::title_of(ws, &s.parent))),
         None => tell(env, tile, crate::conductor::outcome_line(true)),
     }
 }
@@ -553,10 +563,11 @@ pub fn title_of(env: &Env, tile: &str) -> Result<String, CliError> {
 
 pub enum ConductorAction {
     Read,
-    /// A tile asks for the top role (no folders) or to be a sub-conductor for folders.
-    Claim(String, Vec<String>),
+    /// A tile asks for the top role, or (true) to be a sub-conductor under its conductor.
+    Claim(String, bool),
     Set(String),
-    SetSub { tile: String, parent: String, folders: Vec<String> },
+    SetSub { tile: String, parent: String },
+    Assign { tile: String, to: String },
     Remove(String),
     Deny,
     Clear,
@@ -776,13 +787,12 @@ pub fn briefing(env: &Env, tile: Option<&str>, name: &str) -> Result<String, Cli
     let title = |id: &str| crate::conductor::title_of(&ws, id);
     let role = match tile {
         Some(t) if tree.top.as_deref() == Some(t) => crate::briefing::Role::Top {
-            subs: tree.subs.iter().filter(|(_, s)| s.parent == t).map(|(id, s)| (title(id), id.clone(), s.folders.clone())).collect(),
+            subs: tree.subs.iter().filter(|(_, s)| s.parent == t).map(|(id, _)| (title(id), id.clone())).collect(),
         },
         Some(t) => match tree.subs.get(t) {
             Some(s) => crate::briefing::Role::Sub {
                 parent: title(&s.parent),
-                folders: s.folders.clone(),
-                subs: tree.subs.iter().filter(|(_, c)| c.parent == t).map(|(id, c)| (title(id), id.clone(), c.folders.clone())).collect(),
+                subs: tree.subs.iter().filter(|(_, c)| c.parent == t).map(|(id, _)| (title(id), id.clone())).collect(),
             },
             None => crate::briefing::Role::Tile,
         },
