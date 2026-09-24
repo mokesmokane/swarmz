@@ -56,7 +56,10 @@ For a command run from tile `caller` against tile `target`:
 | `conductor --assign <tile> --to <conductor>` | the user; or a conductor moving a tile that answers to it into a sub-conductor directly under it |
 | `conductor --set/--deny/--clear/--remove` | never a tile (the user's, from the desktop or phone) |
 
-`reply` goes to `owner(caller)`, so a tile under a sub-conductor answers it, and a sub-conductor
+`restart` brings back whatever is not running (amended 2026-09-24): a stopped tile afresh, or,
+when its shell is up and idle but Claude has exited, Claude resumed on the tile's conversation in
+that shell, so a conductor never has to type a `claude` line with `send` (which marks the line as
+the conductor's, and a shell cannot run it). `reply` goes to `owner(caller)`, so a tile under a sub-conductor answers it, and a sub-conductor
 answering its own parent is simply a reply. The desktop and the phone's gate still carry no tile
 and pass everything.
 

@@ -794,9 +794,21 @@ fn new_tiles_are_held_typed_and_recorded_and_restart_brings_them_back() {
     assert_eq!(code, 0, "{v2}");
     assert_eq!(v2["tile"]["name"], "proj-2");
 
-    // Restart refuses a running tile, and brings a closed one back.
+    // Claude never started here (there is no `claude` on the test PATH), so the shell is idle:
+    // restart starts it again in that shell, resuming the tile's conversation.
+    let c = tool_client(paths.socket.to_str().unwrap());
+    assert!(wait_until(|| c.info(Duration::from_secs(2)).and_then(|i| i.foreground_busy) == Some(false)));
+    let (code, r) = tool_env(&h.path, &["restart", &id], MINI);
+    assert_eq!((code, r["resumed"].as_bool()), (0, Some(true)), "{r}");
+    assert!(wait_until(|| screen_has(&c, "claude --dangerously-skip-permissions --resume")));
+    // Something running in front is left alone.
+    let (code, _) = tool_env(&h.path, &["send", &id, "--", "sleep 30"], MINI);
+    assert_eq!(code, 0);
+    assert!(wait_until(|| c.info(Duration::from_secs(2)).and_then(|i| i.foreground_busy) == Some(true)));
     let (code, r) = tool_env(&h.path, &["restart", &id], MINI);
     assert_eq!((code, r["code"].as_str()), (1, Some("running")));
+    drop(c);
+    // A closed tile is brought back.
     let (_, closed) = tool_env(&h.path, &["close", &id], MINI);
     assert_eq!(closed["closed"], true);
     let (code, r) = tool_env(&h.path, &["restart", &id], MINI);

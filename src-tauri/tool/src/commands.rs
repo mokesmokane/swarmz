@@ -891,7 +891,7 @@ pub fn restart(env: &Env, tile: &str) -> Result<Value, CliError> {
         .ok_or_else(|| CliError::new("unknown", format!("{tile} is not a tile on this Mac")))?;
     let paths = session_paths(&env.sessions(), tile).map_err(|e| CliError::new("invalid", e))?;
     if live_session(&paths).is_some() {
-        return Err(CliError::new("running", format!("{} is already running", def.name)));
+        return resume_in_shell(env, tile, &def);
     }
     let started = session_started(&env.home, &def);
     if let Some(c) = def.claude.as_mut() {
@@ -901,6 +901,38 @@ pub fn restart(env: &Env, tile: &str) -> Result<Value, CliError> {
         return Err(CliError::new("running", format!("{} is already running", def.name)));
     }
     row(env, tile)
+}
+
+/// `restart` on a tile whose shell is still up (conductor tree spec §3, the phone's Start): when
+/// Claude has exited and the shell is idle, Claude is started again in it, resuming the tile's
+/// newest conversation, so a conductor (or the phone) can bring a session back without typing
+/// into the shell. Anything still running in front, or a tile that is not a Claude tile, is
+/// refused as before.
+fn resume_in_shell(env: &Env, tile: &str, def: &TerminalDef) -> Result<Value, CliError> {
+    let running = || CliError::new("running", format!("{} is already running", def.name));
+    let Some(claude) = def.claude.as_ref().filter(|c| c.enabled) else { return Err(running()) };
+    if def.command.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+        return Err(running());
+    }
+    let c = connect_tool(env, tile)?;
+    // Only a definite "the shell is in front" resumes: a holder that cannot say is left alone.
+    if c.info(Duration::from_secs(3)).and_then(|i| i.foreground_busy) != Some(false) {
+        return Err(running());
+    }
+    // The conversation the tile last showed (followed through `continued-in`), else its own id.
+    let session = rows(env)
+        .into_iter()
+        .find(|r| r.id == tile)
+        .and_then(|r| r.session_id)
+        .filter(|id| crate::util::valid_uuid(id))
+        .unwrap_or_else(|| claude.session_id.clone());
+    let mut cfg = claude.clone();
+    cfg.session_id = session;
+    cfg.started = true;
+    c.write(format!("{}\r", claude_line(&cfg)).as_bytes()).map_err(failed)?;
+    let mut v = row(env, tile)?;
+    v["resumed"] = json!(true);
+    Ok(v)
 }
 
 pub fn send(env: &Env, tile: &str, text: &str) -> Result<Value, CliError> {
