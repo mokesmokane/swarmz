@@ -173,6 +173,11 @@ function ClaimBar() {
   const claimantCard = useStore((s) => (claim ? s.settings[claim.tile]?.card : undefined));
   const claimantAgent = useStore((s) => (claim ? s.agentState[claim.tile] : undefined));
   const decideClaim = useStore((s) => s.decideClaim);
+  const top = useStore((s) => s.conductor);
+  const topTitle = useStore((s) => {
+    const t = s.conductor ? s.terminals[s.conductor] : undefined;
+    return t && s.conductor ? displayTitle(s.settings[s.conductor]?.card, s.agentState[s.conductor], t.name) : "";
+  });
   const parentTitle = useStore((s) => {
     const p = claim?.parent;
     if (!p) return "";
@@ -195,7 +200,7 @@ function ClaimBar() {
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-amber-100">
           🎛 <span className="font-medium">{title}</span>{" "}
-          {claim.sub ? `asks to be a conductor under ${parentTitle}` : "asks to be the conductor"}
+          {claim.sub ? `asks to be a conductor under ${parentTitle}` : topTitle && top !== claim.tile ? `asks to replace ${topTitle} as the top conductor` : "asks to be the conductor"}
         </span>
         <button className="rounded border border-amber-700 px-2 py-0.5 text-amber-100 hover:bg-amber-900/60 disabled:opacity-50" disabled={busy} onClick={() => decide(true)}>
           Approve

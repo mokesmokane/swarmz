@@ -63,7 +63,7 @@ export type SubConductors = Record<string, SubConductor>;
 
 /** Top-level workspace keys this app reads itself, or has retired on purpose (`sshHistory`, replaced
  * by `machines`); any other key is carried through a save untouched. */
-const KNOWN_TOP_KEYS = new Set(["version", "terminals", "layout", "machines", "conductor", "conductorClaim", "conductors", "sync", "sshHistory"]);
+const KNOWN_TOP_KEYS = new Set(["version", "terminals", "layout", "machines", "conductor", "conductorClaim", "conductors", "conductorAt", "sync", "sshHistory"]);
 
 /** The top-level fields this app does not know (a newer version's), to be written back as they came. */
 export function workspaceExtra(ws: object | null | undefined): Record<string, unknown> {
@@ -83,7 +83,27 @@ export interface Workspace {
   conductorClaim?: ConductorClaim | null;
   /** Sub-conductors by tile id (conductor tree spec §2). */
   conductors?: SubConductors;
+  /** When the conductor fields last changed (tree spec §7): the newer copy of them wins. */
+  conductorAt?: string;
   sync?: SyncMeta;
+}
+
+/** The conductor fields as one unit, with the stamp that says how new they are. */
+export interface ConductorFields {
+  conductor: string | null;
+  conductorClaim: ConductorClaim | null;
+  conductors: SubConductors;
+  conductorAt: string | null;
+}
+
+export function conductorFieldsOf(ws: { conductor?: unknown; conductorClaim?: unknown; conductors?: unknown; conductorAt?: unknown } | null | undefined): ConductorFields {
+  const at = ws?.conductorAt;
+  return { conductor: conductorOf(ws), conductorClaim: claimOf(ws), conductors: conductorsOf(ws), conductorAt: typeof at === "string" && at ? at : null };
+}
+
+/** Whether conductor fields stamped `a` are newer than ones stamped `b` (no stamp is oldest). */
+export function newerRoles(a: string | null | undefined, b: string | null | undefined): boolean {
+  return !!a && (!b || a > b);
 }
 
 /** The workspace's conductor as a tile id, or null: anything but a non-empty string is none. */
@@ -592,6 +612,7 @@ export function toWorkspace(input: {
   conductor?: string | null;
   conductorClaim?: ConductorClaim | null;
   conductors?: SubConductors;
+  conductorAt?: string | null;
   /** Top-level fields this app does not know, written back as they came (`workspaceExtra`). */
   extra?: Record<string, unknown>;
   sync?: SyncMeta | null;
@@ -623,6 +644,7 @@ export function toWorkspace(input: {
     layout: input.layout,
     ...(Object.keys(machines).length ? { machines } : {}),
     ...(input.conductors && Object.keys(input.conductors).length ? { conductors: input.conductors } : {}),
+    ...(input.conductorAt ? { conductorAt: input.conductorAt } : {}),
     ...(input.conductor ? { conductor: input.conductor } : {}),
     ...(input.conductorClaim ? { conductorClaim: input.conductorClaim } : {}),
     ...(input.sync ? { sync: input.sync } : {}),

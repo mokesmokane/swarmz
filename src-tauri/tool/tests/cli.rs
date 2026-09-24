@@ -1532,7 +1532,12 @@ fn telegram_notifies_the_user_and_follows_their_replies_into_the_conductor() {
     // message is dropped, and plain text lands in the conductor as a [telegram] prompt.
     let (code, t) = tool_env(&h.path, &["conductor", "--set", "c1"], user);
     assert_eq!((code, t["conductor"].as_str()), (0, Some("c1")));
+    // With a top set, a plain claim asks for a place under it; replacing the top takes --top.
     let (_, c) = tool_env(&h.path, &["conductor", "--claim"], &borrow(&with_api(as_t2)));
+    assert_eq!(c["pending"].as_bool(), Some(true));
+    let (_, st) = tool_env(&h.path, &["conductor"], user);
+    assert_eq!((st["claim"]["sub"].as_bool(), st["claim"]["parent"].as_str()), (Some(true), Some("c1")));
+    let (_, c) = tool_env(&h.path, &["conductor", "--claim", "--top"], &borrow(&with_api(as_t2)));
     assert_eq!(c["pending"].as_bool(), Some(true));
     let n_before = fake.requests().len();
     // Only the conductor or the user may follow.

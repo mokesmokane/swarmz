@@ -434,6 +434,21 @@ pub fn load_workspace() -> Result<Option<Workspace>, String> {
     ws_file::load_from(&ws_file::default_path())
 }
 
+/// The conductor fields of the file on disk (conductor tree spec §7): read before every save, so
+/// a role change the tool wrote, or a peer pushed, since this app last adopted is never saved
+/// over with older roles. Never moves a broken file aside (a reader, not a writer).
+#[tauri::command]
+pub fn workspace_roles() -> Result<serde_json::Value, String> {
+    let Some(ws) = ws_file::read_from(&ws_file::default_path())? else { return Ok(serde_json::Value::Null) };
+    let pick = |k: &str| ws.extra.get(k).cloned().unwrap_or(serde_json::Value::Null);
+    Ok(serde_json::json!({
+        "conductor": pick("conductor"),
+        "conductors": pick("conductors"),
+        "conductorClaim": pick("conductorClaim"),
+        "conductorAt": pick("conductorAt"),
+    }))
+}
+
 #[tauri::command]
 pub fn save_workspace(workspace: Workspace) -> Result<(), String> {
     ws_file::save_to(&ws_file::default_path(), &workspace)

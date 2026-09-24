@@ -22,7 +22,7 @@ const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_
 const MAX_FOLLOW_LINES: usize = 1000;
 
 const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set", "--parent", "--remove", "--assign", "--to"];
-const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once", "--sub"];
+const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once", "--sub", "--top"];
 
 /// The conductor guard (conductor spec §3) for a command run from a tile: `sub` against
 /// `target`. The desktop and the phone's gate carry no tile and pass.
@@ -183,11 +183,16 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
     }
     match a.positional.first().map(String::as_str) {
         Some("conductor") => {
-            a.expect_positional(1, "conductor [--claim [--sub] | --set <tile> [--parent <tile>] | --assign <tile> --to <conductor> | --remove <tile> | --deny | --clear]")?;
+            a.expect_positional(1, "conductor [--claim [--top] | --set <tile> [--parent <tile>] | --assign <tile> --to <conductor> | --remove <tile> | --deny | --clear]")?;
             let env = cmd::Env::from_process()?;
             let action = if a.flag("--claim") {
                 let tile = swarmz_tool::conductor::caller_tile().ok_or_else(|| CliError::new("usage", "--claim is run from a tile (SWARMZ_TERMINAL_ID is not set)"))?;
-                cmd::ConductorAction::Claim(tile, a.flag("--sub"))
+                // In a tree a plain claim asks for a place under the conductor the tile answers to;
+                // replacing the top takes --top (conductor tree spec §4). With no top, it is the top.
+                let ws = cmd::guard_workspace(&env)?;
+                let top = swarmz_tool::conductor::Tree::of(&ws).top;
+                let sub = a.flag("--sub") || (!a.flag("--top") && top.is_some() && top.as_deref() != Some(tile.as_str()));
+                cmd::ConductorAction::Claim(tile, sub)
             } else if let Some(t) = a.opt("--set") {
                 guard("conductor-set", None)?;
                 match a.opt("--parent") {

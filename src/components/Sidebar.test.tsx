@@ -366,6 +366,16 @@ describe("the conductor", () => {
     useStore.setState({ conductorsPanel: false });
   });
 
+  it("says plainly when a claim would replace the top conductor", () => {
+    useStore.setState({
+      terminals: { ...useStore.getState().terminals, top: { id: "top", name: "ops", cwd: "/o", exited: null, error: null } },
+      conductor: "top",
+      conductorClaim: { tile: ID, title: "setup", at: "t" },
+    });
+    render(<Sidebar />);
+    expect(screen.getByTestId("claim-bar").textContent).toContain("setup asks to replace ops as the top conductor");
+  });
+
   it("shows a pending claim as a bar whose Approve and Deny answer through the tool", async () => {
     useStore.setState({ conductorClaim: { tile: ID, title: "Fix the build", at: "2026-09-23T10:00:00Z" } });
     render(<Sidebar />);

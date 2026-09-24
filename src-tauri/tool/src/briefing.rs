@@ -4,11 +4,11 @@
 
 use std::path::Path;
 
-pub const BRIEFING_VERSION: u32 = 3;
+pub const BRIEFING_VERSION: u32 = 4;
 
 /// The common briefing, installed as `~/.swarmz/briefing.md` (versioned by its first line; a
 /// user who removes that line keeps their own).
-pub const BRIEFING: &str = r#"<!-- SWARMZ_BRIEFING_VERSION=3 -->
+pub const BRIEFING: &str = r#"<!-- SWARMZ_BRIEFING_VERSION=4 -->
 You are running in a swarmz tile named "<name>", alongside other agents the user watches from a sidebar and a phone. Keep your tile's card current with the swarmz command:
 
     ~/.swarmz/bin/swarmz card --title "…" --recap "…"
@@ -18,7 +18,7 @@ You are running in a swarmz tile named "<name>", alongside other agents the user
 - Update the recap when the work changes direction, finishes, or is about to wait on the user, not after every step. Both flags may be given together or alone.
 - Do not change a title the user typed themselves unless asked; a recap-only update keeps it.
 
-One tile in the workspace is the conductor, the only agent allowed to act on other tiles. If a prompt arrives starting with `[conductor …]` and asks you something, answer it in a few lines with `~/.swarmz/bin/swarmz reply -- "…"` and carry on with your work; the conductor cannot read your conversation, only what you reply. If the user wants this tile to be the conductor, run `~/.swarmz/bin/swarmz conductor --claim`: the user is asked to approve, and you are told the outcome as a prompt.
+One tile in the workspace is the conductor, the only agent allowed to act on other tiles. If a prompt arrives starting with `[conductor …]` and asks you something, answer it in a few lines with `~/.swarmz/bin/swarmz reply -- "…"` and carry on with your work; the conductor cannot read your conversation, only what you reply. Conductors form a tree: a conductor acts only on the tiles directly under it. If the user wants this tile to look after other tiles, run `~/.swarmz/bin/swarmz conductor --claim`: it asks the user to make this tile a conductor under the one it answers to (or the first conductor, when there is none). Replacing the top conductor takes `--claim --top`, and only when the user asks for exactly that. The user approves either, and you are told the outcome as a prompt; `~/.swarmz/bin/swarmz conductor` shows the tree as it stands.
 "#;
 
 /// The section only the conductor is told (conductor spec §4).
