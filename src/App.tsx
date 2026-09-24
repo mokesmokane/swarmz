@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 
 import { clampSidebarWidth, loadSidebarWidth, saveSidebarWidth, SIDEBAR_DEFAULT } from "./lib/sidebarWidth";
 import { Sidebar } from "./components/Sidebar";
 import { Workbench } from "./components/Workbench";
+import { FileViewer } from "./components/FileViewer";
 import { splitShortcut } from "./lib/shortcuts";
 import { findGroup } from "./lib/layout";
 import { ipc } from "./lib/ipc";
@@ -133,6 +134,7 @@ export default function App() {
       />
       <main className="min-w-0 flex-1">
         <Workbench />
+        <FileViewer />
       </main>
     </div>
   );

@@ -408,6 +408,8 @@ export interface WorkbenchState {
   conductorClaim: ConductorClaim | null;
   /** Whether `~/.swarmz/telegram.json` is set up here (conductor spec §5); null until asked. */
   telegramConfigured: boolean | null;
+  /** The file the viewer shows (file viewing spec §3): which tile named it, the resolved path, the line. */
+  fileView: { id: string; path: string; line: number | null } | null;
   tailscale: TailscaleStatus | null;
   tailscaleError: string | null;
   selfMachine: string | null;
@@ -465,6 +467,9 @@ export interface WorkbenchState {
   createConductorTerminal(cwd: string, placement?: Placement): Promise<string>;
   /** Records whether Telegram is set up on this Mac (the Notifications panel and startup tell it). */
   setTelegramConfigured(configured: boolean): void;
+  /** Opens `path` (absolute or `~`-relative) as tile `id` sees it, at `line` (file viewing spec §3). */
+  openFile(id: string, path: string, line?: number | null): void;
+  closeFile(): void;
   /** The user typed a title for the tile's card (conversation cards spec §5); empty hands it back. */
   setCardTitle(id: string, title: string): void;
   /** Tiles shown in their own windows on this Mac (breakout windows spec §2); the layout is untouched. */
@@ -1361,6 +1366,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   conductor: null,
   conductorClaim: null,
   telegramConfigured: null,
+  fileView: null,
   tailscale: null,
   tailscaleError: null,
   selfMachine: null,
@@ -1850,6 +1856,14 @@ export const useStore = create<WorkbenchState>((set) => ({
 
   setTelegramConfigured(configured) {
     set({ telegramConfigured: configured });
+  },
+
+  openFile(id, path, line) {
+    set({ fileView: { id, path, line: line ?? null } });
+  },
+
+  closeFile() {
+    set({ fileView: null });
   },
 
   async setConductor(id) {

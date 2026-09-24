@@ -56,6 +56,9 @@ vi.mock("@xterm/xterm", () => {
       this.log.push(`resize ${cols}x${rows}`);
     }
     loadAddon() {}
+    registerLinkProvider() {
+      return { dispose() {} };
+    }
     open(container: HTMLElement) {
       this.element = document.createElement("div");
       container.appendChild(this.element);

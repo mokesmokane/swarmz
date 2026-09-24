@@ -81,6 +81,17 @@ export interface HostKeys {
   fingerprints: string[];
 }
 
+/** A file as `read_file` returns it (file viewing spec §3). */
+export interface FileView {
+  kind: "text" | "image" | "binary";
+  path: string;
+  size: number;
+  truncated: boolean;
+  text?: string;
+  base64?: string;
+  mime?: string;
+}
+
 export interface TelegramInfo {
   configured: boolean;
   chatId: string;
@@ -169,6 +180,10 @@ export const ipc = {
     invoke<{ conductor: string | null; claim: ConductorClaim | null }>("conductor_action", { action, id: id ?? null }),
   /** Creates `~/.swarmz/conductor` (with its CLAUDE.md) if missing and returns the path. */
   conductorDir: () => invoke<string>("conductor_dir"),
+  /** A URL from a pane, in the browser (file viewing spec §2). */
+  openUrl: (url: string) => invoke<void>("open_url", { url }),
+  /** A file a tile talks about: on `host` over the ssh master, else on this Mac; `path` absolute or `~`-relative. */
+  readFile: (host: string | null, path: string) => invoke<FileView>("read_file", { host, path }),
   /** Whether Telegram is set up on this Mac (conductor spec §5), the chat id and the token's end. */
   telegramGet: () => invoke<TelegramInfo>("telegram_get"),
   /** Writes `~/.swarmz/telegram.json`; both empty removes it. */

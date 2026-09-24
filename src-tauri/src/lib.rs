@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod commands;
+pub mod files;
 pub mod paste;
 pub use swarmz_tool::pty;
 pub mod registry;
@@ -64,6 +65,8 @@ pub fn run() {
             commands::telegram_push,
             commands::telegram_test,
             commands::telegram_follow,
+            commands::read_file,
+            commands::open_url,
             commands::phones,
             commands::revoke_phone,
             commands::host_keys,
