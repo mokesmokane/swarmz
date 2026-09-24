@@ -693,6 +693,46 @@ pub fn conductor_dir() -> Result<String, String> {
 
 const CONDUCTOR_CLAUDE_MD: &str = "# The conductor\n\nThis folder is the home of the swarmz conductor: the one Claude session allowed to act on the other tiles in the workspace, on every Mac. There is no code here to work on. The user asks the conductor what the other tiles are doing, hands work to them through it, and is reached by it on Telegram when away.\n\nWhat you may do and how is told to you at the start of every session (`~/.swarmz/bin/swarmz briefing` prints it again). Keep notes you want to survive between sessions in this folder.\n";
 
+/// A URL a pane showed, opened in the default browser (file viewing spec §2): `http`, `https`
+/// or `file` only, through macOS `open`, so nothing else `open` understands can be reached.
+#[tauri::command]
+pub async fn open_url(url: String) -> Result<(), String> {
+    let url = url.trim().to_string();
+    let ok = ["http://", "https://", "file://"].iter().any(|p| url.starts_with(p));
+    if !ok || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("not a web or file URL".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let done = std::process::Command::new("/usr/bin/open").arg("--").arg(&url).output().map_err(|e| e.to_string())?;
+        if done.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&done.stderr).trim().to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A file a tile talks about (file viewing spec §3): on `host` over the ssh master when given,
+/// else on this Mac. `path` is absolute or `~`-relative; the frontend resolves relative ones.
+#[tauri::command]
+pub async fn read_file(host: Option<String>, path: String) -> Result<crate::files::FileView, String> {
+    let path = path.trim().to_string();
+    if path.is_empty() || path.contains('\0') {
+        return Err("no path".into());
+    }
+    if !(path.starts_with('/') || path == "~" || path.starts_with("~/")) {
+        return Err("the path must be absolute or start with ~".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || match host {
+        Some(h) => crate::files::read_remote(&h, &path),
+        None => crate::files::read_local(&path, &swarmz_tool::paths::home_dir()),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Whether Telegram is set up on this Mac, and with which chat (conductor spec §5).
 #[tauri::command]
 pub fn telegram_get() -> crate::telegram::TelegramInfo {

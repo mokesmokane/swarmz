@@ -5,6 +5,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { ipc } from "./ipc";
 import { beforeSpawn, terminalColor, useStore } from "../store";
 import { tintBackground } from "./workspace";
+import { paneLinkProvider } from "./paneLinkProvider";
 
 const BASE_BG = "#0f1115";
 
@@ -272,6 +273,8 @@ function createEntry(id: string): Entry {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+  // File paths and URLs on a row open on click (file viewing spec §2).
+  term.registerLinkProvider(paneLinkProvider(term, id));
 
   const entry: Entry = {
     term,
