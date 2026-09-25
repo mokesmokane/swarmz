@@ -12,6 +12,8 @@ export interface MachineTheme {
   name: string;
   /** What it feels like, for the picker's tooltip. */
   blurb: string;
+  /** The Mac's colour when none is picked (its chip, badges): the theme's signature hue, bright enough for dark text. */
+  accent: string;
   theme: ITheme & { background: string; foreground: string };
 }
 
@@ -20,6 +22,7 @@ export const PLAIN_BG = "#0f1115";
 /** swarmz's original look (the Mac's colour still tints it). */
 export const PLAIN: MachineTheme = {
   id: "plain",
+  accent: "#8b8e95",
   name: "Plain",
   blurb: "swarmz's own dark look, tinted by the Mac's colour",
   theme: { background: PLAIN_BG, foreground: "#d4d4d8", cursor: "#d4d4d8", selectionBackground: "#3b4252" },
@@ -28,6 +31,7 @@ export const PLAIN: MachineTheme = {
 export const THEMES: MachineTheme[] = [
   {
     id: "midnight",
+    accent: "#82aaff",
     name: "Midnight",
     blurb: "dark: deep indigo, cool blue text",
     theme: {
@@ -56,6 +60,7 @@ export const THEMES: MachineTheme[] = [
   },
   {
     id: "forest",
+    accent: "#a7c080",
     name: "Forest",
     blurb: "moss green, soft parchment text",
     theme: {
@@ -84,6 +89,7 @@ export const THEMES: MachineTheme[] = [
   },
   {
     id: "ember",
+    accent: "#f5a55a",
     name: "Ember",
     blurb: "warm charcoal-brown, amber text",
     theme: {
@@ -112,6 +118,7 @@ export const THEMES: MachineTheme[] = [
   },
   {
     id: "daylight",
+    accent: "#7dd3fc",
     name: "Daylight",
     blurb: "light: warm paper, ink-dark text",
     theme: {
@@ -140,6 +147,7 @@ export const THEMES: MachineTheme[] = [
   },
   {
     id: "neon",
+    accent: "#ff5c8d",
     name: "Neon",
     blurb: "cyberpunk: ultraviolet night, hot pink and electric cyan",
     theme: {
@@ -187,4 +195,16 @@ export function themeFor(machine: string | null, picked: string | null | undefin
   if (!machine) return PLAIN;
   const names = [...new Set([...known, machine])].sort();
   return THEMES[names.indexOf(machine) % THEMES.length];
+}
+
+/**
+ * A Mac's colour (its chip in the sidebar, its badges): the one picked for it, else the accent of
+ * its terminal theme, so a chip matches the panes of that Mac (sidebar redesign spec). A Mac on the
+ * plain theme takes the accent its place would have given it.
+ */
+export function machineAccent(machine: string, picked: { color?: string | null; theme?: string | null } | undefined, known: string[]): string {
+  if (picked?.color) return picked.color;
+  const t = themeFor(machine, picked?.theme, known);
+  if (t.id !== PLAIN.id) return t.accent;
+  return themeFor(machine, null, known).accent;
 }

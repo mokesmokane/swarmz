@@ -89,6 +89,23 @@ describe("machines", () => {
     expect(screen.queryByTestId("machine-card-phone")).toBeNull();
   });
 
+  it("sets a Mac's colour and theme from its card, Automatic by default", async () => {
+    await act(async () => {
+      render(<MachinesView />);
+    });
+    fireEvent.click(screen.getByTestId("theme-row-mini"));
+    expect(screen.getByRole("radio", { name: "Automatic colour" }).getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: "Colour #ef4444" }));
+    });
+    expect(useStore.getState().machines.mini?.color).toBe("#ef4444");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: "Automatic colour" }));
+    });
+    expect(useStore.getState().machines.mini?.color).toBeNull();
+    expect(screen.getByTestId("theme-picker-mini")).toBeTruthy();
+  });
+
   it("shows one line per Mac in the section, and polls every 30 s only while focused", async () => {
     vi.useFakeTimers();
     await act(async () => {

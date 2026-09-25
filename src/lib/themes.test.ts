@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isThemeId, PLAIN, THEMES, themeById, themeFor } from "./themes";
+import { isThemeId, machineAccent, PLAIN, THEMES, themeById, themeFor } from "./themes";
 
 const hex = /^#[0-9a-f]{6}$/;
 const lum = (c: string) => {
@@ -34,5 +34,18 @@ describe("machine themes", () => {
     expect(isThemeId("plain")).toBe(true);
     expect(isThemeId("nope")).toBe(false);
     expect(themeById("nope")).toBe(PLAIN);
+  });
+});
+
+describe("Mac colours", () => {
+  it("a picked colour wins; else the theme's accent, so each Mac's chip differs and matches its panes", () => {
+    const macs = ["mini", "mini-2", "mini-3"];
+    const auto = macs.map((m) => machineAccent(m, undefined, macs));
+    expect(new Set(auto).size).toBe(3);
+    expect(auto[0]).toBe(themeFor("mini", null, macs).accent);
+    expect(machineAccent("mini", { color: "#123456" }, macs)).toBe("#123456");
+    expect(machineAccent("mini", { theme: "neon" }, macs)).toBe(themeById("neon").accent);
+    // Plain keeps a colour of its own: the one its place gives.
+    expect(machineAccent("mini-2", { theme: "plain" }, macs)).toBe(auto[1]);
   });
 });

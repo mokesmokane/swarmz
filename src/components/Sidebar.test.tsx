@@ -644,3 +644,13 @@ describe("triage (sidebar redesign spec)", () => {
     act(() => useStore.getState().clearSelection());
   });
 });
+
+describe("Mac chip colours", () => {
+  it("colours a Mac with no colour picked from its terminal theme", () => {
+    useStore.setState({ machines: { box: { lastUsed: "t" } } });
+    render(<Sidebar />);
+    const chip = within(screen.getByTestId(`row-${ID}`)).getByTestId("machine-glyph");
+    expect(chip.style.backgroundColor).not.toBe("");
+    expect(chip.style.backgroundColor).not.toBe("rgb(82, 82, 82)");
+  });
+});

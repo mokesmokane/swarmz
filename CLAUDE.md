@@ -111,7 +111,7 @@ The window starts with a VS Code style activity bar (`ActivityBar`, activity bar
 
 ### Machine themes
 
-Each Mac has a terminal theme (machine themes spec, `src/lib/themes.ts`: `THEMES` Midnight, Forest, Ember, Daylight, Neon, plus `PLAIN`, the old look tinted by the Mac's colour). A tile's pane and xterm take the theme of the Mac its shell runs on (`tileMachine`: ssh machine, else `selfMachine`; `tileTheme`, applied by `applyColor` in the registry). The pick is `machines[name].theme` in the shared workspace; with none, `themeFor` assigns by the Mac's place among `knownMacs` sorted by name. `ThemePicker` sits in each Machines card's Theme row and in `MachineSettings`.
+Each Mac has a terminal theme (machine themes spec, `src/lib/themes.ts`: `THEMES` Midnight, Forest, Ember, Daylight, Neon, plus `PLAIN`, the old look tinted by the Mac's colour). A tile's pane and xterm take the theme of the Mac its shell runs on (`tileMachine`: ssh machine, else `selfMachine`; `tileTheme`, applied by `applyColor` in the registry). The pick is `machines[name].theme` in the shared workspace; with none, `themeFor` assigns by the Mac's place among `knownMacs` sorted by name. A Mac with no colour picked takes its theme's `accent` (`machineAccent`, `machineColor` in the store, `RowContext.colorOf`). `ThemePicker` sits in each Machines card's Theme row and in `MachineSettings`.
 
 ### Identify
 

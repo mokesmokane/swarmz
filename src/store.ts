@@ -79,7 +79,7 @@ import {
   type Layouts,
 } from "./lib/windowLayouts";
 import { arrange, presetById } from "./lib/presets";
-import { isThemeId, PLAIN, PLAIN_BG, themeById, themeFor, type MachineTheme } from "./lib/themes";
+import { isThemeId, machineAccent, PLAIN, PLAIN_BG, themeById, themeFor, type MachineTheme } from "./lib/themes";
 
 type Point = { x: number; y: number };
 
@@ -692,6 +692,11 @@ export function knownMacs(s: Pick<WorkbenchState, "selfMachine" | "tailscale" | 
 /** The theme id of Mac `name` (a primitive, safe as a selector). */
 export function machineThemeId(s: Pick<WorkbenchState, "selfMachine" | "tailscale" | "machines">, name: string | null): string {
   return themeFor(name, name ? s.machines[name]?.theme : null, knownMacs(s)).id;
+}
+
+/** Mac `name`'s colour: picked, else its theme's accent (a primitive, safe as a selector). */
+export function machineColor(s: Pick<WorkbenchState, "selfMachine" | "tailscale" | "machines">, name: string): string {
+  return machineAccent(name, s.machines[name], knownMacs(s));
 }
 
 /** The theme id a tile's pane shows: its Mac's (a primitive, safe as a selector). */

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useStore } from "../store";
+import { machineColor, useStore } from "../store";
 import { machineHost, machineLabel } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
 import { MachineSettings } from "./MachineSettings";
@@ -147,7 +147,7 @@ export function NewRemoteTerminal({ onClose }: { onClose: () => void }) {
                 className={`flex cursor-default items-center gap-2 px-2 py-1 ${isSel ? "bg-neutral-800" : "hover:bg-neutral-800/60"} ${p.online ? "" : "opacity-60"}`}
                 onClick={() => setSelected(p.name)}
               >
-                <span className="h-2.5 w-2.5 shrink-0 rounded-full border border-neutral-600" style={{ backgroundColor: cfg?.color ?? "transparent" }} />
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full border border-neutral-600" style={{ backgroundColor: machineColor(useStore.getState(), p.name) }} />
                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${p.online ? "bg-emerald-500" : "bg-neutral-600"}`} title={p.online ? "online" : "offline"} />
                 <span className="min-w-0 flex-1 truncate text-neutral-200">
                   {machineLabel(p.name, cfg)}

@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { useStore, machineList, type MachineStatus } from "../../store";
+import { useStore, machineColor, machineList, type MachineStatus } from "../../store";
 import { ipc } from "../../lib/ipc";
 import { displayTitle } from "../../lib/card";
 import { GROUP_BY_OPTIONS, relativeActivity, type GroupBy, type RowInfo } from "../../lib/sidebarGroups";
@@ -357,7 +357,7 @@ export function MachinesFooter({ onOpen }: { onOpen: () => void }) {
 function MachineLine({ name, onOpen }: { name: string; onOpen: () => void }) {
   const m = useStore((s) => s.machineStats[name]);
   const label = useStore((s) => machineLabel(name, s.machines[name]));
-  const color = useStore((s) => s.machines[name]?.color ?? null);
+  const color = useStore((s) => machineColor(s, name));
   const glyph = useStore((s) => machineGlyph(name, s.machines[name]));
   const needs = m?.stats?.claude.needsYou ?? 0;
   const ping = m?.ping?.ms != null ? `${m.ping.direct ? "" : "↯ "}${m.ping.ms} ms` : "";
