@@ -58,7 +58,7 @@ Fold state is per Mac.
   `statfs("/")`, uptime from `kern.boottime`; the Claude counts are this Mac's tile rows (`ls`)
   by status. It takes well under a second.
 - **The app** runs it here, and over ssh for every online Mac on the tailnet that runs macOS
-  (the same peers and ssh options as the workspace sync, `BatchMode`, a 6 s timeout), every 10 s
+  (the same peers and ssh options as the workspace sync, `BatchMode`, a 6 s timeout), every 30 s
   while the window is focused and either the Machines section is open or the Machines view is
   showing, and once when either opens. A Mac whose tool has no `stats` answers `usage`: shown as
   "update swarmz on this Mac".
