@@ -11,8 +11,8 @@ import { dotPresentation } from "../lib/agentState";
 import { displayTitle, hasTitle } from "../lib/card";
 import { SessionHistory } from "./SessionHistory";
 import { ConductorBadge } from "./ConductorBadge";
-import { PhonesPanel } from "./PhonesPanel";
-import { NotificationsPanel } from "./NotificationsPanel";
+import { MachinesSection } from "./Machines";
+import { loadFoldedSections, saveFoldedSections } from "../lib/activityBar";
 import { UpdateNotice, UpdateVersionLine } from "./UpdateNotice";
 
 function basename(p: string): string {
@@ -469,8 +469,17 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<"closed" | "open" | "ssh">("closed");
-  const [phonesOpen, setPhonesOpen] = useState(false);
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  // The sections below the list (activity bar and machines spec §3), folded per Mac.
+  const [foldedSections, setFoldedSections] = useState<Set<string>>(() => loadFoldedSections());
+  const machinesFolded = foldedSections.has("terminals.machines");
+  const toggleSection = (key: string) =>
+    setFoldedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      saveFoldedSections(next);
+      return next;
+    });
   // The list's grouping (sidebar groups spec §3), a per-machine preference.
   const [groupBy, setGroupBy] = useState<GroupBy>(() => loadGroupBy());
   const now = useNow(30_000);
@@ -529,25 +538,11 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
         <div className="flex items-center gap-1">
           <button
             className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
-            onClick={() => setPhonesOpen((o) => !o)}
-            title="Phones"
-          >
-            📱
-          </button>
-          <button
-            className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
             onClick={() => useStore.getState().setConductorsPanel(true)}
             title="Conductors: arrange who answers to whom"
             aria-label="Conductors"
           >
             🎛
-          </button>
-          <button
-            className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
-            onClick={() => setNotificationsOpen((o) => !o)}
-            title="Notifications (Telegram)"
-          >
-            🔔
           </button>
           <button
             className="rounded px-1.5 text-sm leading-none text-neutral-400 hover:bg-neutral-800"
@@ -569,8 +564,6 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
       <SyncLine />
       <UpdateNotice />
       <ClaimBar />
-      {phonesOpen && <PhonesPanel onClose={() => setPhonesOpen(false)} />}
-      {notificationsOpen && <NotificationsPanel onClose={() => setNotificationsOpen(false)} />}
       {menu === "open" && (
         <div className="flex gap-1 border-b border-neutral-800 p-2 text-xs">
           <button
@@ -645,6 +638,18 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
           </div>
         ))}
         {order.length === 0 && <div className="px-2 py-4 text-xs text-neutral-500">No terminals</div>}
+      </div>
+      <div className="shrink-0 border-t border-neutral-800">
+        <button
+          className="flex h-7 w-full items-center gap-1 px-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-400 hover:text-neutral-200"
+          onClick={() => toggleSection("terminals.machines")}
+          aria-expanded={!machinesFolded}
+          data-testid="section-machines"
+        >
+          <span className="w-3 text-[10px]">{machinesFolded ? "▸" : "▾"}</span>
+          Machines
+        </button>
+        {!machinesFolded && <MachinesSection active />}
       </div>
       <UpdateVersionLine />
     </aside>

@@ -4,6 +4,11 @@ import { Sidebar } from "./components/Sidebar";
 import { Workbench } from "./components/Workbench";
 import { FileViewer } from "./components/FileViewer";
 import { ConductorsPanel } from "./components/ConductorsPanel";
+import { ActivityBar } from "./components/ActivityBar";
+import { MachinesView } from "./components/Machines";
+import { PhonesPanel } from "./components/PhonesPanel";
+import { NotificationsPanel } from "./components/NotificationsPanel";
+import { clickView, loadSideFolded, loadSideView, saveSideFolded, saveSideView, type SideView } from "./lib/activityBar";
 import { splitShortcut } from "./lib/shortcuts";
 import { findGroup } from "./lib/layout";
 import { ipc } from "./lib/ipc";
@@ -118,9 +123,29 @@ export default function App() {
     window.addEventListener("mouseup", onUp);
   };
 
+  // The activity bar's view and whether the side bar is folded away (activity bar spec §2).
+  const [side, setSide] = useState<{ view: SideView; folded: boolean }>(() => ({ view: loadSideView(), folded: loadSideFolded() }));
+  const pick = (v: SideView) =>
+    setSide((cur) => {
+      const next = clickView(cur, v);
+      saveSideView(next.view);
+      saveSideFolded(next.folded);
+      return next;
+    });
+  const backToTerminals = () => pick("terminals");
+
   return (
     <div className="flex h-full w-full">
-      <Sidebar width={sidebarWidth} />
+      <ActivityBar view={side.view} folded={side.folded} onPick={pick} />
+      {!side.folded && side.view === "terminals" && <Sidebar width={sidebarWidth} />}
+      {!side.folded && side.view !== "terminals" && (
+        <aside className="flex h-full shrink-0 flex-col overflow-y-auto border-r border-neutral-800 bg-neutral-950" style={{ width: sidebarWidth }} data-testid={`side-${side.view}`}>
+          {side.view === "machines" && <MachinesView />}
+          {side.view === "phones" && <PhonesPanel onClose={backToTerminals} />}
+          {side.view === "notifications" && <NotificationsPanel onClose={backToTerminals} />}
+        </aside>
+      )}
+      {!side.folded && (
       <div
         role="separator"
         aria-orientation="vertical"
@@ -133,6 +158,7 @@ export default function App() {
           saveSidebarWidth(SIDEBAR_DEFAULT);
         }}
       />
+      )}
       <main className="min-w-0 flex-1">
         <Workbench />
         <FileViewer />
