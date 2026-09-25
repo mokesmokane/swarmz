@@ -654,3 +654,19 @@ describe("Mac chip colours", () => {
     expect(chip.style.backgroundColor).not.toBe("rgb(82, 82, 82)");
   });
 });
+
+describe("updates in the sidebar", () => {
+  it("shows an available update as its own bar, and the footer says Check for updates", async () => {
+    const before = useStore.getState().update;
+    const checkForUpdates = vi.fn(async () => {});
+    useStore.setState({ update: { ...before, status: "available", version: "9.9.9", dismissed: false }, checkForUpdates });
+    render(<Sidebar />);
+    expect(screen.getByTestId("update-notice").textContent).toContain("swarmz 9.9.9 is ready");
+    expect(screen.getByRole("button", { name: "Update and restart" })).toBeTruthy();
+    const btn = screen.getByTestId("check-updates");
+    expect(btn.textContent).toContain("Check for updates");
+    fireEvent.click(btn);
+    expect(checkForUpdates).toHaveBeenCalledWith({ manual: true });
+    act(() => useStore.setState({ update: before }));
+  });
+});

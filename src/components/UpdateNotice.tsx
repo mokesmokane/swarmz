@@ -48,8 +48,9 @@ export function UpdateNotice() {
   return (
     <div
       data-testid="update-notice"
-      className={`flex items-start gap-2 border-b border-neutral-800 px-3 py-1.5 text-xs ${failed ? "text-amber-300" : "text-neutral-300"}`}
+      className={`mx-2 mt-1 flex flex-none items-start gap-2 rounded-md border px-2 py-1.5 text-xs ${failed ? "border-needs/40 text-needs" : "border-pick/50 bg-pick/10 text-ink-2"}`}
     >
+      <span className={`mt-1 h-1.5 w-1.5 flex-none rounded-full ${failed ? "bg-needs" : "bg-pick"}`} />
       <div className="min-w-0 flex-1">
         <div className="truncate" title={error ?? undefined}>
           {line}
@@ -59,7 +60,7 @@ export function UpdateNotice() {
       </div>
       {(status === "available" || failed) && (
         <button
-          className="shrink-0 rounded border border-neutral-700 px-1.5 py-0.5 text-neutral-200 hover:bg-neutral-800"
+          className={`shrink-0 rounded px-1.5 py-0.5 font-semibold ${failed ? "border border-neutral-700 text-ink-2 hover:bg-hover" : "bg-pick text-white hover:brightness-110"}`}
           onClick={() => void (retryCheck ? check({ manual: true }) : install())}
         >
           {retryCheck ? "Try again" : failed ? "Retry" : "Update and restart"}

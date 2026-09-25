@@ -9,6 +9,7 @@ import { ipc } from "../lib/ipc";
 import { endTabDrag, startTerminalDrag } from "./TabGroup";
 import { windowOfTile } from "../lib/windowLayouts";
 import { SelectionTray } from "./SelectionTray";
+import { UpdateNotice } from "./UpdateNotice";
 import { Caret, ClaimCard, GroupHeader, MachinesFooter, MacChip, NeedsCard, Notices, SectionHeader, ViewPicker } from "./sidebar/Parts";
 import { identifyMark } from "./IdentifyLabel";
 import { CaretIcon, CheckIcon, CloseIcon, HistoryIcon, MoreIcon, PlusIcon, ReloadIcon, TreeIcon } from "./sidebar/icons";
@@ -622,6 +623,8 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
       )}
       {menu === "ssh" && <NewRemoteTerminal onClose={() => setMenu("closed")} />}
       <Notices localError={error} onClearLocalError={() => setError(null)} />
+      {/* An update is news of its own: a bar, not a line in the notices. */}
+      <UpdateNotice />
       {order.length > 0 && (
         <ViewPicker
           value={groupBy}

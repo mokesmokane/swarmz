@@ -6,7 +6,6 @@ import { displayTitle } from "../../lib/card";
 import { GROUP_BY_OPTIONS, relativeActivity, type GroupBy, type RowInfo } from "../../lib/sidebarGroups";
 import { machineGlyph, machineLabel } from "../../lib/workspace";
 import { useMachinesPolling } from "../Machines";
-import { UpdateNotice } from "../UpdateNotice";
 import { CaretIcon, SelectAllIcon, TreeIcon } from "./icons";
 
 const errText = (e: unknown) => (typeof e === "string" ? e : e instanceof Error ? e.message : String(e));
@@ -41,16 +40,12 @@ export function Notices({ localError, onClearLocalError }: { localError: string 
   const hooksError = useStore((s) => s.agentHooksError);
   const outside = useStore((s) => s.outsideSessions.length);
   const closeOutside = useStore((s) => s.closeOutsideSessions);
-  const update = useStore((s) => s.update.status);
-  const updateManual = useStore((s) => s.update.manual);
-  const updateDismissed = useStore((s) => s.update.dismissed);
   const [outsideError, setOutsideError] = useState<string | null>(null);
 
   const ago = sync.lastPullAt ? `${Math.max(0, Math.round((Date.now() - Date.parse(sync.lastPullAt)) / 1000))} s ago` : "not yet";
   const syncState: "off" | "error" | "ok" = !running || !sync.enabled ? "off" : sync.error ? "error" : "ok";
   const summary =
     syncState === "off" ? (running ? "Sync off" : "Sync off · Tailscale not running") : syncState === "error" ? null : `Synced · ${sync.peersOk}/${sync.peersTotal} Macs · ${ago}`;
-  const showUpdate = !updateDismissed && (update === "available" || update === "downloading" || update === "ready" || (update === "failed" && updateManual));
 
   const items: { key: string; tone: "needs" | "muted" | "pick" | "exited"; text: string; action?: string; act?: () => void }[] = [];
   if (sync.error) items.push({ key: "sync", tone: "needs", text: `Sync error · ${sync.error}`, action: "Retry", act: () => void pull() });
@@ -69,7 +64,7 @@ export function Notices({ localError, onClearLocalError }: { localError: string 
         if (ok) setOutsideError(await closeOutside());
       },
     });
-  const count = items.length + (showUpdate ? 1 : 0) - (sync.error ? 1 : 0);
+  const count = items.length - (sync.error ? 1 : 0);
   const tone = { needs: "bg-needs", muted: "bg-muted", pick: "bg-pick", exited: "bg-exited" };
   const dot = syncState === "error" ? "bg-needs" : syncState === "ok" ? "bg-working" : "bg-faint";
 
@@ -104,11 +99,6 @@ export function Notices({ localError, onClearLocalError }: { localError: string 
           {items.map((n) => (
             <NoticeRow key={n.key} tone={tone[n.tone]} text={n.text} action={n.action} onAct={n.act} />
           ))}
-          {showUpdate && (
-            <div className="border-t border-line first:border-t-0">
-              <UpdateNotice />
-            </div>
-          )}
         </div>
       )}
     </>
@@ -337,14 +327,22 @@ export function MachinesFooter({ onOpen }: { onOpen: () => void }) {
   const names = namesKey ? namesKey.split("\n") : [];
   const check = useStore((s) => s.checkForUpdates);
   const checking = useStore((s) => s.update.status === "checking");
+  // "Up to date" answers a check the user asked for; a quiet background check says nothing.
+  const upToDate = useStore((s) => s.update.status === "idle" && s.update.manual && s.update.checkedAt !== null);
   return (
     <div className="flex-none border-t border-line pb-2.5 pt-2" data-testid="machines-footer">
       <div className="flex items-center px-3 pb-1 text-[10.5px] font-semibold tracking-[0.05em] text-muted">
         <button className="flex-1 text-left hover:text-ink" onClick={onOpen} title="Open the Machines view">
           MACHINES
         </button>
-        <button className="font-mono font-medium tracking-normal text-faint hover:text-ink" onClick={() => void check({ manual: true })} title="Check for updates" disabled={checking}>
-          {checking ? "checking…" : `v${__APP_VERSION__}`}
+        <button
+          className="font-medium tracking-normal text-faint hover:text-ink disabled:opacity-60"
+          onClick={() => void check({ manual: true })}
+          title="Check for a newer swarmz"
+          disabled={checking}
+          data-testid="check-updates"
+        >
+          {checking ? "Checking…" : upToDate ? `Up to date · v${__APP_VERSION__}` : `v${__APP_VERSION__} · Check for updates`}
         </button>
       </div>
       {names.map((n) => (
