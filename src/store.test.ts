@@ -4124,3 +4124,29 @@ describe("machine themes", () => {
     expect(useStore.getState().machines.b).toEqual({ lastUsed: "t" });
   });
 });
+
+describe("identify", () => {
+  it("brings a tile forward and labels it for a moment; Identify all numbers them in list order", async () => {
+    vi.useFakeTimers();
+    try {
+      const { IDENTIFY_MS } = await import("./store");
+      const a = await useStore.getState().createTerminal("/tmp/a");
+      const b = await useStore.getState().createTerminal("/tmp/b");
+      useStore.getState().focusTerminal(a);
+      useStore.getState().identifyTile(b);
+      expect(useStore.getState().identify).toMatchObject({ ids: [b], numbered: false });
+      expect(allGroups(useStore.getState().layout)[0].active).toBe(b);
+      useStore.getState().identifyAll([b, a, "gone"]);
+      expect(useStore.getState().identify).toMatchObject({ ids: [b, a], numbered: true });
+      vi.advanceTimersByTime(IDENTIFY_MS + 10);
+      expect(useStore.getState().identify).toBeNull();
+      // A tile not open anywhere is labelled in the list only; it does not open.
+      useStore.getState().closeTab(a);
+      useStore.getState().identifyTile(a);
+      expect(useStore.getState().identify?.ids).toEqual([a]);
+      expect(allGroups(useStore.getState().layout)[0].tabs).toEqual([b]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

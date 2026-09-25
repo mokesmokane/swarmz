@@ -589,3 +589,29 @@ describe("picking tiles and not-open tiles (windows and layouts spec §3, §8)",
     expect(screen.queryByTestId("not-open-c")).toBeNull();
   });
 });
+
+describe("tile settings menu (identify)", () => {
+  it("Identify labels the tile; Identify all numbers the rows in list order", () => {
+    const t = (id: string) => ({ id, name: id, cwd: `/p/${id}`, exited: null, error: null });
+    const st = { ssh: null, claude: null, command: null, extra: {} };
+    useStore.setState({
+      terminals: { a: t("a"), b: t("b") },
+      order: ["a", "b"],
+      settings: { a: st, b: st },
+      layout: { kind: "group", id: "g1", tabs: ["a", "b"], active: "a" },
+      identify: null,
+    });
+    render(<Sidebar />);
+    fireEvent.click(screen.getAllByLabelText("Tile settings")[1]);
+    expect(screen.getByTestId("tile-menu-b")).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Identify" }));
+    expect(useStore.getState().identify).toMatchObject({ ids: ["b"], numbered: false });
+    expect(useStore.getState().layout).toMatchObject({ active: "b" });
+    expect(screen.queryByTestId("tile-menu-b")).toBeNull();
+    fireEvent.click(screen.getAllByLabelText("Tile settings")[0]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Identify all tiles" }));
+    expect(screen.getByTestId("row-mark-a").textContent).toBe("1");
+    expect(screen.getByTestId("row-mark-b").textContent).toBe("2");
+    act(() => useStore.setState({ identify: null }));
+  });
+});

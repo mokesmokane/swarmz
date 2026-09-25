@@ -8,6 +8,7 @@ import { ipc } from "../lib/ipc";
 import { endTabDrag, startTerminalDrag } from "./TabGroup";
 import { windowOfTile } from "../lib/windowLayouts";
 import { SelectionBar } from "./SelectionBar";
+import { identifyMark } from "./IdentifyLabel";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
 import { dotPresentation } from "../lib/agentState";
 import { displayTitle, hasTitle } from "../lib/card";
@@ -242,6 +243,22 @@ function Row({ id, info, now, visible }: { id: string; info: RowInfo | undefined
   const card = useStore((s) => s.settings[id]?.card ?? null);
   const isConductor = useStore((s) => isConductorTile(s, id));
   const [roleOpen, setRoleOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const mark = useStore((s) => identifyMark(s, id));
+  const identifyTile = useStore((s) => s.identifyTile);
+  const identifyAll = useStore((s) => s.identifyAll);
+  const openInNewWindow = useStore((s) => s.openInNewWindow);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const off = () => setMenuOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenuOpen(false);
+    window.addEventListener("mousedown", off);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", off);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
   // What is being edited inline: the tile's name, or its card's title (spec §5).
   const [editing, setEditing] = useState<false | "name" | "title">(false);
   const [draft, setDraft] = useState("");
@@ -309,7 +326,9 @@ function Row({ id, info, now, visible }: { id: string; info: RowInfo | undefined
       onMouseLeave={stopHover}
       onKeyDown={stopHover}
       className={`group flex cursor-default select-none items-center gap-2 rounded px-2 py-1.5 text-sm ${
-        selected
+        mark
+          ? "bg-amber-900/30 text-neutral-100 ring-2 ring-inset ring-amber-400"
+          : selected
           ? "bg-blue-900/40 text-neutral-100 ring-1 ring-inset ring-blue-500/60"
           : focused && shownIn
             ? "bg-neutral-800 text-neutral-100"
@@ -370,8 +389,10 @@ function Row({ id, info, now, visible }: { id: string; info: RowInfo | undefined
                 startEditing("title");
               }}
             >
+              {mark && mark !== "●" && <span className="shrink-0 rounded bg-amber-400 px-1 text-[10px] font-bold text-neutral-950" data-testid={`row-mark-${id}`}>{mark}</span>}
               {isConductor && <ConductorBadge />}
               <span className={`min-w-0 truncate ${shownIn ? "" : "text-neutral-400"}`}>{displayTitle(card, agent, t.name)}</span>
+              {mark && !shownIn && <span className="shrink-0 text-[10px] text-amber-300" data-testid={`row-not-open-${id}`}>not open in a window</span>}
               {!shownIn && (
                 <span
                   className="shrink-0 text-[11px] text-neutral-500"
@@ -444,6 +465,19 @@ function Row({ id, info, now, visible }: { id: string; info: RowInfo | undefined
         </button>
       )}
       <button
+        className={`rounded px-1 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100 ${menuOpen ? "text-neutral-200 opacity-100" : "text-neutral-500 opacity-0"}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          setMenuOpen((v) => !v);
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+        title="Tile settings: identify, open in a new window, rename…"
+        aria-label="Tile settings"
+        aria-expanded={menuOpen}
+      >
+        ⋯
+      </button>
+      <button
         className="rounded px-1 text-neutral-500 opacity-0 hover:bg-neutral-700 hover:text-neutral-200 group-hover:opacity-100"
         onClick={(e) => {
           e.stopPropagation();
@@ -460,7 +494,51 @@ function Row({ id, info, now, visible }: { id: string; info: RowInfo | undefined
   return (
     <div className="relative">
       {row}
-      {hovering && !historyOpen && !roleOpen && !editing && <HoverCard id={id} />}
+      {hovering && !historyOpen && !roleOpen && !menuOpen && !editing && <HoverCard id={id} />}
+      {menuOpen && (
+        <div
+          role="menu"
+          aria-label="Tile settings"
+          data-testid={`tile-menu-${id}`}
+          className="absolute right-2 z-40 mt-1 w-56 rounded-md border border-neutral-700 bg-neutral-950 p-1 text-xs shadow-2xl"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {(
+            [
+              ["Identify", "Show where this tile is: its window comes forward and a label flashes over it", () => identifyTile(id)],
+              ["Identify all tiles", "Number every tile's pane and its row here alike", () => identifyAll(visible)],
+              ["Open in a new window", "Move it into a window of its own", () => void openInNewWindow([id], null)],
+              ["Rename…", "The tile's name", () => startEditing("name")],
+              ["Edit title…", "The card's title (empty gives it back to the agent)", () => startEditing("title")],
+            ] as const
+          ).map(([label, hint, act]) => (
+            <button
+              key={label}
+              role="menuitem"
+              title={hint}
+              className="block w-full rounded px-2 py-1 text-left text-neutral-200 hover:bg-neutral-800"
+              onClick={() => {
+                setMenuOpen(false);
+                act();
+              }}
+            >
+              {label}
+            </button>
+          ))}
+          <div className="my-1 border-t border-neutral-800" />
+          <button
+            role="menuitem"
+            className="block w-full rounded px-2 py-1 text-left text-red-300 hover:bg-red-950/60"
+            onClick={() => {
+              setMenuOpen(false);
+              closeTerminal(id).catch(() => {});
+            }}
+          >
+            Stop and remove
+          </button>
+        </div>
+      )}
       {roleOpen && (
         <div className="absolute left-2 right-2 z-30 mt-1 rounded border border-neutral-700 bg-neutral-900 p-1 shadow-xl" onClick={(e) => e.stopPropagation()}>
           <ConductorMenu
