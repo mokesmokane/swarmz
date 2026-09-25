@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import type { LayoutNode } from "../lib/layout";
+import { findGroup, type LayoutNode } from "../lib/layout";
 import { useStore } from "../store";
 import { TabGroup } from "./TabGroup";
 
@@ -41,16 +41,24 @@ function Node({ node }: { node: LayoutNode }) {
 
 export function Workbench() {
   const layout = useStore((s) => s.layout);
+  const anyTiles = useStore((s) => s.order.length > 0);
+  // A zoomed group fills its window (windows and layouts spec §9).
+  const zoomed = useStore((s) => {
+    const g = s.zoomed[s.windowLabel];
+    return g ? findGroup(s.layout, g) : null;
+  });
   if (!layout) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-neutral-500">
-        No terminals yet. Click + in the sidebar to open one.
+      <div className="flex h-full items-center justify-center p-6 text-center text-sm text-neutral-500" data-testid="workbench-empty">
+        {anyTiles
+          ? "No tiles open in this window. Click one in the sidebar to open it here, or + to start a new one."
+          : "No terminals yet. Click + in the sidebar to open one."}
       </div>
     );
   }
   return (
     <div className="h-full w-full">
-      <Node node={layout} />
+      {zoomed ? <TabGroup group={zoomed} /> : <Node node={layout} />}
     </div>
   );
 }

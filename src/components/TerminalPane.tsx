@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore, terminalColor } from "../store";
-import { attach, fitAndFocus } from "../lib/xtermRegistry";
+import { attach, claimSize, fitAndFocus } from "../lib/xtermRegistry";
 import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary, tintBackground } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
 import { SessionHistory } from "./SessionHistory";
@@ -70,6 +70,9 @@ export function TerminalPane({ id }: { id: string }) {
     const ro = new ResizeObserver(refit);
     ro.observe(el);
     refit();
+    // The pane may have been shown in another window meanwhile, at another size: say this one's
+    // once it is laid out, even when fitting here changes nothing (windows and layouts spec §4).
+    if (info && info.exited === null) claimSize(id);
     return () => {
       ro.disconnect();
       cancelAnimationFrame(frame);

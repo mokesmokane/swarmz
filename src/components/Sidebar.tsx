@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { GROUP_BY_OPTIONS, groupRows, loadGroupBy, relativeActivity, rowInfo, saveGroupBy, type GroupBy, type RowInfo } from "../lib/sidebarGroups";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
-import { conductorFor, isConductorTile, useStore, terminalColor } from "../store";
+import { conductorFor, isConductorTile, layoutsOf, useStore, terminalColor } from "../store";
 import { ConductorMenu } from "./ConductorMenu";
 import { ConductorTree } from "./ConductorTree";
 import { ipc } from "../lib/ipc";
-import { endTerminalDrag, startTerminalDrag } from "./TabGroup";
+import { endTabDrag, startTerminalDrag } from "./TabGroup";
+import { windowOfTile } from "../lib/windowLayouts";
+import { SelectionBar } from "./SelectionBar";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
 import { dotPresentation } from "../lib/agentState";
 import { displayTitle, hasTitle } from "../lib/card";
@@ -215,8 +217,12 @@ function ClaimBar() {
   );
 }
 
-function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: number }) {
+function Row({ id, info, now, visible }: { id: string; info: RowInfo | undefined; now: number; visible: string[] }) {
   const t = useStore((s) => s.terminals[id]);
+  // Open in some window on this Mac, or only here in the list (windows and layouts spec §2, §3).
+  const shownIn = useStore((s) => windowOfTile(layoutsOf(s), id));
+  const selected = useStore((s) => s.selectedTiles.includes(id));
+  const selectTile = useStore((s) => s.selectTile);
   const settings = useStore((s) => s.settings[id]);
   const focused = useStore((s) => s.focusedTerminalId === id);
   // Select primitives only (a plain string/boolean/null): machineFor/its cfg return a fresh
@@ -285,8 +291,15 @@ function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: nu
     <div
       draggable={!editing}
       onDragStart={(e) => startTerminalDrag(e, id)}
-      onDragEnd={endTerminalDrag}
-      onClick={() => focusTerminal(id)}
+      onDragEnd={(e) => void endTabDrag(id, e)}
+      onClick={(e) => {
+        // Cmd/Ctrl-click picks, Shift-click picks the rows in between (spec §8); a plain click opens.
+        if (e.metaKey || e.ctrlKey) selectTile(id, "toggle", visible);
+        else if (e.shiftKey) selectTile(id, "range", visible);
+        else focusTerminal(id);
+      }}
+      data-testid={`row-${id}`}
+      aria-selected={selected}
       onDoubleClick={() => startEditing("name")}
       onMouseEnter={() => {
         if (editing) return;
@@ -296,7 +309,11 @@ function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: nu
       onMouseLeave={stopHover}
       onKeyDown={stopHover}
       className={`group flex cursor-default select-none items-center gap-2 rounded px-2 py-1.5 text-sm ${
-        focused ? "bg-neutral-800 text-neutral-100" : "text-neutral-300 hover:bg-neutral-800/60"
+        selected
+          ? "bg-blue-900/40 text-neutral-100 ring-1 ring-inset ring-blue-500/60"
+          : focused && shownIn
+            ? "bg-neutral-800 text-neutral-100"
+            : "text-neutral-300 hover:bg-neutral-800/60"
       }`}
       style={{ borderLeft: color ? `2px solid ${color}` : undefined }}
       data-machine-state={machineName ? (online === true ? "online" : online === false ? "offline" : "unknown") : undefined}
@@ -354,7 +371,16 @@ function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: nu
               }}
             >
               {isConductor && <ConductorBadge />}
-              <span className="min-w-0 truncate">{displayTitle(card, agent, t.name)}</span>
+              <span className={`min-w-0 truncate ${shownIn ? "" : "text-neutral-400"}`}>{displayTitle(card, agent, t.name)}</span>
+              {!shownIn && (
+                <span
+                  className="shrink-0 text-[11px] text-neutral-500"
+                  data-testid={`not-open-${id}`}
+                  title={t.exited === null ? "Not open in a window, still running. Click to open it; × stops it." : "Not open in a window. Click to open it; × removes it."}
+                >
+                  ◌
+                </span>
+              )}
               {hasTitle(card, agent) && info && t.name !== info.folder && (
                 // The tile's name, when the title has taken its place and the folder does not already say it.
                 <span className="shrink-0 rounded bg-neutral-800/80 px-1 font-mono text-[10px] text-neutral-400" title="Tile name">{t.name}</span>
@@ -423,7 +449,8 @@ function Row({ id, info, now }: { id: string; info: RowInfo | undefined; now: nu
           e.stopPropagation();
           closeTerminal(id).catch(() => {});
         }}
-        title="Close terminal"
+        title="Stop and remove from the workspace"
+        aria-label="Stop and remove"
       >
         ×
       </button>
@@ -499,6 +526,11 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
     infos.set(id, rowInfo({ id, name: t.name, cwd: t.cwd, exited: t.exited, ssh: s?.ssh ?? null, foreign: s?.foreign ?? null, sessions: s?.sessions, agent: agentState[id] }, { selfMachine, machines, online }));
   }
   const groups = groupRows(order, infos, groupBy);
+  // The rows in the order they are listed, for Shift-click ranges (spec §8).
+  const visible = groupBy === "conductor" ? order : groups.flatMap((g) => g.ids);
+  const selectTiles = useStore((s) => s.selectTiles);
+  const clearSelection = useStore((s) => s.clearSelection);
+  const anySelected = useStore((s) => s.selectedTiles.length > 0);
 
   const addTerminal = async () => {
     setMenu("closed");
@@ -532,7 +564,13 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
   };
 
   return (
-    <aside className="flex h-full shrink-0 flex-col border-r border-neutral-800 bg-neutral-950" style={{ width }}>
+    <aside
+      className="flex h-full shrink-0 flex-col border-r border-neutral-800 bg-neutral-950"
+      style={{ width }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && anySelected) clearSelection();
+      }}
+    >
       <div className="flex h-8 items-center justify-between border-b border-neutral-800 px-3 text-xs font-semibold uppercase tracking-wide text-neutral-400">
         <span>Terminals</span>
         <div className="flex items-center gap-1">
@@ -622,7 +660,7 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
         </div>
       )}
       <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
-        {groupBy === "conductor" && <ConductorTree order={order} infos={infos} renderRow={(id) => <Row id={id} info={infos.get(id)} now={now} />} />}
+        {groupBy === "conductor" && <ConductorTree order={order} infos={infos} renderRow={(id) => <Row id={id} info={infos.get(id)} now={now} visible={visible} />} />}
         {groupBy !== "conductor" && groups.map((g) => (
           <div key={g.key}>
             {g.title && (
@@ -630,15 +668,26 @@ export function Sidebar({ width = 256 }: { width?: number } = {}) {
                 {groupBy === "machine" ? <MachineChip glyph={g.glyph ?? "?"} label={g.title} color={g.color ?? null} online={g.online ?? null} /> : <span>{g.title}</span>}
                 <span className="text-neutral-600">{g.ids.length}</span>
                 {groupBy === "machine" && g.online === false && <span className="text-neutral-600">· offline</span>}
+                <span className="flex-1" />
+                <button
+                  className="rounded px-1 text-[11px] font-normal normal-case tracking-normal text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+                  onClick={() => selectTiles(g.ids)}
+                  title={`Select these ${g.ids.length} to show them together in a layout`}
+                  aria-label={`Select ${g.title}`}
+                  data-testid={`select-group-${g.key}`}
+                >
+                  ⊞
+                </button>
               </div>
             )}
             {g.ids.map((id) => (
-              <Row key={id} id={id} info={infos.get(id)} now={now} />
+              <Row key={id} id={id} info={infos.get(id)} now={now} visible={visible} />
             ))}
           </div>
         ))}
         {order.length === 0 && <div className="px-2 py-4 text-xs text-neutral-500">No terminals</div>}
       </div>
+      {anySelected && <SelectionBar />}
       <div className="shrink-0 border-t border-neutral-800">
         <button
           className="flex h-7 w-full items-center gap-1 px-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-400 hover:text-neutral-200"

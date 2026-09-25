@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { emit, emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { BREAKOUT_ACTION_EVENT, BREAKOUT_HELLO_EVENT, TILE_STATE_EVENT, type BreakoutAction, type TileState } from "./breakouts";
+import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { WINDOW_ACTION_EVENT, WINDOW_DROP_EVENT, WINDOW_HELLO_EVENT, WINDOW_STATE_EVENT, type WindowAction, type WindowDrop, type WindowMirror } from "./windowMirror";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { ConductorClaim, SubConductors, Workspace } from "./workspace";
@@ -161,18 +161,20 @@ export const ipc = {
     listen<ReplayPayload>(`pty:replay:${id}`, (e) => cb(base64ToBytes(e.payload.data), replaySize(e.payload))),
   onExit: (id: string, cb: (code: number | null) => void): Promise<UnlistenFn> =>
     listen<{ code: number | null }>(`pty:exit:${id}`, (e) => cb(e.payload.code)),
-  /** A breakout window's own viewer of its tile's holder (breakout windows spec §3). */
+  /** Another window's own viewer of a tile's holder (windows and layouts spec §4). */
   openView: (id: string) => invoke<void>("open_view", { id }),
   closeView: (id: string) => invoke<void>("close_view", { id }),
-  /** The main window's picture of a tile, sent to that tile's own window and re-sent on change. */
-  onTileState: (id: string, cb: (state: TileState) => void): Promise<UnlistenFn> =>
-    listen<TileState>(TILE_STATE_EVENT(id), (e) => cb(e.payload)),
-  sendTileState: (label: string, state: TileState) => emitTo(label, TILE_STATE_EVENT(state.terminal.id), state),
-  /** A breakout window announcing itself, and acting on its tile (return, restart). */
-  breakoutHello: (id: string) => emit(BREAKOUT_HELLO_EVENT, { id }),
-  onBreakoutHello: (cb: (id: string) => void): Promise<UnlistenFn> => listen<{ id: string }>(BREAKOUT_HELLO_EVENT, (e) => cb(e.payload.id)),
-  breakoutAction: (action: BreakoutAction) => emit(BREAKOUT_ACTION_EVENT, action),
-  onBreakoutAction: (cb: (action: BreakoutAction) => void): Promise<UnlistenFn> => listen<BreakoutAction>(BREAKOUT_ACTION_EVENT, (e) => cb(e.payload)),
+  /** The main window's picture of what window `label` draws, sent to it on every change. */
+  sendWindowState: (label: string, state: WindowMirror) => emitTo(label, WINDOW_STATE_EVENT(label), state),
+  onWindowState: (label: string, cb: (state: WindowMirror) => void): Promise<UnlistenFn> => listen<WindowMirror>(WINDOW_STATE_EVENT(label), (e) => cb(e.payload)),
+  /** Another window announcing itself, and asking the main window to act. */
+  windowHello: (label: string) => emitTo("main", WINDOW_HELLO_EVENT, { label }),
+  onWindowHello: (cb: (label: string) => void): Promise<UnlistenFn> => listen<{ label: string }>(WINDOW_HELLO_EVENT, (e) => cb(e.payload.label)),
+  windowAction: (action: WindowAction) => emitTo("main", WINDOW_ACTION_EVENT, action),
+  onWindowAction: (cb: (action: WindowAction) => void): Promise<UnlistenFn> => listen<WindowAction>(WINDOW_ACTION_EVENT, (e) => cb(e.payload)),
+  /** A drag no window took, handed to window `label` to resolve at a screen point. */
+  sendWindowDrop: (label: string, drop: WindowDrop) => emitTo(label, WINDOW_DROP_EVENT(label), drop),
+  onWindowDrop: (label: string, cb: (drop: WindowDrop) => void): Promise<UnlistenFn> => listen<WindowDrop>(WINDOW_DROP_EVENT(label), (e) => cb(e.payload)),
   loadWorkspace: () => invoke<Workspace | null>("load_workspace"),
   saveWorkspace: (workspace: Workspace) => invoke<void>("save_workspace", { workspace }),
   sshCheck: (host: string) => invoke<boolean>("ssh_check", { host }),

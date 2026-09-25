@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "windows",
+  "description": "Capability for every window of tabs other than the main one (windows and layouts spec §4)",
+  "windows": ["win-*"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-set-title",
+    "core:window:allow-set-focus",
+    "core:window:allow-inner-position",
+    "core:window:allow-scale-factor",
+    "clipboard-manager:allow-write-text"
+  ]
+}

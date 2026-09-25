@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/ipc", () => ({
@@ -42,7 +42,7 @@ vi.mock("../lib/ipc", () => ({
 }));
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn(async () => "/home/me") }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true) }));
-vi.mock("../lib/xtermRegistry", () => ({ attach: vi.fn(() => ({ term: {}, fit: { fit: vi.fn() } })), fitAndFocus: vi.fn() }));
+vi.mock("../lib/xtermRegistry", () => ({ attach: vi.fn(() => ({ term: {}, fit: { fit: vi.fn() } })), fitAndFocus: vi.fn(), claimSize: vi.fn() }));
 
 import { __stopAllPolling, useStore } from "../store";
 import { TabGroup } from "./TabGroup";
@@ -65,6 +65,11 @@ beforeEach(() => {
     machines: {},
     agentState: {},
     windowFocused: true,
+    windowLabel: "main",
+    windows: {},
+    zoomed: {},
+    selectedTiles: [],
+    closedNotice: null,
   });
 });
 
@@ -99,14 +104,8 @@ describe("tab dot", () => {
   });
 });
 
-describe("breakout windows", () => {
-  it("a broken-out tab is a placeholder that brings its window forward, and the pane stands in", async () => {
-    const { breakoutHooks } = await import("../store");
-    const { TabGroup } = await import("./TabGroup");
-    const calls: string[] = [];
-    breakoutHooks.open = async (id) => void calls.push(`open ${id}`);
-    breakoutHooks.focus = (id) => void calls.push(`focus ${id}`);
-    breakoutHooks.close = () => {};
+describe("windows and layouts", () => {
+  const two = () =>
     useStore.setState({
       terminals: {
         a: { id: "a", name: "alpha", cwd: "/a", exited: null, error: null },
@@ -118,46 +117,79 @@ describe("breakout windows", () => {
       focusedTerminalId: "b",
       settings: {},
       agentState: {},
-      breakouts: { b: true },
     });
+
+  it("a tab's × closes the tab and keeps the tile; ↗ moves it to a new window", async () => {
+    const { windowHooks } = await import("../store");
+    const opened: string[] = [];
+    windowHooks.open = async (label) => void opened.push(label);
+    two();
     render(<TabGroup group={{ kind: "group", id: "g1", tabs: ["a", "b"], active: "b" }} />);
-    expect(screen.getByTestId("placeholder-b").textContent).toContain("beta is in its own window");
-    expect(screen.getByTestId("tab-b").dataset.breakout).toBe("true");
-    // Clicking the placeholder tab focuses the window rather than the pane.
-    screen.getByTestId("tab-b").click();
-    await vi.waitFor(() => expect(calls).toEqual(["focus b"]));
-    // The other tab's hover button breaks it out.
-    screen.getByLabelText("Open in its own window").click();
-    await vi.waitFor(() => expect(calls).toEqual(["focus b", "open a"]));
-    expect(useStore.getState().breakouts).toEqual({ a: true, b: true });
-    localStorage.removeItem("swarmz.breakouts");
-    breakoutHooks.open = async () => {};
-    breakoutHooks.focus = () => {};
+    screen.getAllByLabelText("Close tab")[1].click();
+    let s = useStore.getState();
+    expect(s.terminals.b).toBeDefined();
+    expect(s.layout).toEqual({ kind: "group", id: "g1", tabs: ["a"], active: "a" });
+    expect(s.closedNotice?.ids).toEqual(["b"]);
+    screen.getAllByLabelText("Move to a new window")[0].click();
+    await vi.waitFor(() => expect(opened).toHaveLength(1));
+    s = useStore.getState();
+    expect(s.layout).toBeNull();
+    expect(Object.values(s.windows)[0].layout).toMatchObject({ tabs: ["a"] });
+    windowHooks.open = async () => {};
   });
 
-  it("a drag that ends outside the window breaks the tile out; inside does not", async () => {
-    const { breakoutHooks } = await import("../store");
-    const { endTabDrag } = await import("./TabGroup");
-    const calls: string[] = [];
-    breakoutHooks.open = async (id, at) => void calls.push(`open ${id} ${at?.x},${at?.y}`);
-    breakoutHooks.mainBounds = async () => ({ x: 100, y: 100, width: 800, height: 600 });
+  it("a tab's menu moves it to another window, or stops it", async () => {
+    two();
     useStore.setState({
-      terminals: { a: { id: "a", name: "alpha", cwd: "/a", exited: null, error: null } },
-      order: ["a"],
-      layout: { kind: "group", id: "g1", tabs: ["a"], active: "a" },
-      breakouts: {},
+      terminals: { ...useStore.getState().terminals, c: { id: "c", name: "gamma", cwd: "/c", exited: null, error: null } },
+      windows: { "win-abcd": { layout: { kind: "group", id: "g9", tabs: ["c"], active: "c" }, focusedGroupId: "g9" } },
     });
-    const drag = (dropEffect: string, screenX: number, screenY: number) =>
-      endTabDrag("a", { dataTransfer: { dropEffect } as DataTransfer, screenX, screenY });
-    await drag("move", 2000, 300);
-    expect(calls).toEqual([]);
-    await drag("none", 300, 300);
-    expect(calls).toEqual([]);
-    await drag("none", 2000, 300);
-    expect(calls).toEqual(["open a 2000,300"]);
-    expect(useStore.getState().breakouts).toEqual({ a: true });
-    localStorage.removeItem("swarmz.breakouts");
-    breakoutHooks.open = async () => {};
-    breakoutHooks.mainBounds = async () => null;
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: ["a", "b"], active: "b" }} />);
+    fireEvent.contextMenu(screen.getByTestId("tab-a"));
+    const menu = screen.getByTestId("tab-menu-a");
+    expect(menu.textContent).toContain("New window");
+    fireEvent.click(screen.getByRole("menuitem", { name: "gamma" }));
+    const s = useStore.getState();
+    expect(s.windows["win-abcd"].layout).toMatchObject({ tabs: ["c", "a"] });
+    expect(s.layout).toMatchObject({ tabs: ["b"] });
+  });
+
+  it("the gallery arranges the window's tiles, and an empty slot picks a tile", async () => {
+    two();
+    useStore.setState({ order: ["a", "b", "c"], terminals: { ...useStore.getState().terminals, c: { id: "c", name: "gamma", cwd: "/c", exited: null, error: null } } });
+    const { rerender } = render(<TabGroup group={useStore.getState().layout as never} />);
+    fireEvent.click(screen.getByRole("button", { name: "Layouts" }));
+    expect(screen.getByTestId("preset-side-by-side").getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByTestId("preset-three-columns"));
+    const groups = (await import("../lib/layout")).allGroups(useStore.getState().layout);
+    expect(groups.map((g) => g.tabs)).toEqual([["b"], ["a"], []]);
+    rerender(<TabGroup group={groups[2]} />);
+    expect(screen.getByTestId(`slot-tab-${groups[2].id}`).textContent).toContain("Empty slot");
+    // c is not open anywhere, so it is listed first.
+    const picks = screen.getAllByRole("option").map((o) => o.getAttribute("data-testid"));
+    expect(picks[0]).toBe("slot-pick-c");
+    screen.getByTestId("slot-pick-c").click();
+    expect((await import("../lib/layout")).findGroup(useStore.getState().layout, groups[2].id)?.tabs).toEqual(["c"]);
+  });
+
+  it("zoom fills the window with the group and back", async () => {
+    two();
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: ["a", "b"], active: "b" }} />);
+    screen.getByLabelText("Zoom").click();
+    expect(useStore.getState().zoomed).toEqual({ main: "g1" });
+  });
+
+  it("a drag no drop zone took is handed to the store with the pointer's screen position", async () => {
+    const { endTabDrag } = await import("./TabGroup");
+    const { windowHooks } = await import("../store");
+    const opened: string[] = [];
+    windowHooks.open = async (label, at) => void opened.push(`${label.slice(0, 4)} ${at?.x},${at?.y}`);
+    two();
+    const drag = (dropEffect: string) => endTabDrag("a", { dataTransfer: { dropEffect } as DataTransfer, screenX: 2000, screenY: 300 });
+    await drag("move");
+    expect(opened).toEqual([]);
+    await drag("none");
+    expect(opened).toEqual(["win- 2000,300"]);
+    windowHooks.open = async () => {};
   });
 });

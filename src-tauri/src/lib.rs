@@ -83,7 +83,7 @@ pub fn run() {
             commands::close_view,
         ])
         .on_window_event(|window, event| {
-            // A breakout window closing drops its viewer; the main viewer is untouched.
+            // Another window closing drops its viewers; the main viewer is untouched.
             if let tauri::WindowEvent::Destroyed = event {
                 if let Some(state) = window.try_state::<AppState>() {
                     commands::drop_views(&state, window.label(), None);

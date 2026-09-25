@@ -46,6 +46,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true) }
 vi.mock("../lib/xtermRegistry", () => ({
   attach: vi.fn(() => ({ term: {}, fit: { fit: vi.fn() } })),
   fitAndFocus: vi.fn(),
+  claimSize: vi.fn(),
 }));
 
 import { ipc } from "../lib/ipc";
@@ -195,5 +196,20 @@ describe("TerminalPane connect card", () => {
     expect(screen.getByText("Previous sessions in this tile")).toBeTruthy();
     expect(screen.getByTestId("session-row-old")).toBeTruthy();
     expect(screen.queryByTestId("session-row-abc")).toBeNull();
+  });
+});
+
+describe("size after moving windows (windows and layouts spec §4)", () => {
+  it("a running pane claims its size when it mounts, an exited one does not", async () => {
+    const { claimSize } = await import("../lib/xtermRegistry");
+    const { TerminalPane } = await import("./TerminalPane");
+    vi.mocked(claimSize).mockClear();
+    render(<TerminalPane id={ID} />);
+    expect(claimSize).toHaveBeenCalledWith(ID);
+    cleanup();
+    vi.mocked(claimSize).mockClear();
+    useStore.setState({ terminals: { [ID]: { ...useStore.getState().terminals[ID], exited: 0 } } });
+    render(<TerminalPane id={ID} />);
+    expect(claimSize).not.toHaveBeenCalled();
   });
 });

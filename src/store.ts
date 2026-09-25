@@ -7,11 +7,14 @@ import {
   allGroups,
   findGroup,
   findGroupOf,
-  moveToGroup,
+  groupOf,
+  removeGroup,
   removeTerminal,
   resizeSplit as resizeSplitNode,
   setActive,
   splitWith,
+  tilesInOrder,
+  tilesOf,
   type Layout,
   type Side,
 } from "./lib/layout";
@@ -28,7 +31,6 @@ import {
   mergeForFirstSync,
   openingFor,
   pickNewest,
-  reconcileLayout,
   sameWorkspaceContent,
   sanitizeLayout,
   shellQuote,
@@ -59,32 +61,66 @@ import {
   type SubConductors,
 } from "./lib/workspace";
 import { withUserTitle } from "./lib/card";
-import { loadBreakouts, saveBreakouts, type Bounds } from "./lib/breakouts";
+import {
+  MAIN,
+  dedupeLayouts,
+  loadLayouts,
+  migrateLayouts,
+  newWindowLabel,
+  placeTile,
+  pruneLayouts,
+  removeEverywhere,
+  saveLayouts,
+  windowOfGroup,
+  windowOfNode,
+  windowOfTile,
+  type Bounds,
+  type Layouts,
+} from "./lib/windowLayouts";
+import { arrange, presetById } from "./lib/presets";
+
+type Point = { x: number; y: number };
 
 /**
- * What the window module (`breakoutWindows.ts`) does for the store: opening, focusing and
- * closing a tile's own window, and reading the main window's bounds for the drag-out check. It
- * fills these in at module load so the store never imports the window API (tests mock nothing).
+ * What the window module (`windows.ts`) does for the store (windows and layouts spec §4):
+ * opening, focusing and closing the other windows, finding the window under a screen point,
+ * handing a drop to another window, and reading a window's bounds. It fills these in at module
+ * load so the store never imports the window API (tests mock nothing).
  */
-export const breakoutHooks: {
-  open: (id: string, at: { x: number; y: number } | null) => Promise<void>;
-  focus: (id: string) => void;
-  close: (id: string) => void;
-  mainBounds: () => Promise<Bounds | null>;
+export const windowHooks: {
+  open: (label: string, at: Point | null, bounds?: Bounds | null) => Promise<void>;
+  focus: (label: string) => void;
+  close: (label: string) => void;
+  /** The swarmz window under a screen point (the most recently focused first), or null. */
+  windowAt: (p: Point) => Promise<string | null>;
+  /** Asks window `label` to resolve a drop of tile `id` at screen point `p` (spec §4). */
+  dropAt: (label: string, id: string, p: Point) => void;
+  boundsOf: (label: string) => Promise<Bounds | null>;
 } = {
   open: async () => {},
   focus: () => {},
   close: () => {},
-  mainBounds: async () => null,
+  windowAt: async () => null,
+  dropAt: () => {},
+  boundsOf: async () => null,
 };
 
-/** The per-Mac record of which tiles are out; bounds are kept by the window module. */
-function persistBreakouts(): void {
-  const saved = loadBreakouts();
-  const now = useStore.getState().breakouts;
-  const next: ReturnType<typeof loadBreakouts> = {};
-  for (const id of Object.keys(now)) next[id] = saved[id] ?? { bounds: null };
-  saveBreakouts(next);
+/** How long the "still running" notice stays (spec §3). */
+export const CLOSED_NOTICE_MS = 8000;
+
+/** Another window's own state (spec §4): its tree and which group has focus. */
+export interface WindowState {
+  layout: Layout;
+  focusedGroupId: string | null;
+}
+
+/** Tabs or a window just closed while their tiles run on (spec §3), with what Undo restores. */
+export interface ClosedNotice {
+  /** The window showing the notice. */
+  window: string;
+  ids: string[];
+  at: number;
+  undo: { kind: "tiles"; places: { id: string; groupId: string | null }[] } | { kind: "window"; layout: Layout; bounds: Bounds | null };
 }
 import { applyAgentEvent as foldAgentEvent, OFFLINE, type AgentState } from "./lib/agentState";
 import type { AgentEventPayload } from "./lib/ipc";
@@ -531,14 +567,52 @@ export interface WorkbenchState {
   closeFile(): void;
   /** The user typed a title for the tile's card (conversation cards spec §5); empty hands it back. */
   setCardTitle(id: string, title: string): void;
-  /** Tiles shown in their own windows on this Mac (breakout windows spec §2); the layout is untouched. */
-  breakouts: Record<string, true>;
-  /** Opens the tile in its own window, at `at` (screen, logical px) or where it was last. */
-  breakoutTerminal(id: string, at: { x: number; y: number } | null): Promise<void>;
-  /** Brings the tile back into the workbench (its window closes). */
-  returnTerminal(id: string): void;
-  /** The breakouts this Mac had when it last ran, for `restoreBreakouts`. */
-  restoreBreakouts(): Promise<void>;
+  /** Which window this store draws: `main`, or the label of the window whose mirror it is. */
+  windowLabel: string;
+  /** The other windows on this Mac and their trees (windows and layouts spec §4); `layout` is the main window's. */
+  windows: Record<string, WindowState>;
+  /** The zoomed group of each window (spec §9), by window label; never saved. */
+  zoomed: Record<string, string>;
+  /** The shared file's `layout`, written back untouched for older apps (spec §2). */
+  fileLayout: Layout;
+  /** Tiles picked in the sidebar (spec §8), in the order they were picked. */
+  selectedTiles: string[];
+  /** The "still running" notice after closing tabs or a window (spec §3). */
+  closedNotice: ClosedNotice | null;
+  /** In another window's mirror: every tile open in some window (the main window works it out). */
+  openTileIds: string[];
+  /** Closes the tab: the tile keeps running, not open in any window (spec §3). */
+  closeTab(id: string): void;
+  /** Moves these tiles into a new window at `at` (screen, logical px), arranged by a preset or as tabs of one group. */
+  openInNewWindow(ids: string[], at: Point | null, presetId?: string | null): Promise<void>;
+  /** Moves every tab of group `groupId` into a new window (spec §4). */
+  moveGroupToNewWindow(groupId: string): Promise<void>;
+  /** Moves tile `id` into window `label` (its focused group), or a new window for `new`. */
+  moveToWindow(id: string, label: string): Promise<void>;
+  /** A drag of tile `id` that no window took, ended at screen point `at` over window `from`'s surroundings (spec §4). */
+  dropOutside(id: string, at: Point, from: string): Promise<void>;
+  /** The user closed window `label`: its tiles keep running, not open here (spec §3, §4). */
+  closeWindow(label: string): Promise<void>;
+  /** Opens the windows this Mac had when it last ran (spec §4). */
+  restoreWindows(): Promise<void>;
+  /** Arranges the tiles of the window holding group `groupId` into preset `presetId` (spec §6). */
+  applyPreset(groupId: string, presetId: string): void;
+  /** Arranges the picked tiles into a preset, in a new window or the main one (spec §8). */
+  arrangeSelection(presetId: string, target: "new" | "main"): Promise<void>;
+  /** A local shell in empty slot `groupId` (spec §7). */
+  newInSlot(groupId: string): Promise<void>;
+  /** Removes empty slot `groupId`. */
+  removeSlot(groupId: string): void;
+  /** Zooms group `groupId` to fill its window, or puts it back (spec §9). */
+  toggleZoom(groupId: string): void;
+  /** Cmd/Ctrl-click (toggle) or Shift-click (range over `visible`, the rows as listed) on a row (spec §8). */
+  selectTile(id: string, mode: "toggle" | "range", visible: string[]): void;
+  /** Picks exactly these tiles (a group header's button), or clears them if they already are. */
+  selectTiles(ids: string[]): void;
+  clearSelection(): void;
+  /** Opens the tiles (or the window) the notice is about again, where they were. */
+  undoClosed(): Promise<void>;
+  dismissClosedNotice(): void;
   runStartup(id: string): Promise<void>;
   runRemoteStep(id: string): Promise<void>;
   /** The remote `swarmz attach` reported it is bridging this tile (`isNew`: it started the
@@ -650,11 +724,82 @@ function sanitizeMachines(input: unknown): { machines: Machines; dropped: number
   return { machines: capped, dropped };
 }
 
-function focusFor(layout: Layout, termId: string | null) {
-  if (!termId) return { focusedGroupId: null, focusedTerminalId: null };
-  const g = findGroupOf(layout, termId);
-  return { focusedGroupId: g?.id ?? null, focusedTerminalId: g ? termId : null };
+/** Every window's tree (windows and layouts spec §4): the main window's and the others'. */
+export function layoutsOf(s: Pick<WorkbenchState, "layout" | "windows">): Layouts {
+  const out: Layouts = { [MAIN]: s.layout };
+  for (const [label, w] of Object.entries(s.windows)) out[label] = w.layout;
+  return out;
 }
+
+/**
+ * The store's fields for a new set of trees: the main window's `layout`, the other windows
+ * (a window whose tree emptied is dropped, and the window module closes it), each window's focus
+ * kept when its group survives, zoom dropped with its group, and focus moved to tile `focus`
+ * when given. The main window's focus falls back to its first group.
+ */
+function commit(s: WorkbenchState, ls: Layouts, focus: string | null = null): Partial<WorkbenchState> {
+  const layout = ls[MAIN] ?? null;
+  const windows: Record<string, WindowState> = {};
+  for (const [label, l] of Object.entries(ls)) {
+    if (label === MAIN || !l) continue;
+    const prev = s.windows[label]?.focusedGroupId ?? null;
+    windows[label] = { layout: l, focusedGroupId: prev && findGroup(l, prev) ? prev : (allGroups(l)[0]?.id ?? null) };
+  }
+  const zoomed: Record<string, string> = {};
+  for (const [label, g] of Object.entries(s.zoomed)) if (findGroup(ls[label] ?? null, g)) zoomed[label] = g;
+  const first = allGroups(layout)[0];
+  let main: { focusedGroupId: string | null; focusedTerminalId: string | null } =
+    s.focusedGroupId && findGroup(layout, s.focusedGroupId)
+      ? { focusedGroupId: s.focusedGroupId, focusedTerminalId: findGroup(layout, s.focusedGroupId)?.active || null }
+      : { focusedGroupId: first?.id ?? null, focusedTerminalId: first?.active || null };
+  if (focus) {
+    const label = windowOfTile(ls, focus);
+    const g = label ? findGroupOf(ls[label], focus) : null;
+    if (label === MAIN && g) main = { focusedGroupId: g.id, focusedTerminalId: focus };
+    else if (label && g && windows[label]) windows[label] = { ...windows[label], focusedGroupId: g.id };
+  }
+  return { layout, windows, zoomed, ...main };
+}
+
+/**
+ * The trees with a new tile placed: in the placement's group (whichever window holds it), as a
+ * tab or beside it, else as a tab of the main window's focused group.
+ */
+function placeNew(s: WorkbenchState, id: string, placement?: Placement): Layouts {
+  const ls = layoutsOf(s);
+  const label = (placement && windowOfGroup(ls, placement.groupId)) || MAIN;
+  const groupId = placement?.groupId ?? s.focusedGroupId;
+  let l = addTab(ls[label], id, groupId);
+  if (placement?.kind === "split") l = splitWith(l, placement.groupId, id, placement.side);
+  return { ...ls, [label]: l };
+}
+
+/** Where tile `id` is shown, for Undo (spec §3). */
+function placeOf(s: WorkbenchState, id: string): { id: string; groupId: string | null } {
+  const ls = layoutsOf(s);
+  const label = windowOfTile(ls, id);
+  return { id, groupId: label ? (findGroupOf(ls[label], id)?.id ?? null) : null };
+}
+
+let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+function showNotice(n: ClosedNotice): void {
+  useStore.setState({ closedNotice: n });
+  if (noticeTimer) clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    noticeTimer = null;
+    if (useStore.getState().closedNotice?.at === n.at) useStore.setState({ closedNotice: null });
+  }, CLOSED_NOTICE_MS);
+}
+
+/** The last tile a drop placed, so the drag's end does not place it a second time (spec §4). */
+let lastPlaced: { id: string; at: number } | null = null;
+export const DROP_SETTLE_MS = 1500;
+
+/** This Mac's saved trees while the first load opens their tiles (see `loadWorkspaceOnce`). */
+let initialLayouts: Layouts | null = null;
+
+/** Whether this Mac's trees are loaded, so changes to them are saved (never in another window's mirror). */
+let layoutsLoaded = false;
 
 /** Defs with any repeated id dropped, keeping the first mention. */
 function dedupeById(defs: TerminalDef[]): TerminalDef[] {
@@ -688,6 +833,9 @@ let loadStarted = false;
 
 export function __resetLoadGuard() {
   loadStarted = false;
+  layoutsLoaded = false;
+  lastPlaced = null;
+  initialLayouts = null;
   launchReplay = [];
 }
 
@@ -794,7 +942,6 @@ function startupKey(x: TerminalSettings | undefined): string {
 
 async function openDefs(
   defs: TerminalDef[],
-  savedLayout: Layout,
   set: SetState,
   allDefs: TerminalDef[] = defs,
 ): Promise<{ anyFailed: boolean }> {
@@ -844,45 +991,32 @@ async function openDefs(
           if (n) startupNotes = { ...startupNotes, [id]: n };
         }
       }
-      const sanitizedLayout = sanitizeLayout(savedLayout);
-      const layoutWasInvalid = savedLayout !== null && sanitizedLayout === null;
-      const layout = reconcileLayout(sanitizedLayout, s.order);
+      // The trees are this Mac's (windows and layouts spec §2): tiles gone from the workspace
+      // leave them, and tiles new to it are not opened here until the user opens them.
+      const layouts = dedupeLayouts(pruneLayouts(initialLayouts ?? layoutsOf(s), s.order));
+      initialLayouts = null;
       const startupPending: Record<string, boolean> = { ...s.startupPending };
       for (const id of s.order) {
         const wasOpenBefore = preOpenIds.has(id);
         const changed = !wasOpenBefore || startupKey(settings[id]) !== startupKey(s.settings[id]);
         if (changed) startupPending[id] = !existedIds.has(id) && startupLine(settings[id] ?? EMPTY_SETTINGS) !== null;
       }
-      const keep =
-        s.focusedTerminalId && findGroupOf(layout, s.focusedTerminalId)
-          ? s.focusedTerminalId
-          : (allGroups(layout)[0]?.active ?? null);
+      const keep = s.focusedTerminalId && findGroupOf(layouts[MAIN], s.focusedTerminalId) ? s.focusedTerminalId : null;
       const persistError =
-        failedCount > 0
-          ? `${failedCount} terminal(s) could not be opened; saving is paused until a successful Reload`
-          : layoutWasInvalid
-            ? "layout in workspace.json was invalid and was rebuilt"
-            : s.persistError;
+        failedCount > 0 ? `${failedCount} terminal(s) could not be opened; saving is paused until a successful Reload` : s.persistError;
       return {
         settings,
         startupNotes,
-        layout,
         startupPending,
         persistenceReady: failedCount === 0,
         persistError,
-        ...focusFor(layout, keep),
+        ...commit(s, layouts, keep),
       };
     } catch (e) {
-      const layout = reconcileLayout(null, s.order);
-      const keep =
-        s.focusedTerminalId && findGroupOf(layout, s.focusedTerminalId)
-          ? s.focusedTerminalId
-          : (allGroups(layout)[0]?.active ?? null);
       return {
-        layout,
         persistenceReady: false,
         persistError: `could not reconcile workspace: ${typeof e === "string" ? e : String(e)}`,
-        ...focusFor(layout, keep),
+        ...commit(s, pruneLayouts(layoutsOf(s), s.order)),
       };
     }
   });
@@ -1383,6 +1517,7 @@ async function loadWorkspaceOnce(set: SetState): Promise<void> {
   if (!ws) {
     neverSyncedAtLoad = true;
     set({ persistenceReady: true });
+    layoutsLoaded = true;
     return;
   }
   neverSyncedAtLoad = !ws.sync;
@@ -1397,9 +1532,19 @@ async function loadWorkspaceOnce(set: SetState): Promise<void> {
     set({ machines, ...(dropped > 0 ? { persistError: machineDropNote(dropped) } : {}) });
   }
   set({ ...conductorFieldsOf(ws), workspaceExtra: workspaceExtra(ws) });
+  // This Mac's trees (windows and layouts spec §2), or on the first run of this version the
+  // file's layout with every tile placed, plus a window for each old breakout.
+  const saved = loadLayouts();
+  const fileLayout = ws.layout ?? null;
+  const initial = saved ?? migrateLayouts(sanitizeLayout(fileLayout), ws.terminals.map((t) => t.id));
+  if (!saved && fileLayout !== null && sanitizeLayout(fileLayout) === null) set({ persistError: "layout in workspace.json was invalid and was rebuilt" });
+  // Applied by openDefs once the tiles are open, so no pane mounts before its terminal exists.
+  initialLayouts = initial;
+  set({ fileLayout });
   // openDefs sets persistenceReady itself: true when every def opened cleanly, false
   // (with a persistError) if any failed, so a partial load never gets overwritten by a save.
-  await openDefs(ws.terminals, ws.layout, set);
+  await openDefs(ws.terminals, set);
+  layoutsLoaded = true;
   set({ syncMeta: ws.sync ?? null });
   lastSeenMtime = await ipc.workspaceStat().catch(() => null);
 }
@@ -1494,19 +1639,14 @@ export const useStore = create<WorkbenchState>((set) => ({
     const info = await ipc.createTerminal(id, cwd, dims.cols, dims.rows);
     const origin = useStore.getState().selfMachine ?? null;
     set((s) => {
-      const groupId = placement?.groupId ?? s.focusedGroupId;
-      let layout = addTab(s.layout, info.id, groupId);
-      if (placement?.kind === "split") {
-        layout = splitWith(layout, placement.groupId, info.id, placement.side);
-      }
+      const layouts = placeNew(s, info.id, placement);
       return {
         terminals: { ...s.terminals, [info.id]: info },
         order: [...s.order, info.id],
-        layout,
         lastCwd: cwd,
         settings: { ...s.settings, [info.id]: { ...EMPTY_SETTINGS, origin } },
         startupPending: { ...s.startupPending, [info.id]: false },
-        ...focusFor(layout, info.id),
+        ...commit(s, layouts, info.id),
       };
     });
     return info.id;
@@ -1531,19 +1671,14 @@ export const useStore = create<WorkbenchState>((set) => ({
       origin: useStore.getState().selfMachine ?? null,
     };
     set((s) => {
-      const groupId = placement?.groupId ?? s.focusedGroupId;
-      let layout = addTab(s.layout, info.id, groupId);
-      if (placement?.kind === "split") {
-        layout = splitWith(layout, placement.groupId, info.id, placement.side);
-      }
+      const layouts = placeNew(s, info.id, placement);
       return {
         terminals: { ...s.terminals, [info.id]: info },
         order: [...s.order, info.id],
-        layout,
         settings: { ...s.settings, [info.id]: settings },
         startupPending: { ...s.startupPending, [info.id]: true },
         machines: machineName ? touchMachine(s.machines, machineName, rememberedOrGivenCwd ? { cwd: rememberedOrGivenCwd } : {}) : s.machines,
-        ...focusFor(layout, info.id),
+        ...commit(s, layouts, info.id),
       };
     });
     // The user asked for this connection right now, so run it without a click.
@@ -1566,11 +1701,6 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   async closeTerminal(id) {
-    if (useStore.getState().breakouts[id]) {
-      set((st) => ({ breakouts: omit(st.breakouts, id) as Record<string, true> }));
-      persistBreakouts();
-      breakoutHooks.close(id);
-    }
     stopPolling(id);
     forgetAttach(id);
     // A tile whose home is another Mac has a session holder there too (§3.6): end it alongside
@@ -1589,17 +1719,17 @@ export const useStore = create<WorkbenchState>((set) => ({
       const terminals = { ...s.terminals };
       delete terminals[id];
       const homeGroupId = findGroupOf(s.layout, id)?.id ?? null;
-      const layout = removeTerminal(s.layout, id);
+      const layouts = removeEverywhere(layoutsOf(s), id);
+      const layout = layouts[MAIN];
       const stillFocused = s.focusedTerminalId && s.focusedTerminalId !== id ? s.focusedTerminalId : null;
       const fallback =
         stillFocused ??
-        (homeGroupId && findGroup(layout, homeGroupId)?.active) ??
-        allGroups(layout)[0]?.active ??
-        null;
+        ((homeGroupId && findGroup(layout, homeGroupId)?.active) || null) ??
+        (allGroups(layout)[0]?.active || null);
       return {
         terminals,
         order: s.order.filter((t) => t !== id),
-        layout,
+        selectedTiles: s.selectedTiles.includes(id) ? s.selectedTiles.filter((t) => t !== id) : s.selectedTiles,
         settings: omit(s.settings, id),
         startupPending: omit(s.startupPending, id),
         startupNotes: omit(s.startupNotes, id),
@@ -1615,7 +1745,7 @@ export const useStore = create<WorkbenchState>((set) => ({
         ...(s.conductor === id || s.conductorClaim?.tile === id || s.conductors[id] || Object.values(s.conductors).some((c) => c.tiles.includes(id))
           ? { conductorAt: new Date().toISOString() }
           : {}),
-        ...focusFor(layout, fallback),
+        ...commit(s, layouts, fallback),
       };
     });
   },
@@ -1669,42 +1799,59 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   focusTerminal(id) {
+    if (!useStore.getState().terminals[id]) return;
+    let shown: string | null = null;
     set((s) => {
-      const g = findGroupOf(s.layout, id);
+      let ls = layoutsOf(s);
+      let label = windowOfTile(ls, id);
+      // Not open here (windows and layouts spec §2): it opens as a tab of the main window's focused group.
+      if (!label) {
+        ls = { ...ls, [MAIN]: addTab(ls[MAIN], id, s.focusedGroupId) };
+        label = MAIN;
+      }
+      const g = findGroupOf(ls[label], id);
       if (!g) return {};
-      const layout = setActive(s.layout, g.id, id);
+      ls = { ...ls, [label]: setActive(ls[label], g.id, id) };
+      shown = label;
       const cur = s.agentState[id];
       const agentState = s.windowFocused && cur?.unseen ? { ...s.agentState, [id]: { ...cur, unseen: false } } : s.agentState;
-      return { layout, focusedGroupId: g.id, focusedTerminalId: id, agentState };
+      const zoomed = s.zoomed[label] && s.zoomed[label] !== g.id ? omit(s.zoomed, label) : s.zoomed;
+      return { ...commit({ ...s, zoomed }, ls, id), agentState };
     });
+    if (shown && shown !== MAIN) windowHooks.focus(shown);
   },
 
   focusGroup(groupId) {
     set((s) => {
-      const group = allGroups(s.layout).find((g) => g.id === groupId);
-      const id = group?.active ?? null;
+      const ls = layoutsOf(s);
+      const label = windowOfGroup(ls, groupId);
+      if (!label) return {};
+      const group = findGroup(ls[label], groupId);
+      const id = group?.active || null;
       const cur = id ? s.agentState[id] : undefined;
       const agentState = id && s.windowFocused && cur?.unseen ? { ...s.agentState, [id]: { ...cur, unseen: false } } : s.agentState;
+      if (label !== MAIN) return { windows: { ...s.windows, [label]: { ...s.windows[label], focusedGroupId: groupId } }, agentState };
       return { focusedGroupId: groupId, focusedTerminalId: id, agentState };
     });
   },
 
   moveTerminal(id, groupId) {
-    set((s) => {
-      const layout = moveToGroup(s.layout, id, groupId);
-      return { layout, ...focusFor(layout, id) };
-    });
+    lastPlaced = { id, at: Date.now() };
+    set((s) => commit(s, placeTile(layoutsOf(s), id, groupId), id));
   },
 
   splitTerminal(id, targetGroupId, side) {
-    set((s) => {
-      const layout = splitWith(s.layout, targetGroupId, id, side);
-      return { layout, ...focusFor(layout, id) };
-    });
+    lastPlaced = { id, at: Date.now() };
+    set((s) => commit(s, placeTile(layoutsOf(s), id, targetGroupId, side), id));
   },
 
   resizeSplit(splitId, sizes) {
-    set((s) => ({ layout: resizeSplitNode(s.layout, splitId, sizes) }));
+    set((s) => {
+      const ls = layoutsOf(s);
+      const label = windowOfNode(ls, splitId);
+      if (!label) return {};
+      return commit(s, { ...ls, [label]: resizeSplitNode(ls[label], splitId, sizes) });
+    });
   },
 
   setDragging(id) {
@@ -1915,44 +2062,238 @@ export const useStore = create<WorkbenchState>((set) => ({
     return firstError;
   },
 
-  breakouts: {},
+  windowLabel: MAIN,
+  windows: {},
+  zoomed: {},
+  fileLayout: null,
+  selectedTiles: [],
+  closedNotice: null,
+  openTileIds: [],
 
-  async breakoutTerminal(id, at) {
+  closeTab(id) {
     const s = useStore.getState();
-    if (!s.terminals[id] || s.terminals[id].exited !== null) return;
-    if (s.breakouts[id]) {
-      breakoutHooks.focus(id);
+    const ls = layoutsOf(s);
+    const label = windowOfTile(ls, id);
+    if (!label) return;
+    const place = placeOf(s, id);
+    set((st) => commit(st, removeEverywhere(layoutsOf(st), id)));
+    showNotice({ window: label, ids: [id], at: Date.now(), undo: { kind: "tiles", places: [place] } });
+  },
+
+  async openInNewWindow(ids, at, presetId = null) {
+    const s = useStore.getState();
+    const tiles = ids.filter((id) => s.terminals[id]);
+    if (tiles.length === 0) return;
+    const label = newWindowLabel();
+    const preset = presetId ? presetById(presetId) : null;
+    const ls0 = layoutsOf(s);
+    // A group moved whole keeps the tab it was showing.
+    const source = windowOfTile(ls0, tiles[0]);
+    const showing = source ? findGroupOf(ls0[source], tiles[0])?.active : null;
+    const tree = preset ? arrange(preset, tiles) : groupOf(tiles, showing && tiles.includes(showing) ? showing : tiles[0]);
+    set((st) => {
+      let ls = layoutsOf(st);
+      for (const id of tiles) ls = removeEverywhere(ls, id);
+      return commit(st, { ...ls, [label]: tree }, tiles[0]);
+    });
+    try {
+      await windowHooks.open(label, at);
+    } catch (e) {
+      // No window: the tiles go back to the main window rather than vanish.
+      set((st) => {
+        let main = layoutsOf(st)[MAIN];
+        for (const id of tiles) main = addTab(main, id, st.focusedGroupId);
+        return { ...commit(st, { ...omit(layoutsOf(st), label), [MAIN]: main }), persistError: `could not open a window: ${errText(e)}` };
+      });
+    }
+  },
+
+  async moveGroupToNewWindow(groupId) {
+    const s = useStore.getState();
+    const ls = layoutsOf(s);
+    const label = windowOfGroup(ls, groupId);
+    const g = label ? findGroup(ls[label], groupId) : null;
+    if (!g || g.tabs.length === 0) return;
+    const bounds = label ? await windowHooks.boundsOf(label) : null;
+    const at = bounds ? { x: bounds.x + 80, y: bounds.y + 60 } : null;
+    await useStore.getState().openInNewWindow([g.active, ...g.tabs.filter((t) => t !== g.active)], at);
+  },
+
+  async moveToWindow(id, label): Promise<void> {
+    const s = useStore.getState();
+    if (label === "new") {
+      await useStore.getState().openInNewWindow([id], null);
       return;
     }
-    // The group shows another tab meanwhile, so it is never blank.
-    set((st) => {
-      const group = findGroupOf(st.layout, id);
-      const next = group?.tabs.find((t) => t !== id && !st.breakouts[t]);
-      const layout = group && group.active === id && next ? setActive(st.layout, group.id, next) : st.layout;
-      return { breakouts: { ...st.breakouts, [id]: true }, layout };
+    const ls = layoutsOf(s);
+    const target = ls[label];
+    if (label !== MAIN && !target) return;
+    const groupId = (label === MAIN ? s.focusedGroupId : s.windows[label]?.focusedGroupId) ?? allGroups(target)[0]?.id ?? null;
+    if (groupId && findGroup(target, groupId)) {
+      useStore.getState().moveTerminal(id, groupId);
+    } else {
+      set((st) => commit(st, { ...removeEverywhere(layoutsOf(st), id), [label]: addTab(null, id, null) }, id));
+    }
+    if (label !== MAIN) windowHooks.focus(label);
+  },
+
+  async dropOutside(id, at, from) {
+    if (!useStore.getState().terminals[id]) return;
+    // Another window's webview took this drop a moment ago (its drag end can still say "none").
+    if (lastPlaced?.id === id && Date.now() - lastPlaced.at < DROP_SETTLE_MS) return;
+    const under = await windowHooks.windowAt(at);
+    // Back over the window it came from: a drop nothing took, so nothing moves.
+    if (under === from) return;
+    if (under) {
+      windowHooks.dropAt(under, id, at);
+      return;
+    }
+    await useStore.getState().openInNewWindow([id], at);
+  },
+
+  async closeWindow(label) {
+    if (label === MAIN) return;
+    const s = useStore.getState();
+    const w = s.windows[label];
+    if (!w) return;
+    const bounds = await windowHooks.boundsOf(label).catch(() => null);
+    const ids = allGroups(w.layout).flatMap((g) => g.tabs);
+    set((st) => commit(st, omit(layoutsOf(st), label)));
+    if (ids.length > 0) showNotice({ window: MAIN, ids, at: Date.now(), undo: { kind: "window", layout: w.layout, bounds } });
+  },
+
+  async restoreWindows() {
+    for (const label of Object.keys(useStore.getState().windows)) {
+      try {
+        await windowHooks.open(label, null);
+      } catch {
+        // No window after all: its tiles are simply not open here.
+        set((st) => commit(st, omit(layoutsOf(st), label)));
+      }
+    }
+  },
+
+  applyPreset(groupId, presetId) {
+    const preset = presetById(presetId);
+    if (!preset) return;
+    set((s) => {
+      const ls = layoutsOf(s);
+      const label = windowOfGroup(ls, groupId);
+      if (!label) return {};
+      const tree = arrange(preset, tilesInOrder(ls[label]));
+      return { ...commit({ ...s, zoomed: omit(s.zoomed, label) }, { ...ls, [label]: tree }) };
     });
-    persistBreakouts();
-    try {
-      await breakoutHooks.open(id, at);
-    } catch (e) {
-      set((st) => ({ breakouts: omit(st.breakouts, id) as Record<string, true>, persistError: `could not open a window: ${typeof e === "string" ? e : String(e)}` }));
-      persistBreakouts();
-    }
   },
 
-  returnTerminal(id) {
-    if (!useStore.getState().breakouts[id]) return;
-    set((st) => ({ breakouts: omit(st.breakouts, id) as Record<string, true> }));
-    persistBreakouts();
-    breakoutHooks.close(id);
-    useStore.getState().focusTerminal(id);
+  async arrangeSelection(presetId, target) {
+    const s = useStore.getState();
+    const preset = presetById(presetId);
+    const ids = s.selectedTiles.filter((id) => s.terminals[id]);
+    if (!preset || ids.length === 0) return;
+    set({ selectedTiles: [] });
+    if (target === "new") {
+      await useStore.getState().openInNewWindow(ids, null, presetId);
+      return;
+    }
+    // In the main window: what it showed and was not picked is closed there, still running (spec §8).
+    const closed = tilesOf(s.layout).filter((id) => !ids.includes(id));
+    const places = closed.map((id) => placeOf(s, id));
+    set((st) => {
+      let ls = layoutsOf(st);
+      for (const id of ids) ls = removeEverywhere(ls, id);
+      return commit({ ...st, zoomed: omit(st.zoomed, MAIN) }, { ...ls, [MAIN]: arrange(preset, ids) }, ids[0]);
+    });
+    if (closed.length > 0) showNotice({ window: MAIN, ids: closed, at: Date.now(), undo: { kind: "tiles", places } });
   },
 
-  async restoreBreakouts() {
-    const saved = loadBreakouts();
-    for (const id of Object.keys(saved)) {
-      if (useStore.getState().terminals[id]) await useStore.getState().breakoutTerminal(id, null);
+  async newInSlot(groupId) {
+    const s = useStore.getState();
+    const cwd = (s.focusedTerminalId && s.terminals[s.focusedTerminalId]?.cwd) || s.lastCwd || (await homeDir());
+    await useStore.getState().createTerminal(cwd, { kind: "tab", groupId });
+  },
+
+  removeSlot(groupId) {
+    set((s) => {
+      const ls = layoutsOf(s);
+      const label = windowOfGroup(ls, groupId);
+      if (!label) return {};
+      return commit(s, { ...ls, [label]: removeGroup(ls[label], groupId) });
+    });
+  },
+
+  toggleZoom(groupId) {
+    set((s) => {
+      const label = windowOfGroup(layoutsOf(s), groupId);
+      if (!label) return {};
+      return { zoomed: s.zoomed[label] === groupId ? omit(s.zoomed, label) : { ...s.zoomed, [label]: groupId } };
+    });
+  },
+
+  selectTile(id, mode, visible) {
+    set((s) => {
+      const cur = s.selectedTiles;
+      if (mode === "toggle") return { selectedTiles: cur.includes(id) ? cur.filter((t) => t !== id) : [...cur, id] };
+      const anchor = cur[cur.length - 1];
+      const a = anchor ? visible.indexOf(anchor) : -1;
+      const b = visible.indexOf(id);
+      if (a === -1 || b === -1) return { selectedTiles: cur.includes(id) ? cur : [...cur, id] };
+      const range = visible.slice(Math.min(a, b), Math.max(a, b) + 1);
+      const ordered = a <= b ? range : range.reverse();
+      return { selectedTiles: [...cur, ...ordered.filter((t) => !cur.includes(t))] };
+    });
+  },
+
+  selectTiles(ids) {
+    set((s) => {
+      const all = ids.length > 0 && ids.every((id) => s.selectedTiles.includes(id)) && s.selectedTiles.length === ids.length;
+      return { selectedTiles: all ? [] : [...ids] };
+    });
+  },
+
+  clearSelection() {
+    set({ selectedTiles: [] });
+  },
+
+  async undoClosed() {
+    const n = useStore.getState().closedNotice;
+    if (!n) return;
+    set({ closedNotice: null });
+    const alive = (id: string) => useStore.getState().terminals[id] !== undefined;
+    if (n.undo.kind === "window") {
+      const label = newWindowLabel();
+      const layout = n.undo.layout;
+      set((st) => {
+        let ls = layoutsOf(st);
+        let tree = layout;
+        for (const id of tilesOf(layout)) {
+          if (alive(id)) ls = removeEverywhere(ls, id);
+          else tree = removeTerminal(tree, id);
+        }
+        return tree ? commit(st, { ...ls, [label]: tree }) : {};
+      });
+      if (useStore.getState().windows[label]) {
+        await windowHooks.open(label, null, n.undo.bounds).catch(() => set((st) => commit(st, omit(layoutsOf(st), label))));
+      }
+      return;
     }
+    const places = n.undo.places;
+    set((st) => {
+      let ls = layoutsOf(st);
+      for (const { id, groupId } of places) {
+        if (!alive(id)) continue;
+        if (groupId && windowOfGroup(ls, groupId)) {
+          ls = placeTile(ls, id, groupId);
+        } else {
+          ls = removeEverywhere(ls, id);
+          ls = { ...ls, [MAIN]: addTab(ls[MAIN], id, st.focusedGroupId) };
+        }
+      }
+      return commit(st, ls, places.find((p) => alive(p.id))?.id ?? null);
+    });
+  },
+
+  dismissClosedNotice() {
+    set({ closedNotice: null });
   },
 
   setCardTitle(id, title) {
@@ -2630,7 +2971,7 @@ export function __resetSyncState() {
  * compares against the file that was adopted. */
 function currentWorkspace(): Workspace {
   const s = useStore.getState();
-  return toWorkspace({ order: s.order, terminals: persistedTerminals(s.terminals), settings: s.settings, layout: s.layout, machines: s.machines, conductor: s.conductor, conductorClaim: s.conductorClaim, conductors: s.conductors, conductorAt: s.conductorAt, extra: s.workspaceExtra });
+  return toWorkspace({ order: s.order, terminals: persistedTerminals(s.terminals), settings: s.settings, layout: s.fileLayout, machines: s.machines, conductor: s.conductor, conductorClaim: s.conductorClaim, conductors: s.conductors, conductorAt: s.conductorAt, extra: s.workspaceExtra });
 }
 
 /**
@@ -2697,7 +3038,8 @@ async function applyWorkspace(
     for (const id of toClose) await useStore.getState().closeTerminal(id);
   }
   const open = new Set(useStore.getState().order);
-  const { anyFailed } = await openDefs(defs.filter((d) => !open.has(d.id)), ws.layout, useStore.setState, defs);
+  useStore.setState({ fileLayout: ws.layout ?? null });
+  const { anyFailed } = await openDefs(defs.filter((d) => !open.has(d.id)), useStore.setState, defs);
   // Names travel too. A terminal that was already open keeps the name the registry gave it when
   // it was spawned, so a rename made on another machine would never land here — and then that
   // machine would write "other" and this one would write the old name back, once per round,
@@ -2889,7 +3231,7 @@ function runSaveNow(): Promise<void> {
       order: s.order,
       terminals: persistedTerminals(s.terminals),
       settings: s.settings,
-      layout: s.layout,
+      layout: s.fileLayout,
       machines: s.machines,
       conductor: s.conductor,
       conductorClaim: s.conductorClaim,
@@ -2912,7 +3254,7 @@ function runSaveNow(): Promise<void> {
       order: s.order,
       terminals: persistedTerminals(s.terminals),
       settings: s.settings,
-      layout: s.layout,
+      layout: s.fileLayout,
       machines: s.machines,
       conductor: s.conductor,
       conductorClaim: s.conductorClaim,
@@ -3001,7 +3343,6 @@ useStore.subscribe((s, prev) => {
   if (
     s.terminals !== prev.terminals ||
     s.order !== prev.order ||
-    s.layout !== prev.layout ||
     s.settings !== prev.settings ||
     s.machines !== prev.machines ||
     s.conductor !== prev.conductor ||
@@ -3014,6 +3355,14 @@ useStore.subscribe((s, prev) => {
 
 useStore.subscribe((s, prev) => {
   if (s.sshConnected !== prev.sshConnected || s.order !== prev.order) void s.ensureAgentWatchers();
+});
+
+// This Mac's trees are its own (windows and layouts spec §2): kept per Mac, never in the file.
+useStore.subscribe((s, prev) => {
+  if (s.windowLabel !== MAIN || (s.layout === prev.layout && s.windows === prev.windows)) return;
+  if (layoutsLoaded) saveLayouts(layoutsOf(s));
+  // A window whose tree emptied closes (its tiles moved elsewhere, or it was closed).
+  for (const label of Object.keys(prev.windows)) if (!s.windows[label]) windowHooks.close(label);
 });
 
 useStore.subscribe((s, prev) => {

@@ -552,7 +552,8 @@ describe("sameWorkspaceContent", () => {
     expect(sameWorkspaceContent(base, ws([t("a"), { ...t("b"), command: "ls" }]))).toBe(false);
     expect(sameWorkspaceContent(base, ws([t("a"), { ...t("b"), origin: "desk" }]))).toBe(false);
     expect(sameWorkspaceContent(base, ws([t("a")]))).toBe(false);
-    expect(sameWorkspaceContent(base, { ...base, layout: null })).toBe(false);
+    // The layout is each Mac's own (windows and layouts spec §2): never a difference.
+    expect(sameWorkspaceContent(base, { ...base, layout: null })).toBe(true);
     expect(sameWorkspaceContent(base, { ...base, machines: { desk: { lastUsed: "t" } } })).toBe(false);
   });
   it("sees the conductor and a claim change, and treats absent, null and empty as none", () => {

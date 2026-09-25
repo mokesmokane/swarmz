@@ -132,6 +132,18 @@ function Node(p: NodeProps) {
           <span className="w-4 shrink-0" />
         )}
         <div className="min-w-0 flex-1">{p.renderRow(id)}</div>
+        {node.conductor && below.length > 0 && (
+          // Picks the conductor and everything under it, to show them together (windows and layouts spec §8).
+          <button
+            className="mt-1 shrink-0 rounded px-1 text-[11px] text-neutral-600 hover:bg-neutral-800 hover:text-neutral-200"
+            onClick={() => useStore.getState().selectTiles([id, ...below])}
+            title={`Select ${title} and the ${below.length} under it, to show them together in a layout`}
+            aria-label={`Select ${title} and its tiles`}
+            data-testid={`tree-select-${id}`}
+          >
+            ⊞
+          </button>
+        )}
       </div>
       {node.conductor && isCollapsed && below.length > 0 && (
         <button
