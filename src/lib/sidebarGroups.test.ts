@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { OFFLINE, type AgentState } from "./agentState";
-import { groupRows, loadGroupBy, relativeActivity, rowInfo, rowStatus, saveGroupBy, type RowContext, type RowSource } from "./sidebarGroups";
+import { groupRows, triage, loadGroupBy, relativeActivity, rowInfo, rowStatus, saveGroupBy, type RowContext, type RowSource } from "./sidebarGroups";
 
 const ctx: RowContext = {
   selfMachine: "mini",
@@ -70,8 +70,19 @@ describe("grouping", () => {
   const infos = new Map(rows.map((r) => [r.id, rowInfo(r, ctx)]));
   const order = rows.map((r) => r.id);
 
-  it("workspace keeps the order in one untitled group", () => {
-    expect(groupRows(order, infos, "workspace")).toEqual([{ key: "all", title: "", ids: order }]);
+  it("triage splits needs you, working and the rest, each newest first", () => {
+    expect(triage(order, infos)).toEqual({ needs: ["l1"], working: ["r1"], quiet: ["l2", "r2", "l3"], exited: 0 });
+    expect(groupRows(order, infos, "triage")).toEqual([]);
+  });
+
+  it("time buckets by last activity", () => {
+    const now = Date.parse("2026-09-23T11:30:00Z");
+    const g = groupRows(order, infos, "time", now);
+    expect(g.map((x) => [x.title, x.ids])).toEqual([
+      ["Last hour", ["l1"]],
+      ["Today", ["r1", "l2"]],
+      ["Older", ["r2", "l3"]],
+    ]);
   });
 
   it("machine puts this Mac first and sorts each group by activity", () => {
@@ -84,16 +95,6 @@ describe("grouping", () => {
     expect(g.map((x) => x.glyph)).toEqual(["M", "B"]);
   });
 
-  it("status orders needs you, working, idle, stopped and hides empty groups", () => {
-    const g = groupRows(order, infos, "status");
-    expect(g.map((x) => [x.title, x.ids])).toEqual([
-      ["needs you", ["l1"]],
-      ["working", ["r1"]],
-      ["idle", ["l2"]],
-      ["stopped", ["r2", "l3"]],
-    ]);
-  });
-
   it("folder groups by basename, by name", () => {
     const g = groupRows(order, infos, "folder");
     expect(g.map((x) => x.title)).toEqual(["l1", "l2", "l3", "r1", "r2"]);
@@ -102,11 +103,14 @@ describe("grouping", () => {
   it("the preference round-trips and defaults", () => {
     const store = new Map<string, string>();
     const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
-    expect(loadGroupBy(storage)).toBe("workspace");
+    expect(loadGroupBy(storage)).toBe("triage");
     saveGroupBy("machine", storage);
     expect(loadGroupBy(storage)).toBe("machine");
-    store.set("swarmz.sidebarGroupBy", "junk");
-    expect(loadGroupBy(storage)).toBe("workspace");
-    expect(loadGroupBy(null)).toBe("workspace");
+    // The old groupings, and anything unknown, open on Triage.
+    for (const old of ["workspace", "status", "junk"]) {
+      store.set("swarmz.sidebarGroupBy", old);
+      expect(loadGroupBy(storage)).toBe("triage");
+    }
+    expect(loadGroupBy(null)).toBe("triage");
   });
 });

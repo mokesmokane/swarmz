@@ -3,20 +3,21 @@ import { needsYou } from "./agentState";
 import type { SessionRecord } from "./sessions";
 import { hostLabel, machineGlyph, machineLabel, type Machines } from "./workspace";
 
-/** How the sidebar lists tiles (sidebar groups spec §3), a per-machine preference. */
-export type GroupBy = "workspace" | "machine" | "status" | "folder" | "conductor";
+/** How the sidebar lists tiles (sidebar redesign spec: Mac · Triage · Folder · Tree · Time), a per-machine preference. */
+export type GroupBy = "machine" | "triage" | "folder" | "conductor" | "time";
 export const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
-  { value: "workspace", label: "Workspace" },
-  { value: "machine", label: "Machine" },
-  { value: "status", label: "Status" },
+  { value: "machine", label: "Mac" },
+  { value: "triage", label: "Triage" },
   { value: "folder", label: "Folder" },
   { value: "conductor", label: "Tree" },
+  { value: "time", label: "Time" },
 ];
 const KEY = "swarmz.sidebarGroupBy";
 
 export function loadGroupBy(storage: Pick<Storage, "getItem"> | null = typeof localStorage === "undefined" ? null : localStorage): GroupBy {
   const raw = storage?.getItem(KEY);
-  return GROUP_BY_OPTIONS.some((o) => o.value === raw) ? (raw as GroupBy) : "workspace";
+  // The old Workspace and Status groupings are what Triage does now.
+  return GROUP_BY_OPTIONS.some((o) => o.value === raw) ? (raw as GroupBy) : "triage";
 }
 
 export function saveGroupBy(value: GroupBy, storage: Pick<Storage, "setItem"> | null = typeof localStorage === "undefined" ? null : localStorage): void {
@@ -124,12 +125,6 @@ export interface Group {
   ids: string[];
 }
 
-const STATUS_ORDER: RowStatus[] = ["needs you", "working", "idle", "stopped"];
-
-function statusBucket(s: RowStatus): RowStatus {
-  return s.startsWith("exited") ? "stopped" : s;
-}
-
 function byActivity(infos: Map<string, RowInfo>) {
   return (a: string, b: string) => {
     const ta = infos.get(a)?.since ? Date.parse(infos.get(a)!.since!) : 0;
@@ -138,11 +133,39 @@ function byActivity(infos: Map<string, RowInfo>) {
   };
 }
 
-/** The list's groups for `groupBy` (spec §3); a single untitled group in workspace order for "workspace". */
-export function groupRows(order: string[], infos: Map<string, RowInfo>, groupBy: GroupBy): Group[] {
-  if (groupBy === "workspace") return [{ key: "all", title: "", ids: order }];
-  // The Tree view draws its own nesting (ConductorTree).
-  if (groupBy === "conductor") return [];
+/** Triage (sidebar redesign spec): what needs you, what is working, and the rest, each newest first. */
+export function triage(order: string[], infos: Map<string, RowInfo>): { needs: string[]; working: string[]; quiet: string[]; exited: number } {
+  const sort = byActivity(infos);
+  const known = order.filter((id) => infos.has(id));
+  const is = (id: string, s: RowStatus) => infos.get(id)!.status === s;
+  const needs = known.filter((id) => is(id, "needs you")).sort(sort);
+  const working = known.filter((id) => is(id, "working")).sort(sort);
+  const quiet = known.filter((id) => !is(id, "needs you") && !is(id, "working")).sort(sort);
+  return { needs, working, quiet, exited: quiet.filter((id) => infos.get(id)!.status.startsWith("exited")).length };
+}
+
+/** The Time view's buckets by last activity (sidebar redesign spec). */
+export const TIME_BUCKETS: { key: string; title: string; upTo: number }[] = [
+  { key: "hour", title: "Last hour", upTo: 3600_000 },
+  { key: "today", title: "Today", upTo: 86_400_000 },
+  { key: "week", title: "This week", upTo: 7 * 86_400_000 },
+  { key: "older", title: "Older", upTo: Infinity },
+];
+
+/** The list's groups for `groupBy`; Triage and Tree draw their own (see `triage`, ConductorTree). */
+export function groupRows(order: string[], infos: Map<string, RowInfo>, groupBy: GroupBy, now: number = Date.now()): Group[] {
+  if (groupBy === "triage" || groupBy === "conductor") return [];
+  if (groupBy === "time") {
+    const sort = byActivity(infos);
+    const out: Group[] = TIME_BUCKETS.map((b) => ({ key: b.key, title: b.title, ids: [] as string[] }));
+    for (const id of [...order].filter((x) => infos.has(x)).sort(sort)) {
+      const since = infos.get(id)!.since;
+      const age = since ? now - Date.parse(since) : Infinity;
+      const i = TIME_BUCKETS.findIndex((b) => (Number.isFinite(age) ? Math.max(0, age) : Infinity) < b.upTo || b.upTo === Infinity);
+      out[i].ids.push(id);
+    }
+    return out.filter((g) => g.ids.length > 0);
+  }
   const sort = byActivity(infos);
   const groups = new Map<string, Group>();
   for (const id of order) {
@@ -155,9 +178,6 @@ export function groupRows(order: string[], infos: Map<string, RowInfo>, groupBy:
       key = info.machine.key;
       title = info.machine.alias ? `${info.machine.label} (${info.machine.alias})` : info.machine.label;
       extra = { glyph: info.machine.glyph, color: info.machine.color, online: info.machine.self ? null : info.machine.online };
-    } else if (groupBy === "status") {
-      key = statusBucket(info.status);
-      title = key;
     } else {
       key = info.folder;
       title = info.folder;
@@ -171,8 +191,6 @@ export function groupRows(order: string[], infos: Map<string, RowInfo>, groupBy:
   if (groupBy === "machine") {
     const selfKey = order.map((id) => infos.get(id)).find((i) => i?.machine.self)?.machine.key;
     out.sort((a, b) => (a.key === selfKey ? -1 : b.key === selfKey ? 1 : a.title.localeCompare(b.title)));
-  } else if (groupBy === "status") {
-    out.sort((a, b) => STATUS_ORDER.indexOf(a.key as RowStatus) - STATUS_ORDER.indexOf(b.key as RowStatus));
   } else {
     out.sort((a, b) => a.title.localeCompare(b.title));
   }

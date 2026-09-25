@@ -16,13 +16,21 @@ import { ipc } from "../lib/ipc";
 import { useStore } from "../store";
 import { ConductorTree } from "./ConductorTree";
 import type { RowInfo } from "../lib/sidebarGroups";
+import type { RowTree } from "./Sidebar";
 
 const tile = (id: string) => ({ id, name: id, cwd: `/p/${id}`, exited: null, error: null });
 const claude = { enabled: true, sessionId: "s", skipPermissions: false, started: true };
 const order = ["top", "s1", "a", "b", "o"];
 const info = (id: string, status: RowInfo["status"] = "idle"): RowInfo => ({ id, machine: { key: "m", glyph: "M", label: "m", alias: null, color: null, self: true, online: null }, folder: "f", status, since: null });
 const infos = new Map<string, RowInfo>([["top", info("top")], ["s1", info("s1")], ["a", info("a", "needs you")], ["b", info("b")], ["o", info("o")]]);
-const renderRow = (id: string) => <div data-testid={`row-${id}`}>{id}</div>;
+// A stand-in for the sidebar's row: its fold caret and folded summary come from the tree.
+const renderRow = (id: string, extra?: { depth?: number; tree?: RowTree }) => (
+  <div data-testid={`row-${id}`} data-depth={extra?.depth ?? 0}>
+    {id}
+    {extra?.tree?.caret && <button aria-label={`${extra.tree.folded ? "Expand" : "Collapse"} ${id}`} onClick={extra.tree.onFold} />}
+    {extra?.tree?.summary && <span data-testid={`summary-${id}`}>{`${extra.tree.summary}·${extra.tree.summaryNeeds ?? ""}`}</span>}
+  </div>
+);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -51,17 +59,19 @@ describe("ConductorTree", () => {
     expect(inside("s1", "a") && inside("s1", "b")).toBe(true);
     expect(inside("top", "o") && inside("top", "s1")).toBe(true);
     expect(screen.queryByTestId("tree-node-o")?.querySelector("button[aria-label^='Collapse']")).toBeFalsy();
+    // Each level down is one more step of indent.
+    expect(screen.getByTestId("row-a").dataset.depth).toBe("2");
   });
 
   it("folds a conductor shut, says what needs you inside, and remembers the fold", () => {
     const { unmount } = render(<ConductorTree order={order} infos={infos} renderRow={renderRow} />);
     fireEvent.click(screen.getByLabelText("Collapse s1"));
     expect(screen.queryByTestId("row-a")).toBeNull();
-    expect(screen.getByTestId("tree-folded-s1").textContent).toBe("2 under it1 needs you");
+    expect(screen.getByTestId("summary-s1").textContent).toBe("2 under·1 needs you");
     unmount();
     render(<ConductorTree order={order} infos={infos} renderRow={renderRow} />);
     expect(screen.queryByTestId("row-a")).toBeNull();
-    fireEvent.click(screen.getByTestId("tree-folded-s1"));
+    fireEvent.click(screen.getByLabelText("Expand s1"));
     expect(screen.getByTestId("row-a")).toBeTruthy();
   });
 
@@ -71,7 +81,7 @@ describe("ConductorTree", () => {
     expect(screen.getByTestId("tree-empty-s2").textContent).toBe("Drag tiles here");
     act(() => useStore.setState({ draggingTerminalId: "o" }));
     fireEvent.dragOver(screen.getByTestId("tree-node-s1"));
-    expect(screen.getByTestId("tree-node-s1").className).toContain("ring-amber");
+    expect(screen.getByTestId("tree-node-s1").className).toContain("ring-needs");
     await act(async () => {
       fireEvent.drop(screen.getByTestId("tree-node-s1"));
     });
@@ -88,7 +98,7 @@ describe("ConductorTree", () => {
     render(<ConductorTree order={order} infos={infos} renderRow={renderRow} />);
     act(() => useStore.setState({ draggingTerminalId: "a" }));
     fireEvent.dragOver(screen.getByTestId("tree-node-s1"));
-    expect(screen.getByTestId("tree-node-s1").className).not.toContain("ring-amber");
+    expect(screen.getByTestId("tree-node-s1").className).not.toContain("ring-needs");
     await act(async () => {
       fireEvent.drop(screen.getByTestId("tree-node-s1"));
     });

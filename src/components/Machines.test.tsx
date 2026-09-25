@@ -129,8 +129,8 @@ describe("ActivityBar", () => {
     expect(screen.getByLabelText("Terminals").getAttribute("aria-pressed")).toBe("true");
     expect(screen.queryByTestId("badge-needs")).toBeNull();
     expect(screen.getByTestId("badge-machines")).toBeTruthy();
-    fireEvent.click(screen.getByLabelText("Machines"));
-    expect(pick).toHaveBeenCalledWith("machines");
+    // Machines opens from the sidebar's footer now (sidebar redesign spec), not the bar.
+    expect(screen.queryByLabelText("Machines")).toBeNull();
     fireEvent.click(screen.getByLabelText("Conductors"));
     expect(useStore.getState().conductorsPanel).toBe(true);
     rerender(<ActivityBar view="machines" folded={false} onPick={pick} />);

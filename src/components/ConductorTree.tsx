@@ -2,8 +2,10 @@ import { useState, type DragEvent, type ReactNode } from "react";
 import { useStore } from "../store";
 import { DRAG_MIME } from "./TabGroup";
 import { buildConductorTree, descendants, dropAction, loadCollapsed, saveCollapsed, type TreeNode } from "../lib/conductorTree";
-import { displayTitle } from "../lib/card";
 import type { RowInfo } from "../lib/sidebarGroups";
+import type { RowTree } from "./Sidebar";
+
+type RenderRow = (id: string, extra?: { depth?: number; tree?: RowTree }) => ReactNode;
 
 const message = (e: unknown) => (typeof e === "string" ? e : String(e));
 
@@ -14,7 +16,7 @@ const message = (e: unknown) => (typeof e === "string" ? e : String(e));
  * moves it with everything under it. Dragging a row into a pane still opens it there, as in every
  * other view. Every change goes through the tool.
  */
-export function ConductorTree({ order, infos, renderRow }: { order: string[]; infos: Map<string, RowInfo>; renderRow: (id: string) => ReactNode }) {
+export function ConductorTree({ order, infos, renderRow }: { order: string[]; infos: Map<string, RowInfo>; renderRow: RenderRow }) {
   const top = useStore((s) => s.conductor);
   const subs = useStore((s) => s.conductors);
   const tree = buildConductorTree(order, top, subs);
@@ -65,7 +67,7 @@ interface NodeProps {
   collapsed: Set<string>;
   onToggle: (id: string) => void;
   onError: (e: string | null) => void;
-  renderRow: (id: string) => ReactNode;
+  renderRow: RenderRow;
 }
 
 function Node(p: NodeProps) {
@@ -74,10 +76,6 @@ function Node(p: NodeProps) {
   const dragging = useStore((s) => s.draggingTerminalId);
   const setSubConductor = useStore((s) => s.setSubConductor);
   const assignTile = useStore((s) => s.assignTile);
-  const title = useStore((s) => {
-    const t = s.terminals[id];
-    return t ? displayTitle(s.settings[id]?.card, s.agentState[id], t.name) : id;
-  });
   const [over, setOver] = useState(false);
   const isCollapsed = node.conductor && p.collapsed.has(id);
   const below = node.conductor ? descendants(node) : [];
@@ -115,57 +113,35 @@ function Node(p: NodeProps) {
         if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) setOver(false);
       }}
       onDrop={node.conductor ? onDrop : undefined}
-      className={`rounded ${over && action ? "bg-amber-900/25 ring-1 ring-amber-600/70" : ""}`}
+      className={over && action ? "bg-needs/10 ring-1 ring-inset ring-needs/70" : ""}
     >
-      <div className="flex items-start">
-        {node.conductor ? (
-          <button
-            className="mt-1.5 w-4 shrink-0 text-[10px] leading-4 text-neutral-500 hover:text-neutral-200"
-            onClick={() => p.onToggle(id)}
-            title={isCollapsed ? `Show the ${below.length} under ${title}` : `Fold ${title}`}
-            aria-label={isCollapsed ? `Expand ${title}` : `Collapse ${title}`}
-            aria-expanded={!isCollapsed}
-          >
-            {isCollapsed ? "▸" : "▾"}
-          </button>
-        ) : (
-          <span className="w-4 shrink-0" />
-        )}
-        <div className="min-w-0 flex-1">{p.renderRow(id)}</div>
-        {node.conductor && below.length > 0 && (
-          // Picks the conductor and everything under it, to show them together (windows and layouts spec §8).
-          <button
-            className="mt-1 shrink-0 rounded px-1 text-[11px] text-neutral-600 hover:bg-neutral-800 hover:text-neutral-200"
-            onClick={() => useStore.getState().selectTiles([id, ...below])}
-            title={`Select ${title} and the ${below.length} under it, to show them together in a layout`}
-            aria-label={`Select ${title} and its tiles`}
-            data-testid={`tree-select-${id}`}
-          >
-            ⊞
-          </button>
-        )}
-      </div>
-      {node.conductor && isCollapsed && below.length > 0 && (
-        <button
-          className="ml-6 flex items-center gap-1.5 pb-1 text-[11px] text-neutral-500 hover:text-neutral-300"
-          onClick={() => p.onToggle(id)}
-          data-testid={`tree-folded-${id}`}
-        >
-          <span>{`${below.length} under it`}</span>
-          {needs > 0 && <span className="rounded bg-red-900/60 px-1 text-red-200">{`${needs} need${needs === 1 ? "s" : ""} you`}</span>}
-        </button>
-      )}
+      {p.renderRow(id, {
+        depth,
+        tree: node.conductor
+          ? {
+              caret: true,
+              folded: !!isCollapsed,
+              onFold: () => p.onToggle(id),
+              summary: isCollapsed && below.length > 0 ? `${below.length} under` : null,
+              summaryNeeds: isCollapsed && needs > 0 ? `${needs} need${needs === 1 ? "s" : ""} you` : null,
+            }
+          : undefined,
+      })}
       {node.conductor && !isCollapsed && (
-        <div className="ml-2 border-l border-neutral-800 pl-1.5">
+        <>
           {node.children.map((c) => (
             <Node key={c.id} {...p} node={c} depth={depth + 1} />
           ))}
           {node.children.length === 0 && id !== tree.id && (
-            <div className="my-0.5 ml-4 rounded border border-dashed border-neutral-700 px-2 py-1 text-[11px] text-neutral-500" data-testid={`tree-empty-${id}`}>
+            <div
+              className="my-0.5 mr-2 rounded border border-dashed border-[#2b2d33] px-2 py-1 text-[11px] text-faint"
+              style={{ marginLeft: 8 + (depth + 1) * 16 }}
+              data-testid={`tree-empty-${id}`}
+            >
               Drag tiles here
             </div>
           )}
-        </div>
+        </>
       )}
     </div>
   );

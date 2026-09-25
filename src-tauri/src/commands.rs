@@ -470,6 +470,18 @@ pub async fn ssh_list_dir(host: String, path: Option<String>) -> Result<crate::r
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn answering_from_the_sidebar_only_passes_safe_arguments() {
+        let id = "2d6e3b7b-e3b1-4097-8926-64a02bca5f96";
+        assert_eq!(answer_args(id, "yes", None).unwrap(), vec!["answer", id, "yes"]);
+        assert_eq!(answer_args(id, "no", Some("martins-mac-mini-2")).unwrap(), vec!["--on", "martins-mac-mini-2", "answer", id, "no"]);
+        assert!(answer_args(id, "always", None).is_none());
+        assert!(answer_args("../x", "yes", None).is_none());
+        assert!(answer_args(id, "yes", Some("-oProxyCommand=x")).is_none());
+        assert!(answer_args(id, "yes", Some("a b")).is_none());
+    }
+
     use super::*;
     use crate::pty::{PtySession, SpawnSpec};
 
@@ -696,6 +708,38 @@ pub async fn conductor_action(action: String, id: Option<String>, parent: Option
         let tool = crate::toolbin::ensure_installed()?;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         // Telling a claimant on another Mac goes over ssh, so allow for that.
+        crate::toolbin::run_tool_json(&tool, &args, Duration::from_secs(20))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The arguments for answering a tile's permission dialog from the sidebar (sidebar redesign spec):
+/// `swarmz [--on <machine>] answer <tile> yes|no`. None when an argument is not safe.
+pub fn answer_args(tile: &str, choice: &str, machine: Option<&str>) -> Option<Vec<String>> {
+    if !swarmz_tool::paths::valid_tile_id(tile) || !matches!(choice, "yes" | "no") {
+        return None;
+    }
+    let mut args = Vec::new();
+    if let Some(m) = machine {
+        if m.is_empty() || m.len() > 63 || !m.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') || m.starts_with('-') {
+            return None;
+        }
+        args.extend(["--on".to_string(), m.to_string()]);
+    }
+    args.extend(["answer".to_string(), tile.to_string(), choice.to_string()]);
+    Some(args)
+}
+
+/// Allow or Deny on a tile's permission dialog, from the sidebar's Needs you card. The tool reads
+/// the tile's screen and refuses when no permission dialog is showing, so a stale card answers
+/// nothing.
+#[tauri::command]
+pub async fn tile_answer(tile: String, choice: String, machine: Option<String>) -> Result<serde_json::Value, String> {
+    let args = answer_args(&tile, &choice, machine.as_deref()).ok_or_else(|| "not a tile, a choice or a machine swarmz knows".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let tool = crate::toolbin::ensure_installed()?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         crate::toolbin::run_tool_json(&tool, &args, Duration::from_secs(20))
     })
     .await
