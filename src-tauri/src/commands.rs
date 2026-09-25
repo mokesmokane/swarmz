@@ -717,6 +717,45 @@ pub fn conductor_dir() -> Result<String, String> {
 
 const CONDUCTOR_CLAUDE_MD: &str = "# The conductor\n\nThis folder is the home of the swarmz conductor: the one Claude session allowed to act on the other tiles in the workspace, on every Mac. There is no code here to work on. The user asks the conductor what the other tiles are doing, hands work to them through it, and is reached by it on Telegram when away.\n\nWhat you may do and how is told to you at the start of every session (`~/.swarmz/bin/swarmz briefing` prints it again). Keep notes you want to survive between sessions in this folder.\n";
 
+/// A Mac's numbers for the Machines view (activity bar and machines spec §4): `swarmz stats`
+/// here, or on `host` over ssh with the sync's options. A tool too old to know `stats` is
+/// `old_tool`.
+#[tauri::command]
+pub async fn machine_stats(host: Option<String>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || match host {
+        None => {
+            let tool = crate::toolbin::ensure_installed()?;
+            crate::toolbin::run_tool_json(&tool, &["stats"], Duration::from_secs(6))
+        }
+        Some(h) => {
+            let done = crate::sync::run_remote(&h, "~/.swarmz/bin/swarmz stats", 6)?;
+            if done.status.code() == Some(255) {
+                return Err("not reachable".to_string());
+            }
+            let v: serde_json::Value = serde_json::from_str(done.stdout.trim()).map_err(|_| {
+                let e = done.stderr.trim();
+                if e.contains("No such file") || e.contains("not found") { "swarmz is not installed there".to_string() } else { format!("unreadable reply: {e}") }
+            })?;
+            if v["code"] == "usage" {
+                return Err("old_tool".to_string());
+            }
+            if let Some(e) = v["error"].as_str() {
+                return Err(e.to_string());
+            }
+            Ok(v)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One `tailscale ping` to `name` (spec §4): the round trip and whether it went direct; null when
+/// it did not answer within two seconds.
+#[tauri::command]
+pub async fn tailscale_ping(name: String) -> Result<Option<swarmz_tool::tailscale::Ping>, String> {
+    tauri::async_runtime::spawn_blocking(move || swarmz_tool::tailscale::ping(&name)).await.map_err(|e| e.to_string())?
+}
+
 /// A URL a pane showed, opened in the default browser (file viewing spec §2): `http`, `https`
 /// or `file` only, through macOS `open`, so nothing else `open` understands can be reached.
 #[tauri::command]

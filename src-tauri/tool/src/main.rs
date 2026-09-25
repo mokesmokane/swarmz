@@ -262,6 +262,10 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             cmd::telegram_follow(&cmd::Env::from_process()?, a.flag("--once"), &mut std::io::stdout())?;
             Ok(None)
         }
+        Some("stats") => {
+            a.expect_positional(1, "stats")?;
+            Ok(Some(cmd::stats(&cmd::Env::from_process()?)?))
+        }
         Some("version") => {
             a.expect_positional(1, "version")?;
             Ok(Some(json!({ "v": 1, "tool": env!("CARGO_PKG_VERSION"), "protocol": PROTOCOL_VERSION, "build": build_id() })))

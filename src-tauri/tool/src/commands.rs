@@ -153,6 +153,12 @@ pub fn row(env: &Env, tile: &str) -> Result<Value, CliError> {
     Ok(json!({"v": 1, "tile": row}))
 }
 
+/// `stats` (activity bar and machines spec §4): this Mac's CPU, memory, disk, uptime and Claude
+/// sessions.
+pub fn stats(env: &Env) -> Result<Value, CliError> {
+    Ok(crate::stats::gather(&rows(env), crate::paths::build_id()))
+}
+
 pub fn ls(env: &Env) -> Result<Value, CliError> {
     let mut v = json!({"v": 1, "tiles": rows(env)});
     merge_conductor(&mut v, &conductor_state(env));

@@ -18,6 +18,7 @@ pub mod proto;
 pub mod pty;
 pub mod ring;
 pub mod screen;
+pub mod stats;
 pub mod server;
 pub mod tailscale;
 pub mod telegram;
