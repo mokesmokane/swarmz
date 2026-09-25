@@ -81,6 +81,25 @@ export interface HostKeys {
   fingerprints: string[];
 }
 
+/** A Mac's numbers as `swarmz stats` reports them (activity bar and machines spec §4). */
+export interface MachineStats {
+  cpu: { percent: number; load1: number | null; cores: number | null };
+  memory: { usedPercent: number | null; totalBytes: number | null };
+  disk: { freePercent: number | null; freeBytes: number | null };
+  uptimeSeconds: number | null;
+  claude: { working: number; needsYou: number; idle: number; stopped: number };
+  app: string | null;
+  tool: string;
+  build: number;
+}
+
+/** One `tailscale ping`: the round trip, and direct or through a DERP relay. */
+export interface PingResult {
+  ms: number | null;
+  direct: boolean;
+  relay: string | null;
+}
+
 /** A file as `read_file` returns it (file viewing spec §3). */
 export interface FileView {
   kind: "text" | "image" | "binary" | "dir";
@@ -188,6 +207,10 @@ export const ipc = {
   conductorDir: () => invoke<string>("conductor_dir"),
   /** The conductor fields of the workspace file on disk, or null with no file (read before every save). */
   workspaceRoles: () => invoke<{ conductor?: unknown; conductors?: unknown; conductorClaim?: unknown; conductorAt?: unknown } | null>("workspace_roles"),
+  /** `swarmz stats` here (null) or on `host` over ssh; rejects with `old_tool` for a tool without it. */
+  machineStats: (host: string | null) => invoke<MachineStats>("machine_stats", { host }),
+  /** One `tailscale ping` to a machine; null when it did not answer within two seconds. */
+  tailscalePing: (name: string) => invoke<PingResult | null>("tailscale_ping", { name }),
   /** A URL from a pane, in the browser (file viewing spec §2). */
   openUrl: (url: string) => invoke<void>("open_url", { url }),
   /** Opens `path` outside swarmz (spec §4): the default app, or Finder with `reveal`; a remote file is copied here first. Resolves with the path opened. */

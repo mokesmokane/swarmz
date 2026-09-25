@@ -37,6 +37,8 @@ vi.mock("../lib/ipc", () => ({
     remoteTileClose: vi.fn(async () => false),
     localSessions: vi.fn(async () => []),
     closeSession: vi.fn(async () => true),
+    machineStats: vi.fn(async () => ({ cpu: { percent: 12, load1: 1, cores: 8 }, memory: { usedPercent: 50, totalBytes: 8 }, disk: { freePercent: 40, freeBytes: 4 }, uptimeSeconds: 60, claude: { working: 1, needsYou: 0, idle: 0, stopped: 0 }, app: "0.8.0", tool: "0.1.0", build: 1 })),
+    tailscalePing: vi.fn(async () => null),
     conductorAction: vi.fn(async () => ({ conductor: null, claim: null })),
     conductorDir: vi.fn(async () => "/home/me/.swarmz/conductor"),
     phones: vi.fn(async () => []),
@@ -501,12 +503,21 @@ describe("sessions outside the workspace", () => {
     expect(ipc.closeSession).toHaveBeenCalledTimes(2);
   });
 
-  it("opens the phones list", async () => {
-    render(<Sidebar />);
+  it("folds the Machines section under the list, closed at first, and remembers opening it", async () => {
+    localStorage.removeItem("swarmz.foldedSections");
+    useStore.setState({ selfMachine: "mini", machineStats: {} });
+    const { unmount } = render(<Sidebar />);
+    expect(screen.getByTestId("section-machines").getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("machines-section")).toBeNull();
     await act(async () => {
-      fireEvent.click(screen.getByTitle("Phones"));
+      fireEvent.click(screen.getByTestId("section-machines"));
     });
-    expect(await screen.findByText("No phones paired")).toBeTruthy();
+    expect(screen.getByTestId("machines-section")).toBeTruthy();
+    expect(ipc.machineStats).toHaveBeenCalledWith(null);
+    unmount();
+    render(<Sidebar />);
+    expect(screen.getByTestId("section-machines").getAttribute("aria-expanded")).toBe("true");
+    localStorage.removeItem("swarmz.foldedSections");
   });
 
   it("dismisses a stale close error", async () => {

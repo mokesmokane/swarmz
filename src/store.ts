@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { homeDir } from "@tauri-apps/api/path";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { ipc, updater, type TerminalInfo, type TailscaleStatus } from "./lib/ipc";
+import { ipc, updater, type TerminalInfo, type TailscaleStatus, type MachineStats, type PingResult } from "./lib/ipc";
 import {
   addTab,
   allGroups,
@@ -331,6 +331,42 @@ export type Placement =
   | { kind: "split"; groupId: string; side: Side };
 
 /** What a new SSH terminal connects to. Claude, when set, gets a fresh session. */
+/** A Mac in the Machines view (activity bar and machines spec §3–§4). */
+export interface MachineStatus {
+  name: string;
+  self: boolean;
+  online: boolean;
+  /** The last numbers it gave (kept while a later ask fails). */
+  stats: MachineStats | null;
+  /** Why the last ask failed: `old_tool` when its swarmz predates `stats`. */
+  error: string | null;
+  ping: PingResult | null;
+  /** When it was last asked. */
+  at: string;
+}
+
+/**
+ * The Macs the Machines view asks: this one, then every macOS machine on the tailnet (online ones
+ * with the ssh destination the sync uses; offline ones only to be shown as offline).
+ */
+export function machineList(s: Pick<WorkbenchState, "selfMachine" | "tailscale" | "machines">): { name: string; self: boolean; online: boolean; host: string | null }[] {
+  const out: { name: string; self: boolean; online: boolean; host: string | null }[] = [];
+  if (s.selfMachine) out.push({ name: s.selfMachine, self: true, online: true, host: null });
+  if (!s.tailscale?.running) return out;
+  for (const p of s.tailscale.peers) {
+    if (p.os !== "macOS" || p.name === s.selfMachine) continue;
+    const host = machineHost(p.name, s.machines[p.name], s.tailscale.user ?? "");
+    if (validateHost(host) !== null) continue;
+    out.push({ name: p.name, self: false, online: p.online, host });
+  }
+  return out;
+}
+
+function statsError(reason: unknown): string {
+  const m = typeof reason === "string" ? reason : reason instanceof Error ? reason.message : String(reason);
+  return m.includes("old_tool") || m.includes("(usage)") ? "old_tool" : m;
+}
+
 export interface SshTerminalOptions {
   host: string;
   cwd?: string | null;
@@ -416,6 +452,10 @@ export interface WorkbenchState {
   conductorAt: string | null;
   /** Top-level workspace fields this app does not know, written back through every save. */
   workspaceExtra: Record<string, unknown>;
+  /** Each Mac's numbers for the Machines view (activity bar and machines spec §4), by machine name. */
+  machineStats: Record<string, MachineStatus>;
+  /** Asks every Mac on the tailnet (and this one) for its numbers and pings it; results land in `machineStats`. */
+  refreshMachineStats(): Promise<void>;
   /** Whether the Conductors dialog (the tree, arranged by hand) is open. */
   conductorsPanel: boolean;
   setConductorsPanel(open: boolean): void;
@@ -1388,6 +1428,46 @@ export const useStore = create<WorkbenchState>((set) => ({
   conductorAt: null,
   workspaceExtra: {},
   conductorsPanel: false,
+  machineStats: {},
+  async refreshMachineStats() {
+    const s = useStore.getState();
+    const self = s.selfMachine;
+    const at = new Date().toISOString();
+    const macs = machineList(s);
+    if (macs.length === 0) return;
+    // Offline Macs are marked at once; the others answer in parallel, each on its own.
+    set((st) => {
+      const next = { ...st.machineStats };
+      for (const m of macs) {
+        if (!m.online) next[m.name] = { ...(next[m.name] ?? { stats: null, ping: null }), name: m.name, self: false, online: false, error: null, at };
+      }
+      return { machineStats: next };
+    });
+    await Promise.all(
+      macs
+        .filter((m) => m.online)
+        .map(async (m) => {
+          const [stats, ping] = await Promise.allSettled([ipc.machineStats(m.self ? null : m.host), m.self || !self ? Promise.resolve(null) : ipc.tailscalePing(m.name)]);
+          set((st) => {
+            const prev = st.machineStats[m.name];
+            return {
+              machineStats: {
+                ...st.machineStats,
+                [m.name]: {
+                  name: m.name,
+                  self: m.self,
+                  online: true,
+                  stats: stats.status === "fulfilled" ? stats.value : (prev?.stats ?? null),
+                  error: stats.status === "rejected" ? statsError(stats.reason) : null,
+                  ping: ping.status === "fulfilled" ? ping.value : null,
+                  at,
+                },
+              },
+            };
+          });
+        }),
+    );
+  },
   setConductorsPanel(open) {
     set({ conductorsPanel: open });
   },

@@ -1,7 +1,7 @@
 # swarmz: an activity bar, and a view of every Mac
 
 Date: 2026-09-25
-Status: approved design
+Status: approved design, implemented 2026-09-25 (steps 1–3); as built, the Terminals view keeps its title row (with the conductors, reload and + buttons) above the list rather than a folding Terminals section
 Amends: `2026-09-23-sidebar-groups-design.md` (the side bar gains views and sections; the
 terminal list itself is unchanged), `2026-09-23-conductor-design.md` §6 (the 📱 and 🔔 buttons
 move to the activity bar).
