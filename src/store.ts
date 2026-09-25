@@ -514,7 +514,12 @@ export interface WorkbenchState {
   };
   agentState: Record<string, AgentState>;
   agentHooksError: string | null;
+  /** Whether some swarmz window has focus. */
   windowFocused: boolean;
+  /** The swarmz window that has (or last had) focus (windows and layouts spec §4). */
+  focusedWindow: string;
+  /** Window `label` gained or lost focus (the main window's, or one sent by another window). */
+  windowFocus(label: string, focused: boolean): void;
   /** When each terminal last copied a selection to the clipboard (ms since epoch), for the pane's "Copied" flash. */
   copiedAt: Record<string, number>;
   /** When each terminal last pushed a clipboard image to its remote (ms since epoch), for the pane's paste flash. */
@@ -772,6 +777,14 @@ function placeNew(s: WorkbenchState, id: string, placement?: Placement): Layouts
   let l = addTab(ls[label], id, groupId);
   if (placement?.kind === "split") l = splitWith(l, placement.groupId, id, placement.side);
   return { ...ls, [label]: l };
+}
+
+/** The tile the user is looking at: the showing tab of the focused group of the focused window. */
+export function seenTile(s: Pick<WorkbenchState, "focusedWindow" | "focusedTerminalId" | "windows">): string | null {
+  if (s.focusedWindow === MAIN) return s.focusedTerminalId;
+  const w = s.windows[s.focusedWindow];
+  if (!w?.focusedGroupId) return null;
+  return findGroup(w.layout, w.focusedGroupId)?.active || null;
 }
 
 /** Where tile `id` is shown, for Undo (spec §3). */
@@ -1626,6 +1639,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   agentState: {},
   agentHooksError: null,
   windowFocused: true,
+  focusedWindow: MAIN,
   copiedAt: {},
   pastedAt: {},
   resumeWatch: {},
@@ -1814,7 +1828,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       ls = { ...ls, [label]: setActive(ls[label], g.id, id) };
       shown = label;
       const cur = s.agentState[id];
-      const agentState = s.windowFocused && cur?.unseen ? { ...s.agentState, [id]: { ...cur, unseen: false } } : s.agentState;
+      const agentState = s.windowFocused && s.focusedWindow === label && cur?.unseen ? { ...s.agentState, [id]: { ...cur, unseen: false } } : s.agentState;
       const zoomed = s.zoomed[label] && s.zoomed[label] !== g.id ? omit(s.zoomed, label) : s.zoomed;
       return { ...commit({ ...s, zoomed }, ls, id), agentState };
     });
@@ -1829,7 +1843,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       const group = findGroup(ls[label], groupId);
       const id = group?.active || null;
       const cur = id ? s.agentState[id] : undefined;
-      const agentState = id && s.windowFocused && cur?.unseen ? { ...s.agentState, [id]: { ...cur, unseen: false } } : s.agentState;
+      const agentState = id && s.windowFocused && s.focusedWindow === label && cur?.unseen ? { ...s.agentState, [id]: { ...cur, unseen: false } } : s.agentState;
       if (label !== MAIN) return { windows: { ...s.windows, [label]: { ...s.windows[label], focusedGroupId: groupId } }, agentState };
       return { focusedGroupId: groupId, focusedTerminalId: id, agentState };
     });
@@ -2075,6 +2089,11 @@ export const useStore = create<WorkbenchState>((set) => ({
     const ls = layoutsOf(s);
     const label = windowOfTile(ls, id);
     if (!label) return;
+    // The last tab of another window: the window closes, and its Undo brings the window back.
+    if (label !== MAIN && tilesOf(ls[label]).length === 1) {
+      void useStore.getState().closeWindow(label);
+      return;
+    }
     const place = placeOf(s, id);
     set((st) => commit(st, removeEverywhere(layoutsOf(st), id)));
     showNotice({ window: label, ids: [id], at: Date.now(), undo: { kind: "tiles", places: [place] } });
@@ -2557,7 +2576,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       // still running in its holder keeps the history since that holder started (an older
       // holder's, e.g. from before a reboot, is stale too); every remote's history counts.
       if (event.ts < APP_LAUNCHED_AT && host === null && !preLaunchEventCounts(id, event.ts)) return {};
-      const focused = s.windowFocused && s.focusedTerminalId === id;
+      const focused = s.windowFocused && seenTile(s) === id;
       const next = foldAgentEvent(s.agentState[id], event, focused);
       const patch: Partial<WorkbenchState> = {};
       if (next) patch.agentState = { ...s.agentState, [id]: next };
@@ -2740,11 +2759,18 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   setWindowFocused(focused) {
+    useStore.getState().windowFocus(MAIN, focused);
+  },
+
+  windowFocus(label, focused) {
     set((s) => {
-      const id = s.focusedTerminalId;
+      // A blur from a window that no longer has focus arrived after the next window's focus.
+      if (!focused) return label === s.focusedWindow ? { windowFocused: false } : {};
+      const next = { ...s, windowFocused: true, focusedWindow: label };
+      const id = seenTile(next);
       const cur = id ? s.agentState[id] : undefined;
-      if (!focused || !id || !cur?.unseen) return { windowFocused: focused };
-      return { windowFocused: focused, agentState: { ...s.agentState, [id]: { ...cur, unseen: false } } };
+      if (!id || !cur?.unseen) return { windowFocused: true, focusedWindow: label };
+      return { windowFocused: true, focusedWindow: label, agentState: { ...s.agentState, [id]: { ...cur, unseen: false } } };
     });
   },
 
@@ -3354,6 +3380,8 @@ useStore.subscribe((s, prev) => {
 });
 
 useStore.subscribe((s, prev) => {
+  // Watchers, the watchdog and the Telegram follower are the main window's; another window only mirrors.
+  if (s.windowLabel !== MAIN) return;
   if (s.sshConnected !== prev.sshConnected || s.order !== prev.order) void s.ensureAgentWatchers();
 });
 
@@ -3366,6 +3394,7 @@ useStore.subscribe((s, prev) => {
 });
 
 useStore.subscribe((s, prev) => {
+  if (s.windowLabel !== MAIN) return;
   if (s.sshConnected === prev.sshConnected && s.order === prev.order && s.terminals === prev.terminals && s.settings === prev.settings) return;
   syncWatchdog(s);
   const reconnected = Object.keys(s.sshDropped).filter((id) => s.sshConnected[id] || !s.terminals[id]);
@@ -3373,7 +3402,7 @@ useStore.subscribe((s, prev) => {
 });
 
 useStore.subscribe((s, prev) => {
-  if (s.terminals === prev.terminals) return;
+  if (s.windowLabel !== MAIN || s.terminals === prev.terminals) return;
   for (const id of Object.keys(prev.terminals)) if (!(id in s.terminals)) forgetAttach(id);
 });
 
@@ -3412,6 +3441,7 @@ export function telegramFollowWanted(s: Pick<WorkbenchState, "telegramConfigured
 
 let telegramFollowing = false;
 useStore.subscribe((s, prev) => {
+  if (s.windowLabel !== MAIN) return;
   if (s.telegramConfigured === prev.telegramConfigured && s.conductor === prev.conductor && s.terminals === prev.terminals && s.settings === prev.settings) return;
   const wanted = telegramFollowWanted(s);
   if (wanted === telegramFollowing) return;

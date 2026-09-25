@@ -23,20 +23,31 @@ export function WindowApp({ label = labelFromLocation(window.location.search) }:
     const unlisten: Array<() => void> = [];
     let stopViewers: (() => void) | null = null;
     let cancelled = false;
+    // Each listener is dropped at once if the effect was cleaned up while it registered.
+    const keep = (f: () => void) => (cancelled ? f() : unlisten.push(f));
     void (async () => {
-      unlisten.push(
+      keep(
         await ipc.onWindowState(label, (m) => {
           applyMirror(m);
           setReady(true);
         }),
       );
-      unlisten.push(await ipc.onWindowDrop(label, (d) => void resolveDrop(d.id, { x: d.x, y: d.y })));
+      keep(await ipc.onWindowDrop(label, (d) => void resolveDrop(d.id, { x: d.x, y: d.y })));
       if (cancelled) return;
       stopViewers = manageViewers();
       await ipc.windowHello(label);
       // The user closing this window closes its tabs; the tiles keep running (spec §3).
-      unlisten.push(await getCurrentWindow().onCloseRequested(() => void useStore.getState().closeWindow(label)));
+      keep(await getCurrentWindow().onCloseRequested(() => void useStore.getState().closeWindow(label)));
     })();
+    // Which window has focus decides which tile the user is looking at (agent "unseen").
+    const onFocus = () => useStore.getState().windowFocus(label, true);
+    const onBlur = () => useStore.getState().windowFocus(label, false);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    unlisten.push(() => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+    });
     return () => {
       cancelled = true;
       unlisten.forEach((f) => f());

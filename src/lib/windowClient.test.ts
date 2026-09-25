@@ -27,13 +27,23 @@ describe("another window's store", () => {
     await s.createTerminal("/tmp", { kind: "tab", groupId: "g1" });
     s.setDragging("a");
     expect(useStore.getState().draggingTerminalId).toBe("a");
-    await s.setTerminalCwd("a", "/x", "osc7");
+    // Folder polls and copies happen where the pane is: sent on. Exit and resume handling: the main window's alone.
+    await s.setTerminalCwd("a", "/x", "poll");
     s.flashCopied("a");
+    s.markExited("a", 0);
+    s.noteResumeFailure("a", "sid");
     expect(sent).toEqual([
       { label: "win-abcd", name: "moveTerminal", args: ["a", "g1"] },
       { label: "win-abcd", name: "createTerminal", args: ["/tmp", { kind: "tab", groupId: "g1" }] },
       { label: "win-abcd", name: "setDragging", args: ["a"] },
+      { label: "win-abcd", name: "setTerminalCwd", args: ["a", "/x", "poll"] },
+      { label: "win-abcd", name: "flashCopied", args: ["a"] },
     ]);
+    // Its background work (agent watchers) stays with the main window.
+    const ensure = vi.fn(async () => {});
+    useStore.setState({ ensureAgentWatchers: ensure });
+    useStore.setState({ order: ["a", "b"], sshConnected: { a: true } });
+    expect(ensure).not.toHaveBeenCalled();
   });
 
   it("opens a viewer per tile shown, again after a restart, and closes it when the tile leaves", async () => {

@@ -135,6 +135,7 @@ beforeEach(async () => {
     fileLayout: null,
     selectedTiles: [],
     closedNotice: null,
+    focusedWindow: "main",
   });
   beforeSpawn.hook = async () => {};
   beforeSpawn.size = () => null;
@@ -3999,6 +4000,35 @@ describe("windows and layouts", () => {
     await useStore.getState().arrangeSelection("stacked", "new");
     const [w] = labels();
     expect(allGroups(useStore.getState().windows[w].layout).map((x) => x.tabs)).toEqual([[b], [c]]);
+  });
+
+  it("a tile in another window counts as seen when that window has focus", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    await useStore.getState().openInNewWindow([b], null);
+    const [w] = labels();
+    useStore.setState({ agentState: { [b]: { status: "idle", sessionId: "s", since: "t", lastEvent: "Stop", unseen: true, title: null, firstPrompt: null } } });
+    useStore.getState().windowFocus("main", true);
+    expect(useStore.getState().agentState[b].unseen).toBe(true);
+    useStore.getState().windowFocus(w, true);
+    expect(useStore.getState().agentState[b].unseen).toBe(false);
+    // A late blur from the main window does not unfocus the app.
+    useStore.getState().windowFocus("main", false);
+    expect(useStore.getState().windowFocused).toBe(true);
+    useStore.getState().windowFocus(w, false);
+    expect(useStore.getState().windowFocused).toBe(false);
+    void a;
+  });
+
+  it("closing the last tab of another window closes the window, with a window Undo in the main one", async () => {
+    await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    await useStore.getState().openInNewWindow([b], null);
+    const [w] = labels();
+    useStore.getState().closeTab(b);
+    await vi.waitFor(() => expect(useStore.getState().windows).toEqual({}));
+    expect(useStore.getState().closedNotice).toMatchObject({ window: "main", ids: [b], undo: { kind: "window" } });
+    expect(calls).toContain(`close ${w}`);
   });
 
   it("stopping a tile takes it out of every window and the selection", async () => {

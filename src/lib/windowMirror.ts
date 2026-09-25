@@ -44,18 +44,19 @@ export const PROXIED_ACTIONS = [
   "toggleZoom",
   "undoClosed",
   "dismissClosedNotice",
+  "windowFocus",
+  "setTerminalCwd",
+  "flashCopied",
+  "flashPasted",
 ] as const;
 export type ProxiedAction = (typeof PROXIED_ACTIONS)[number];
 
 /**
  * Actions another window's terminal registry calls that only the main window acts on: it
- * receives and parses every tile's output too, so clipboard, folder, resume and exit handling
- * happen there once.
+ * receives and parses every tile's output too, so resume, attach and exit handling happen there
+ * once. (Folder polls, copies and image pastes happen where the pane is, and are proxied.)
  */
 export const MAIN_ONLY_ACTIONS = [
-  "setTerminalCwd",
-  "flashCopied",
-  "flashPasted",
   "noteResumeFailure",
   "remoteAttached",
   "markExited",
@@ -97,6 +98,9 @@ export const MIRRORED_KEYS = [
   "tailscale",
   "windows",
   "lastCwd",
+  "toolReady",
+  "windowFocused",
+  "focusedWindow",
 ] as const satisfies readonly (keyof WorkbenchState)[];
 
 export type WindowMirror = Pick<WorkbenchState, (typeof MIRRORED_KEYS)[number]> & {

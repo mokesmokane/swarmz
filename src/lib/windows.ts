@@ -16,6 +16,8 @@ import { resolveDrop } from "./windowDrop";
 /** Every window's last known bounds (logical px) and the order windows last had focus, newest first. */
 const bounds = new Map<string, Bounds>();
 let focusOrder: string[] = [MAIN];
+/** How long after a window vanished its tabs are closed (see `open`). */
+const GONE_AFTER_MS = 1500;
 /** Set while the main window closes: its windows go with it and keep their trees for next time. */
 let quitting = false;
 
@@ -90,6 +92,12 @@ async function open(label: string, at: { x: number; y: number } | null, given: B
   void win.once("tauri://destroyed", () => {
     bounds.delete(label);
     focusOrder = focusOrder.filter((l) => l !== label);
+    // Gone without asking to close (closed while loading, or crashed): its tabs close as if the
+    // user closed it. Not while quitting: then this main window is gone before the delay ends,
+    // and the window comes back at the next launch.
+    setTimeout(() => {
+      if (!quitting && useStore.getState().windows[label]) void useStore.getState().closeWindow(label);
+    }, GONE_AFTER_MS);
   });
 }
 

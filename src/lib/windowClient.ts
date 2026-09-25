@@ -41,11 +41,20 @@ export function applyMirror(m: WindowMirror): void {
  */
 export function manageViewers(api: { open: (id: string) => Promise<unknown>; close: (id: string) => Promise<unknown> } = { open: ipc.openView, close: ipc.closeView }): () => void {
   const shown = new Map<string, boolean>();
+  // Bumped whenever a tile arrives, restarts or leaves, so an open still in flight for an older
+  // state undoes itself instead of leaking a viewer and a pane.
+  const gen = new Map<string, number>();
+  const bump = (id: string) => {
+    const n = (gen.get(id) ?? 0) + 1;
+    gen.set(id, n);
+    return n;
+  };
   const sync = (s: WorkbenchState) => {
     const now = new Set(tilesOf(s.layout));
     for (const [id] of shown) {
       if (!now.has(id) || !s.terminals[id]) {
         shown.delete(id);
+        bump(id);
         void api.close(id).catch(() => {});
         dispose(id);
       }
@@ -57,11 +66,17 @@ export function manageViewers(api: { open: (id: string) => Promise<unknown>; clo
       const before = shown.get(id);
       if (before === running) continue;
       shown.set(id, running);
+      const mine = bump(id);
       if (!running) continue;
       void (async () => {
         if (before === false) await api.close(id).catch(() => {});
         await prepare(id);
+        if (gen.get(id) !== mine) {
+          if (!shown.has(id)) dispose(id);
+          return;
+        }
         await api.open(id).catch(() => {});
+        if (gen.get(id) !== mine && !shown.has(id)) void api.close(id).catch(() => {});
       })();
     }
   };
