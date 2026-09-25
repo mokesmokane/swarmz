@@ -137,36 +137,28 @@ class RepositoryTest {
     }
 
     @Test
-    fun transcriptSessionsResumeAfterTheLastMessageAndLoadOlder() = runTest {
-        val older = """{"hasMore":false,"messages":[{"id":"a0","role":"user","text":"first"}],"v":1}"""
-        val first = FakeConn { cmd ->
-            when (cmd) {
-                Cmd.machines() -> NO_MACHINES
-                Cmd.transcript(T1, before = "a1") -> older
-                else -> VERSION_OK
-            }
-        }
+    fun outputSessionsFollowAgainAfterADrop() = runTest {
+        val first = FakeConn { if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
         val second = FakeConn { if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
         val repo = repo(paired("mini"), HostConnector(mapOf("mini" to ArrayDeque(listOf(first, second)))))
         repo.start()
         runCurrent()
-        val s = repo.openTranscript(TileKey("mini", T1))
+        val s = repo.openOutput(TileKey("mini", T1))
         runCurrent()
-        val open = Cmd.transcript(T1, follow = true)
-        first.stream(open).send("""{"hasMore":true,"messages":[{"id":"a1","role":"assistant","text":"hi"}],"v":1}""")
+        val open = Cmd.output(T1, lines = OUTPUT_LINES, follow = true)
+        assertTrue("the output follows a long scrollback", open in first.ran)
+        first.stream(open).send("""{"cols":80,"rows":1,"lines":[[{"text":"$ one"}]],"v":1}""")
         runCurrent()
-        assertEquals(listOf("a1"), s.state.value.messages.map { it.id })
-        s.loadOlder()
-        assertEquals(listOf("a0", "a1"), s.state.value.messages.map { it.id })
+        assertEquals("$ one", s.state.value.lines[0][0].text)
         first.stream(Cmd.watch()).close(java.io.IOException("reset"))
         first.stream(open).close(java.io.IOException("reset"))
         advanceTimeBy(1_001)
         runCurrent()
-        val resume = Cmd.transcript(T1, after = "a1", follow = true)
-        assertTrue(resume in second.ran)
-        second.stream(resume).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hi"},{"id":"a2","role":"user","text":"more"}],"v":1}""")
+        assertTrue(open in second.ran)
+        assertNull(s.error.value)
+        second.stream(open).send("""{"cols":80,"rows":1,"lines":[[{"text":"$ two"}]],"v":1}""")
         runCurrent()
-        assertEquals(listOf("a0", "a1", "a2"), s.state.value.messages.map { it.id })
+        assertEquals("$ two", s.state.value.lines[0][0].text)
         s.close()
     }
 
@@ -178,10 +170,11 @@ class RepositoryTest {
         runCurrent()
         val out = repo.openOutput(TileKey("mini", T1))
         runCurrent()
-        mini.stream(Cmd.output(T1, lines = 300, follow = true))
+        mini.stream(Cmd.output(T1, lines = OUTPUT_LINES, follow = true))
             .send("""{"code":"old_session","error":"restart this tile to use it from the phone","v":1}""")
         runCurrent()
         assertEquals("restart this tile to use it from the phone", out.error.value)
+        assertEquals("a tool failure is not retried", 1, mini.ran.count { it == Cmd.output(T1, lines = OUTPUT_LINES, follow = true) })
         out.close()
     }
 
@@ -197,35 +190,16 @@ class RepositoryTest {
         assertEquals(Instant.ofEpochMilli(testScheduler.currentTime), repo.seen.value[TileKey("mini", T1)])
     }
     @Test
-    fun transcriptToolFailuresStopTheSession() = runTest {
-        val mini = FakeConn { if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
-        val repo = repo(paired("mini"), HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)))))
-        repo.start()
-        runCurrent()
-        val s = repo.openTranscript(TileKey("mini", T1))
-        runCurrent()
-        val open = Cmd.transcript(T1, follow = true)
-        mini.stream(open).send("""{"code":"old_session","error":"restart this tile to use it from the phone","v":1}""")
-        runCurrent()
-        assertEquals("restart this tile to use it from the phone", s.error.value)
-        assertEquals(1, mini.ran.count { it == open })
-        s.close()
-    }
-
-    @Test
     fun malformedStreamLinesEndTheSessionWithAnError() = runTest {
         val mini = FakeConn { if (it == Cmd.machines()) NO_MACHINES else VERSION_OK }
         val repo = repo(paired("mini"), HostConnector(mapOf("mini" to ArrayDeque(listOf(mini)))))
         repo.start()
         runCurrent()
         val out = repo.openOutput(TileKey("mini", T1))
-        val chat = repo.openTranscript(TileKey("mini", T1))
         runCurrent()
-        mini.stream(Cmd.output(T1, lines = 300, follow = true)).send("not json")
-        mini.stream(Cmd.transcript(T1, follow = true)).send("not json")
+        mini.stream(Cmd.output(T1, lines = OUTPUT_LINES, follow = true)).send("not json")
         runCurrent()
         assertEquals("Couldn't read this tile's output", out.error.value)
-        assertEquals("Couldn't read this conversation", chat.error.value)
     }
 
     @Test
@@ -326,13 +300,11 @@ class RepositoryTest {
         repo.start()
         runCurrent()
         val out = repo.openOutput(TileKey("mini", T1))
-        val chat = repo.openTranscript(TileKey("mini", T1))
         runCurrent()
         settings.setPaired(null)
         runCurrent()
         assertEquals("Disconnected", out.error.value)
-        assertEquals("Disconnected", chat.error.value)
-        assertTrue(!out.job.isActive && !chat.job.isActive)
+        assertTrue(!out.job.isActive)
     }
 
     @Test

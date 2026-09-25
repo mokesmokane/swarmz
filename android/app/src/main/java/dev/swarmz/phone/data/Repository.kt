@@ -14,7 +14,6 @@ import dev.swarmz.phone.proto.SessionClosed
 import dev.swarmz.phone.ssh.Progress
 import dev.swarmz.phone.proto.UploadReply
 import dev.swarmz.phone.proto.Folders
-import dev.swarmz.phone.proto.ImageReply
 import dev.swarmz.phone.proto.Key
 import dev.swarmz.phone.proto.MachineList
 import dev.swarmz.phone.proto.PHONE_KEY_EXEC_MS
@@ -25,14 +24,12 @@ import dev.swarmz.phone.proto.TileReply
 import dev.swarmz.phone.proto.TileRow
 import dev.swarmz.phone.proto.ToolFailure
 import dev.swarmz.phone.proto.ToolJson
-import dev.swarmz.phone.proto.TranscriptPage
 import dev.swarmz.phone.ssh.Auth
 import dev.swarmz.phone.ssh.SshConnector
 import dev.swarmz.phone.state.MacInfo
 import dev.swarmz.phone.state.ScreenState
 import dev.swarmz.phone.state.TileKey
 import dev.swarmz.phone.state.TileView
-import dev.swarmz.phone.state.TranscriptState
 import dev.swarmz.phone.state.apply
 import dev.swarmz.phone.state.lastId
 import dev.swarmz.phone.state.oldestId
@@ -106,43 +103,8 @@ internal fun isPaired(mac: String, pairings: List<Paired>) = pairings.any { same
 
 private data class LinkSnapshot(val link: MacLink, val state: LinkState, val tiles: Map<String, TileRow>, val lastSeen: Long?, val conductor: ConductorState = ConductorState())
 
-class TranscriptSession internal constructor(scope: CoroutineScope, private val link: MacLink, private val tile: String) {
-    private val _state = MutableStateFlow(TranscriptState())
-    val state: StateFlow<TranscriptState> = _state.asStateFlow()
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
-
-    internal val job: Job = scope.launch {
-        try {
-            link.follow { Cmd.transcript(tile, after = _state.value.lastId, follow = true) }.collect { line ->
-                ToolJson.transcriptEvent(line)?.let { ev -> _state.update { it.apply(ev) } }
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: ToolFailure) {
-            _error.value = e.message
-        } catch (e: Exception) {
-            // Anything else (a malformed line, a stream failure that was not a drop) ends the session, not the app.
-            _error.value = "Couldn't read this conversation"
-        }
-    }
-
-    suspend fun loadOlder() {
-        val s = _state.value
-        val before = s.oldestId ?: return
-        if (!s.hasMore) return
-        val page = link.call<TranscriptPage>(Cmd.transcript(tile, before = before))
-        _state.update { it.withOlder(page) }
-    }
-
-    /** Ends the session from outside, e.g. because its Mac's link stopped. */
-    internal fun end(message: String) {
-        if (job.isActive) _error.value = message
-        job.cancel()
-    }
-
-    fun close() = job.cancel()
-}
+/** How much of a tile's screen and scrollback the phone follows (phone terminal-only spec §1). */
+const val OUTPUT_LINES = 3000
 
 class OutputSession internal constructor(scope: CoroutineScope, link: MacLink, tile: String) {
     private val _state = MutableStateFlow(ScreenState())
@@ -152,7 +114,7 @@ class OutputSession internal constructor(scope: CoroutineScope, link: MacLink, t
 
     internal val job: Job = scope.launch {
         try {
-            link.follow { Cmd.output(tile, lines = 300, follow = true) }.collect { line ->
+            link.follow { Cmd.output(tile, lines = OUTPUT_LINES, follow = true) }.collect { line ->
                 ToolJson.outputEvent(line)?.let { ev -> _state.update { it.apply(ev) } }
             }
         } catch (e: CancellationException) {
@@ -471,10 +433,7 @@ class Repository(
 
     suspend fun folders(mac: String, path: String?): Folders = link(mac).call(Cmd.folders(path))
 
-    suspend fun image(key: TileKey, imageId: String): ImageReply = link(key.mac).call(Cmd.image(key.id, imageId))
 
-    fun openTranscript(key: TileKey): TranscriptSession =
-        TranscriptSession(scope, link(key.mac), key.id).also { register(it.job, key.mac, it::end) }
 
     fun openOutput(key: TileKey): OutputSession =
         OutputSession(scope, link(key.mac), key.id).also { register(it.job, key.mac, it::end) }

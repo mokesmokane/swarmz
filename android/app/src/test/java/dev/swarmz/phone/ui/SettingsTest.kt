@@ -82,10 +82,6 @@ class SettingsTest {
         compose.onNodeWithText("Watch in the background").performScrollTo().performClick()
         compose.waitUntil(5_000) { !settings.backgroundWatch.value }
 
-        compose.onNodeWithText("English (UK)").performScrollTo().performClick()
-        compose.waitUntil(5_000) { settings.dictationLanguage.value == "en-GB" }
-        assertEquals("en-GB", settings.dictationLanguage.value)
-
         compose.onNodeWithText("Revoke this phone").performScrollTo().performClick()
         compose.onNodeWithText("Revoke").performClick()
         compose.waitUntil(5_000) { exists("Couldn't revoke: revoked here; could not reach the other Macs: x") }

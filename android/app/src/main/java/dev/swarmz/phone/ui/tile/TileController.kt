@@ -1,16 +1,12 @@
 package dev.swarmz.phone.ui.tile
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import dev.swarmz.phone.data.OutputSession
 import dev.swarmz.phone.data.Repository
-import dev.swarmz.phone.data.TranscriptSession
 import dev.swarmz.phone.proto.Key
 import dev.swarmz.phone.proto.Opt
 import dev.swarmz.phone.proto.Pending
@@ -18,13 +14,9 @@ import dev.swarmz.phone.proto.TileRow
 import dev.swarmz.phone.proto.ToolFailure
 import dev.swarmz.phone.state.ScreenState
 import dev.swarmz.phone.state.TileKey
-import dev.swarmz.phone.state.TranscriptState
-import dev.swarmz.phone.state.lastId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableJob
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.sync.withLock
@@ -43,9 +35,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.time.Instant
-import java.util.Base64
 import java.util.concurrent.atomic.AtomicLong
 
 /** The wait after a real answer before asking the screen again: `answer` returns before Claude closes its dialog. */
@@ -57,41 +47,6 @@ private val FINAL_PENDING_CODES = setOf("old_session", "not_running", "invalid")
 
 /** 2 s, 4 s, 8 s, 16 s, then 30 s. */
 internal fun pendingRetryMs(attempt: Int): Long = minOf(ASK_RETRY_MAX_MS, ASK_RETRY_MS shl minOf(attempt, 5))
-
-/** The long side images are decoded down to (at most a power of two above it). */
-internal const val IMAGE_TARGET_PX = 1024
-
-/** A `Sent` entry can never stick: it is dropped this long after sending even if no echo (or non-echo) arrives. */
-internal const val SENT_TIMEOUT_MS = 20_000L
-
-/** The largest power-of-two sample size that keeps the long side at or above [target]. */
-internal fun sampleSize(width: Int, height: Int, target: Int = IMAGE_TARGET_PX): Int {
-    val long = maxOf(width, height)
-    var sample = 1
-    while (long / (sample * 2) >= target) sample *= 2
-    return sample
-}
-
-private fun decodeSampled(bytes: ByteArray): ImageBitmap? {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-    val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight) }
-    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)?.asImageBitmap()
-}
-
-/**
- * What the screen shows after a reopen: the new session's messages, preceded by the [carried] ones older than its
- * first page, so a reconnect does not blank the conversation or lose pages already loaded.
- */
-internal fun mergeTranscript(carried: TranscriptState?, fresh: TranscriptState): TranscriptState {
-    if (carried == null) return fresh
-    if (!fresh.loaded) return carried
-    val first = fresh.messages.firstOrNull() ?: return fresh
-    val at = carried.messages.indexOfFirst { it.id == first.id }
-    if (at <= 0) return fresh
-    return fresh.copy(messages = carried.messages.take(at) + fresh.messages, hasMore = carried.hasMore)
-}
 
 private data class OpenTrigger(val kind: String?, val running: Boolean, val online: Boolean)
 
@@ -119,28 +74,13 @@ class TileController(
 
     val draft: MutableState<TextFieldValue> = mutableStateOf(TextFieldValue(""))
 
-    /** Where the conversation is scrolled to. */
-    val listState = LazyListState()
-
     /**
-     * Where the screen body is scrolled to. Separate from [listState] because the two lists have nothing in
-     * common: a conversation index carried into the screen would stop it following its newest lines, and a screen
-     * index carried back would scroll the conversation into paging in its whole history.
+     * Where the terminal is scrolled to. It lives here, not in the composition, so folding keeps it, as it keeps
+     * the draft (phone terminal-only spec §1: the terminal is the tile, for every kind).
      */
     val screenListState = LazyListState()
 
-    /**
-     * Whether a Claude tile shows its live screen instead of the conversation: the way to reach anything Claude
-     * draws on the terminal but never writes to the transcript (`/login`, `/model`, `/cost`, its banners). It lives
-     * here, not in the composition, so folding keeps it, as it keeps the draft and the list positions.
-     */
-    val screenMode: MutableState<Boolean> = mutableStateOf(false)
-
-    /** Where images are decoded; tests replace it. */
-    internal var decoder: CoroutineDispatcher = Dispatchers.Default
-
-    /** How sessions are opened; tests replace these to make an open fail. */
-    internal var openTranscript: (TileKey) -> TranscriptSession = repo::openTranscript
+    /** How the screen is followed; tests replace it to make an open fail. */
     internal var openOutput: (TileKey) -> OutputSession = repo::openOutput
 
     val row: StateFlow<TileRow?> = repo.tiles.map { t -> t.firstOrNull { it.key == key }?.row }
@@ -151,36 +91,23 @@ class TileController(
     val macLabel: StateFlow<String> = mac.map { it?.label ?: key.mac }.stateIn(scope, SharingStarted.Eagerly, key.mac)
     val lastSeen: StateFlow<Instant?> = mac.map { it?.lastSeen }.stateIn(scope, SharingStarted.Eagerly, null)
 
-    private val transcriptSession = MutableStateFlow<TranscriptSession?>(null)
     private val outputSession = MutableStateFlow<OutputSession?>(null)
     private val openError = MutableStateFlow<String?>(null)
-    private val carried = MutableStateFlow<TranscriptState?>(null)
 
-    val transcript: StateFlow<TranscriptState> = combine(
-        transcriptSession.flatMapLatest { it?.state ?: flowOf(TranscriptState()) },
-        carried,
-    ) { fresh, old -> mergeTranscript(old, fresh) }
-        .stateIn(scope, SharingStarted.Eagerly, TranscriptState())
     val screen: StateFlow<ScreenState> = outputSession.flatMapLatest { it?.state ?: flowOf(ScreenState()) }
         .stateIn(scope, SharingStarted.Eagerly, ScreenState())
     val streamError: StateFlow<String?> = combine(
-        transcriptSession.flatMapLatest { it?.error ?: flowOf(null) },
         outputSession.flatMapLatest { it?.error ?: flowOf(null) },
         openError,
-    ) { a, b, c -> a ?: b ?: c }.stateIn(scope, SharingStarted.Eagerly, null)
+    ) { a, b -> a ?: b }.stateIn(scope, SharingStarted.Eagerly, null)
 
     private val _pending = MutableStateFlow<Pending?>(null)
     val pending: StateFlow<Pending?> = _pending.asStateFlow()
-    private val _outgoing = MutableStateFlow<List<Outgoing>>(emptyList())
-    val outgoing: StateFlow<List<Outgoing>> = _outgoing.asStateFlow()
     private val _notice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = _notice.asStateFlow()
     private val _noticeRound = MutableStateFlow(0)
     /** Bumped by every notice, so the same text twice in a row still re-arms the screen's dismissal timer. */
     val noticeRound: StateFlow<Int> = _noticeRound.asStateFlow()
-    private val _images = MutableStateFlow<Map<String, ImageBitmap?>>(emptyMap())
-    val images: StateFlow<Map<String, ImageBitmap?>> = _images.asStateFlow()
-    private val loadingImages = mutableSetOf<String>()
     private val ids = AtomicLong()
 
     /** The one pending fetch (with its retries); a newer fetch or an answer cancels it. */
@@ -207,18 +134,13 @@ class TileController(
                     val restarted = before?.kind != null && t.running && !before.running
                     // The tile came (back) into view, or its Mac came back online.
                     val fresh = before == null || before.kind == null || !before.online
+                    // Failed or finished: the follow ended, so follow again.
+                    val ended = outputSession.value?.let { it.error.value != null || !it.job.isActive } == true
                     when {
-                        missing(kind) -> open(kind)
-                        t.online && restarted -> open(kind)
-                        // Only what failed or finished is reopened: a dropped output must not restart the
-                        // transcript (which would fetch its pages again), and a trigger that arrives while
-                        // everything is still following changes nothing.
-                        t.online && fresh -> reopenEnded(kind)
+                        outputSession.value == null -> open()
+                        t.online && (restarted || (fresh && ended)) -> open()
                     }
                 }
-        }
-        scope.launch {
-            transcript.collect { t -> _outgoing.update { reconcile(it, t.messages) } }
         }
         scope.launch {
             // The summary is in the key so a form's next question (a new summary under the same
@@ -234,88 +156,12 @@ class TileController(
         }
     }
 
-    /** A Claude tile follows its transcript; a shell, and a Claude tile in screen mode, follows the tile's output. */
-    private fun wantsTranscript(kind: String) = kind != "shell"
-    private fun wantsOutput(kind: String) = kind == "shell" || screenMode.value
-
-    /** A session that should be open but is not: nothing is being followed yet, so open. */
-    private fun missing(kind: String) =
-        (wantsTranscript(kind) && transcriptSession.value == null) || (wantsOutput(kind) && outputSession.value == null)
-
-    /** Whether a session that should be following has failed or finished. */
-    private fun transcriptEnded(kind: String) = wantsTranscript(kind) && transcriptSession.value?.let { it.error.value != null || !it.job.isActive } == true
-    private fun outputEnded(kind: String) = wantsOutput(kind) && outputSession.value?.let { it.error.value != null || !it.job.isActive } == true
-
-    /** Reopens the sessions of [kind] that have ended, and only those. */
-    private fun reopenEnded(kind: String) {
-        val tEnded = transcriptEnded(kind)
-        val oEnded = outputEnded(kind)
-        if (tEnded && oEnded) {
-            open(kind)
-            return
-        }
-        try {
-            if (tEnded) {
-                transcriptSession.value?.let {
-                    it.close()
-                    carried.value = transcript.value
-                    transcriptSession.value = null
-                }
-                transcriptSession.value = openTranscript(key)
-                openError.value = null
-            }
-            if (oEnded) {
-                closeOutput()
-                outputSession.value = openOutput(key)
-                openError.value = null
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            openError.value = e.message ?: "Couldn't open this tile"
-        }
-    }
-
-    /** Opens (or reopens) the sessions for [kind], carrying the conversation shown so far across. */
-    private fun open(kind: String) {
-        transcriptSession.value?.let {
-            it.close()
-            carried.value = transcript.value
-            transcriptSession.value = null
-        }
-        closeOutput()
-        try {
-            if (wantsTranscript(kind)) transcriptSession.value = openTranscript(key)
-            if (wantsOutput(kind)) outputSession.value = openOutput(key)
-            openError.value = null
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            openError.value = e.message ?: "Couldn't open this tile"
-        }
-    }
-
-    private fun closeOutput() {
+    /** Follows (or follows again) the tile's screen. */
+    private fun open() {
         outputSession.value?.let {
             it.close()
             outputSession.value = null
         }
-    }
-
-    /**
-     * Switches a Claude tile between its conversation and its live screen. The transcript session stays open either
-     * way, and the two bodies scroll independently ([listState] and [screenListState]), so coming back keeps the
-     * conversation's position and any older pages; only the output session comes and goes.
-     */
-    fun toggleScreen() {
-        if (isShell) return
-        val on = !screenMode.value
-        screenMode.value = on
-        if (!on) {
-            closeOutput()
-            return
-        }
-        if (outputSession.value != null) return
         try {
             outputSession.value = openOutput(key)
             openError.value = null
@@ -378,8 +224,6 @@ class TileController(
             }
         }
     }
-
-    private val isShell get() = row.value?.kind == "shell"
 
     private val _attachments = MutableStateFlow<List<Attachment>>(emptyList())
     /** Files being sent to the tile's Mac, and the ones sent this session (spec §4.3). */
@@ -452,22 +296,11 @@ class TileController(
         notify(prefix + (e.message ?: "something went wrong"))
     }
 
+    /** Types the draft into the tile; the terminal shows it arrive. A failure puts it back in the composer. */
     fun send() {
         val text = draft.value.text.trim()
         if (text.isEmpty()) return
         draft.value = TextFieldValue("")
-        // A slash command is a command, not a message: Claude never writes it to the transcript, so it would
-        // never be reconciled away. Send it the way a shell send works instead.
-        if (isShell || text.startsWith("/")) {
-            sendPlain(text)
-            return
-        }
-        val entry = Outgoing(ids.incrementAndGet(), text, SendState.Sending, after = transcript.value.lastId)
-        _outgoing.update { it + entry }
-        deliver(entry)
-    }
-
-    private fun sendPlain(text: String) {
         scope.launch {
             try {
                 repo.send(key, text)
@@ -478,37 +311,6 @@ class TileController(
                 fail(e, "Couldn't send: ")
             }
         }
-    }
-
-    private fun deliver(entry: Outgoing) {
-        scope.launch {
-            val state = try {
-                repo.send(key, entry.text)
-                SendState.Sent
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                SendState.Failed
-            }
-            _outgoing.update { list -> reconcile(list.map { if (it.id == entry.id) it.copy(state = state) else it }, transcript.value.messages) }
-            if (state == SendState.Sent) expireSent(entry.id)
-        }
-    }
-
-    /** A `Sent` entry can never stick: drop it if it is still `Sent` and unreconciled after [SENT_TIMEOUT_MS]. */
-    private fun expireSent(id: Long) {
-        scope.launch {
-            delay(SENT_TIMEOUT_MS)
-            _outgoing.update { list -> list.filterNot { it.id == id && it.state == SendState.Sent } }
-        }
-    }
-
-    fun retry(id: Long) {
-        val entry = _outgoing.value.firstOrNull { it.id == id && it.state == SendState.Failed } ?: return
-        // It never arrived, so only messages from now on can be its echo.
-        val again = entry.copy(state = SendState.Sending, after = transcript.value.lastId)
-        _outgoing.update { list -> list.map { if (it.id == id) again else it } }
-        deliver(again)
     }
 
     fun answer(option: Opt) = answerWith(option.n.toString())
@@ -581,34 +383,6 @@ class TileController(
         }
     }
 
-    suspend fun loadOlder() {
-        try {
-            transcriptSession.value?.loadOlder()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            fail(e)
-        }
-    }
-
-    /** Fetches and decodes an image once; a failed load is recorded as null and tried again on the next call. */
-    fun loadImage(id: String) {
-        if (_images.value[id] != null || !loadingImages.add(id)) return
-        scope.launch {
-            val bitmap = try {
-                val reply = repo.image(key, id)
-                withContext(decoder) { decodeSampled(Base64.getDecoder().decode(reply.base64)) }
-            } catch (e: CancellationException) {
-                loadingImages.remove(id)
-                throw e
-            } catch (_: Exception) {
-                null
-            }
-            loadingImages.remove(id)
-            _images.update { it + (id to bitmap) }
-        }
-    }
-
     /** Shows a one-off line under the body, the way a failed action does. Saying the same thing twice shows twice. */
     fun notify(text: String) {
         _notice.value = text
@@ -620,7 +394,6 @@ class TileController(
     }
 
     fun close() {
-        transcriptSession.value?.close()
         outputSession.value?.close()
         job.cancel()
     }

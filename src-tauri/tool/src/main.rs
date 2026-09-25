@@ -19,7 +19,7 @@ const CLOSE_WAIT: Duration = Duration::from_secs(5);
 const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT", "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT"];
 
 /// The most lines `output --follow` watches.
-const MAX_FOLLOW_LINES: usize = 1000;
+const MAX_FOLLOW_LINES: usize = 5000;
 
 const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set", "--parent", "--remove", "--assign", "--to"];
 const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once", "--sub", "--top"];

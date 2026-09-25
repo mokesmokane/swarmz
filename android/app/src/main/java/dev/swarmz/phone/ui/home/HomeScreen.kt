@@ -58,7 +58,6 @@ import dev.swarmz.phone.state.parseTime
 import dev.swarmz.phone.state.relativeTime
 import dev.swarmz.phone.ui.HomeUi
 import dev.swarmz.phone.ui.components.Badge
-import dev.swarmz.phone.ui.components.LocalMic
 import dev.swarmz.phone.ui.components.Pill
 import dev.swarmz.phone.ui.components.PrimaryButton
 import dev.swarmz.phone.ui.components.QuietButton
@@ -266,7 +265,6 @@ private fun ReplyCard(view: TileView, ui: HomeUi, onOpen: (TileKey) -> Unit, onR
                     }
                 } else null,
             )
-            LocalMic.current.Content(text, Modifier.size(44.dp).clip(CircleShape).background(Sw.Primary))
         }
         failed?.let { Text(it.message, style = MaterialTheme.typography.bodySmall, color = Sw.ErrorLine) }
     }

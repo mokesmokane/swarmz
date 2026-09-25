@@ -46,12 +46,6 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.swarmz.phone.data.LIST_MAX_DP
 import dev.swarmz.phone.data.LIST_MIN_DP
-import dev.swarmz.phone.ui.components.LocalMic
-import dev.swarmz.phone.ui.dictation.AndroidRecognizer
-import dev.swarmz.phone.ui.dictation.Dictation
-import dev.swarmz.phone.ui.dictation.DictationMic
-import dev.swarmz.phone.ui.dictation.DictationOverlay
-import dev.swarmz.phone.ui.dictation.onMicPermissionResult
 import dev.swarmz.phone.ui.home.HomeScreen
 import dev.swarmz.phone.ui.home.TileListPane
 import dev.swarmz.phone.ui.newsession.NewSessionScreen
@@ -77,22 +71,6 @@ fun SwarmzRoot(vm: AppViewModel) {
         vm.setVisible(true)
         onPauseOrDispose { vm.setVisible(false) }
     }
-    // The recognizer is only created when the mic is first pressed, and destroyed with the root.
-    val context = LocalContext.current
-    val language by vm.settings.dictationLanguage.collectAsStateWithLifecycle()
-    val currentLanguage by rememberUpdatedState(language)
-    val dictation = remember { Dictation(AndroidRecognizer(context.applicationContext), { currentLanguage }) }
-    DisposableEffect(dictation) { onDispose { dictation.release() } }
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        onMicPermissionResult(dictation, granted)
-    }
-    val mic = remember(dictation) {
-        DictationMic(
-            dictation,
-            hasPermission = { context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED },
-            requestPermission = { permission.launch(Manifest.permission.RECORD_AUDIO) },
-        )
-    }
     SwarmzTheme {
         val paired by vm.paired.collectAsStateWithLifecycle()
         Box(Modifier.fillMaxSize().background(Sw.Background).safeDrawingPadding()) {
@@ -100,15 +78,7 @@ fun SwarmzRoot(vm: AppViewModel) {
                 val ui by vm.pairingUi.collectAsStateWithLifecycle()
                 PairingScreen(ui, defaultDeviceName(Build.MODEL ?: "phone"), vm::pair, pins = vm.settings)
             } else {
-                CompositionLocalProvider(LocalMic provides mic) {
-                    Box(Modifier.fillMaxSize()) {
-                        PairedContent(vm)
-                        dictation.message.value?.let {
-                            Text(it, color = Sw.ErrorLine, modifier = Modifier.align(Alignment.TopCenter).padding(8.dp))
-                        }
-                        DictationOverlay(dictation.talk.value, dictation.level.value, Modifier.align(Alignment.BottomCenter))
-                    }
-                }
+                PairedContent(vm)
             }
         }
     }

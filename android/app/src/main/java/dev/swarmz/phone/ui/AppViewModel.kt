@@ -489,10 +489,6 @@ class AppViewModel(
         }
     }
 
-    fun setLanguage(tag: String?) {
-        viewModelScope.launch { settings.setDictationLanguage(tag) }
-    }
-
     /** The unfolded tile list's width in dp, and whether it is hidden; both are stored, so they outlive a fold. */
     val listWidth: StateFlow<Int> = settings.listWidth
     val listCollapsed: StateFlow<Boolean> = settings.listCollapsed

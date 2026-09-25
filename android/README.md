@@ -130,15 +130,14 @@ services.
   first, with online/offline state per Mac. The list can be dragged wider or
   narrower (220-480 dp, 260 dp by default) and hidden with the chevron in its header, which leaves the
   open tile the whole width until you bring it back.
-- **Tile screen**: a Claude conversation (messages, tool chips, images, a permission card, a
-  composer with hold-to-dictate) or a shell's coloured scrollback and command box, with a quick-key
-  row for each kind. A Claude tile's header also has a Screen button that swaps the conversation for
-  the tile's live terminal, which is the only way to reach what Claude draws but never writes to the
-  transcript (`/login`, `/model`, `/cost`, its banners); any `http(s)` URL on a terminal screen is
-  tappable, offering Open and Copy, which is how the `/login` flow is completed from the phone.
+- **Tile screen**: the tile's live terminal, Claude and shell alike, with 3000 lines of coloured
+  scrollback, the permission or question card when Claude asks, a quick-key row for each kind, and a
+  composer that types into the tile (use the keyboard's own voice typing to dictate). Any `http(s)`
+  URL on the screen is tappable, offering Open and Copy, which is how the `/login` flow is completed
+  from the phone.
 - **New session**: pick an online Mac, browse or pick a recent folder, optionally skip
   permissions, and start.
-- **Settings**: paired and discovered Macs, dictation language, and this phone's key (revoke it
+- **Settings**: paired and discovered Macs, and this phone's key (revoke it
   here, which removes it from every reachable Mac).
 
 ## Installing updates
