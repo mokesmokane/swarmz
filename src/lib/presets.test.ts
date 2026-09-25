@@ -23,6 +23,12 @@ describe("presets", () => {
     expect(allGroups(arrange(presetById("single")!, ["a", "b"]))[0]).toMatchObject({ tabs: ["a", "b"], active: "a" });
   });
 
+  it("stacks three and four rows for a portrait display", () => {
+    const four = presetDrawing(presetById("four-stacked")!);
+    expect(four.map((r) => [r.x, r.w, Math.round(r.y * 100), Math.round(r.h * 100)])).toEqual([[0, 1, 0, 25], [0, 1, 25, 25], [0, 1, 50, 25], [0, 1, 75, 25]]);
+    expect(allGroups(arrange(presetById("three-stacked")!, ["a", "b", "c"])).map((g) => g.tabs)).toEqual([["a"], ["b"], ["c"]]);
+  });
+
   it("draws a built tree the same as its preset", () => {
     const p = presetById("main-and-two")!;
     const built = drawing(arrange(p, ["a", "b", "c"]));
