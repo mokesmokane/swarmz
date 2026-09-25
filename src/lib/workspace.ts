@@ -321,6 +321,8 @@ export interface MachineConfig {
   color?: string | null;
   /** A glyph for the machine's badge (an emoji or up to two characters); the monogram when absent. */
   icon?: string | null;
+  /** The terminal theme for tiles running on this Mac (machine themes spec); absent: chosen for it. */
+  theme?: string | null;
   cwd?: string | null;
   lastUsed: string;
 }

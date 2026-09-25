@@ -4093,3 +4093,34 @@ describe("windows and layouts", () => {
     expect(JSON.parse(localStorage.getItem("swarmz.windowBounds")!)[w]).toEqual({ x: 1, y: 2, width: 300, height: 200 });
   });
 });
+
+describe("machine themes", () => {
+  it("a tile takes its Mac's theme: picked, else by place; plain keeps the colour tint", async () => {
+    const { tileTheme, tileThemeId } = await import("./store");
+    useStore.setState({
+      selfMachine: "mini",
+      tailscale: { running: true, message: null, user: "mokes", self: null, peers: [{ name: "mini-2", hostName: "m2", ip: "100.1.1.2", os: "macOS", online: true }] },
+      machines: { "mini-2": { lastUsed: "t", color: "#22c55e" } },
+      terminals: { l: { id: "l", name: "l", cwd: "/", exited: null, error: null }, r: { id: "r", name: "r", cwd: "/", exited: null, error: null } },
+      settings: { l: { ...EMPTY_SETTINGS }, r: { ...EMPTY_SETTINGS, ssh: { host: "mokes@mini-2", cwd: null, machine: "mini-2" } } },
+    });
+    const s = () => useStore.getState();
+    expect(tileThemeId(s(), "l")).not.toBe(tileThemeId(s(), "r"));
+    expect(await s().updateMachine("mini-2", { theme: "bogus" })).toBe("unsupported theme");
+    expect(await s().updateMachine("mini-2", { theme: "neon" })).toBeNull();
+    expect(tileThemeId(s(), "r")).toBe("neon");
+    expect(tileTheme(s(), "r").background).toBe("#0d0221");
+    await s().updateMachine("mini-2", { theme: "plain" });
+    expect(tileTheme(s(), "r").background).not.toBe("#0f1115");
+    await s().updateMachine("mini-2", { theme: null });
+    expect(s().machines["mini-2"].theme).toBeNull();
+  });
+
+  it("keeps a Mac's theme through the workspace and drops an unknown one without dropping the Mac", async () => {
+    useStore.setState({ persistenceReady: false });
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({ version: 1, layout: null, terminals: [], machines: { a: { lastUsed: "t", theme: "daylight" }, b: { lastUsed: "t", theme: "from-the-future" } } });
+    await useStore.getState().loadWorkspace();
+    expect(useStore.getState().machines.a.theme).toBe("daylight");
+    expect(useStore.getState().machines.b).toEqual({ lastUsed: "t" });
+  });
+});

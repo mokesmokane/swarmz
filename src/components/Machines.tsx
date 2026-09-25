@@ -1,7 +1,9 @@
-import { useEffect, type ReactNode } from "react";
-import { useStore, machineList, type MachineStatus } from "../store";
+import { useEffect, useState, type ReactNode } from "react";
+import { useStore, machineList, machineThemeId, type MachineStatus } from "../store";
+import { themeById } from "../lib/themes";
 import { bytesText, uptimeText } from "../lib/activityBar";
 import { machineLabel } from "../lib/workspace";
+import { ThemePicker } from "./ThemePicker";
 
 /** How often the Machines numbers are asked for while they are showing (spec §4, amended: 30 s). */
 export const MACHINES_POLL_MS = 30_000;
@@ -132,6 +134,26 @@ export function MachinesView() {
   );
 }
 
+/** The Mac's terminal theme (machine themes spec), folded to its name until opened. */
+function ThemeRow({ name }: { name: string }) {
+  const [open, setOpen] = useState(false);
+  const current = useStore((s) => machineThemeId(s, name));
+  return (
+    <div className="mt-1.5 border-t border-neutral-800 pt-1.5">
+      <button className="flex w-full items-center gap-2 text-left text-neutral-500 hover:text-neutral-300" onClick={() => setOpen((o) => !o)} aria-expanded={open} data-testid={`theme-row-${name}`}>
+        <span className="w-[4.5rem]">Theme</span>
+        <span className="flex-1 text-neutral-300">{themeById(current).name}</span>
+        <span className="text-[10px]">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <div className="mt-1.5">
+          <ThemePicker name={name} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MachineCard({ name }: { name: string }) {
   const m = useStore((s) => s.machineStats[name]);
   const { label, color } = useLabel(name);
@@ -166,6 +188,7 @@ function MachineCard({ name }: { name: string }) {
           {m?.error && <div className="text-amber-400">{`Last ask failed: ${st.word}`}</div>}
         </div>
       )}
+      <ThemeRow name={name} />
     </div>
   );
 }

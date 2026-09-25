@@ -3,11 +3,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { ipc } from "./ipc";
-import { beforeSpawn, terminalColor, useStore } from "../store";
-import { tintBackground } from "./workspace";
+import { beforeSpawn, tileTheme, useStore } from "../store";
 import { paneLinkProvider } from "./paneLinkProvider";
 
-const BASE_BG = "#0f1115";
 
 export const CWD_POLL_AFTER_ENTER_MS = 300;
 export const CWD_POLL_INTERVAL_MS = 5000;
@@ -515,8 +513,10 @@ function copySelection(id: string, term: Terminal): void {
 export function applyColor(id: string): void {
   const entry = entries.get(id);
   if (!entry) return;
-  const bg = tintBackground(BASE_BG, terminalColor(useStore.getState(), id));
-  if (entry.term.options.theme?.background !== bg) entry.term.options.theme = { ...entry.term.options.theme, background: bg };
+  // The theme of the Mac the tile runs on (machine themes spec).
+  const theme = tileTheme(useStore.getState(), id);
+  const cur = entry.term.options.theme;
+  if (cur?.background !== theme.background || cur?.foreground !== theme.foreground || cur?.red !== theme.red) entry.term.options.theme = theme;
 }
 
 export function fitAndFocus(id: string): void {
@@ -555,5 +555,5 @@ useStore.subscribe((state, prev) => {
 });
 
 useStore.subscribe((s, prev) => {
-  if (s.settings !== prev.settings || s.machines !== prev.machines) for (const id of entries.keys()) applyColor(id);
+  if (s.settings !== prev.settings || s.machines !== prev.machines || s.selfMachine !== prev.selfMachine || s.tailscale !== prev.tailscale) for (const id of entries.keys()) applyColor(id);
 });

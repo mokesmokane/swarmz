@@ -59,6 +59,7 @@ import {
   workspaceExtra,
   type ConductorClaim,
   type SubConductors,
+  tintBackground,
 } from "./lib/workspace";
 import { withUserTitle } from "./lib/card";
 import {
@@ -78,6 +79,7 @@ import {
   type Layouts,
 } from "./lib/windowLayouts";
 import { arrange, presetById } from "./lib/presets";
+import { isThemeId, PLAIN, PLAIN_BG, themeById, themeFor, type MachineTheme } from "./lib/themes";
 
 type Point = { x: number; y: number };
 
@@ -628,7 +630,7 @@ export interface WorkbenchState {
   skipStartup(id: string): void;
   dismissPersistError(): void;
   refreshTailscale(): Promise<void>;
-  updateMachine(name: string, patch: { alias?: string | null; user?: string | null; color?: string | null; icon?: string | null }): Promise<string | null>;
+  updateMachine(name: string, patch: { alias?: string | null; user?: string | null; color?: string | null; icon?: string | null; theme?: string | null }): Promise<string | null>;
   applyAgentEvent(payload: AgentEventPayload): void;
   setWindowFocused(focused: boolean): void;
   flashCopied(id: string): void;
@@ -670,6 +672,34 @@ export function terminalColor(s: WorkbenchState, id: string): string | null {
   return machineFor(s, id)?.cfg?.color ?? null;
 }
 
+/** The Mac a tile's shell runs on: its ssh machine, else this one. */
+export function tileMachine(s: Pick<WorkbenchState, "settings" | "selfMachine">, id: string): string | null {
+  return s.settings[id]?.ssh?.machine ?? s.selfMachine;
+}
+
+/** Every Mac this app knows, for the themes chosen by place (machine themes spec). */
+export function knownMacs(s: Pick<WorkbenchState, "selfMachine" | "tailscale" | "machines">): string[] {
+  const peers = (s.tailscale?.peers ?? []).filter((p) => p.os === "macOS").map((p) => p.name);
+  return [...new Set([...(s.selfMachine ? [s.selfMachine] : []), ...peers, ...Object.keys(s.machines)])];
+}
+
+/** The theme id of Mac `name` (a primitive, safe as a selector). */
+export function machineThemeId(s: Pick<WorkbenchState, "selfMachine" | "tailscale" | "machines">, name: string | null): string {
+  return themeFor(name, name ? s.machines[name]?.theme : null, knownMacs(s)).id;
+}
+
+/** The theme id a tile's pane shows: its Mac's (a primitive, safe as a selector). */
+export function tileThemeId(s: WorkbenchState, id: string): string {
+  return machineThemeId(s, tileMachine(s, id));
+}
+
+/** A tile's full xterm theme and pane background: its Mac's theme, or plain tinted by the Mac's colour. */
+export function tileTheme(s: WorkbenchState, id: string): MachineTheme["theme"] {
+  const t = themeById(tileThemeId(s, id));
+  if (t.id !== PLAIN.id) return t.theme;
+  return { ...t.theme, background: tintBackground(PLAIN_BG, terminalColor(s, id)) };
+}
+
 /** Loaded from workspace.json: parses and validates each machine entry, dropping any whose key
  * is not a valid host or whose string fields fail validation, and caps the result at
  * `MACHINES_MAX` entries (newest `lastUsed` first). */
@@ -704,6 +734,8 @@ function sanitizeMachines(input: unknown): { machines: Machines; dropped: number
       dropped += 1;
       continue;
     }
+    // An unknown theme (a newer app's) is left out rather than dropping the Mac.
+    const theme = isThemeId(v.theme) ? { theme: v.theme } : v.theme === null ? { theme: null } : {};
     if (typeof v.cwd === "string" && !isSafeRemotePath(v.cwd)) {
       dropped += 1;
       continue;
@@ -718,6 +750,7 @@ function sanitizeMachines(input: unknown): { machines: Machines; dropped: number
       ...(v.user !== undefined ? { user: v.user as string | null } : {}),
       ...(v.cwd !== undefined ? { cwd: v.cwd as string | null } : {}),
       ...(v.color !== undefined ? { color: v.color as string | null } : {}),
+      ...theme,
     };
   }
   // The cap trims excess entries (oldest first), which is routine housekeeping rather than an
@@ -2527,6 +2560,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (err) return err;
     }
     if (patch.color !== undefined && !isMachineColor(patch.color)) return "unsupported colour";
+    if (patch.theme !== undefined && patch.theme !== null && !isThemeId(patch.theme)) return "unsupported theme";
     if (patch.icon !== undefined && patch.icon !== null && patch.icon.trim() !== "") {
       const err = validateIcon(patch.icon);
       if (err) return err;
@@ -2538,6 +2572,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       ...(patch.user !== undefined ? { user: patch.user?.trim() || null } : {}),
       ...(patch.color !== undefined ? { color: patch.color } : {}),
       ...(patch.icon !== undefined ? { icon: patch.icon?.trim() || null } : {}),
+      ...(patch.theme !== undefined ? { theme: patch.theme } : {}),
     };
     set((s) => ({ machines: touchMachine(s.machines, name, cleaned, undefined, { bump: false }) }));
     const after = useStore.getState();
