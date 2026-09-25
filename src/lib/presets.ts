@@ -22,6 +22,9 @@ export const PRESETS: Preset[] = [
   { id: "single", name: "Single", shape: S },
   { id: "side-by-side", name: "Side by side", shape: row([50, 50], S, S) },
   { id: "stacked", name: "Stacked", shape: col([50, 50], S, S) },
+  // For a portrait display (windows and layouts spec §6, amended): three and four rows.
+  { id: "three-stacked", name: "Three stacked", shape: col([33.34, 33.33, 33.33], S, S, S) },
+  { id: "four-stacked", name: "Four stacked", shape: col([25, 25, 25, 25], S, S, S, S) },
   { id: "main-and-two", name: "Main and two", shape: row([60, 40], S, col([50, 50], S, S)) },
   { id: "three-columns", name: "Three columns", shape: row([33.34, 33.33, 33.33], S, S, S) },
   { id: "top-and-two", name: "Top and two", shape: col([55, 45], S, row([50, 50], S, S)) },
