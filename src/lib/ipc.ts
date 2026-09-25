@@ -228,7 +228,8 @@ export const ipc = {
   /** Writes `~/.swarmz/telegram.json`; both empty removes it. */
   telegramSet: (token: string, chatId: string) => invoke<TelegramInfo>("telegram_set", { token, chatId }),
   /** Makes `host`'s Telegram setup match this Mac's; true when it changed. */
-  telegramPush: (host: string) => invoke<boolean>("telegram_push", { host }),
+  /** Copies this Mac's Telegram setup to `host`; with `remove` (the user removed it here), removes `host`'s too. */
+  telegramPush: (host: string, remove = false) => invoke<boolean>("telegram_push", { host, remove }),
   /** Sends a test message through `swarmz notify`. */
   telegramTest: () => invoke<void>("telegram_test"),
   /** Starts or stops the follower that types the user's Telegram messages into the conductor; resolves with its state. */
