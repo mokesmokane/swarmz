@@ -118,6 +118,39 @@ pub fn status() -> Result<TailscaleStatus, String> {
     parse_status(&done.stdout, &user)
 }
 
+/// A `tailscale ping` answer (activity bar and machines spec §4): the round trip, and whether it
+/// went direct or through a DERP relay (and which).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ping {
+    pub ms: Option<u32>,
+    pub direct: bool,
+    pub relay: Option<String>,
+}
+
+/// Reads `pong from NAME (IP) via DERP(lhr) in 28ms` or `… via 192.168.0.76:41641 in 7ms`; None
+/// when there was no pong.
+pub fn parse_ping(out: &str) -> Option<Ping> {
+    let line = out.lines().find(|l| l.starts_with("pong from"))?;
+    let via = line.split(" via ").nth(1)?;
+    let (path, rest) = via.split_once(" in ")?;
+    let ms = rest.trim().trim_end_matches("ms").trim().parse::<f64>().ok().map(|v| v.round() as u32);
+    let relay = path.strip_prefix("DERP(").and_then(|r| r.strip_suffix(')')).map(str::to_string);
+    Some(Ping { ms, direct: relay.is_none(), relay })
+}
+
+/// Pings `name` once over the tailnet, waiting at most two seconds.
+pub fn ping(name: &str) -> Result<Option<Ping>, String> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
+        return Err(format!("{name:?} is not a machine name"));
+    }
+    let cli = find_cli().ok_or("Tailscale is not installed")?;
+    let mut cmd = Command::new(cli);
+    cmd.args(["ping", "-c", "1", "--timeout", "2s", name]).env("TERM", "dumb");
+    let done = run_with_timeout(cmd, Duration::from_secs(5), "tailscale")?;
+    Ok(parse_ping(&done.stdout).or_else(|| parse_ping(&done.stderr)))
+}
+
 pub fn open_app() -> Result<(), String> {
     let status = Command::new("open").arg("-a").arg("Tailscale").status().map_err(|e| e.to_string())?;
     if status.success() { Ok(()) } else { Err("could not open Tailscale".into()) }
@@ -126,6 +159,18 @@ pub fn open_app() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pings_are_read_direct_relayed_or_missing() {
+        assert_eq!(parse_ping("pong from mini-3 (100.1.2.3) via 192.168.0.76:41641 in 7ms\n"), Some(Ping { ms: Some(7), direct: true, relay: None }));
+        assert_eq!(
+            parse_ping("pong from mini-2 (100.1.2.4) via DERP(lhr) in 28ms\n2026/09/25 direct connection not established\n"),
+            Some(Ping { ms: Some(28), direct: false, relay: Some("lhr".into()) })
+        );
+        assert_eq!(parse_ping("pong from x (1.2.3.4) via DERP(nyc) in 101.6ms"), Some(Ping { ms: Some(102), direct: false, relay: Some("nyc".into()) }));
+        assert_eq!(parse_ping("ping \"x\" timed out\n"), None);
+        assert!(ping("bad name;rm").is_err());
+    }
 
     #[test]
     fn status_command_sets_term_so_the_bundled_binary_acts_as_a_cli() {

@@ -19,6 +19,15 @@ fn ssh_command(host: &str) -> Result<Command, String> {
     Ok(cmd)
 }
 
+/// Runs `remote` on `host` with the sync's ssh options (a shared master when there is one,
+/// `BatchMode`, never a prompt), within `secs`.
+pub fn run_remote(host: &str, remote: &str, secs: u64) -> Result<crate::remote::Finished, String> {
+    let host = validate_host(host)?;
+    let mut cmd = ssh_command(&host)?;
+    cmd.arg(remote);
+    run_with_timeout(cmd, Duration::from_secs(secs), "ssh")
+}
+
 pub fn classify_pull(code: Option<i32>, stdout: &str, stderr: &str) -> Result<Option<String>, String> {
     match code {
         Some(0) => Ok(Some(stdout.to_string())),

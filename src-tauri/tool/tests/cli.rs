@@ -1317,6 +1317,30 @@ fn card_sets_reads_and_keeps_a_user_title() {
 }
 
 #[test]
+fn stats_reports_this_macs_numbers_and_claude_sessions() {
+    let h = home("stats");
+    let cwd = h.path.to_string_lossy().into_owned();
+    let claude = serde_json::json!({"enabled": true, "sessionId": "5e2b8a52-0000-4000-8000-000000000001", "skipPermissions": false, "started": true});
+    write_ws(&h.path, serde_json::json!([
+        {"id": "c1", "name": "api", "cwd": cwd, "origin": "mini", "claude": claude},
+        {"id": "s1", "name": "sh", "cwd": cwd, "origin": "mini"}
+    ]), serde_json::json!({}));
+    let (code, v) = tool_env(&h.path, &["stats"], MINI);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["claude"], serde_json::json!({"working": 0, "needsYou": 0, "idle": 0, "stopped": 1}));
+    let cpu = v["cpu"]["percent"].as_f64().unwrap();
+    assert!((0.0..=100.0).contains(&cpu), "{v}");
+    assert!(v["cpu"]["cores"].as_u64().unwrap() >= 1);
+    assert!(v["memory"]["usedPercent"].as_f64().is_some_and(|p| p > 0.0 && p <= 100.0), "{v}");
+    assert!(v["disk"]["freeBytes"].as_u64().unwrap() > 0);
+    assert!(v["uptimeSeconds"].as_u64().unwrap() > 0);
+    // The phone's gate lets it through too.
+    let (code, g) = tool_env(&h.path, &["ssh-gate"], &[("SWARMZ_MACHINE", "mini"), ("SSH_ORIGINAL_COMMAND", "swarmz stats")]);
+    assert_eq!(code, 0, "{g}");
+    assert!(g["cpu"].is_object());
+}
+
+#[test]
 fn a_tree_of_conductors_acts_on_children_and_glances_below() {
     let h = home("ctree");
     let dir = h.path.to_string_lossy().into_owned();
