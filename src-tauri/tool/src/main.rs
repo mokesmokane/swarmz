@@ -254,7 +254,8 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             a.expect_positional(2, "notify [--tile <id>] [--] <text>")?;
             guard("notify", None)?;
             let tile = a.opt("--tile").map(cmd::tile_arg).transpose()?;
-            Ok(Some(cmd::notify(&cmd::Env::from_process()?, tile.as_deref(), &a.positional[1])?))
+            let caller = swarmz_tool::conductor::caller_tile();
+            Ok(Some(cmd::notify(&cmd::Env::from_process()?, caller.as_deref(), tile.as_deref(), &a.positional[1])?))
         }
         Some("telegram-follow") => {
             a.expect_positional(1, "telegram-follow [--once]")?;

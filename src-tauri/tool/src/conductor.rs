@@ -136,9 +136,10 @@ pub const SCREEN_MAX: usize = 200;
 const ACT: &[&str] = &["send", "ask", "key", "answer", "pending", "close", "restart"];
 /// Commands with no target tile that any conductor may run (a sub-conductor's `fleet` is
 /// filtered, and a tile its `new` starts joins its list).
-const CONDUCTING: &[&str] = &["fleet", "new", "on"];
-/// The user's channel: the top conductor's alone.
-const TOP_ONLY: &[&str] = &["notify", "telegram-follow"];
+const CONDUCTING: &[&str] = &["fleet", "new", "on", "notify"];
+/// Following the user's Telegram chat: the top conductor's Mac alone (Telegram gives one
+/// follower per bot); a message to any conductor is still routed to it.
+const TOP_ONLY: &[&str] = &["telegram-follow"];
 /// Set, deny, clear and remove are the user's (desktop, phone) and never a tile's.
 const USER_ONLY: &[&str] = &["conductor-set", "conductor-clear"];
 
@@ -163,7 +164,7 @@ pub fn allowed(ws: &Workspace, caller: Option<&str>, sub: &str, target: Option<&
         if tree.top.is_none() { "no conductor is set; run `swarmz conductor --claim` to ask for the role".into() } else { "only a conductor acts on other tiles; run `swarmz conductor --claim` to ask for the role".into() }
     };
     if TOP_ONLY.contains(&sub) {
-        return if tree.top.as_deref() == Some(caller) { Ok(()) } else if tree.is_conductor(caller) { denied("only the top conductor talks to the user; raise it with your parent through `swarmz reply`".into()) } else { denied(none_set()) };
+        return if tree.top.as_deref() == Some(caller) { Ok(()) } else if tree.is_conductor(caller) { denied("only the top conductor's Mac follows the Telegram chat".into()) } else { denied(none_set()) };
     }
     if CONDUCTING.contains(&sub) {
         return if tree.is_conductor(caller) { Ok(()) } else { denied(none_set()) };
@@ -640,8 +641,10 @@ mod tests {
         assert!(ok("s1", "on", None).is_ok());
         assert!(ok("a", "fleet", None).is_err());
         assert!(ok("c1", "notify", None).is_ok());
-        assert!(ok("s1", "notify", None).unwrap_err().message.contains("swarmz reply"));
+        // Any conductor may message the user (Telegram for every conductor); only the top follows the chat.
+        assert!(ok("s1", "notify", None).is_ok());
         assert!(ok("s1", "telegram-follow", None).is_err());
+        assert!(ok("a", "notify", None).is_err());
         assert!(ok("a", "send", Some("a")).is_ok());
         assert!(ok("a", "send", Some("o")).is_err());
         assert!(ok("s1", "conductor-set", None).is_err());

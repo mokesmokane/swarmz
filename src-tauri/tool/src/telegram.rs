@@ -177,6 +177,13 @@ pub fn text_from_chat(update: &Value, chat_id: &str) -> Option<String> {
     m["text"].as_str().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
 }
 
+/// The first line of the bot message the user replied to (a conductor's title heads its
+/// messages), or None when the message is not a reply.
+pub fn replied_header(update: &Value) -> Option<String> {
+    let t = update["message"]["reply_to_message"]["text"].as_str()?;
+    t.lines().next().map(|l| l.trim().to_string()).filter(|l| !l.is_empty())
+}
+
 /// The message `conductor --claim` sends when Telegram is set up (spec §3, §5).
 pub fn claim_message(title: &str, what: &str) -> String {
     format!("🎛 <b>{}</b> asks to be {}. Reply <b>approve</b> or <b>deny</b>.", escape_html(title), escape_html(what))
