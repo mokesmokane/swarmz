@@ -57,6 +57,8 @@ export interface RowContext {
   machines: Machines;
   /** Online state by machine name, from Tailscale; a name not present is unknown. */
   online: Record<string, boolean>;
+  /** A Mac's colour when it has none picked (its theme's accent); absent: only picked colours. */
+  colorOf?: (machine: string) => string | null;
 }
 
 function basename(p: string): string {
@@ -81,7 +83,7 @@ export function rowInfo(t: RowSource, ctx: RowContext): RowInfo {
       glyph: machineGlyph(key, remote ? ctx.machines[remote] : undefined),
       label: key,
       alias: alias && alias !== key ? alias : null,
-      color: remote ? (ctx.machines[remote]?.color ?? null) : null,
+      color: remote ? (ctx.machines[remote]?.color ?? ctx.colorOf?.(remote) ?? null) : null,
       self: false,
       online: remote ? (ctx.online[remote] ?? null) : null,
     };
@@ -93,7 +95,7 @@ export function rowInfo(t: RowSource, ctx: RowContext): RowInfo {
       glyph: self ? machineGlyph(self, ctx.machines[self]) : "⌂",
       label: self ?? "this Mac",
       alias: alias && alias !== self ? alias : null,
-      color: self ? (ctx.machines[self]?.color ?? null) : null,
+      color: self ? (ctx.machines[self]?.color ?? ctx.colorOf?.(self) ?? null) : null,
       self: true,
       online: true,
     };

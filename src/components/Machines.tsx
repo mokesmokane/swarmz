@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { useStore, machineList, machineThemeId, type MachineStatus } from "../store";
+import { useStore, machineColor, machineList, machineThemeId, type MachineStatus } from "../store";
 import { themeById } from "../lib/themes";
 import { bytesText, uptimeText } from "../lib/activityBar";
 import { machineLabel } from "../lib/workspace";
@@ -36,7 +36,7 @@ function useMacNames(): string[] {
 
 function useLabel(name: string): { label: string; color: string | null } {
   const label = useStore((s) => machineLabel(name, s.machines[name]));
-  const color = useStore((s) => s.machines[name]?.color ?? null);
+  const color = useStore((s) => machineColor(s, name));
   return { label, color };
 }
 

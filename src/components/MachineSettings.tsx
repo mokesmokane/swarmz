@@ -45,8 +45,8 @@ export function MachineSettings({ name, onClose }: { name: string; onClose: () =
       <div className="flex flex-wrap gap-1">
         <button
           className={`h-5 w-5 rounded-full border ${color === null ? "border-white" : "border-neutral-700"} bg-neutral-800`}
-          title="None"
-          aria-label="No colour"
+          title="Automatic: the colour of its terminal theme"
+          aria-label="Automatic colour"
           onClick={() => setColor(null)}
         />
         {MACHINE_COLORS.map((c) => (

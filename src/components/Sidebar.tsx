@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { groupRows, triage, loadGroupBy, relativeActivity, rowInfo, saveGroupBy, type GroupBy, type RowInfo } from "../lib/sidebarGroups";
 import { open } from "@tauri-apps/plugin-dialog";
-import { conductorFor, isConductorTile, layoutsOf, useStore } from "../store";
+import { conductorFor, isConductorTile, knownMacs, layoutsOf, useStore } from "../store";
+import { machineAccent } from "../lib/themes";
 import { ConductorMenu } from "./ConductorMenu";
 import { ConductorTree } from "./ConductorTree";
 import { ipc } from "../lib/ipc";
@@ -528,12 +529,16 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
   const peers = useStore((s) => s.tailscale?.peers ?? null);
   const online: Record<string, boolean> = {};
   for (const p of peers ?? []) online[p.name] = p.online;
+  // Every Mac gets a colour, from its theme when none is picked (sidebar redesign spec).
+  const knownKey = useStore((s) => knownMacs(s).join("\n"));
+  const known = knownKey ? knownKey.split("\n") : [];
+  const colorOf = (m: string) => machineAccent(m, machines[m], known);
   const infos = new Map<string, RowInfo>();
   for (const id of order) {
     const t = terminals[id];
     if (!t) continue;
     const s = settings[id];
-    infos.set(id, rowInfo({ id, name: t.name, cwd: t.cwd, exited: t.exited, ssh: s?.ssh ?? null, foreign: s?.foreign ?? null, sessions: s?.sessions, agent: agentState[id] }, { selfMachine, machines, online }));
+    infos.set(id, rowInfo({ id, name: t.name, cwd: t.cwd, exited: t.exited, ssh: s?.ssh ?? null, foreign: s?.foreign ?? null, sessions: s?.sessions, agent: agentState[id] }, { selfMachine, machines, online, colorOf }));
   }
   const groups = groupRows(order, infos, groupBy, now);
   const tri = triage(order, infos);
