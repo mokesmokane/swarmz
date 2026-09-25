@@ -17,3 +17,11 @@ tinted its panes).
   the same on every Mac. An unknown theme (a newer app's) is ignored, never dropping the Mac.
 - **Where to pick.** The Machines view's card for each Mac has a Theme row that opens the picker
   (Auto, the five, Plain), each drawn as a tiny terminal; the ssh Mac settings have it too.
+
+## Amendment: a colour for every Mac (same day)
+
+A Mac with no colour picked takes its theme's accent (Midnight blue, Forest green, Ember orange,
+Daylight sky, Neon pink; a Mac on Plain takes the accent its place would give) for its chip and
+badges in the sidebar, the Machines view and the remote picker, so every Mac is colourful and its
+chip matches its panes. A picked colour still wins; the colour picker's first swatch is
+"Automatic".
