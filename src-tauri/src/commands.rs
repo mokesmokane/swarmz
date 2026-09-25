@@ -859,8 +859,9 @@ pub fn telegram_set(token: String, chat_id: String) -> Result<crate::telegram::T
 
 /// Makes `host`'s Telegram setup match this Mac's, over the shared ssh master; true when it changed.
 #[tauri::command]
-pub async fn telegram_push(host: String) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::telegram::push(&host)).await.map_err(|e| e.to_string())?
+pub async fn telegram_push(host: String, remove: Option<bool>) -> Result<bool, String> {
+    let remove = remove.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || crate::telegram::push(&host, remove)).await.map_err(|e| e.to_string())?
 }
 
 /// Sends a test message through the tool (`swarmz notify`), as the conductor would.

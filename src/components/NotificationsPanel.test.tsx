@@ -44,7 +44,8 @@ describe("NotificationsPanel", () => {
       fireEvent.click(screen.getByRole("button", { name: "Save" }));
     });
     expect(ipc.telegramSet).toHaveBeenCalledWith("123456:AAxx", "42");
-    expect(ipc.telegramPush).toHaveBeenCalledWith("mokes@box");
+    // Saving copies the setup; it never removes another Mac's.
+    expect(ipc.telegramPush).toHaveBeenCalledWith("mokes@box", false);
     expect(await screen.findByText("Studio: updated")).toBeTruthy();
     expect(screen.getByText("Saved")).toBeTruthy();
     expect(useStore.getState().telegramConfigured).toBe(true);
@@ -96,6 +97,8 @@ describe("NotificationsPanel", () => {
       fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     });
     expect(ipc.telegramSet).toHaveBeenLastCalledWith("", "");
+    // Only Remove takes the setup off the other Macs.
+    expect(ipc.telegramPush).toHaveBeenLastCalledWith("mokes@box", true);
     expect(useStore.getState().telegramConfigured).toBe(false);
     expect(await screen.findByText("Removed")).toBeTruthy();
   });

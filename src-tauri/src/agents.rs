@@ -315,7 +315,8 @@ pub fn install_remote(host: &str) -> Result<bool, String> {
         wrote = true;
     }
     // The Telegram setup rides along (conductor spec §5), so the conductor can run on any Mac.
-    if crate::telegram::push(&host)? {
+    // Only ever copied from here: a Mac without it must not remove it there.
+    if crate::telegram::push(&host, false)? {
         wrote = true;
     }
     Ok(wrote)

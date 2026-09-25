@@ -58,9 +58,29 @@ pub fn remote_write_command(len: usize) -> String {
 pub const REMOTE_REMOVE_COMMAND: &str = "rm -f ~/.swarmz/telegram.json";
 pub const REMOTE_READ_COMMAND: &str = "cat ~/.swarmz/telegram.json 2>/dev/null; true";
 
-/// Makes `host`'s setup match this Mac's: written when this Mac has one and the remote's
-/// differs, removed when this Mac has none. True when something changed there.
-pub fn push(host: &str) -> Result<bool, String> {
+/// What a push does to a remote Mac's setup.
+#[derive(Debug, PartialEq)]
+pub enum PushPlan {
+    Write,
+    Remove,
+    Nothing,
+}
+
+/// A push's decision: this Mac's setup is written where it differs; a Mac with none here
+/// removes the remote's only when the user removed it (`remove`), never on a routine sync,
+/// or a Mac that was never set up would wipe the setup of every Mac it connects to.
+pub fn push_plan(local: Option<&Config>, remote: Option<&Config>, remote_has_file: bool, remove: bool) -> PushPlan {
+    match local {
+        Some(cfg) if remote != Some(cfg) => PushPlan::Write,
+        Some(_) => PushPlan::Nothing,
+        None if remove && (remote.is_some() || remote_has_file) => PushPlan::Remove,
+        None => PushPlan::Nothing,
+    }
+}
+
+/// Copies this Mac's setup to `host` where it differs; with `remove` (the user removed it here),
+/// a Mac with no setup removes `host`'s too. True when something changed there.
+pub fn push(host: &str, remove: bool) -> Result<bool, String> {
     let host = validate_host(host)?;
     let local = telegram::read(&swarmz_tool::paths::home_dir());
     let mut cmd = ssh_command(&host)?;
@@ -72,8 +92,8 @@ pub fn push(host: &str) -> Result<bool, String> {
     let remote: Option<Config> = serde_json::from_str::<serde_json::Value>(done.stdout.trim()).ok().and_then(|v| {
         Some(Config { token: v["token"].as_str()?.trim().to_string(), chat_id: v["chatId"].as_str()?.trim().to_string() })
     });
-    match local {
-        Some(cfg) if remote.as_ref() != Some(&cfg) => {
+    match (push_plan(local.as_ref(), remote.as_ref(), !done.stdout.trim().is_empty(), remove), local) {
+        (PushPlan::Write, Some(cfg)) => {
             let payload = format!("{}\n", serde_json::json!({"token": cfg.token, "chatId": cfg.chat_id}));
             let mut cmd = ssh_command(&host)?;
             cmd.arg(remote_write_command(payload.len()));
@@ -83,8 +103,7 @@ pub fn push(host: &str) -> Result<bool, String> {
             }
             Ok(true)
         }
-        Some(_) => Ok(false),
-        None if remote.is_some() || !done.stdout.trim().is_empty() => {
+        (PushPlan::Remove, _) => {
             let mut cmd = ssh_command(&host)?;
             cmd.arg(REMOTE_REMOVE_COMMAND);
             let done = run_with_timeout(cmd, Duration::from_secs(10), "ssh")?;
@@ -93,7 +112,7 @@ pub fn push(host: &str) -> Result<bool, String> {
             }
             Ok(true)
         }
-        None => Ok(false),
+        _ => Ok(false),
     }
 }
 
@@ -188,6 +207,20 @@ impl Drop for Follower {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_mac_without_telegram_never_wipes_another_macs_unless_the_user_removed_it() {
+        let cfg = Config { token: "1:a".into(), chat_id: "42".into() };
+        let other = Config { token: "1:a".into(), chat_id: "7".into() };
+        assert_eq!(push_plan(None, Some(&cfg), true, false), PushPlan::Nothing);
+        assert_eq!(push_plan(None, Some(&cfg), true, true), PushPlan::Remove);
+        assert_eq!(push_plan(None, None, true, true), PushPlan::Remove, "an unreadable file goes too");
+        assert_eq!(push_plan(None, None, false, true), PushPlan::Nothing);
+        assert_eq!(push_plan(Some(&cfg), Some(&other), true, false), PushPlan::Write);
+        assert_eq!(push_plan(Some(&cfg), None, false, false), PushPlan::Write);
+        assert_eq!(push_plan(Some(&cfg), Some(&cfg), true, true), PushPlan::Nothing);
+    }
+
     use super::*;
 
     #[test]

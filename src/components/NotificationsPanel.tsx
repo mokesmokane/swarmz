@@ -70,7 +70,8 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
       const results: typeof pushed = [];
       for (const h of hostList) {
         try {
-          await ipc.telegramPush(h.host);
+          // Saving with nothing set up clears it here, and that is the user's removal too.
+          await ipc.telegramPush(h.host, !i.configured);
           results.push({ machine: h.label, ok: true });
         } catch (e) {
           results.push({ machine: h.label, ok: false, error: message(e) });
@@ -97,7 +98,7 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
       const results: typeof pushed = [];
       for (const h of hostList) {
         try {
-          await ipc.telegramPush(h.host);
+          await ipc.telegramPush(h.host, true);
           results.push({ machine: h.label, ok: true });
         } catch (e) {
           results.push({ machine: h.label, ok: false, error: message(e) });
