@@ -6,6 +6,7 @@ import { windowNames } from "../lib/windowMirror";
 import { MAIN } from "../lib/windowLayouts";
 import { GalleryButton } from "./LayoutGallery";
 import { EmptySlot } from "./EmptySlot";
+import { identifyMark } from "./IdentifyLabel";
 import { dotPresentation } from "../lib/agentState";
 import { displayTitle } from "../lib/card";
 import { TerminalPane } from "./TerminalPane";
@@ -123,6 +124,8 @@ export function TabGroup({ group }: { group: GroupNode }) {
   const windowTiles = useStore((s) => allGroups(s.layout).reduce((n, g) => n + g.tabs.length, 0));
   const soleGroup = useStore((s) => s.windowLabel !== MAIN && allGroups(s.layout).length === 1);
   const [menu, setMenu] = useState<{ id: string; at: { x: number; y: number } } | null>(null);
+  const identified = useStore((s) => group.tabs.map((t) => identifyMark(s, t) ?? "").join("\n"));
+  const markOf = (i: number) => identified.split("\n")[i] || null;
   const moveTerminal = useStore((s) => s.moveTerminal);
   const splitTerminal = useStore((s) => s.splitTerminal);
   const createTerminal = useStore((s) => s.createTerminal);
@@ -222,9 +225,10 @@ export function TabGroup({ group }: { group: GroupNode }) {
             </button>
           </div>
         )}
-        {group.tabs.map((id) => {
+        {group.tabs.map((id, i) => {
           const t = terminals[id];
           const active = group.active === id;
+          const mark = markOf(i);
           return (
             <div
               key={id}
@@ -236,8 +240,9 @@ export function TabGroup({ group }: { group: GroupNode }) {
               data-testid={`tab-${id}`}
               className={`group flex shrink-0 cursor-default select-none items-center gap-2 border-r border-neutral-800 px-3 text-xs ${
                 active ? "bg-[#0f1115] text-neutral-100" : "text-neutral-400 hover:bg-neutral-800"
-              }`}
+              } ${mark ? "ring-2 ring-inset ring-amber-400" : ""}`}
             >
+              {mark && mark !== "●" && <span className="rounded bg-amber-400 px-1 text-[10px] font-bold text-neutral-950" data-testid={`tab-mark-${id}`}>{mark}</span>}
               <TabDot id={id} exitCode={t?.exited ?? null} />
               {isConductorTile({ conductor, conductors }, id) && <ConductorBadge />}
               <span className="max-w-[160px] truncate" title={t?.name ?? id}>{t ? displayTitle(settings[id]?.card, agentState[id], t.name) : id}</span>

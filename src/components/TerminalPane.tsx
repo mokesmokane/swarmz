@@ -4,6 +4,7 @@ import { attach, claimSize, fitAndFocus } from "../lib/xtermRegistry";
 import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
 import { SessionHistory } from "./SessionHistory";
+import { IdentifyLabel } from "./IdentifyLabel";
 
 /** How long the "Copied" and "Image sent to remote" pills stay after a copy or a remote paste. */
 export const COPIED_FLASH_MS = 1000;
@@ -154,6 +155,7 @@ export function TerminalPane({ id }: { id: string }) {
           onClose={() => setPicking(false)}
         />
       )}
+      <IdentifyLabel id={id} />
       {pill && (
         <div className="pointer-events-none absolute right-3 top-3 z-20 rounded bg-neutral-800/95 px-2 py-0.5 text-xs text-neutral-200 shadow">{pill}</div>
       )}

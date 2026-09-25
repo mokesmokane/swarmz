@@ -588,6 +588,12 @@ export interface WorkbenchState {
   closedNotice: ClosedNotice | null;
   /** In another window's mirror: every tile open in some window (the main window works it out). */
   openTileIds: string[];
+  /** Tiles showing their identify label (identify spec): one tile, or all of them numbered in list order. */
+  identify: { ids: string[]; numbered: boolean; at: number } | null;
+  /** Shows where tile `id` is: its window comes forward, its tab shows, and a label flashes over its pane. */
+  identifyTile(id: string): void;
+  /** Numbers every open tile's pane and its sidebar row alike (`ids` in the order the list shows them). */
+  identifyAll(ids: string[]): void;
   /** Closes the tab: the tile keeps running, not open in any window (spec §3). */
   closeTab(id: string): void;
   /** Moves these tiles into a new window at `at` (screen, logical px), arranged by a preset or as tabs of one group. */
@@ -825,6 +831,18 @@ function placeOf(s: WorkbenchState, id: string): { id: string; groupId: string |
   const ls = layoutsOf(s);
   const label = windowOfTile(ls, id);
   return { id, groupId: label ? (findGroupOf(ls[label], id)?.id ?? null) : null };
+}
+
+/** How long an identify label stays (identify spec). */
+export const IDENTIFY_MS = 3500;
+let identifyTimer: ReturnType<typeof setTimeout> | null = null;
+function showIdentify(v: NonNullable<WorkbenchState["identify"]>): void {
+  useStore.setState({ identify: v });
+  if (identifyTimer) clearTimeout(identifyTimer);
+  identifyTimer = setTimeout(() => {
+    identifyTimer = null;
+    if (useStore.getState().identify?.at === v.at) useStore.setState({ identify: null });
+  }, IDENTIFY_MS);
 }
 
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2116,6 +2134,19 @@ export const useStore = create<WorkbenchState>((set) => ({
   selectedTiles: [],
   closedNotice: null,
   openTileIds: [],
+  identify: null,
+
+  identifyTile(id) {
+    if (!useStore.getState().terminals[id]) return;
+    // Open somewhere: shown and brought forward. Not open: the row says so, nothing opens.
+    if (windowOfTile(layoutsOf(useStore.getState()), id)) useStore.getState().focusTerminal(id);
+    showIdentify({ ids: [id], numbered: false, at: Date.now() });
+  },
+
+  identifyAll(ids) {
+    const s = useStore.getState();
+    showIdentify({ ids: ids.filter((id) => s.terminals[id]), numbered: true, at: Date.now() });
+  },
 
   closeTab(id) {
     const s = useStore.getState();

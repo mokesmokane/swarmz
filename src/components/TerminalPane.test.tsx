@@ -213,3 +213,16 @@ describe("size after moving windows (windows and layouts spec §4)", () => {
     expect(claimSize).not.toHaveBeenCalled();
   });
 });
+
+describe("identify label", () => {
+  it("shows the tile's title and place while identified, a number when all are", async () => {
+    const { TerminalPane } = await import("./TerminalPane");
+    useStore.setState({ identify: { ids: [ID], numbered: false, at: 1 } });
+    render(<TerminalPane id={ID} />);
+    expect(screen.getByTestId(`identify-${ID}`).textContent).toContain(useStore.getState().terminals[ID].name);
+    act(() => useStore.setState({ identify: { ids: ["x", ID], numbered: true, at: 2 } }));
+    expect(screen.getByTestId(`identify-${ID}`).textContent).toContain("2");
+    act(() => useStore.setState({ identify: null }));
+    expect(screen.queryByTestId(`identify-${ID}`)).toBeNull();
+  });
+});

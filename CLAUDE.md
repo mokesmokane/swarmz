@@ -113,6 +113,10 @@ The window starts with a VS Code style activity bar (`ActivityBar`, activity bar
 
 Each Mac has a terminal theme (machine themes spec, `src/lib/themes.ts`: `THEMES` Midnight, Forest, Ember, Daylight, Neon, plus `PLAIN`, the old look tinted by the Mac's colour). A tile's pane and xterm take the theme of the Mac its shell runs on (`tileMachine`: ssh machine, else `selfMachine`; `tileTheme`, applied by `applyColor` in the registry). The pick is `machines[name].theme` in the shared workspace; with none, `themeFor` assigns by the Mac's place among `knownMacs` sorted by name. `ThemePicker` sits in each Machines card's Theme row and in `MachineSettings`.
 
+### Identify
+
+Each sidebar row has a ⋯ settings menu (identify spec): Identify, Identify all tiles, Open in a new window, Rename…, Edit title…, Stop and remove. `identifyTile` focuses the tile when it is open and sets `identify` `{ids, numbered, at}` for `IDENTIFY_MS`; `identifyAll` numbers the tiles in the sidebar's order. `IdentifyLabel` draws over the pane, `identifyMark` marks tabs and rows; `identify` is mirrored to other windows.
+
 ### Sidebar width
 
 The sidebar is resized by dragging the 4 px handle between it and the workbench (`App.tsx`), double-click resets it; the width is a per-machine preference in `localStorage` (`src/lib/sidebarWidth.ts`, clamped 180–640, default 256), never part of the shared workspace.
