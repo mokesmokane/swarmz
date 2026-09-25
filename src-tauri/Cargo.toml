@@ -3,7 +3,7 @@ members = ["tool"]
 
 [package]
 name = "swarmz"
-version = "0.8.0"
+version = "0.9.0"
 description = "Tiled terminal workbench for Claude Code agents"
 authors = ["Martin O'Kane"]
 edition = "2021"
