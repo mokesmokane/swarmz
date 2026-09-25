@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../store";
 import { MACHINE_COLORS, machineGlyph } from "../lib/workspace";
+import { ThemePicker } from "./ThemePicker";
 
 const field = "w-full rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-xs text-neutral-100 outline-none focus:border-blue-500";
 const label = "mt-2 block text-[10px] uppercase tracking-wide text-neutral-500";
@@ -59,6 +60,8 @@ export function MachineSettings({ name, onClose }: { name: string; onClose: () =
           />
         ))}
       </div>
+      <label className={label}>Terminal theme (applies at once)</label>
+      <ThemePicker name={name} />
       {error && <div className="mt-1 text-red-400">{error}</div>}
       <div className="mt-2 flex justify-end gap-2">
         <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={onClose}>Cancel</button>

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { useStore, terminalColor } from "../store";
+import { useStore, terminalColor, tileTheme } from "../store";
 import { attach, claimSize, fitAndFocus } from "../lib/xtermRegistry";
-import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary, tintBackground } from "../lib/workspace";
+import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
 import { SessionHistory } from "./SessionHistory";
 
@@ -12,6 +12,8 @@ export function TerminalPane({ id }: { id: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const info = useStore((s) => s.terminals[id]);
   const color = useStore((s) => terminalColor(s, id));
+  // The pane around the terminal takes its Mac's theme too (machine themes spec).
+  const background = useStore((s) => tileTheme(s, id).background);
   const focused = useStore((s) => s.focusedTerminalId === id);
   const restart = useStore((s) => s.restartTerminal);
   const [restartError, setRestartError] = useState<string | null>(null);
@@ -98,7 +100,7 @@ export function TerminalPane({ id }: { id: string }) {
   }, [pastedAt]);
 
   return (
-    <div className="relative h-full w-full" style={{ backgroundColor: tintBackground("#0f1115", color) }}>
+    <div className="relative h-full w-full" style={{ backgroundColor: background }}>
       {color && <div className="absolute inset-x-0 top-0 z-20 h-0.5" style={{ backgroundColor: color }} />}
       {overlay === "pending" && (
         <div className="absolute inset-0 z-10 flex items-center justify-center p-6">
