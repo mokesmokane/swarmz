@@ -124,9 +124,9 @@ export default function App() {
   return (
     <div className="flex h-full w-full">
       <ActivityBar view={side.view} folded={side.folded} onPick={pick} />
-      {!side.folded && side.view === "terminals" && <Sidebar width={sidebarWidth} />}
+      {!side.folded && side.view === "terminals" && <Sidebar width={sidebarWidth} onShowMachines={() => pick("machines")} />}
       {!side.folded && side.view !== "terminals" && (
-        <aside className="flex h-full shrink-0 flex-col overflow-y-auto border-r border-neutral-800 bg-neutral-950" style={{ width: sidebarWidth }} data-testid={`side-${side.view}`}>
+        <aside className="flex h-full shrink-0 flex-col overflow-y-auto border-r border-line bg-panel" style={{ width: sidebarWidth }} data-testid={`side-${side.view}`}>
           {side.view === "machines" && <MachinesView />}
           {side.view === "phones" && <PhonesPanel onClose={backToTerminals} />}
           {side.view === "notifications" && <NotificationsPanel onClose={backToTerminals} />}

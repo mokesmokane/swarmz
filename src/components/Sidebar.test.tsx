@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/ipc", () => ({
@@ -40,6 +40,7 @@ vi.mock("../lib/ipc", () => ({
     machineStats: vi.fn(async () => ({ cpu: { percent: 12, load1: 1, cores: 8 }, memory: { usedPercent: 50, totalBytes: 8 }, disk: { freePercent: 40, freeBytes: 4 }, uptimeSeconds: 60, claude: { working: 1, needsYou: 0, idle: 0, stopped: 0 }, app: "0.8.0", tool: "0.1.0", build: 1 })),
     tailscalePing: vi.fn(async () => null),
     conductorAction: vi.fn(async () => ({ conductor: null, claim: null })),
+    tileAnswer: vi.fn(async () => ({ v: 1, answered: true })),
     conductorDir: vi.fn(async () => "/home/me/.swarmz/conductor"),
     phones: vi.fn(async () => []),
     revokePhone: vi.fn(async () => ({ removed: 1, machines: [] })),
@@ -97,24 +98,16 @@ afterEach(() => {
 });
 
 describe("Sidebar", () => {
-  it("renders a machine row once, with its colour, online tooltip, and machine name, without a getSnapshot warning", () => {
+  it("renders a machine row once, with its Mac chip in its colour, online tooltip, and no getSnapshot warning", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       render(<Sidebar />);
-
-      // The row shows the raw machine name (not the alias, which is already the tile's name).
-      const machineLine = screen.getByText("box");
-      expect(machineLine).toBeTruthy();
-
-      const row = machineLine.closest("[data-machine-state]") as HTMLElement;
-      expect(row).toBeTruthy();
-      // jsdom normalizes the hex colour in the shorthand to rgb() when it parses the inline style.
-      expect(row.style.borderLeft).toContain("rgb(245, 158, 11)");
+      const row = screen.getByTestId(`row-${ID}`);
       expect(row.dataset.machineState).toBe("online");
-
-      const dot = row.querySelector("span") as HTMLElement;
-      expect(dot.style.backgroundColor).toBe("rgb(245, 158, 11)");
-
+      const chip = within(row).getByTestId("machine-glyph");
+      // jsdom normalizes the hex colour to rgb() when it parses the inline style.
+      expect(chip.style.backgroundColor).toBe("rgb(245, 158, 11)");
+      expect(chip.title).toBe("desk · box · online");
       for (const call of errorSpy.mock.calls) {
         expect(String(call[0])).not.toContain("getSnapshot");
       }
@@ -122,27 +115,24 @@ describe("Sidebar", () => {
       errorSpy.mockRestore();
     }
   });
-
-  it("shows the card's title, then the first prompt, then the name, and the name moves down", () => {
+  it("shows the card's title, then the first prompt, then the name, and the name moves to the second line", () => {
     render(<Sidebar />);
     // No card, no prompt: the name.
     expect(screen.getByTestId(`title-${ID}`).textContent).toBe("desk");
-    // A first prompt names it; the name becomes a tag beside the title.
+    // A first prompt names it; the name moves to the second line, in mono, beside the folder.
     act(() => {
       useStore.setState({ agentState: { [ID]: { ...useStore.getState().agentState[ID], status: "working", sessionId: "s", since: "t", lastEvent: "UserPromptSubmit", unseen: false, title: "fix the build", firstPrompt: "fix the build please" } } });
     });
-    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("fix the builddesk");
-    // Machine first, always; the name moves to a tag on the title line since the folder does not say it.
-    expect(screen.getByTestId(`line2-${ID}`).textContent).toBe("Bbox·projects·working·now");
+    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("fix the build");
+    expect(screen.getByTestId(`line2-${ID}`).textContent).toBe("Bprojectsdesk");
     expect(screen.getByTitle("Tile name").textContent).toBe("desk");
     // The agent's card wins over the prompt.
     act(() => {
       const s = useStore.getState();
       useStore.setState({ settings: { [ID]: { ...s.settings[ID], card: { title: "Phone: answer questions", recap: "Parsed the dialog.\nNext: the card.", updatedAt: new Date().toISOString(), by: "agent" } } } });
     });
-    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("Phone: answer questionsdesk");
+    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("Phone: answer questions");
   });
-
   it("opens a hover card with the recap after a pause, and closes it on leave", () => {
     vi.useFakeTimers();
     try {
@@ -196,7 +186,7 @@ describe("Sidebar", () => {
     fireEvent.change(input, { target: { value: "  Mine  " } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(useStore.getState().settings[ID].card).toMatchObject({ title: "Mine", by: "user" });
-    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("Minedesk");
+    expect(screen.getByTestId(`title-${ID}`).textContent).toBe("Mine");
     // The name is still edited from the rest of the row.
     fireEvent.doubleClick(screen.getByTestId(`line2-${ID}`));
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("desk");
@@ -208,7 +198,8 @@ describe("Sidebar", () => {
     expect(screen.getByTestId(`title-${ID}`).textContent).toBe("desk");
   });
 
-  it("groups by machine with a header, and by status in order", () => {
+  it("opens on Triage (needs you as cards, the rest as rows) and switches views, remembered per Mac", () => {
+    localStorage.removeItem("swarmz.sidebarGroupBy");
     act(() => {
       const s = useStore.getState();
       useStore.setState({
@@ -220,46 +211,29 @@ describe("Sidebar", () => {
       });
     });
     render(<Sidebar />);
-    // The chip names the machine on every row, remote and local alike.
-    expect(screen.getByTestId(`line2-${ID}`).textContent).toContain("Bbox·projects·needs you");
-    expect(screen.getByTestId("line2-local").textContent).toBe("Mmini·other·stopped");
-    fireEvent.change(screen.getByLabelText("Group by"), { target: { value: "machine" } });
-    expect(screen.getByTestId("group-mini").textContent).toContain("mini");
-    expect(screen.getByTestId("group-box").textContent).toContain("box");
-    // This Mac's group comes first.
-    const headers = screen.getAllByTestId(/^group-/).map((h) => h.getAttribute("data-testid"));
-    expect(headers).toEqual(["group-mini", "group-box"]);
-    fireEvent.change(screen.getByLabelText("Group by"), { target: { value: "status" } });
-    expect(screen.getAllByTestId(/^group-/).map((h) => h.getAttribute("data-testid"))).toEqual(["group-needs you", "group-stopped"]);
-    expect(localStorage.getItem("swarmz.sidebarGroupBy")).toBe("status");
+    expect(screen.getByRole("radio", { name: "Triage" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByTestId("triage-needs").textContent).toContain("NEEDS YOU");
+    expect(screen.getByTestId(`needs-card-${ID}`).textContent).toContain("desk");
+    expect(screen.getByTestId("triage-quiet").textContent).toContain("QUIET");
+    expect(screen.getByTestId("line2-local").textContent).toBe("Mother");
+    fireEvent.click(screen.getByRole("radio", { name: "Mac" }));
+    // This Mac's group comes first; a row in the Mac view says "needs you".
+    expect(screen.getAllByTestId(/^group-/).map((h) => h.getAttribute("data-testid"))).toEqual(["group-mini", "group-box"]);
+    expect(screen.getByTestId(`status-${ID}`).textContent).toBe("needs you");
+    expect(screen.getByTestId("group-box").textContent).toContain("1");
+    fireEvent.click(screen.getByRole("radio", { name: "Time" }));
+    expect(screen.getAllByTestId(/^group-/).length).toBeGreaterThan(0);
+    expect(localStorage.getItem("swarmz.sidebarGroupBy")).toBe("time");
     localStorage.removeItem("swarmz.sidebarGroupBy");
   });
-
-  it("shows a synced status line when sync is enabled and tailscale is running", () => {
+  it("sums up sync in the notices line when sync is enabled and tailscale is running", () => {
     useStore.setState({
-      sync: {
-        enabled: true,
-        lastPullAt: new Date().toISOString(),
-        lastPushAt: null,
-        peersOk: 1,
-        peersTotal: 2,
-        error: null,
-        adopting: false,
-      },
-      tailscale: {
-        running: true,
-        message: null,
-        user: "mokes",
-        self: { name: "here", hostName: "h", ip: null, os: "macOS", online: true },
-        peers: [],
-      },
+      sync: { enabled: true, lastPullAt: new Date().toISOString(), lastPushAt: null, peersOk: 1, peersTotal: 2, error: null, adopting: false },
+      tailscale: { running: true, message: null, user: "mokes", self: { name: "here", hostName: "h", ip: null, os: "macOS", online: true }, peers: [] },
     });
-
     render(<Sidebar />);
-
-    expect(screen.getByRole("button", { name: /Synced · 1\/2 machines/ }).textContent).toContain("Synced · 1/2 machines");
+    expect(screen.getByTestId("notices").textContent).toContain("Synced · 1/2 Macs");
   });
-
   it("shows sync off when tailscale is not available", () => {
     useStore.setState({ tailscale: null });
 
@@ -284,7 +258,7 @@ describe("the conductor", () => {
     });
     expect(ipc.conductorAction).toHaveBeenCalledWith("set", ID);
     expect(useStore.getState().conductor).toBe(ID);
-    expect(screen.getByTestId(`title-${ID}`).querySelector("[aria-label='Conductor']")).toBeTruthy();
+    expect(screen.getByTestId(`row-${ID}`).querySelector("[aria-label='Conductor']")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Conductor role"));
     expect(screen.getByText("Not the conductor")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Conductor role"));
@@ -328,7 +302,7 @@ describe("the conductor", () => {
       fireEvent.click(screen.getByText("Make it a conductor here"));
     });
     expect(ipc.conductorAction).toHaveBeenCalledWith("sub", ID, "top");
-    expect(screen.getByTestId(`title-${ID}`).querySelector("[aria-label='Conductor']")).toBeTruthy();
+    expect(screen.getByTestId(`row-${ID}`).querySelector("[aria-label='Conductor']")).toBeTruthy();
     // alpha's menu offers desk now; choosing it assigns alpha.
     fireEvent.click(screen.getAllByLabelText("Conductor role")[2]);
     vi.mocked(ipc.conductorAction).mockResolvedValueOnce({ conductor: "top", conductors: { [ID]: { parent: "top", tiles: ["a"] } }, claim: null });
@@ -367,7 +341,7 @@ describe("the conductor", () => {
       conductorClaim: { tile: ID, title: "certify", at: "t", sub: true, parent: "top" },
     });
     render(<Sidebar />);
-    expect(screen.getByTestId("claim-bar").textContent).toContain("certify asks to be a conductor under ops");
+    expect(screen.getByTestId("claim-bar").textContent).toContain("certify asks to be a sub-conductor under ops");
     fireEvent.click(screen.getByLabelText("Conductors"));
     expect(useStore.getState().conductorsPanel).toBe(true);
     useStore.setState({ conductorsPanel: false });
@@ -394,10 +368,13 @@ describe("the conductor", () => {
       conductors: {},
     });
     render(<Sidebar />);
-    fireEvent.change(screen.getByLabelText("Group by"), { target: { value: "conductor" } });
+    fireEvent.click(screen.getByRole("radio", { name: "Tree" }));
     expect(screen.getByTestId("conductor-tree")).toBeTruthy();
     expect(screen.getByTestId("tree-node-top").contains(screen.getByTestId(`title-${ID}`))).toBe(true);
-    fireEvent.change(screen.getByLabelText("Group by"), { target: { value: "workspace" } });
+    // Nested one level: indented with a guide line.
+    expect(screen.getByTestId(`row-${ID}`).style.paddingLeft).toBe("24px");
+    fireEvent.click(screen.getByRole("radio", { name: "Triage" }));
+    localStorage.removeItem("swarmz.sidebarGroupBy");
   });
 
   it("shows a pending claim as a bar whose Approve and Deny answer through the tool", async () => {
@@ -431,7 +408,7 @@ describe("the conductor", () => {
     render(<Sidebar />);
     fireEvent.click(screen.getByTitle("New terminal"));
     await act(async () => {
-      fireEvent.click(screen.getByText("🎛 Conductor…"));
+      fireEvent.click(screen.getByText("Conductor…"));
     });
     expect(ipc.conductorDir).toHaveBeenCalled();
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ directory: true, defaultPath: "/home/me/.swarmz/conductor" }));
@@ -439,35 +416,38 @@ describe("the conductor", () => {
 });
 
 describe("agent status dot", () => {
-  it("uses the agent colour and ring, keeps exited grey, and shows the hooks error with retry", () => {
+  it("colours the dot by state, glows when it needs you, and lists the hooks error with Retry", () => {
     useStore.setState({
       settings: { [ID]: { ssh: null, claude: null, command: null, extra: {} } },
       machines: {},
       agentState: { [ID]: { status: "blocked", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "Notification", unseen: true, title: null, firstPrompt: null } },
       agentHooksError: "could not install Claude hooks: nope",
     });
+    localStorage.setItem("swarmz.sidebarGroupBy", "machine");
     render(<Sidebar />);
     const dot = screen.getByTestId(`agent-dot-${ID}`);
-    expect(dot.style.backgroundColor).toBe("rgb(255, 178, 27)");
-    expect(dot.className).toContain("ring-2");
-    expect(dot.title).toContain("blocked");
-    expect(dot.title).toContain("Notification");
+    expect(dot.style.backgroundColor).toBe("var(--color-needs)");
+    expect(dot.style.boxShadow).toContain("--color-needs");
+    expect(screen.getByTestId(`row-${ID}`).title).toContain("Needs you");
+    fireEvent.click(screen.getByTestId("notices"));
     expect(screen.getByText("could not install Claude hooks: nope")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     act(() => {
       useStore.setState({ terminals: { [ID]: { ...useStore.getState().terminals[ID], exited: 1 } } });
     });
-    expect(screen.getByTestId(`agent-dot-${ID}`).style.backgroundColor).toBe("rgb(255, 3, 3)");
+    expect(screen.getByTestId(`agent-dot-${ID}`).style.backgroundColor).toBe("var(--color-exited)");
+    expect(screen.getByTestId(`status-${ID}`).textContent).toBe("exited 1");
     act(() => {
       useStore.setState({ terminals: { [ID]: { ...useStore.getState().terminals[ID], exited: 0 } } });
     });
-    expect(screen.getByTestId(`agent-dot-${ID}`).className).toContain("bg-neutral-600");
+    // Stopped: a hollow dot.
+    expect(screen.getByTestId(`agent-dot-${ID}`).style.backgroundColor).toBe("transparent");
+    localStorage.removeItem("swarmz.sidebarGroupBy");
   });
-
-  it("shows the machine colour when there is no agent state", () => {
+  it("rings the dot of a tile that finished while nobody looked", () => {
+    useStore.setState({ agentState: { [ID]: { status: "working", sessionId: "s", since: "t", lastEvent: "UserPromptSubmit", unseen: true, title: null, firstPrompt: null } } });
     render(<Sidebar />);
-    const dot = screen.getByTestId(`agent-dot-${ID}`);
-    expect(dot.style.backgroundColor).toBe("rgb(245, 158, 11)");
+    expect(screen.getByTestId(`agent-dot-${ID}`).style.boxShadow).toContain("--color-working");
   });
 });
 
@@ -497,44 +477,40 @@ describe("sessions outside the workspace", () => {
   const outside = (...ids: string[]) =>
     ids.map((id) => ({ id, name: id, running: true, pid: 1, startedAt: "2020-01-01T00:00:00Z", exitedAt: null, exitCode: null, known: false }));
 
-  it("offers to close them after confirming", async () => {
+  it("lists them in the notices and closes them after confirming", async () => {
     useStore.setState({ outsideSessions: ["o1", "o2"] });
     vi.mocked(ipc.localSessions).mockImplementation(async () => outside("o1", "o2"));
     render(<Sidebar />);
+    expect(screen.getByTestId("notices-count").textContent).toBe("1");
+    fireEvent.click(screen.getByTestId("notices"));
     expect(screen.getByText("2 sessions running outside this workspace")).toBeTruthy();
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Close them" }));
+      fireEvent.click(screen.getByRole("button", { name: "Close…" }));
     });
     expect(ipc.closeSession).toHaveBeenCalledTimes(2);
   });
-
-  it("folds the Machines section under the list, closed at first, and remembers opening it", async () => {
-    localStorage.removeItem("swarmz.foldedSections");
+  it("keeps the Machines footer under the list, whose click opens the Machines view", async () => {
     useStore.setState({ selfMachine: "mini", machineStats: {} });
-    const { unmount } = render(<Sidebar />);
-    expect(screen.getByTestId("section-machines").getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByTestId("machines-section")).toBeNull();
+    const onShow = vi.fn();
     await act(async () => {
-      fireEvent.click(screen.getByTestId("section-machines"));
+      render(<Sidebar onShowMachines={onShow} />);
     });
-    expect(screen.getByTestId("machines-section")).toBeTruthy();
+    expect(screen.getByTestId("machines-footer").textContent).toContain("MACHINES");
     expect(ipc.machineStats).toHaveBeenCalledWith(null);
-    unmount();
-    render(<Sidebar />);
-    expect(screen.getByTestId("section-machines").getAttribute("aria-expanded")).toBe("true");
-    localStorage.removeItem("swarmz.foldedSections");
+    fireEvent.click(screen.getByTestId("machine-line-mini"));
+    expect(onShow).toHaveBeenCalled();
   });
-
   it("dismisses a stale close error", async () => {
     useStore.setState({ outsideSessions: ["o1"] });
     vi.mocked(ipc.localSessions).mockResolvedValueOnce(outside("o1"));
     vi.mocked(ipc.closeSession).mockRejectedValueOnce("nope");
     render(<Sidebar />);
+    fireEvent.click(screen.getByTestId("notices"));
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Close them" }));
+      fireEvent.click(screen.getByRole("button", { name: "Close…" }));
     });
     expect(screen.getByText("could not close o1: nope")).toBeTruthy();
-    fireEvent.click(screen.getByTitle("Dismiss"));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText("could not close o1: nope")).toBeNull();
   });
 });
@@ -553,14 +529,16 @@ describe("picking tiles and not-open tiles (windows and layouts spec §3, §8)",
     });
   };
 
-  it("marks a tile no window shows, and × says it stops the tile", () => {
+  it("greys a tile no window shows, says it still runs, and × says it stops the tile", () => {
     three();
+    localStorage.setItem("swarmz.sidebarGroupBy", "folder");
     render(<Sidebar />);
-    expect(screen.getByTestId("not-open-c").title).toContain("still running");
-    expect(screen.queryByTestId("not-open-a")).toBeNull();
+    expect(screen.getByTestId("row-c").dataset.open).toBe("false");
+    expect(screen.getByTestId("row-c").title).toContain("running, not open in any window");
+    expect(screen.getByTestId("row-a").dataset.open).toBe("true");
     expect(screen.getAllByLabelText("Stop and remove")[0].title).toBe("Stop and remove from the workspace");
+    localStorage.removeItem("swarmz.sidebarGroupBy");
   });
-
   it("Cmd-click and Shift-click pick rows, and the bar arranges them in a new window", async () => {
     const { windowHooks } = await import("../store");
     const opened: string[] = [];
@@ -613,5 +591,56 @@ describe("tile settings menu (identify)", () => {
     expect(screen.getByTestId("row-mark-a").textContent).toBe("1");
     expect(screen.getByTestId("row-mark-b").textContent).toBe("2");
     act(() => useStore.setState({ identify: null }));
+  });
+});
+
+describe("triage (sidebar redesign spec)", () => {
+  it("answers a permission from its card on the tile's Mac, opens a question, and folds Quiet", async () => {
+    localStorage.removeItem("swarmz.sidebarGroupBy");
+    localStorage.removeItem("swarmz.foldedSections");
+    const t = (id: string) => ({ id, name: id, cwd: `/p/${id}`, exited: null, error: null });
+    useStore.setState({
+      terminals: { p: t("p"), q: t("q"), z: t("z") },
+      order: ["p", "q", "z"],
+      settings: {
+        p: { ssh: { host: "mokes@box", cwd: "/p", machine: "box" }, claude: null, command: null, extra: {}, card: { title: "Deploy", recap: "Wants to run the deploy script.", updatedAt: "t", by: "agent" } },
+        q: { ssh: null, claude: null, command: null, extra: {} },
+        z: { ssh: null, claude: null, command: null, extra: {} },
+      },
+      layout: { kind: "group", id: "g1", tabs: ["p", "q", "z"], active: "z" },
+      agentState: {
+        p: { status: "blocked", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "PermissionRequest", unseen: false, title: null, firstPrompt: null },
+        q: { status: "blocked", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "Notification", unseen: false, title: null, firstPrompt: null },
+      },
+    });
+    render(<Sidebar />);
+    const card = screen.getByTestId("needs-card-p");
+    expect(card.textContent).toContain("Deploy");
+    expect(card.textContent).toContain("Wants to run the deploy script.");
+    await act(async () => {
+      fireEvent.click(within(card).getByRole("button", { name: "Allow" }));
+    });
+    expect(ipc.tileAnswer).toHaveBeenCalledWith("p", "yes", "box");
+    await act(async () => {
+      fireEvent.click(within(card).getByRole("button", { name: "Deny" }));
+    });
+    expect(ipc.tileAnswer).toHaveBeenLastCalledWith("p", "no", "box");
+    // A question: Answer opens the tile.
+    fireEvent.click(within(screen.getByTestId("needs-card-q")).getByRole("button", { name: "Answer" }));
+    expect(useStore.getState().focusedTerminalId).toBe("q");
+    // Quiet folds and stays folded.
+    expect(screen.getByTestId("row-z")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("triage-quiet"));
+    expect(screen.queryByTestId("row-z")).toBeNull();
+    expect(localStorage.getItem("swarmz.foldedSections")).toContain("triage.quiet");
+    localStorage.removeItem("swarmz.foldedSections");
+  });
+
+  it("turns the dot into a checkbox that picks the row", () => {
+    render(<Sidebar />);
+    fireEvent.click(screen.getByTestId(`row-check-${ID}`));
+    expect(useStore.getState().selectedTiles).toEqual([ID]);
+    expect(screen.getByTestId(`row-check-${ID}`).getAttribute("aria-checked")).toBe("true");
+    act(() => useStore.getState().clearSelection());
   });
 });

@@ -59,6 +59,7 @@ pub fn run() {
             commands::local_sessions,
             commands::close_session,
             commands::conductor_action,
+            commands::tile_answer,
             commands::conductor_dir,
             commands::telegram_get,
             commands::telegram_set,

@@ -199,6 +199,8 @@ export const ipc = {
   /** Ends a session that no tile in this window shows. */
   closeSession: (id: string) => invoke<boolean>("close_session", { id }),
   /** Sets, denies or clears the conductor through the tool, which tells the tiles concerned (conductor spec §6). */
+  /** Allow (`yes`) or Deny (`no`) a tile's permission dialog, on its Mac when that is another one. */
+  tileAnswer: (tile: string, choice: "yes" | "no", machine: string | null) => invoke<unknown>("tile_answer", { tile, choice, machine }),
   conductorAction: (action: "set" | "deny" | "clear" | "sub" | "assign" | "remove", id?: string, parent?: string) =>
     invoke<{ conductor: string | null; conductors?: SubConductors; claim: ConductorClaim | null; conductorAt?: string | null }>("conductor_action", {
       action,
