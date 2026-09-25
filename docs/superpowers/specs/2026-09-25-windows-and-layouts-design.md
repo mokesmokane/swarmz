@@ -94,6 +94,8 @@ layout with its slots numbered, and its name.
 | Single | 1 |
 | Side by side | 2 |
 | Stacked | 2 |
+| Three stacked | 3 |
+| Four stacked | 4 |
 | Main and two | 3 |
 | Three columns | 3 |
 | Top and two | 3 |
@@ -101,7 +103,7 @@ layout with its slots numbered, and its name.
 | Main and three | 4 |
 | Six grid | 6 |
 
-Choosing one arranges that window's open tiles into it: each group's active tab first, in
+Three stacked and Four stacked (added the same day) suit a portrait display. Choosing one arranges that window's open tiles into it: each group's active tab first, in
 reading order, then the other tabs. Tiles beyond the slots become tabs of the last slot; slots
 beyond the tiles are empty slots (§7). The drawings come from the same trees the presets build,
 so they cannot disagree.
