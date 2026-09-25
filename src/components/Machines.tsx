@@ -1,8 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { useStore, machineColor, machineList, machineThemeId, type MachineStatus } from "../store";
+import { useStore, knownMacs, machineColor, machineList, machineThemeId, type MachineStatus } from "../store";
+import { machineAccent } from "../lib/themes";
 import { themeById } from "../lib/themes";
 import { bytesText, uptimeText } from "../lib/activityBar";
-import { machineLabel } from "../lib/workspace";
+import { MACHINE_COLORS, machineLabel } from "../lib/workspace";
 import { ThemePicker } from "./ThemePicker";
 
 /** How often the Machines numbers are asked for while they are showing (spec §4, amended: 30 s). */
@@ -138,16 +139,51 @@ export function MachinesView() {
 function ThemeRow({ name }: { name: string }) {
   const [open, setOpen] = useState(false);
   const current = useStore((s) => machineThemeId(s, name));
+  const picked = useStore((s) => s.machines[name]?.color ?? null);
+  const color = useStore((s) => machineColor(s, name));
+  const updateMachine = useStore((s) => s.updateMachine);
   return (
     <div className="mt-1.5 border-t border-neutral-800 pt-1.5">
       <button className="flex w-full items-center gap-2 text-left text-neutral-500 hover:text-neutral-300" onClick={() => setOpen((o) => !o)} aria-expanded={open} data-testid={`theme-row-${name}`}>
-        <span className="w-[4.5rem]">Theme</span>
-        <span className="flex-1 text-neutral-300">{themeById(current).name}</span>
+        <span className="w-[4.5rem]">Look</span>
+        <span className="h-2.5 w-2.5 flex-none rounded-sm" style={{ backgroundColor: color }} />
+        <span className="flex-1 text-neutral-300">{`${themeById(current).name}${picked ? "" : " · colour from theme"}`}</span>
         <span className="text-[10px]">{open ? "▾" : "▸"}</span>
       </button>
       {open && (
-        <div className="mt-1.5">
-          <ThemePicker name={name} />
+        <div className="mt-1.5 space-y-2">
+          <div>
+            <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">Colour (chip and badges)</div>
+            <div className="flex flex-wrap gap-1" role="radiogroup" aria-label={`Colour for ${name}`}>
+              <button
+                role="radio"
+                aria-checked={picked === null}
+                className={`flex h-5 items-center gap-1 rounded-full border px-1.5 text-[10px] text-neutral-300 ${picked === null ? "border-white" : "border-neutral-700"}`}
+                title="Automatic: the colour of its terminal theme"
+                aria-label="Automatic colour"
+                onClick={() => void updateMachine(name, { color: null })}
+              >
+                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: machineAccent(name, { theme: useStore.getState().machines[name]?.theme }, knownMacs(useStore.getState())) }} />
+                Auto
+              </button>
+              {MACHINE_COLORS.map((c) => (
+                <button
+                  key={c}
+                  role="radio"
+                  aria-checked={picked === c}
+                  className={`h-5 w-5 rounded-full border ${picked === c ? "border-white" : "border-transparent"}`}
+                  style={{ backgroundColor: c }}
+                  title={c}
+                  aria-label={`Colour ${c}`}
+                  onClick={() => void updateMachine(name, { color: c })}
+                />
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">Terminal theme</div>
+            <ThemePicker name={name} />
+          </div>
         </div>
       )}
     </div>
