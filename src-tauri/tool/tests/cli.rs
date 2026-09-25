@@ -1393,12 +1393,13 @@ fn a_tree_of_conductors_acts_on_children_and_glances_below() {
     assert!(d["error"].as_str().unwrap().contains("answers to certify"), "{d}");
     let (code, o) = tool_env(&h.path, &["output", "b", "--lines", "5"], &as_("top", "ops"));
     assert_eq!(code, 0, "{o}");
-    // The sub-conductor acts on its own tiles, not on its parent, and does not notify the user.
+    // The sub-conductor acts on its own tiles, not on its parent; it may message the user (here
+    // Telegram is not set up anywhere, so it is told so).
     let (code, ok) = tool_env(&h.path, &["send", "a", "--", "echo from-certify"], &as_("sub", "certify"));
     assert_eq!((code, ok["sent"].as_bool()), (0, Some(true)));
     assert!(wait_until(|| screen_has(&a, "[conductor certify] echo from-certify")));
     assert_eq!(tool_env(&h.path, &["send", "top", "--", "x"], &as_("sub", "certify")).1["code"], "denied");
-    assert_eq!(tool_env(&h.path, &["notify", "--", "x"], &as_("sub", "certify")).1["code"], "denied");
+    assert_eq!(tool_env(&h.path, &["notify", "--", "x"], &as_("sub", "certify")).1["code"], "not_configured");
     // Replies go to the conductor each tile answers to.
     assert_eq!(tool_env(&h.path, &["reply", "--", "alpha is green"], &as_("a", "alpha")).0, 0);
     assert!(wait_until(|| screen_has(&sub, "[alpha] alpha is green")));
@@ -1536,7 +1537,11 @@ fn telegram_notifies_the_user_and_follows_their_replies_into_the_conductor() {
         {"update_id": 11, "message": {"chat": {"id": 9999}, "text": "not you"}},
         {"update_id": 12, "message": {"chat": {"id": 4242}, "text": "how is it going?"}}
     ]);
-    let fake = FakeTelegram::start(vec![updates]);
+    // The second poll: the user replies to a sub-conductor's message.
+    let replies = serde_json::json!([
+        {"update_id": 13, "message": {"chat": {"id": 4242}, "text": "go ahead", "reply_to_message": {"text": "api\nneed a decision"}}}
+    ]);
+    let fake = FakeTelegram::start(vec![updates, replies]);
     swarmz_tool::telegram::write(&h.path, &swarmz_tool::telegram::Config { token: "123:abc".into(), chat_id: "4242".into() }).unwrap();
     // Each caller's environment plus the fake API's address.
     let base = fake.base.clone();
@@ -1594,6 +1599,20 @@ fn telegram_notifies_the_user_and_follows_their_replies_into_the_conductor() {
     // The new conductor (t2) got the text; c1, replaced, did not.
     assert!(wait_until(|| screen_has(&t2, "[telegram] how is it going?")));
     assert!(!screen_has(&c1, "[telegram]"));
+
+    // Any conductor may message the user, headed with its title, and a reply to its message
+    // goes to it rather than the top.
+    let (code, s) = tool_env(&h.path, &["conductor", "--set", "c1", "--parent", "t2"], user);
+    assert_eq!(code, 0, "{s}");
+    let as_c1: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "c1"), ("SWARMZ_TERMINAL_NAME", "api")];
+    let (code, n) = tool_env(&h.path, &["notify", "--", "need a decision"], &borrow(&with_api(as_c1)));
+    assert_eq!((code, n["notified"].as_bool()), (0, Some(true)), "{n}");
+    assert_eq!(fake.requests().last().unwrap().1["text"], "<b>api</b>\nneed a decision");
+    let out = tool_command(&h.path).args(["telegram-follow", "--once"]).envs(with_api(user)).stderr(Stdio::piped()).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("\"delivered\""), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(wait_until(|| screen_has(&c1, "[telegram] go ahead")));
+    assert!(!screen_has(&t2, "go ahead"));
 }
 
 #[test]

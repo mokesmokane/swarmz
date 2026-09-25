@@ -59,6 +59,22 @@ describe("NotificationsPanel", () => {
     expect(await screen.findByText("Sent; check Telegram")).toBeTruthy();
   });
 
+  it("pushes to every Mac online on the tailnet too, since any conductor may message the user", async () => {
+    const peer = (name: string, online: boolean, os = "macOS") => ({ name, hostName: name, ip: "100.1.1.1", os, online });
+    useStore.setState({
+      selfMachine: "here",
+      tailscale: { running: true, message: null, user: "mokes", self: null, peers: [peer("box", true), peer("laptop", true), peer("off", false), peer("phone", true, "android"), peer("here", true)] },
+    });
+    render(<NotificationsPanel onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Bot token"), { target: { value: "123456:AAxx" } });
+    fireEvent.change(screen.getByLabelText("Chat id"), { target: { value: "42" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    });
+    expect(vi.mocked(ipc.telegramPush).mock.calls.map((c) => c[0])).toEqual(["mokes@box", "mokes@laptop"]);
+    useStore.setState({ tailscale: null, selfMachine: null });
+  });
+
   it("shows a failed push per Mac and a failed test, and Remove clears the setup", async () => {
     vi.mocked(ipc.telegramGet).mockResolvedValueOnce({ configured: true, chatId: "42", tokenEnd: "AAxx" });
     vi.mocked(ipc.telegramPush).mockRejectedValueOnce("not reachable: timeout");

@@ -30,7 +30,7 @@ You are the conductor: the one agent allowed to act on the other tiles, on every
 - `~/.swarmz/bin/swarmz ask <tile> -- "question"` asks a tile something; its answer arrives later as a prompt starting `[<its title>]`. Ask, carry on, and read the answer when it comes; do not wait in a loop.
 - `~/.swarmz/bin/swarmz send <tile> -- "instruction"` tells a tile to do something (the line is marked as coming from you). `pending <tile>` and `answer <tile> …` handle a tile's permission or question, but never answer a permission the user did not tell you to. `new` and `close` start and stop tiles; `restart <tile>` starts whatever is not running: a stopped tile afresh, or Claude again, resuming its conversation, in a tile whose Claude has exited (never type a `claude` command with `send`: the line is marked as yours and the shell would not run it).
 - Add `--on <machine>` before the command for a tile on another Mac (its machine is in `fleet`).
-- `~/.swarmz/bin/swarmz notify -- "text"` messages the user on Telegram, when it is set up: use it when the user asked to be told, when a tile has waited on a question for more than a few minutes, or when something failed. A prompt starting `[telegram]` came from the user's phone; reply with `notify`.
+- `~/.swarmz/bin/swarmz notify -- "text"` messages the user on Telegram, when it is set up: use it when the user asked to be told, when a tile has waited on a question for more than a few minutes, or when something failed. A prompt starting `[telegram]` came from the user's phone; reply with `notify`. Your conductors can message the user too, headed with their title, and the user's replies to theirs go to them.
 "#;
 
 /// What a tile is in the conductor tree (conductor tree spec §5). Sub-conductors directly under
@@ -66,7 +66,8 @@ You are a conductor for part of the workspace: the tiles the user (or {parent}) 
 - `~/.swarmz/bin/swarmz output <tile> --lines 60` shows the last lines of any tile's screen below you (at most 200). The hook status can lag; the screen does not.
 - `~/.swarmz/bin/swarmz ask <tile> -- "question"` and `send <tile> -- "instruction"` reach the tiles directly under you; answers arrive later as prompts starting `[<its title>]`. `pending`, `answer` and `close` work on them too, `restart <tile>` brings back a tile or a Claude that has exited (resuming its conversation; never type a `claude` command with `send`), and a tile you start with `new --folder <dir>` is yours. Never answer a permission nobody told you to.
 - Add `--on <machine>` before the command for a tile on another Mac.
-- A prompt starting `[conductor {parent}]` is the conductor above you: answer it with `~/.swarmz/bin/swarmz reply -- "..."`. Raise anything that needs the user, and finished work worth knowing, the same way. You do not message the user on Telegram; {parent} does.
+- A prompt starting `[conductor {parent}]` is the conductor above you: answer it with `~/.swarmz/bin/swarmz reply -- "..."`. Report finished work and progress to {parent} the same way.
+- `~/.swarmz/bin/swarmz notify -- "text"` messages the user on Telegram, when it is set up: use it when something of yours needs the user and cannot wait for {parent} (a question waiting more than a few minutes, a failure, news the user asked you for). Your title heads the message, and the user's reply to it comes back to you as a prompt starting `[telegram]`; answer with `notify`.
 {below}"#,
             below = below(subs),
         ),
@@ -141,8 +142,9 @@ mod tests {
         assert!(sub.contains("You answer to Ops"));
         assert!(sub.contains("[conductor Ops]"));
         assert!(sub.contains("swarmz reply"));
-        assert!(sub.contains("You do not message the user on Telegram"));
-        assert!(!sub.contains("swarmz notify"));
+        // Every conductor may message the user (Telegram for every conductor).
+        assert!(sub.contains("swarmz notify"));
+        assert!(sub.contains("comes back to you as a prompt starting `[telegram]`"));
         let mid = conductor_section(&Role::Sub { parent: "Ops".into(), subs: area() });
         assert!(mid.contains("These conductors answer to you"));
         assert_eq!(conductor_section(&Role::Tile), "");

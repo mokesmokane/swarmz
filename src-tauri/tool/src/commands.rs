@@ -642,14 +642,30 @@ pub fn reply(env: &Env, caller: &str, text: &str) -> Result<Value, CliError> {
 /// `notify [--tile <id>] -- <text>` (spec §5): a Telegram message to the user, the tile's title
 /// in bold first when given. Only the conductor (or the user) may; `not_configured` without a
 /// `~/.swarmz/telegram.json`.
-pub fn notify(env: &Env, tile: Option<&str>, text: &str) -> Result<Value, CliError> {
-    let cfg = crate::telegram::read(&env.home).ok_or_else(|| CliError::new("not_configured", "Telegram is not set up on this Mac (swarmz → Notifications)"))?;
-    let title = match tile {
-        Some(t) => Some(crate::conductor::title_of(&env.workspace()?.unwrap_or_else(empty_workspace), t)),
-        None => None,
-    };
-    crate::telegram::send_message(&cfg, &crate::telegram::message_text(title.as_deref(), text))?;
-    Ok(json!({"v": 1, "notified": true}))
+pub fn notify(env: &Env, caller: Option<&str>, tile: Option<&str>, text: &str) -> Result<Value, CliError> {
+    // A conductor's message is headed with its title, so the user sees who is talking and a
+    // Telegram reply to it finds its way back (see `telegram_inbound`).
+    let from = tile.or(caller);
+    let ws = env.workspace()?.unwrap_or_else(empty_workspace);
+    let title = from.map(|t| crate::conductor::title_of(&ws, t));
+    if let Some(cfg) = crate::telegram::read(&env.home) {
+        crate::telegram::send_message(&cfg, &crate::telegram::message_text(title.as_deref(), text))?;
+        return Ok(json!({"v": 1, "notified": true}));
+    }
+    // Not set up here: the top conductor's Mac is where Telegram is followed, so it has it.
+    let not_here = || CliError::new("not_configured", "Telegram is not set up on this Mac: save it again in swarmz → Notifications to copy it to every Mac");
+    let Some(from) = from else { return Err(not_here()) };
+    let Some(top) = crate::conductor::conductor_of(&ws) else { return Err(not_here()) };
+    let home = crate::conductor::def_of(&ws, &top).and_then(|d| d.extra.get("origin")).and_then(|o| o.as_str()).map(str::to_string);
+    let Some(machine) = home.filter(|m| Some(m.as_str()) != env.machine.as_deref()) else { return Err(not_here()) };
+    let host = crate::conductor::host_for(&ws, env.machine.as_deref(), &default_user(), &machine).ok_or_else(not_here)?;
+    let c = crate::conductor::remote_command(&host, &["notify".into(), "--tile".into(), from.into(), "--".into(), text.into()]);
+    let done = run_with_timeout(c, Duration::from_secs(30), "ssh").map_err(failed)?;
+    if done.status.success() {
+        return Ok(json!({"v": 1, "notified": true, "via": machine}));
+    }
+    let why = crate::util::last_non_blank(&done.stderr).unwrap_or_else(|| format!("ssh exited with {:?}", done.status.code()));
+    Err(CliError::new("not_configured", format!("Telegram is not set up on this Mac, and relaying through {machine} failed ({why}): save it again in swarmz → Notifications to copy it to every Mac")))
 }
 
 /// `telegram-follow [--once]` (spec §5): the user's Telegram messages, typed into the conductor
@@ -674,7 +690,7 @@ pub fn telegram_follow(env: &Env, once: bool, out: &mut dyn Write) -> Result<(),
                 offset = offset.max(id + 1);
             }
             let Some(text) = crate::telegram::text_from_chat(&u, &cfg.chat_id) else { continue };
-            let outcome = telegram_inbound(env, &cfg, &text);
+            let outcome = telegram_inbound(env, &cfg, &text, crate::telegram::replied_header(&u).as_deref());
             if !emit(out, &json!({"v": 1, "type": "message", "text": text, "outcome": outcome})) {
                 return Ok(());
             }
@@ -687,7 +703,7 @@ pub fn telegram_follow(env: &Env, once: bool, out: &mut dyn Write) -> Result<(),
 
 /// One message from the user's chat: an answer to a pending claim, else a line for the
 /// conductor. What was done, for the follow output. Telegram is told when nothing could be.
-fn telegram_inbound(env: &Env, cfg: &crate::telegram::Config, text: &str) -> &'static str {
+fn telegram_inbound(env: &Env, cfg: &crate::telegram::Config, text: &str, replied_to: Option<&str>) -> &'static str {
     let ws = env.workspace().ok().flatten().unwrap_or_else(empty_workspace);
     let claim = crate::conductor::claim_of(&ws);
     let word = text.trim().to_ascii_lowercase();
@@ -710,7 +726,8 @@ fn telegram_inbound(env: &Env, cfg: &crate::telegram::Config, text: &str) -> &'s
             }
         };
     }
-    let Some(conductor) = crate::conductor::conductor_of(&ws) else {
+    // A reply to a conductor's message goes to that conductor; anything else to the top.
+    let Some(conductor) = replied_to.and_then(|h| conductor_titled(&ws, h)).or_else(|| crate::conductor::conductor_of(&ws)) else {
         let _ = crate::telegram::send_message(cfg, "No conductor is set, so there is nobody to tell. Make a tile the conductor in swarmz first.");
         return "no_conductor";
     };
@@ -721,6 +738,14 @@ fn telegram_inbound(env: &Env, cfg: &crate::telegram::Config, text: &str) -> &'s
             "failed"
         }
     }
+}
+
+/// The conductor (the top or a live sub-conductor) whose title is `header`, when exactly one is.
+fn conductor_titled(ws: &Workspace, header: &str) -> Option<String> {
+    let tree = crate::conductor::Tree::of(ws);
+    let all: Vec<String> = tree.top.iter().cloned().chain(tree.subs.keys().cloned()).collect();
+    let hits: Vec<String> = all.into_iter().filter(|c| crate::conductor::title_of(ws, c).trim() == header.trim()).collect();
+    (hits.len() == 1).then(|| hits[0].clone())
 }
 
 /// `fleet [--follow]` (spec §2): every tile on every reachable Mac. `--follow` polls and prints

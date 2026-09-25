@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ipc, type TelegramInfo } from "../lib/ipc";
 import { useStore, telegramFollowWanted } from "../store";
-import { hostLabel, machineLabel } from "../lib/workspace";
+import { hostLabel, machineHost, machineLabel, validateHost } from "../lib/workspace";
 
 const message = (e: unknown) => (typeof e === "string" ? e : String(e));
 
@@ -21,8 +21,8 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
   const setTelegramConfigured = useStore((s) => s.setTelegramConfigured);
   const following = useStore((s) => telegramFollowWanted(s));
   const conductor = useStore((s) => s.conductor);
-  // The Macs whose Telegram setup is refreshed on Save: those with a connected tile (the shared
-  // ssh master is up there).
+  // The Macs whose Telegram setup is refreshed on Save: those with a connected tile, and every
+  // other Mac online on the tailnet, since any conductor, wherever it runs, may message the user.
   const hosts = useStore((s) => {
     const out: Array<{ host: string; label: string }> = [];
     for (const id of s.order) {
@@ -30,6 +30,12 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
       const host = ssh?.host?.trim();
       if (!host || !s.sshConnected[id] || out.some((h) => h.host === host)) continue;
       out.push({ host, label: ssh?.machine ? machineLabel(ssh.machine, s.machines[ssh.machine]) : hostLabel(host) });
+    }
+    for (const p of s.tailscale?.peers ?? []) {
+      if (!p.online || p.os !== "macOS" || p.name === s.selfMachine) continue;
+      const host = machineHost(p.name, s.machines[p.name], s.tailscale?.user ?? "");
+      if (validateHost(host) !== null || out.some((h) => h.host === host)) continue;
+      out.push({ host, label: machineLabel(p.name, s.machines[p.name]) });
     }
     return out.map((h) => `${h.host}\u0000${h.label}`).join("\n");
   });
