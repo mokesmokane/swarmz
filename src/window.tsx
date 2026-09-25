@@ -1,10 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { BreakoutApp } from "./components/BreakoutApp";
+import { WindowApp } from "./components/WindowApp";
 import "./index.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <BreakoutApp />
+    <WindowApp />
   </React.StrictMode>,
 );

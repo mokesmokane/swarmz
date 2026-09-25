@@ -81,7 +81,7 @@ import {
   beforeSpawn,
   machineFor,
   terminalColor,
-  useStore, breakoutHooks, telegramFollowWanted } from "./store";
+  useStore, windowHooks, telegramFollowWanted } from "./store";
 import { allGroups, findGroup, findGroupOf, type GroupNode, type Layout, type SplitNode } from "./lib/layout";
 import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, sshMasterLine, shellQuote, toWorkspace, type TerminalDef, type Workspace } from "./lib/workspace";
 
@@ -129,6 +129,13 @@ beforeEach(async () => {
     agentHooksError: null,
     windowFocused: true,
     resumeWatch: {},
+    windowLabel: "main",
+    windows: {},
+    zoomed: {},
+    fileLayout: null,
+    selectedTiles: [],
+    closedNotice: null,
+    focusedWindow: "main",
   });
   beforeSpawn.hook = async () => {};
   beforeSpawn.size = () => null;
@@ -3797,7 +3804,8 @@ describe("sessions outside the workspace", () => {
   });
 });
 
-describe("breakout windows", () => {
+describe("windows and layouts", () => {
+  const calls: string[] = [];
   // The store suite runs in node: the per-Mac record needs a localStorage to land in.
   beforeEach(() => {
     const store = new Map<string, string>();
@@ -3806,63 +3814,282 @@ describe("breakout windows", () => {
       setItem: (k: string, v: string) => void store.set(k, v),
       removeItem: (k: string) => void store.delete(k),
     };
+    calls.length = 0;
+    windowHooks.open = async (label, at) => void calls.push(`open ${label} ${at ? `${at.x},${at.y}` : "-"}`);
+    windowHooks.close = (label) => void calls.push(`close ${label}`);
+    windowHooks.focus = (label) => void calls.push(`focus ${label}`);
+    windowHooks.windowAt = async () => null;
+    windowHooks.dropAt = (label, id) => void calls.push(`drop ${label} ${id}`);
+    windowHooks.boundsOf = async () => null;
   });
   afterEach(() => {
     delete (globalThis as { localStorage?: unknown }).localStorage;
+    windowHooks.open = async () => {};
+    windowHooks.close = () => {};
+    windowHooks.focus = () => {};
+    windowHooks.windowAt = async () => null;
+    windowHooks.dropAt = () => {};
+    windowHooks.boundsOf = async () => null;
   });
+  const labels = () => Object.keys(useStore.getState().windows);
 
-  it("breaking out keeps the layout, activates another tab, and returning brings it back", async () => {
-    const calls: string[] = [];
-    breakoutHooks.open = async (id) => void calls.push(`open ${id}`);
-    breakoutHooks.close = (id) => void calls.push(`close ${id}`);
-    breakoutHooks.focus = (id) => void calls.push(`focus ${id}`);
+  it("closing a tab keeps the tile running, not open, with a notice whose Undo puts it back", async () => {
+    vi.mocked(ipc.closeTerminal).mockClear();
     const a = await useStore.getState().createTerminal("/tmp/a");
     const b = await useStore.getState().createTerminal("/tmp/b");
+    const g = allGroups(useStore.getState().layout)[0].id;
+    useStore.getState().closeTab(b);
+    let s = useStore.getState();
+    expect(s.order).toEqual([a, b]);
+    expect(s.terminals[b]).toBeDefined();
+    expect(ipc.closeTerminal).not.toHaveBeenCalled();
+    expect(allGroups(s.layout)[0].tabs).toEqual([a]);
+    expect(s.closedNotice).toMatchObject({ window: "main", ids: [b] });
+    await useStore.getState().undoClosed();
+    s = useStore.getState();
+    expect(findGroup(s.layout, g)?.tabs).toEqual([a, b]);
+    expect(s.closedNotice).toBeNull();
+  });
+
+  it("clicking a tile that is not open opens it in the main window's focused group", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    useStore.getState().closeTab(b);
     useStore.getState().focusTerminal(b);
-    await useStore.getState().breakoutTerminal(b, { x: 10, y: 10 });
     const s = useStore.getState();
-    expect(s.breakouts).toEqual({ [b]: true });
-    // The tile is still in the (shared) layout; the group shows the other tab meanwhile.
     expect(allGroups(s.layout)[0].tabs).toEqual([a, b]);
-    expect(allGroups(s.layout)[0].active).toBe(a);
-    expect(calls).toEqual([`open ${b}`]);
-    expect(JSON.parse(localStorage.getItem("swarmz.breakouts") ?? "{}")).toEqual({ [b]: { bounds: null } });
-    // A second breakout of the same tile only focuses its window.
-    await useStore.getState().breakoutTerminal(b, null);
-    expect(calls).toEqual([`open ${b}`, `focus ${b}`]);
-    useStore.getState().returnTerminal(b);
-    expect(useStore.getState().breakouts).toEqual({});
-    expect(useStore.getState().focusedTerminalId).toBe(b);
-    expect(calls).toEqual([`open ${b}`, `focus ${b}`, `close ${b}`]);
-    expect(JSON.parse(localStorage.getItem("swarmz.breakouts") ?? "{}")).toEqual({});
-    // A window that fails to open leaves nothing behind.
-    breakoutHooks.open = async () => {
-      throw "no window";
-    };
-    await useStore.getState().breakoutTerminal(a, null);
-    expect(useStore.getState().breakouts).toEqual({});
-    expect(useStore.getState().persistError).toContain("no window");
-    breakoutHooks.open = async () => {};
-    breakoutHooks.close = () => {};
-    breakoutHooks.focus = () => {};
+    expect(s.focusedTerminalId).toBe(b);
   });
 
-  it("closing a broken-out tile closes its window, and restore reopens the saved ones", async () => {
-    const calls: string[] = [];
-    breakoutHooks.open = async (id) => void calls.push(`open ${id}`);
-    breakoutHooks.close = (id) => void calls.push(`close ${id}`);
+  it("a new window takes the tile's space with it, and closes when its last tile leaves", async () => {
     const a = await useStore.getState().createTerminal("/tmp/a");
-    await useStore.getState().breakoutTerminal(a, null);
-    await useStore.getState().closeTerminal(a);
-    expect(useStore.getState().breakouts).toEqual({});
-    expect(calls).toEqual([`open ${a}`, `close ${a}`]);
     const b = await useStore.getState().createTerminal("/tmp/b");
-    localStorage.setItem("swarmz.breakouts", JSON.stringify({ [b]: { bounds: null }, gone: { bounds: null } }));
-    await useStore.getState().restoreBreakouts();
-    expect(useStore.getState().breakouts).toEqual({ [b]: true });
-    expect(calls).toEqual([`open ${a}`, `close ${a}`, `open ${b}`]);
-    localStorage.removeItem("swarmz.breakouts");
-    breakoutHooks.open = async () => {};
-    breakoutHooks.close = () => {};
+    await useStore.getState().openInNewWindow([b], { x: 300, y: 200 });
+    let s = useStore.getState();
+    const [w] = labels();
+    expect(w).toMatch(/^win-/);
+    expect(allGroups(s.layout)[0].tabs).toEqual([a]);
+    expect(allGroups(s.windows[w].layout)[0].tabs).toEqual([b]);
+    expect(calls).toEqual([`open ${w} 300,200`]);
+    // Dragged back onto the main window's group: the window is empty and closes.
+    const g = allGroups(s.layout)[0].id;
+    useStore.getState().moveTerminal(b, g);
+    s = useStore.getState();
+    expect(allGroups(s.layout)[0].tabs).toEqual([a, b]);
+    expect(s.windows).toEqual({});
+    expect(calls).toEqual([`open ${w} 300,200`, `close ${w}`]);
+  });
+
+  it("splits and moves work across windows, and focusing a tile in another window brings it forward", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    const c = await useStore.getState().createTerminal("/tmp/c");
+    await useStore.getState().openInNewWindow([c], null);
+    const [w] = labels();
+    const wg = allGroups(useStore.getState().windows[w].layout)[0].id;
+    useStore.getState().splitTerminal(a, wg, "right");
+    let s = useStore.getState();
+    expect(allGroups(s.layout)[0].tabs).toEqual([b]);
+    expect(allGroups(s.windows[w].layout).map((g) => g.tabs)).toEqual([[c], [a]]);
+    expect(s.windows[w].focusedGroupId).toBe(findGroupOf(s.windows[w].layout, a)?.id);
+    // A new tile made from that window's + lands there.
+    const d = await useStore.getState().createTerminal("/tmp/d", { kind: "tab", groupId: wg });
+    s = useStore.getState();
+    expect(findGroup(s.windows[w].layout, wg)?.tabs).toEqual([c, d]);
+    calls.length = 0;
+    useStore.getState().focusTerminal(c);
+    expect(calls).toEqual([`focus ${w}`]);
+    expect(findGroup(useStore.getState().windows[w].layout, wg)?.active).toBe(c);
+  });
+
+  it("a whole group moves to a new window keeping the tab it showed", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    const c = await useStore.getState().createTerminal("/tmp/c");
+    const g = allGroups(useStore.getState().layout)[0].id;
+    useStore.getState().splitTerminal(c, g, "right");
+    useStore.getState().focusTerminal(a);
+    await useStore.getState().moveGroupToNewWindow(g);
+    const s = useStore.getState();
+    const [w] = labels();
+    expect(allGroups(s.layout).map((x) => x.tabs)).toEqual([[c]]);
+    const moved = allGroups(s.windows[w].layout)[0];
+    expect(moved.tabs.sort()).toEqual([a, b].sort());
+    expect(moved.active).toBe(a);
+  });
+
+  it("closing a window closes its tabs; Undo brings the window back with its layout", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    await useStore.getState().openInNewWindow([b], null);
+    const [w] = labels();
+    await useStore.getState().closeWindow(w);
+    let s = useStore.getState();
+    expect(s.windows).toEqual({});
+    expect(s.order).toEqual([a, b]);
+    expect(s.closedNotice).toMatchObject({ window: "main", ids: [b] });
+    await useStore.getState().undoClosed();
+    s = useStore.getState();
+    const [w2] = labels();
+    expect(allGroups(s.windows[w2].layout)[0].tabs).toEqual([b]);
+    expect(calls.filter((c) => c.startsWith("open"))).toHaveLength(2);
+  });
+
+  it("a drag no window took: over nothing a new window, over another window a drop there, over its own nothing", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    await useStore.getState().dropOutside(b, { x: 5, y: 6 }, "main");
+    const [w] = labels();
+    expect(calls).toEqual([`open ${w} 5,6`]);
+    calls.length = 0;
+    windowHooks.windowAt = async () => "main";
+    await useStore.getState().dropOutside(a, { x: 1, y: 1 }, "main");
+    expect(calls).toEqual([]);
+    await useStore.getState().dropOutside(b, { x: 1, y: 1 }, w);
+    expect(calls).toEqual([`drop main ${b}`]);
+    // A drop another window's webview took just now is not placed twice.
+    calls.length = 0;
+    useStore.getState().moveTerminal(a, allGroups(useStore.getState().windows[w].layout)[0].id);
+    await useStore.getState().dropOutside(a, { x: 1, y: 1 }, "main");
+    expect(calls).toEqual([]);
+  });
+
+  it("a preset arranges the window's tiles, leaving empty slots, and a slot is filled or removed", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    const g = allGroups(useStore.getState().layout)[0].id;
+    useStore.getState().toggleZoom(g);
+    useStore.getState().applyPreset(g, "main-and-two");
+    let s = useStore.getState();
+    const groups = allGroups(s.layout);
+    expect(groups.map((x) => x.tabs)).toEqual([[b], [a], []]);
+    expect(groups[2].slot).toBe(true);
+    expect(s.zoomed).toEqual({});
+    const c = await useStore.getState().createTerminal("/tmp/c");
+    useStore.getState().closeTab(c);
+    useStore.getState().moveTerminal(c, groups[2].id);
+    s = useStore.getState();
+    expect(findGroup(s.layout, groups[2].id)?.tabs).toEqual([c]);
+    expect(findGroup(s.layout, groups[2].id)?.slot).toBeUndefined();
+    useStore.getState().applyPreset(allGroups(s.layout)[0].id, "grid");
+    const empty = allGroups(useStore.getState().layout).find((x) => x.tabs.length === 0)!;
+    useStore.getState().removeSlot(empty.id);
+    expect(allGroups(useStore.getState().layout).map((x) => x.tabs.length)).toEqual([1, 1, 1]);
+  });
+
+  it("picking tiles toggles and ranges, and arranging them in the main window closes the rest there", async () => {
+    const [a, b, c, d] = [await useStore.getState().createTerminal("/tmp/a"), await useStore.getState().createTerminal("/tmp/b"), await useStore.getState().createTerminal("/tmp/c"), await useStore.getState().createTerminal("/tmp/d")];
+    const visible = [a, b, c, d];
+    useStore.getState().selectTile(b, "toggle", visible);
+    useStore.getState().selectTile(d, "range", visible);
+    expect(useStore.getState().selectedTiles).toEqual([b, c, d]);
+    useStore.getState().selectTile(c, "toggle", visible);
+    expect(useStore.getState().selectedTiles).toEqual([b, d]);
+    useStore.getState().selectTiles([a, b]);
+    expect(useStore.getState().selectedTiles).toEqual([a, b]);
+    useStore.getState().selectTiles([a, b]);
+    expect(useStore.getState().selectedTiles).toEqual([]);
+    useStore.getState().selectTiles([d, a]);
+    await useStore.getState().arrangeSelection("side-by-side", "main");
+    const s = useStore.getState();
+    expect(allGroups(s.layout).map((x) => x.tabs)).toEqual([[d], [a]]);
+    expect(s.selectedTiles).toEqual([]);
+    expect(s.closedNotice?.ids.sort()).toEqual([b, c].sort());
+    expect(s.order).toHaveLength(4);
+    useStore.getState().selectTiles([b, c]);
+    await useStore.getState().arrangeSelection("stacked", "new");
+    const [w] = labels();
+    expect(allGroups(useStore.getState().windows[w].layout).map((x) => x.tabs)).toEqual([[b], [c]]);
+  });
+
+  it("a tile in another window counts as seen when that window has focus", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    await useStore.getState().openInNewWindow([b], null);
+    const [w] = labels();
+    useStore.setState({ agentState: { [b]: { status: "idle", sessionId: "s", since: "t", lastEvent: "Stop", unseen: true, title: null, firstPrompt: null } } });
+    useStore.getState().windowFocus("main", true);
+    expect(useStore.getState().agentState[b].unseen).toBe(true);
+    useStore.getState().windowFocus(w, true);
+    expect(useStore.getState().agentState[b].unseen).toBe(false);
+    // A late blur from the main window does not unfocus the app.
+    useStore.getState().windowFocus("main", false);
+    expect(useStore.getState().windowFocused).toBe(true);
+    useStore.getState().windowFocus(w, false);
+    expect(useStore.getState().windowFocused).toBe(false);
+    void a;
+  });
+
+  it("closing the last tab of another window closes the window, with a window Undo in the main one", async () => {
+    await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    await useStore.getState().openInNewWindow([b], null);
+    const [w] = labels();
+    useStore.getState().closeTab(b);
+    await vi.waitFor(() => expect(useStore.getState().windows).toEqual({}));
+    expect(useStore.getState().closedNotice).toMatchObject({ window: "main", ids: [b], undo: { kind: "window" } });
+    expect(calls).toContain(`close ${w}`);
+  });
+
+  it("stopping a tile takes it out of every window and the selection", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const b = await useStore.getState().createTerminal("/tmp/b");
+    await useStore.getState().openInNewWindow([b], null);
+    useStore.getState().selectTiles([a, b]);
+    await useStore.getState().closeTerminal(b);
+    const s = useStore.getState();
+    expect(s.windows).toEqual({});
+    expect(s.selectedTiles).toEqual([a]);
+  });
+
+  it("the layout is this Mac's: kept in localStorage, never saved to the file nor taken from it", async () => {
+    useStore.setState({ persistenceReady: false });
+    const peerLayout = { kind: "group" as const, id: "g-file", tabs: ["t1", "t2"], active: "t1" };
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1, layout: peerLayout,
+      terminals: [
+        { id: "t1", name: "one", cwd: "/tmp/1", ssh: null, claude: null, command: null },
+        { id: "t2", name: "two", cwd: "/tmp/2", ssh: null, claude: null, command: null },
+      ],
+    });
+    // This Mac shows only t2, and a window that shows t1.
+    localStorage.setItem("swarmz.layouts", JSON.stringify({ main: { kind: "group", id: "g-here", tabs: ["t2", "gone"], active: "t2" }, "win-abcd": { kind: "group", id: "g-w", tabs: ["t1"], active: "t1" } }));
+    await useStore.getState().loadWorkspace();
+    let s = useStore.getState();
+    expect(s.layout).toEqual({ kind: "group", id: "g-here", tabs: ["t2"], active: "t2" });
+    expect(Object.keys(s.windows)).toEqual(["win-abcd"]);
+    expect(s.fileLayout).toEqual(peerLayout);
+    await useStore.getState().restoreWindows();
+    expect(calls).toEqual(["open win-abcd -"]);
+    // A layout change is saved here, not to the file; a save writes the file's layout back untouched.
+    await new Promise((r) => setTimeout(r, SAVE_DEBOUNCE_MS + 50));
+    vi.mocked(ipc.saveWorkspace).mockClear();
+    useStore.getState().closeTab("t2");
+    expect(JSON.parse(localStorage.getItem("swarmz.layouts")!).main).toBeNull();
+    await new Promise((r) => setTimeout(r, SAVE_DEBOUNCE_MS + 50));
+    expect(ipc.saveWorkspace).not.toHaveBeenCalled();
+    s = useStore.getState();
+    const ws = toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.fileLayout, machines: s.machines });
+    expect(ws.layout).toEqual(peerLayout);
+  });
+
+  it("the first run takes the file's layout and turns old breakouts into windows", async () => {
+    useStore.setState({ persistenceReady: false });
+    localStorage.setItem("swarmz.breakouts", JSON.stringify({ t2: { bounds: { x: 1, y: 2, width: 300, height: 200 } } }));
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1, layout: { kind: "group", id: "g-file", tabs: ["t1", "t2"], active: "t1" },
+      terminals: [
+        { id: "t1", name: "one", cwd: "/tmp/1", ssh: null, claude: null, command: null },
+        { id: "t2", name: "two", cwd: "/tmp/2", ssh: null, claude: null, command: null },
+        { id: "t3", name: "three", cwd: "/tmp/3", ssh: null, claude: null, command: null },
+      ],
+    });
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(allGroups(s.layout)[0].tabs).toEqual(["t1", "t3"]);
+    const [w] = labels();
+    expect(allGroups(s.windows[w].layout)[0].tabs).toEqual(["t2"]);
+    expect(localStorage.getItem("swarmz.breakouts")).toBeNull();
+    expect(JSON.parse(localStorage.getItem("swarmz.windowBounds")!)[w]).toEqual({ x: 1, y: 2, width: 300, height: 200 });
   });
 });

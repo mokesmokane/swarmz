@@ -83,6 +83,11 @@ beforeEach(() => {
     },
     tailscaleError: null,
     outsideSessions: [],
+    windowLabel: "main",
+    windows: {},
+    zoomed: {},
+    selectedTiles: [],
+    closedNotice: null,
   });
 });
 
@@ -531,5 +536,56 @@ describe("sessions outside the workspace", () => {
     expect(screen.getByText("could not close o1: nope")).toBeTruthy();
     fireEvent.click(screen.getByTitle("Dismiss"));
     expect(screen.queryByText("could not close o1: nope")).toBeNull();
+  });
+});
+
+describe("picking tiles and not-open tiles (windows and layouts spec §3, §8)", () => {
+  const three = () => {
+    const t = (id: string) => ({ id, name: id, cwd: `/p/${id}`, exited: null, error: null });
+    const st = { ssh: null, claude: null, command: null, extra: {} };
+    useStore.setState({
+      terminals: { a: t("a"), b: t("b"), c: t("c") },
+      order: ["a", "b", "c"],
+      settings: { a: st, b: st, c: st },
+      layout: { kind: "group", id: "g1", tabs: ["a", "b"], active: "a" },
+      focusedGroupId: "g1",
+      focusedTerminalId: "a",
+    });
+  };
+
+  it("marks a tile no window shows, and × says it stops the tile", () => {
+    three();
+    render(<Sidebar />);
+    expect(screen.getByTestId("not-open-c").title).toContain("still running");
+    expect(screen.queryByTestId("not-open-a")).toBeNull();
+    expect(screen.getAllByLabelText("Stop and remove")[0].title).toBe("Stop and remove from the workspace");
+  });
+
+  it("Cmd-click and Shift-click pick rows, and the bar arranges them in a new window", async () => {
+    const { windowHooks } = await import("../store");
+    const opened: string[] = [];
+    windowHooks.open = async (label) => void opened.push(label);
+    three();
+    render(<Sidebar />);
+    fireEvent.click(screen.getByTestId("row-a"), { metaKey: true });
+    fireEvent.click(screen.getByTestId("row-c"), { shiftKey: true });
+    expect(useStore.getState().selectedTiles).toEqual(["a", "b", "c"]);
+    expect(screen.getByTestId("selection-bar").textContent).toContain("3 selected");
+    expect(screen.getByTestId("preset-three-columns").getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByTestId("preset-three-columns"));
+    await vi.waitFor(() => expect(opened).toHaveLength(1));
+    const s = useStore.getState();
+    expect(s.layout).toBeNull();
+    expect(s.selectedTiles).toEqual([]);
+    expect(screen.queryByTestId("selection-bar")).toBeNull();
+    windowHooks.open = async () => {};
+  });
+
+  it("a plain click on a tile that is not open opens it", () => {
+    three();
+    render(<Sidebar />);
+    fireEvent.click(screen.getByTestId("row-c"));
+    expect(useStore.getState().layout).toMatchObject({ tabs: ["a", "b", "c"], active: "c" });
+    expect(screen.queryByTestId("not-open-c")).toBeNull();
   });
 });

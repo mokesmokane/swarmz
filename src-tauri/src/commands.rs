@@ -22,7 +22,7 @@ pub struct AppState {
     /// Ids closed before their start had registered them, with when (see `close_terminal`).
     pub closed_early: Mutex<HashMap<String, Instant>>,
     pub watchers: Mutex<HashMap<Option<String>, (u64, crate::agents::Watcher)>>,
-    /// Second viewers of tiles shown in their own windows (breakout windows spec §3), by
+    /// Second viewers of tiles shown in other windows (windows and layouts spec §4), by
     /// (window label, tile id). Their replay goes to that window alone; data still arrives on
     /// `pty:data:<id>`, which every window receives from the main viewer.
     pub views: Mutex<HashMap<(String, String), Arc<dyn TerminalSession>>>,
@@ -31,7 +31,7 @@ pub struct AppState {
 }
 
 /// The session a window's writes and resizes go to: its own viewer of the tile when it has one
-/// (a breakout window), else the main viewer.
+/// (a tile in another window), else the main viewer.
 fn session_for(state: &AppState, label: &str, id: &str) -> Option<Arc<dyn TerminalSession>> {
     if let Some(v) = state.views.lock().unwrap().get(&(label.to_string(), id.to_string())) {
         return Some(v.clone());
@@ -44,7 +44,7 @@ pub fn drop_views(state: &AppState, label: &str, id: Option<&str>) {
     state.views.lock().unwrap().retain(|(l, i), _| l != label || id.is_some_and(|want| want != i));
 }
 
-/// Opens a breakout window's own viewer of a running tile's holder (spec §3): a sizeless Hello,
+/// Opens another window's own viewer of a running tile's holder (windows and layouts spec §4): a sizeless Hello,
 /// so the pane keeps the size the last typist set until something is typed here, and the replay
 /// delivered to this window only. Errors: an unknown tile, or a holder that does not answer.
 #[tauri::command]

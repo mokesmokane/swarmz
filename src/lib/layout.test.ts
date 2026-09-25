@@ -207,3 +207,19 @@ describe("resizeSplit", () => {
     expect((l as SplitNode).sizes).toEqual([25, 75]);
   });
 });
+
+describe("empty slots and reading order", () => {
+  it("keeps an empty slot until it is filled, then it closes like any group when emptied", async () => {
+    const { emptySlot, addTab, removeTerminal, removeGroup, tilesInOrder, allGroups: groups } = await import("./layout");
+    const slot = emptySlot("gs");
+    let l: import("./layout").Layout = { kind: "split", id: "s", dir: "row", sizes: [50, 50], children: [{ kind: "group", id: "g1", tabs: ["a", "b"], active: "b" }, slot] };
+    expect(groups(l)).toHaveLength(2);
+    l = addTab(l, "c", "gs");
+    expect(groups(l)[1]).toEqual({ kind: "group", id: "gs", tabs: ["c"], active: "c" });
+    expect(tilesInOrder(l)).toEqual(["b", "c", "a"]);
+    l = removeTerminal(l, "c");
+    expect(groups(l).map((g) => g.id)).toEqual(["g1"]);
+    const again: import("./layout").Layout = { kind: "split", id: "s", dir: "row", sizes: [50, 50], children: [{ kind: "group", id: "g1", tabs: ["a"], active: "a" }, emptySlot("gs")] };
+    expect(removeGroup(again, "gs")).toEqual({ kind: "group", id: "g1", tabs: ["a"], active: "a" });
+  });
+});

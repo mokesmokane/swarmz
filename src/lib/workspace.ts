@@ -575,8 +575,9 @@ function stableJson(v: unknown): string {
 
 /**
  * Whether two workspaces describe the same thing, ignoring how they are written down: terminals
- * are compared as a map keyed by id (so the order they appear in is irrelevant), the layout
- * structurally, machines as a map, and `sync` not at all.
+ * are compared as a map keyed by id (so the order they appear in is irrelevant), machines as a
+ * map, and `sync` and `layout` not at all (the layout is each Mac's own: windows and layouts
+ * spec §2; the file's copy only rides along for older apps).
  *
  * This is what decides whether the state reached after an adoption still differs from the file
  * that was adopted. It must NOT be order-sensitive: two machines reconcile the same file into the
@@ -598,7 +599,7 @@ export function sameWorkspaceContent(a: Workspace, b: Workspace): boolean {
         card: cardOf(t.card),
       };
     }
-    return stableJson({ terminals, layout: ws.layout, machines: ws.machines ?? {}, conductor: conductorOf(ws), conductorClaim: claimOf(ws), conductors: conductorsOf(ws), extra: workspaceExtra(ws) });
+    return stableJson({ terminals, machines: ws.machines ?? {}, conductor: conductorOf(ws), conductorClaim: claimOf(ws), conductors: conductorsOf(ws), extra: workspaceExtra(ws) });
   };
   return key(a) === key(b);
 }

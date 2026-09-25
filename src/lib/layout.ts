@@ -6,7 +6,10 @@ export interface GroupNode {
   kind: "group";
   id: string;
   tabs: TerminalId[];
+  /** The tab showing; "" in an empty slot. */
   active: TerminalId;
+  /** An empty slot a preset made (windows and layouts spec §7): kept with no tabs until filled. */
+  slot?: boolean;
 }
 
 export interface SplitNode {
@@ -47,7 +50,7 @@ function normalizeSizes(sizes: number[]): number[] {
 }
 
 function normalize(node: LayoutNode): LayoutNode | null {
-  if (node.kind === "group") return node.tabs.length === 0 ? null : node;
+  if (node.kind === "group") return node.tabs.length === 0 && !node.slot ? null : node;
   const kept: LayoutNode[] = [];
   const sizes: number[] = [];
   node.children.forEach((child, i) => {
@@ -72,7 +75,49 @@ export function addTab(layout: Layout, termId: TerminalId, groupId: string | nul
   const existing = findGroupOf(layout, termId);
   if (existing) return setActive(layout, existing.id, termId);
   const target = (groupId && findGroup(layout, groupId)) || allGroups(layout)[0];
-  return updateGroup(layout, target.id, (g) => ({ ...g, tabs: [...g.tabs, termId], active: termId }));
+  return updateGroup(layout, target.id, (g) => filled(g, [...g.tabs, termId], termId));
+}
+
+/** A group given tabs: an empty slot stops being one once it holds a tile. */
+function filled(g: GroupNode, tabs: TerminalId[], active: TerminalId): GroupNode {
+  const { slot: _slot, ...rest } = g;
+  return { ...rest, tabs, active };
+}
+
+/** An empty slot (windows and layouts spec §7). */
+export function emptySlot(id: string = newNodeId("g")): GroupNode {
+  return { kind: "group", id, tabs: [], active: "", slot: true };
+}
+
+/** A group with these tabs, the first showing; an empty slot when there are none. */
+export function groupOf(tabs: TerminalId[], active: TerminalId | null = null): GroupNode {
+  if (tabs.length === 0) return emptySlot();
+  return { kind: "group", id: newNodeId("g"), tabs, active: active && tabs.includes(active) ? active : tabs[0] };
+}
+
+/** The layout without group `groupId` (an empty slot's ×, or a group moved elsewhere whole). */
+export function removeGroup(layout: Layout, groupId: string): Layout {
+  if (!layout) return null;
+  const strip = (node: LayoutNode): LayoutNode =>
+    node.kind === "group"
+      ? node.id === groupId
+        ? { ...node, tabs: [], slot: false }
+        : node
+      : { ...node, children: node.children.map(strip) };
+  return normalize(strip(layout));
+}
+
+/** Every tile in the layout, each group's showing tab first, groups in reading order (spec §6). */
+export function tilesInOrder(layout: Layout): TerminalId[] {
+  const groups = allGroups(layout);
+  const first = groups.map((g) => g.active).filter((t) => t !== "");
+  const rest = groups.flatMap((g) => g.tabs.filter((t) => t !== g.active));
+  return [...first, ...rest];
+}
+
+/** The ids of every tile in the layout. */
+export function tilesOf(layout: Layout): TerminalId[] {
+  return allGroups(layout).flatMap((g) => g.tabs);
 }
 
 export function setActive(layout: Layout, groupId: string, termId: TerminalId): Layout {

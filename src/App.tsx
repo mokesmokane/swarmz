@@ -9,12 +9,12 @@ import { MachinesView } from "./components/Machines";
 import { PhonesPanel } from "./components/PhonesPanel";
 import { NotificationsPanel } from "./components/NotificationsPanel";
 import { clickView, loadSideFolded, loadSideView, saveSideFolded, saveSideView, type SideView } from "./lib/activityBar";
-import { splitShortcut } from "./lib/shortcuts";
-import { findGroup } from "./lib/layout";
+import { useWorkbenchShortcuts } from "./lib/useWorkbenchShortcuts";
 import { ipc } from "./lib/ipc";
 import { SYNC_PULL_MS, SYNC_STAT_MS, useStore } from "./store";
+import { ClosedNoticeBar } from "./components/ClosedNoticeBar";
 import "./lib/xtermRegistry";
-import "./lib/breakoutWindows";
+import "./lib/windows";
 
 export default function App() {
   useEffect(() => {
@@ -25,8 +25,8 @@ export default function App() {
         await useStore.getState().refreshTailscale();
         await useStore.getState().pullWorkspace();
         await useStore.getState().refreshOutsideSessions();
-        // The windows this Mac had last time, once their tiles are open.
-        await useStore.getState().restoreBreakouts();
+        // The windows this Mac had last time, once their tiles are open (windows and layouts spec §4).
+        await useStore.getState().restoreWindows();
       });
   }, []);
 
@@ -69,20 +69,7 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const side = splitShortcut(e);
-      if (!side) return;
-      const { layout, focusedGroupId, terminals, createTerminal } = useStore.getState();
-      const group = focusedGroupId ? findGroup(layout, focusedGroupId) : null;
-      const cwd = group ? terminals[group.active]?.cwd : undefined;
-      if (!group || !cwd) return;
-      e.preventDefault();
-      createTerminal(cwd, { kind: "split", groupId: group.id, side }).catch(() => {});
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  useWorkbenchShortcuts();
 
   useEffect(() => {
     const unlisten: Array<() => void> = [];
@@ -159,8 +146,9 @@ export default function App() {
         }}
       />
       )}
-      <main className="min-w-0 flex-1">
+      <main className="relative min-w-0 flex-1">
         <Workbench />
+        <ClosedNoticeBar />
         <FileViewer />
         <ConductorsPanel />
       </main>
