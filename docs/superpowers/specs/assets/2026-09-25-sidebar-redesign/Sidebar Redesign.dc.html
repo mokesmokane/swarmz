@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<style>
+body{margin:0;background:#1b1c1f;color:#e8e9ec;font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif;-webkit-font-smoothing:antialiased}
+a{color:oklch(0.72 0.12 250)}a:hover{color:oklch(0.82 0.1 250)}
+</style>
+</helmet>
+<section style="padding:48px 56px 24px;display:flex;flex-direction:column;gap:28px;border-bottom:1px solid #2a2c31">
+  <div style="display:flex;flex-direction:column;gap:6px;max-width:900px">
+    <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#8b8e95">swarmz · sidebar · turn 2</div>
+    <div style="font-size:26px;font-weight:600">1a with Triage as a view</div>
+    <div style="font-size:14px;color:#9a9ca3;line-height:1.5;text-wrap:pretty">Views: Mac · Triage · Folder · Tree · Time. Triage is <a href="#1b">1b</a>; Time sorts by last activity into Last hour, Today, This week and Older. Times and Mac colours appear on every row. Machines stay visible at the bottom.</div>
+  </div>
+  <div id="2a" style="display:flex;flex-direction:column;gap:14px">
+    <div style="display:flex;align-items:center;gap:10px"><span style="font-family:ui-monospace,Menlo,monospace;font-size:12px;font-weight:700;background:#e8e9ec;color:#111;border-radius:4px;padding:2px 7px">2a</span><span style="font-size:16px;font-weight:600">Refined + Triage</span></div>
+    <div style="display:flex;height:920px;width:fit-content;border-radius:10px;overflow:hidden;border:1px solid #2a2c31;background:#121316;box-shadow:0 20px 60px rgba(0,0,0,0.4)">
+      <div style="width:44px;flex:none;background:#0c0d0f;border-right:1px solid #1f2125;display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:4px">
+        <div style="position:relative;width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#e8e9ec"><div style="position:absolute;left:0;top:8px;bottom:8px;width:2px;background:#e8e9ec"></div><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="14" height="12" rx="2"></rect><path d="M5 7l2.5 2L5 11M9 11h4"></path></svg></div>
+        <div style="flex:1"></div>
+        <div style="width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 4.8v2.2M7 7L3.9 9.4M7 7l3.1 2.4"></path></svg></div>
+        <div style="width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="2" width="8" height="14" rx="2"></rect><path d="M8 13.5h2"></path></svg></div>
+        <div style="width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4.5 12.5V8a4.5 4.5 0 0 1 9 0v4.5l1.2 1.5H3.3z"></path><path d="M7.5 16h3"></path></svg></div>
+      </div>
+      <div style="width:{{ sbw }};flex:none;display:flex;flex-direction:column;min-height:0;border-right:1px solid #1f2125">
+        <div style="height:36px;flex:none;display:flex;align-items:center;padding:0 6px 0 12px;gap:2px">
+          <span style="flex:1;font-size:11px;font-weight:600;letter-spacing:0.07em;color:#9a9ca3">TERMINALS</span>
+          <div title="Arrange conductors" style="width:26px;height:24px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:#a4a7ae" style-hover="background:#24262b;color:#e8e9ec"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 4.8v2.2M7 7L3.9 9.4M7 7l3.1 2.4"></path></svg></div>
+          <div title="Reload workspace" style="width:26px;height:24px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:#a4a7ae" style-hover="background:#24262b;color:#e8e9ec"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M11.5 7a4.5 4.5 0 1 1-1.3-3.2"></path><path d="M11.7 1.8v2.4H9.3"></path></svg></div>
+          <div title="New terminal" style="width:26px;height:24px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:#a4a7ae" style-hover="background:#24262b;color:#e8e9ec"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M7 2.5v9M2.5 7h9"></path></svg></div>
+        </div>
+        <div onClick="{{ toggleNoticesD }}" style="margin:0 8px;height:26px;flex:none;display:flex;align-items:center;gap:7px;padding:0 6px;border-radius:5px;font-size:11px;color:#9a9ca3;cursor:default" style-hover="background:#1c1e22">
+          <div style="width:6px;height:6px;border-radius:50%;background:oklch(0.80 0.15 75);flex:none"></div>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span style="color:oklch(0.80 0.15 75)">Sync error</span> · 2/3 Macs · 12 s ago</span>
+          <span style="flex:none;font-size:10px;font-weight:600;color:#e8e9ec;background:#2a2c31;border-radius:8px;padding:1px 6px">{{ noticeCount }}</span>
+        </div>
+        <sc-if value="{{ noticesDOpen }}">
+          <div style="margin:4px 8px 0;border:1px solid #26282d;border-radius:6px;display:flex;flex-direction:column;overflow:hidden">
+            <sc-for list="{{ notices }}" as="n" hint-placeholder-count="3">
+              <div style="display:flex;align-items:flex-start;gap:8px;padding:7px 8px;border-top:1px solid #1f2125;font-size:11px;line-height:1.4">
+                <div style="width:6px;height:6px;border-radius:50%;margin-top:4px;flex:none;background:{{ n.color }}"></div>
+                <span style="flex:1;color:#c4c6cc;text-wrap:pretty">{{ n.text }}</span>
+                <span style="flex:none;color:oklch(0.72 0.12 250);font-weight:600">{{ n.action }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+        <div style="margin:8px 8px 4px;flex:none;display:flex;background:#0d0e10;border-radius:6px;padding:2px;gap:2px">
+          <sc-for list="{{ groupOptsD }}" as="o" hint-placeholder-count="5"><div onClick="{{ o.onClick }}" style="flex:1;text-align:center;font-size:11px;padding:4px 0;border-radius:4px;background:{{ o.bg }};color:{{ o.color }};font-weight:{{ o.weight }};cursor:default">{{ o.label }}</div></sc-for>
+        </div>
+        <div style="flex:1;min-height:0;overflow-y:auto;padding-bottom:8px">
+          <sc-if value="{{ isTriageD }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex;align-items:center;gap:6px;padding:8px 12px 6px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:oklch(0.80 0.15 75)"><span>NEEDS YOU</span><span style="font-size:10px;font-weight:700;color:#1a1405;background:oklch(0.80 0.15 75);border-radius:7px;padding:0 5px;line-height:14px">{{ triD.needsCount }}</span></div>
+            <div style="display:flex;flex-direction:column;gap:6px;padding:0 8px">
+              <div style="border-radius:7px;background:#1a1b1f;border:1px dashed oklch(0.80 0.15 75 / 0.45);padding:8px 10px;display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;gap:7px;align-items:flex-start;font-size:12px;line-height:1.4;color:#e8e9ec"><svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="oklch(0.80 0.15 75)" stroke-width="1.4" style="flex:none;margin-top:2px"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 4.8v2.2M7 7L3.9 9.4M7 7l3.1 2.4"></path></svg><span style="text-wrap:pretty"><b style="font-weight:600">Collaborative projects service</b> asks to be a sub-conductor</span></div>
+                <div style="display:flex;gap:6px;justify-content:flex-end"><div style="font-size:11px;padding:3px 10px;border-radius:4px;color:#c4c6cc;background:#26282d">Deny</div><div style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:4px;background:oklch(0.80 0.15 75);color:#1a1405">Approve</div></div>
+              </div>
+              <sc-for list="{{ triD.needs }}" as="n" hint-placeholder-count="3">
+                <div onClick="{{ n.onClick }}" style="border-radius:7px;background:{{ n.bg }};border:1px solid oklch(0.80 0.15 75 / 0.3);padding:8px 10px;display:flex;flex-direction:column;gap:5px;cursor:default">
+                  <div style="display:flex;align-items:center;gap:7px">
+                    <div style="width:8px;height:8px;border-radius:50%;background:oklch(0.80 0.15 75);box-shadow:0 0 0 3px oklch(0.80 0.15 75 / 0.22);flex:none"></div>
+                    <sc-if value="{{ n.conductor }}"><svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="oklch(0.80 0.15 75)" stroke-width="1.4" style="flex:none"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 4.8v2.2M7 7L3.9 9.4M7 7l3.1 2.4"></path></svg></sc-if>
+                    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600">{{ n.title }}</span>
+                    <span style="font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:#7d8087;flex:none">{{ n.ago }}</span>
+                  </div>
+                  <div style="font-size:11.5px;line-height:1.45;color:#b9bbc1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-wrap:pretty">{{ n.recap }}</div>
+                  <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#8b8e95">
+                    <div style="min-width:14px;height:14px;padding:0 2px;box-sizing:border-box;border-radius:3px;background:{{ n.macColor }};color:#101114;font-size:8.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none">{{ n.macMono }}</div>
+                    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ n.folder }}</span>
+                    <sc-if value="{{ n.isPerm }}"><div style="display:flex;gap:4px;flex:none"><div style="padding:2px 8px;border-radius:4px;background:#26282d;color:#c4c6cc">Deny</div><div style="padding:2px 8px;border-radius:4px;background:#e8e9ec;color:#111;font-weight:600">Allow</div></div></sc-if>
+                    <sc-if value="{{ n.isQ }}"><div style="padding:2px 8px;border-radius:4px;background:#e8e9ec;color:#111;font-weight:600;flex:none">Answer</div></sc-if>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;padding:14px 12px 4px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:#8b8e95"><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.76 0.15 150)"></span><span>WORKING</span><span style="color:#6f727a;font-weight:500">{{ triD.workingCount }}</span></div>
+            <sc-for list="{{ triD.working }}" as="row" hint-placeholder-count="2"><dc-import name="TileRow" row="{{ row }}" hint-size="100%,44px"></dc-import></sc-for>
+            <div onClick="{{ toggleQuietD }}" style="display:flex;align-items:center;gap:6px;padding:14px 12px 4px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:#8b8e95;cursor:default">
+              <div style="display:flex;transform:{{ quietDRot }}"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.8L5 6.3l2.5-2.5"></path></svg></div>
+              <span>QUIET</span><span style="color:#6f727a;font-weight:500">{{ triD.quietCount }}</span>
+              <span style="font-weight:500;letter-spacing:0;color:oklch(0.66 0.19 25)">1 exited</span>
+            </div>
+            <sc-if value="{{ quietDOpen }}"><sc-for list="{{ triD.quiet }}" as="row" hint-placeholder-count="9"><dc-import name="TileRow" row="{{ row }}" hint-size="100%,44px"></dc-import></sc-for></sc-if>
+          </sc-if>
+          <sc-if value="{{ notTriageD }}">
+            <sc-for list="{{ groupsD }}" as="g" hint-placeholder-count="3">
+              <div>
+                <sc-if value="{{ g.showHeader }}"><div style="display:flex;align-items:center;gap:6px;padding:12px 10px 4px 12px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:#8b8e95">
+                  <sc-if value="{{ g.showMono }}"><div style="min-width:14px;height:14px;padding:0 2px;box-sizing:border-box;border-radius:3px;background:{{ g.monoColor }};color:#101114;font-size:8.5px;font-weight:700;display:flex;align-items:center;justify-content:center">{{ g.mono }}</div></sc-if>
+                  <span style="text-transform:uppercase;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ g.label }}</span>
+                  <span style="color:#6f727a;font-weight:500">{{ g.count }}</span>
+                  <sc-if value="{{ g.showNeeds }}"><span style="font-size:10px;font-weight:700;color:#1a1405;background:oklch(0.80 0.15 75);border-radius:7px;padding:0 5px;line-height:14px">{{ g.needs }}</span></sc-if>
+                  <div style="flex:1"></div>
+                  <div title="Select all in group" onClick="{{ g.onSelectAll }}" style="width:18px;height:18px;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#6f727a" style-hover="background:#24262b;color:#e8e9ec"><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="1.5" width="9" height="9" rx="2"></rect><path d="M3.8 6.2l1.5 1.5 3-3.2"></path></svg></div>
+                </div></sc-if>
+                <sc-for list="{{ g.rows }}" as="row" hint-placeholder-count="4"><dc-import name="TileRow" row="{{ row }}" hint-size="100%,44px"></dc-import></sc-for>
+              </div>
+            </sc-for>
+          </sc-if>
+        </div>
+        <sc-if value="{{ trayD.show }}"><dc-import name="SelectionTray" tray="{{ trayD.tray }}" hint-size="100%,190px"></dc-import></sc-if>
+        <div style="flex:none;border-top:1px solid #1f2125;padding:8px 0 10px">
+          <div style="display:flex;align-items:center;padding:0 12px 4px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:#8b8e95"><span style="flex:1">MACHINES</span><span style="font-weight:500;letter-spacing:0;color:#6f727a;font-family:ui-monospace,Menlo,monospace">v0.9.4</span></div>
+          <sc-for list="{{ macs }}" as="m" hint-placeholder-count="3"><div style="display:flex;align-items:center;gap:7px;padding:4px 12px;font-size:11px;color:#b9bbc1">
+            <div style="width:6px;height:6px;border-radius:50%;background:{{ m.dot }};flex:none"></div>
+            <div style="min-width:14px;height:14px;padding:0 2px;box-sizing:border-box;border-radius:3px;background:{{ m.color }};color:#101114;font-size:8.5px;font-weight:700;display:flex;align-items:center;justify-content:center">{{ m.mono }}</div>
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ m.alias }}</span>
+            <div style="width:36px;height:4px;border-radius:2px;background:#26282d;overflow:hidden;flex:none"><div style="height:100%;width:{{ m.cpuPct }};background:#8b8e95"></div></div>
+            <span style="width:50px;text-align:right;font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#7d8087;flex:none">{{ m.ping }}</span>
+            <sc-if value="{{ m.showNeeds }}"><span style="font-size:10px;font-weight:700;color:#1a1405;background:oklch(0.80 0.15 75);border-radius:7px;padding:0 5px;line-height:14px">{{ m.needs }}</span></sc-if>
+          </div></sc-for>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<section style="padding:48px 56px 80px;display:flex;flex-direction:column;gap:32px">
+  <div style="display:flex;flex-direction:column;gap:6px;max-width:900px">
+    <div style="font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#8b8e95">swarmz · sidebar · turn 1</div>
+    <div style="font-size:26px;font-weight:600">Three directions for the Terminals sidebar</div>
+    <div style="font-size:14px;color:#9a9ca3;line-height:1.5;text-wrap:pretty">Same fleet in each (14 tiles, 3 Macs). All three share a new row: one status dot, one Mac chip, and a status word only when it matters. Hover a row to see its actions; tick the dot box or ⌘-click to select and open the layout tray. Use Tweaks to change the sidebar width.</div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:56px;align-items:flex-start">
+
+    <!-- 1a -->
+    <div id="1a" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;flex-direction:column;gap:6px;max-width:380px">
+        <div style="display:flex;align-items:center;gap:10px"><span style="font-family:ui-monospace,Menlo,monospace;font-size:12px;font-weight:700;background:#e8e9ec;color:#111;border-radius:4px;padding:2px 7px">1a</span><span style="font-size:16px;font-weight:600">Refined</span></div>
+        <div style="font-size:12.5px;color:#9a9ca3;line-height:1.5;text-wrap:pretty">Today's structure, cleaned up. Needs-you rows get an amber tint and edge in every grouping. Up to eight top lines fold into one status line that opens on click. Group by becomes a segmented control.</div>
+      </div>
+      <div style="display:flex;height:920px;border-radius:10px;overflow:hidden;border:1px solid #2a2c31;background:#121316;box-shadow:0 20px 60px rgba(0,0,0,0.4)">
+        <div style="width:44px;flex:none;background:#0c0d0f;border-right:1px solid #1f2125;display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:4px">
+          <div style="position:relative;width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#e8e9ec"><div style="position:absolute;left:0;top:8px;bottom:8px;width:2px;background:#e8e9ec"></div><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="14" height="12" rx="2"></rect><path d="M5 7l2.5 2L5 11M9 11h4"></path></svg></div>
+          <div style="position:relative;width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="3" width="13" height="5" rx="1.5"></rect><rect x="2.5" y="10" width="13" height="5" rx="1.5"></rect></svg><div style="position:absolute;top:9px;right:10px;width:6px;height:6px;border-radius:50%;background:oklch(0.80 0.15 75)"></div></div>
+          <div style="flex:1"></div>
+          <div style="width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 4.8v2.2M7 7L3.9 9.4M7 7l3.1 2.4"></path></svg></div>
+          <div style="width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="2" width="8" height="14" rx="2"></rect><path d="M8 13.5h2"></path></svg></div>
+          <div style="width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4.5 12.5V8a4.5 4.5 0 0 1 9 0v4.5l1.2 1.5H3.3z"></path><path d="M7.5 16h3"></path></svg></div>
+        </div>
+        <div style="width:{{ sbw }};flex:none;display:flex;flex-direction:column;min-height:0;border-right:1px solid #1f2125">
+          <div style="height:36px;flex:none;display:flex;align-items:center;padding:0 6px 0 12px;gap:2px">
+            <span style="flex:1;font-size:11px;font-weight:600;letter-spacing:0.07em;color:#9a9ca3">TERMINALS</span>
+            <div title="Arrange conductors" style="width:26px;height:24px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:#a4a7ae" style-hover="background:#24262b;color:#e8e9ec"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 4.8v2.2M7 7L3.9 9.4M7 7l3.1 2.4"></path></svg></div>
+            <div title="Reload workspace" style="width:26px;height:24px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:#a4a7ae" style-hover="background:#24262b;color:#e8e9ec"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M11.5 7a4.5 4.5 0 1 1-1.3-3.2"></path><path d="M11.7 1.8v2.4H9.3"></path></svg></div>
+            <div title="New terminal" style="width:26px;height:24px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:#a4a7ae" style-hover="background:#24262b;color:#e8e9ec"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M7 2.5v9M2.5 7h9"></path></svg></div>
+          </div>
+          <div onClick="{{ toggleNotices }}" style="margin:0 8px;height:26px;flex:none;display:flex;align-items:center;gap:7px;padding:0 6px;border-radius:5px;font-size:11px;color:#9a9ca3;cursor:default" style-hover="background:#1c1e22">
+            <div style="width:6px;height:6px;border-radius:50%;background:oklch(0.80 0.15 75);flex:none"></div>
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span style="color:oklch(0.80 0.15 75)">Sync error</span> · 2/3 Macs · 12 s ago</span>
+            <span style="flex:none;font-size:10px;font-weight:600;color:#e8e9ec;background:#2a2c31;border-radius:8px;padding:1px 6px">{{ noticeCount }}</span>
+          </div>
+          <sc-if value="{{ noticesOpen }}">
+            <div style="margin:4px 8px 0;border:1px solid #26282d;border-radius:6px;display:flex;flex-direction:column;overflow:hidden">
+              <sc-for list="{{ notices }}" as="n" hint-placeholder-count="3">
+                <div style="display:flex;align-items:flex-start;gap:8px;padding:7px 8px;border-top:1px solid #1f2125;font-size:11px;line-height:1.4">
+                  <div style="width:6px;height:6px;border-radius:50%;margin-top:4px;flex:none;background:{{ n.color }}"></div>
+                  <span style="flex:1;color:#c4c6cc;text-wrap:pretty">{{ n.text }}</span>
+                  <span style="flex:none;color:oklch(0.72 0.12 250);font-weight:600">{{ n.action }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <div style="margin:6px 8px 0;flex:none;border-radius:6px;background:oklch(0.80 0.15 75 / 0.1);border:1px solid oklch(0.80 0.15 75 / 0.3);padding:7px 8px;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;gap:7px;align-items:flex-start;font-size:11.5px;line-height:1.4;color:#e8e9ec"><svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="oklch(0.80 0.15 75)" stroke-width="1.4" style="flex:none;margin-top:1px"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 4.8v2.2M7 7L3.9 9.4M7 7l3.1 2.4"></path></svg><span style="text-wrap:pretty"><b style="font-weight:600">Collaborative projects service</b> asks to be a sub-conductor</span></div>
+            <div style="display:flex;gap:6px;justify-content:flex-end"><div style="font-size:11px;padding:3px 10px;border-radius:4px;color:#c4c6cc" style-hover="background:#2a2c31">Deny</div><div style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:4px;background:oklch(0.80 0.15 75);color:#1a1405">Approve</div></div>
+          </div>
+          <div style="margin:8px 8px 4px;flex:none;display:flex;background:#0d0e10;border-radius:6px;padding:2px;gap:2px">
+            <sc-for list="{{ groupOpts }}" as="o" hint-placeholder-count="5"><div onClick="{{ o.onClick }}" style="flex:1;text-align:center;font-size:11px;padding:4px 0;border-radius:4px;background:{{ o.bg }};color:{{ o.color }};cursor:default">{{ o.label }}</div></sc-for>
+          </div>
+          <div style="flex:1;min-height:0;overflow-y:auto;padding-bottom:8px">
+            <sc-for list="{{ groupsA }}" as="g" hint-placeholder-count="3">
+              <div>
+                <sc-if value="{{ g.showHeader }}"><div style="display:flex;align-items:center;gap:6px;padding:12px 10px 4px 12px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:#8b8e95">
+                  <sc-if value="{{ g.showMono }}"><div style="min-width:14px;height:14px;padding:0 2px;box-sizing:border-box;border-radius:3px;background:{{ g.monoColor }};color:#101114;font-size:8.5px;font-weight:700;display:flex;align-items:center;justify-content:center">{{ g.mono }}</div></sc-if>
+                  <sc-if value="{{ g.showDot }}"><div style="width:7px;height:7px;border-radius:50%;background:{{ g.dotColor }}"></div></sc-if>
+                  <span style="text-transform:uppercase;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ g.label }}</span>
+                  <span style="color:#6f727a;font-weight:500">{{ g.count }}</span>
+                  <sc-if value="{{ g.showNeeds }}"><span style="font-size:10px;font-weight:700;color:#1a1405;background:oklch(0.80 0.15 75);border-radius:7px;padding:0 5px;line-height:14px">{{ g.needs }}</span></sc-if>
+                  <div style="flex:1"></div>
+                  <div title="Select all in group" onClick="{{ g.onSelectAll }}" style="width:18px;height:18px;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#6f727a" style-hover="background:#24262b;color:#e8e9ec"><svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="1.5" width="9" height="9" rx="2"></rect><path d="M3.8 6.2l1.5 1.5 3-3.2"></path></svg></div>
+                </div></sc-if>
+                <sc-for list="{{ g.rows }}" as="row" hint-placeholder-count="4"><dc-import name="TileRow" row="{{ row }}" hint-size="100%,44px"></dc-import></sc-for>
+              </div>
+            </sc-for>
+          </div>
+          <sc-if value="{{ trayA.show }}"><dc-import name="SelectionTray" tray="{{ trayA.tray }}" hint-size="100%,190px"></dc-import></sc-if>
+          <div style="flex:none;border-top:1px solid #1f2125">
+            <div onClick="{{ toggleMacsA }}" style="height:30px;display:flex;align-items:center;gap:7px;padding:0 10px 0 12px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:#8b8e95;cursor:default" style-hover="background:#1c1e22">
+              <div style="display:flex;transform:{{ macsARot }}"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.8L5 6.3l2.5-2.5"></path></svg></div>
+              <span>MACHINES</span>
+              <div style="display:flex;gap:3px"><sc-for list="{{ macs }}" as="m" hint-placeholder-count="3"><div title="{{ m.name }}" style="width:6px;height:6px;border-radius:50%;background:{{ m.dot }}"></div></sc-for></div>
+              <div style="flex:1"></div>
+              <span style="font-weight:500;letter-spacing:0;color:#6f727a;font-family:ui-monospace,Menlo,monospace">v0.9.4</span>
+            </div>
+            <sc-if value="{{ macsAOpen }}"><div style="padding:0 0 8px">
+              <sc-for list="{{ macs }}" as="m" hint-placeholder-count="3"><div style="display:flex;align-items:center;gap:7px;padding:4px 12px;font-size:11px;color:#b9bbc1">
+                <div style="min-width:14px;height:14px;padding:0 2px;box-sizing:border-box;border-radius:3px;background:{{ m.color }};color:#101114;font-size:8.5px;font-weight:700;display:flex;align-items:center;justify-content:center">{{ m.mono }}</div>
+                <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ m.alias }}</span>
+                <div style="width:36px;height:4px;border-radius:2px;background:#26282d;overflow:hidden;flex:none"><div style="height:100%;width:{{ m.cpuPct }};background:#8b8e95"></div></div>
+                <span style="width:52px;text-align:right;font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#7d8087;flex:none">{{ m.ping }}</span>
+                <sc-if value="{{ m.showNeeds }}"><span style="font-size:10px;font-weight:700;color:#1a1405;background:oklch(0.80 0.15 75);border-radius:7px;padding:0 5px;line-height:14px">{{ m.needs }}</span></sc-if>
+              </div></sc-for>
+            </div></sc-if>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 1b -->
+    <div id="1b" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;flex-direction:column;gap:6px;max-width:380px">
+        <div style="display:flex;align-items:center;gap:10px"><span style="font-family:ui-monospace,Menlo,monospace;font-size:12px;font-weight:700;background:#e8e9ec;color:#111;border-radius:4px;padding:2px 7px">1b</span><span style="font-size:16px;font-weight:600">Triage</span></div>
+        <div style="font-size:12.5px;color:#9a9ca3;line-height:1.5;text-wrap:pretty">Sorted by what needs doing. Needs-you tiles become cards with the recap and quick answers, then working tiles, then quiet tiles on one line each. Machines are a permanent footer section.</div>
+      </div>
+      <div style="display:flex;height:920px;border-radius:10px;overflow:hidden;border:1px solid #2a2c31;background:#121316;box-shadow:0 20px 60px rgba(0,0,0,0.4)">
+        <div style="width:44px;flex:none;background:#0c0d0f;border-right:1px solid #1f2125;display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:4px">
+          <div style="position:relative;width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#e8e9ec"><div style="position:absolute;left:0;top:8px;bottom:8px;width:2px;background:#e8e9ec"></div><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="14" height="12" rx="2"></rect><path d="M5 7l2.5 2L5 11M9 11h4"></path></svg></div>
+          <div style="flex:1"></div>
+          <div style="width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 4.8v2.2M7 7L3.9 9.4M7 7l3.1 2.4"></path></svg></div>
+          <div style="width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="2" width="8" height="14" rx="2"></rect><path d="M8 13.5h2"></path></svg></div>
+          <div style="width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4.5 12.5V8a4.5 4.5 0 0 1 9 0v4.5l1.2 1.5H3.3z"></path><path d="M7.5 16h3"></path></svg></div>
+        </div>
+        <div style="width:{{ sbw }};flex:none;display:flex;flex-direction:column;min-height:0;border-right:1px solid #1f2125">
+          <div style="height:36px;flex:none;display:flex;align-items:center;padding:0 6px 0 12px;gap:2px">
+            <span style="flex:1;font-size:11px;font-weight:600;letter-spacing:0.07em;color:#9a9ca3">TERMINALS</span>
+            <div style="width:26px;height:24px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:#a4a7ae" style-hover="background:#24262b;color:#e8e9ec"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M11.5 7a4.5 4.5 0 1 1-1.3-3.2"></path><path d="M11.7 1.8v2.4H9.3"></path></svg></div>
+            <div style="width:26px;height:24px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:#a4a7ae" style-hover="background:#24262b;color:#e8e9ec"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M7 2.5v9M2.5 7h9"></path></svg></div>
+          </div>
+          <div style="padding:0 10px 6px 12px;flex:none;display:flex;flex-wrap:wrap;gap:5px;font-size:10.5px">
+            <span style="display:flex;align-items:center;gap:5px;padding:2px 7px;border-radius:9px;background:#1c1e22;color:#9a9ca3"><span style="width:6px;height:6px;border-radius:50%;background:oklch(0.80 0.15 75)"></span>Sync error · mini-2</span>
+            <span style="padding:2px 7px;border-radius:9px;background:#1c1e22;color:#9a9ca3">3 outside</span>
+            <span style="padding:2px 7px;border-radius:9px;background:oklch(0.68 0.14 250 / 0.18);color:oklch(0.8 0.1 250)">Update ready</span>
+          </div>
+          <div style="flex:1;min-height:0;overflow-y:auto;padding-bottom:8px">
+            <div style="display:flex;align-items:center;gap:6px;padding:8px 12px 6px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:oklch(0.80 0.15 75)"><span>NEEDS YOU</span><span style="font-size:10px;font-weight:700;color:#1a1405;background:oklch(0.80 0.15 75);border-radius:7px;padding:0 5px;line-height:14px">{{ needsCount }}</span></div>
+            <div style="display:flex;flex-direction:column;gap:6px;padding:0 8px">
+              <div style="border-radius:7px;background:#1a1b1f;border:1px dashed oklch(0.80 0.15 75 / 0.45);padding:8px 10px;display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;gap:7px;align-items:flex-start;font-size:12px;line-height:1.4;color:#e8e9ec"><svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="oklch(0.80 0.15 75)" stroke-width="1.4" style="flex:none;margin-top:2px"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 4.8v2.2M7 7L3.9 9.4M7 7l3.1 2.4"></path></svg><span style="text-wrap:pretty"><b style="font-weight:600">Collaborative projects service</b> asks to be a sub-conductor</span></div>
+                <div style="display:flex;gap:6px;justify-content:flex-end"><div style="font-size:11px;padding:3px 10px;border-radius:4px;color:#c4c6cc;background:#26282d">Deny</div><div style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:4px;background:oklch(0.80 0.15 75);color:#1a1405">Approve</div></div>
+              </div>
+              <sc-for list="{{ needsB }}" as="n" hint-placeholder-count="3">
+                <div onClick="{{ n.onClick }}" style="border-radius:7px;background:{{ n.bg }};border:1px solid oklch(0.80 0.15 75 / 0.3);padding:8px 10px;display:flex;flex-direction:column;gap:5px;cursor:default">
+                  <div style="display:flex;align-items:center;gap:7px">
+                    <div style="width:8px;height:8px;border-radius:50%;background:oklch(0.80 0.15 75);box-shadow:0 0 0 3px oklch(0.80 0.15 75 / 0.22);flex:none"></div>
+                    <sc-if value="{{ n.conductor }}"><svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="oklch(0.80 0.15 75)" stroke-width="1.4" style="flex:none"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 4.8v2.2M7 7L3.9 9.4M7 7l3.1 2.4"></path></svg></sc-if>
+                    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600">{{ n.title }}</span>
+                    <span style="font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:#7d8087;flex:none">{{ n.ago }}</span>
+                  </div>
+                  <div style="font-size:11.5px;line-height:1.45;color:#b9bbc1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-wrap:pretty">{{ n.recap }}</div>
+                  <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#8b8e95">
+                    <div style="min-width:14px;height:14px;padding:0 2px;box-sizing:border-box;border-radius:3px;background:{{ n.macColor }};color:#101114;font-size:8.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none">{{ n.macMono }}</div>
+                    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ n.folder }}</span>
+                    <sc-if value="{{ n.isPerm }}"><div style="display:flex;gap:4px;flex:none"><div style="padding:2px 8px;border-radius:4px;background:#26282d;color:#c4c6cc">Deny</div><div style="padding:2px 8px;border-radius:4px;background:#e8e9ec;color:#111;font-weight:600">Allow</div></div></sc-if>
+                    <sc-if value="{{ n.isQ }}"><div style="padding:2px 8px;border-radius:4px;background:#e8e9ec;color:#111;font-weight:600;flex:none">Answer</div></sc-if>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;padding:14px 12px 4px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:#8b8e95"><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.76 0.15 150)"></span><span>WORKING</span><span style="color:#6f727a;font-weight:500">{{ workingCount }}</span></div>
+            <sc-for list="{{ workingB }}" as="row" hint-placeholder-count="2"><dc-import name="TileRow" row="{{ row }}" hint-size="100%,44px"></dc-import></sc-for>
+            <div onClick="{{ toggleQuiet }}" style="display:flex;align-items:center;gap:6px;padding:14px 12px 4px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:#8b8e95;cursor:default">
+              <div style="display:flex;transform:{{ quietRot }}"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.8L5 6.3l2.5-2.5"></path></svg></div>
+              <span>QUIET</span><span style="color:#6f727a;font-weight:500">{{ quietCount }}</span>
+              <span style="font-weight:500;letter-spacing:0;color:oklch(0.66 0.19 25)">1 exited</span>
+            </div>
+            <sc-if value="{{ quietOpen }}">
+              <sc-for list="{{ quietB }}" as="q" hint-placeholder-count="9">
+                <div onClick="{{ q.onClick }}" onMouseEnter="{{ q.onEnter }}" onMouseLeave="{{ q.onLeave }}" style="display:flex;align-items:center;gap:8px;height:26px;padding:0 10px 0 11px;background:{{ q.bg }};cursor:default">
+                  <div style="width:8px;height:8px;box-sizing:border-box;border-radius:50%;background:{{ q.dotBg }};border:1.5px solid {{ q.dotColor }};flex:none;margin:0 3px"></div>
+                  <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:{{ q.titleColor }};font-style:{{ q.titleStyle }}">{{ q.title }}</span>
+                  <span style="font-size:11px;font-weight:600;color:{{ q.statusColor }};flex:none">{{ q.status }}</span>
+                  <div style="min-width:14px;height:14px;padding:0 2px;box-sizing:border-box;border-radius:3px;background:{{ q.macColor }};color:#101114;font-size:8.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none">{{ q.macMono }}</div>
+                  <span style="width:22px;text-align:right;font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:#6f727a;flex:none">{{ q.ago }}</span>
+                </div>
+              </sc-for>
+            </sc-if>
+          </div>
+          <sc-if value="{{ trayB.show }}"><dc-import name="SelectionTray" tray="{{ trayB.tray }}" hint-size="100%,190px"></dc-import></sc-if>
+          <div style="flex:none;border-top:1px solid #1f2125;padding:8px 0 10px">
+            <div style="display:flex;align-items:center;padding:0 12px 4px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:#8b8e95"><span style="flex:1">MACHINES</span><span style="font-weight:500;letter-spacing:0;color:#6f727a;font-family:ui-monospace,Menlo,monospace">v0.9.4</span></div>
+            <sc-for list="{{ macs }}" as="m" hint-placeholder-count="3"><div style="display:flex;align-items:center;gap:7px;padding:4px 12px;font-size:11px;color:#b9bbc1">
+              <div style="width:6px;height:6px;border-radius:50%;background:{{ m.dot }};flex:none"></div>
+              <div style="min-width:14px;height:14px;padding:0 2px;box-sizing:border-box;border-radius:3px;background:{{ m.color }};color:#101114;font-size:8.5px;font-weight:700;display:flex;align-items:center;justify-content:center">{{ m.mono }}</div>
+              <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ m.alias }}</span>
+              <div style="width:36px;height:4px;border-radius:2px;background:#26282d;overflow:hidden;flex:none"><div style="height:100%;width:{{ m.cpuPct }};background:#8b8e95"></div></div>
+              <span style="width:50px;text-align:right;font-family:ui-monospace,Menlo,monospace;font-size:10px;color:#7d8087;flex:none">{{ m.ping }}</span>
+              <span style="width:28px;text-align:right;font-size:10.5px;color:#8b8e95;flex:none">{{ m.claude }}</span>
+            </div></sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 1c -->
+    <div id="1c" style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;flex-direction:column;gap:6px;max-width:380px">
+        <div style="display:flex;align-items:center;gap:10px"><span style="font-family:ui-monospace,Menlo,monospace;font-size:12px;font-weight:700;background:#e8e9ec;color:#111;border-radius:4px;padding:2px 7px">1c</span><span style="font-size:16px;font-weight:600">Fleet + tree</span></div>
+        <div style="font-size:12.5px;color:#9a9ca3;line-height:1.5;text-wrap:pretty">Answers the open question: yes. Machines become a top strip (click one to focus its tiles). The conductor tree is the main list, with needs-you counts rolled up to each conductor. Tiles with no conductor sit in their own section.</div>
+      </div>
+      <div style="display:flex;height:920px;border-radius:10px;overflow:hidden;border:1px solid #2a2c31;background:#121316;box-shadow:0 20px 60px rgba(0,0,0,0.4)">
+        <div style="width:44px;flex:none;background:#0c0d0f;border-right:1px solid #1f2125;display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:4px">
+          <div style="position:relative;width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#e8e9ec"><div style="position:absolute;left:0;top:8px;bottom:8px;width:2px;background:#e8e9ec"></div><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="14" height="12" rx="2"></rect><path d="M5 7l2.5 2L5 11M9 11h4"></path></svg></div>
+          <div style="flex:1"></div>
+          <div style="width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="2" width="8" height="14" rx="2"></rect><path d="M8 13.5h2"></path></svg></div>
+          <div style="width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:#7d8087"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4.5 12.5V8a4.5 4.5 0 0 1 9 0v4.5l1.2 1.5H3.3z"></path><path d="M7.5 16h3"></path></svg></div>
+        </div>
+        <div style="width:{{ sbw }};flex:none;display:flex;flex-direction:column;min-height:0;border-right:1px solid #1f2125">
+          <div style="height:36px;flex:none;display:flex;align-items:center;padding:0 6px 0 12px;gap:2px">
+            <span style="flex:1;font-size:11px;font-weight:600;letter-spacing:0.07em;color:#9a9ca3">TERMINALS</span>
+            <div style="width:26px;height:24px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:#a4a7ae" style-hover="background:#24262b;color:#e8e9ec"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M11.5 7a4.5 4.5 0 1 1-1.3-3.2"></path><path d="M11.7 1.8v2.4H9.3"></path></svg></div>
+            <div style="width:26px;height:24px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:#a4a7ae" style-hover="background:#24262b;color:#e8e9ec"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M7 2.5v9M2.5 7h9"></path></svg></div>
+          </div>
+          <div style="padding:0 8px;flex:none;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px">
+            <sc-for list="{{ fleet }}" as="f" hint-placeholder-count="3">
+              <div onClick="{{ f.onClick }}" style="border-radius:6px;background:{{ f.bg }};border:1px solid {{ f.border }};padding:6px 7px 7px;display:flex;flex-direction:column;gap:4px;cursor:default;min-width:0">
+                <div style="display:flex;align-items:center;gap:5px;min-width:0">
+                  <div style="min-width:14px;height:14px;padding:0 2px;box-sizing:border-box;border-radius:3px;background:{{ f.color }};color:#101114;font-size:8.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none">{{ f.mono }}</div>
+                  <span style="font-size:11.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ f.alias }}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:#8b8e95;white-space:nowrap">
+                  <span>{{ f.count }}</span>
+                  <sc-if value="{{ f.showNeeds }}"><span style="font-size:10px;font-weight:700;color:#1a1405;background:oklch(0.80 0.15 75);border-radius:7px;padding:0 5px;line-height:14px">{{ f.needs }}</span></sc-if>
+                  <div style="flex:1"></div>
+                  <span style="font-family:ui-monospace,Menlo,monospace;font-size:9.5px;color:{{ f.pingColor }}">{{ f.ping }}</span>
+                </div>
+                <div style="height:3px;border-radius:2px;background:#26282d;overflow:hidden"><div style="height:100%;width:{{ f.cpuPct }};background:#7d8087"></div></div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="padding:6px 12px 0;flex:none;font-size:10.5px;color:#7d8087;display:flex;gap:6px;align-items:center"><span style="width:6px;height:6px;border-radius:50%;background:oklch(0.80 0.15 75)"></span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Sync error on mini-2 · 12 s ago</span><span style="color:oklch(0.72 0.12 250);font-weight:600">Retry</span></div>
+          <div style="flex:1;min-height:0;overflow-y:auto;padding-bottom:8px">
+            <div style="display:flex;align-items:center;gap:6px;padding:14px 10px 4px 12px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:#8b8e95"><span style="flex:1">CONDUCTORS</span><span style="font-weight:500;letter-spacing:0;color:oklch(0.72 0.12 250)">Arrange</span></div>
+            <div style="margin:2px 8px 6px;border-radius:6px;background:oklch(0.80 0.15 75 / 0.1);border:1px solid oklch(0.80 0.15 75 / 0.3);padding:6px 8px;display:flex;align-items:center;gap:8px;font-size:11px;color:#e8e9ec">
+              <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b style="font-weight:600">Collab. projects service</b> wants sub-conductor</span>
+              <span style="color:#c4c6cc;flex:none">Deny</span><span style="font-weight:600;padding:2px 8px;border-radius:4px;background:oklch(0.80 0.15 75);color:#1a1405;flex:none">Approve</span>
+            </div>
+            <sc-for list="{{ treeC }}" as="row" hint-placeholder-count="10"><dc-import name="TileRow" row="{{ row }}" hint-size="100%,44px"></dc-import></sc-for>
+            <div style="display:flex;align-items:center;gap:6px;padding:16px 12px 4px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;color:#8b8e95"><span>NOT UNDER A CONDUCTOR</span><span style="color:#6f727a;font-weight:500">{{ looseCount }}</span></div>
+            <sc-for list="{{ looseC }}" as="row" hint-placeholder-count="3"><dc-import name="TileRow" row="{{ row }}" hint-size="100%,44px"></dc-import></sc-for>
+            <div style="margin:6px 10px 0;border:1px dashed #33363c;border-radius:6px;padding:8px;text-align:center;font-size:11px;color:#6f727a">Drag a tile onto a conductor to assign it</div>
+          </div>
+          <sc-if value="{{ trayC.show }}"><dc-import name="SelectionTray" tray="{{ trayC.tray }}" hint-size="100%,190px"></dc-import></sc-if>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;sidebarWidth&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:320,&quot;min&quot;:180,&quot;max&quot;:480,&quot;step&quot;:10,&quot;unit&quot;:&quot;px&quot;,&quot;tsType&quot;:&quot;number&quot;},&quot;line2&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;folder&quot;,&quot;recap&quot;],&quot;default&quot;:&quot;folder&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+const C = {needs:'oklch(0.80 0.15 75)',working:'oklch(0.76 0.15 150)',idle:'#8b8e95',stopped:'#6f727a',exited:'oklch(0.66 0.19 25)',blue:'oklch(0.68 0.14 250)'};
+const MAC = {
+  M:{mono:'M',alias:'mini',name:'martins-mac-mini',color:'oklch(0.74 0.11 230)',cpu:22,ping:'3 ms',claude:'3'},
+  M2:{mono:'M2',alias:'mini-2',name:'martins-mac-mini-2',color:'oklch(0.76 0.11 165)',cpu:61,ping:'9 ms',claude:'8',warn:true},
+  M3:{mono:'M3',alias:'mini-3',name:'martins-mac-mini-3',color:'oklch(0.74 0.11 320)',cpu:38,ping:'↯ 41 ms',claude:'6'}
+};
+const TILES = [
+  {id:'t1',title:'Windows, per-Mac layouts and presets',mac:'M',state:'working',ago:'now',folder:'swarmz',cond:true,parent:null,recap:'Adding per-Mac layout presets; wiring the gallery to saved arrangements.'},
+  {id:'t2',title:'CertifyIP agents',name:'martins-mac-mini-2-3',mac:'M2',state:'needs',ago:'4h',folder:'certifyip_services',cond:true,skip:true,parent:'t1',history:true,kind:'q',recap:'mokes exited with code 1 during the migration run. Restart it, or leave it stopped for you to look at?'},
+  {id:'t3',title:'Collaborative contract redesign',name:'certifyip-ui-2',mac:'M2',state:'working',ago:'3m',folder:'certifyip-desktop',cond:true,parent:'t2',recap:'Rebuilding the contract editor around shared cursors.'},
+  {id:'t4',title:'Run latest desktop app',name:'certifyIP-desktop-2',mac:'M3',state:'needs',ago:'55m',folder:'certifyIP-desktop',parent:'t3',unread:true,history:true,kind:'perm',recap:'Wants to run npm run tauri dev on mini-3 to launch the latest build for a smoke test.'},
+  {id:'t5',title:'mokes',mac:'M3',state:'exited',ago:'2h',folder:'mokes',parent:'t3',open:false,recap:'Migration script exited with code 1.'},
+  {id:'t6',title:'Collaborative projects service',name:'certifyIP-5',mac:'M2',state:'stopped',ago:'1d',folder:'feat+collaborative-projects',cond:true,parent:'t2',recap:'Service scaffolded; waiting on API review.'},
+  {id:'t7',title:'Team projects test branch',mac:'M3',state:'stopped',ago:'1d',folder:'certifyIP-desktop',parent:'t6',recap:'Test branch green; merged into feat.'},
+  {id:'t8',title:'desktop %',name:'certifyIP-4',mac:'M2',state:'idle',ago:'11m',folder:'certifyIP',parent:'t2',history:true,recap:'Explained the stale working directory; waiting for next instruction.'},
+  {id:'t9',title:'hmm i think the website is using our old hubspot form',name:'certifyIP-2',mac:'M3',state:'needs',ago:'1d',folder:'certifyIP',parent:'t1',kind:'q',recap:'Found the old HubSpot embed on /contact and /demo. Replace both with the new form, or remove the embed entirely?'},
+  {id:'t10',title:'colourdoodle',mac:'M3',state:'stopped',ago:'8d',folder:'colourdoodle',parent:'t1',recap:'No recap yet'},
+  {id:'t11',title:'compzr-2',mac:'M',state:'stopped',ago:'5h',folder:'compzr',parent:'t1',open:false,recap:'No recap yet'},
+  {id:'t12',title:'certifyip-desktop-teams',mac:'M2',state:'stopped',ago:'2d',folder:'certifyip-desktop-teams',parent:null,recap:'No recap yet'},
+  {id:'t13',title:'Free up external drive space',name:'martins-mac-mini-2',mac:'M2',state:'stopped',ago:'11h',folder:'project',skip:true,parent:null,recap:'ExternalSSD is 99% full (17 GB free of 931 GB); proposing cleanup candidates.'},
+  {id:'t14',title:'certifyIP-desktop-3',mac:'M3',state:'stopped',ago:'2d',folder:'certifyIP-desktop',parent:null,recap:'No recap yet'}
+];
+const ORDER = ['needs','working','idle','stopped','exited'];
+const LABEL = {needs:'Needs you',working:'Working',idle:'Idle',stopped:'Stopped',exited:'Exited'};
+const LAYOUTS = [
+  [[0,0,100,100]],
+  [[0,0,50,100],[50,0,50,100]],
+  [[0,0,100,50],[0,50,100,50]],
+  [[0,0,50,100],[50,0,50,50],[50,50,50,50]],
+  [[0,0,33.33,100],[33.33,0,33.33,100],[66.66,0,33.34,100]],
+  [[0,0,50,50],[50,0,50,50],[0,50,50,50],[50,50,50,50]],
+  [[0,0,60,100],[60,0,40,33.33],[60,33.33,40,33.33],[60,66.66,40,33.34]],
+  [[0,0,33.33,50],[33.33,0,33.33,50],[66.66,0,33.34,50],[0,50,33.33,50],[33.33,50,33.33,50],[66.66,50,33.34,50]]
+];
+const kids = id => TILES.filter(t => t.parent === id);
+const desc = id => kids(id).flatMap(k => [k, ...desc(k.id)]);
+
+class Component extends DCLogic {
+  state = {hover:null, focus:'t8', sel:{}, fold:{}, groupA:'machine', notices:false, macsA:false, quiet:true, filterC:null, target:{}, groupD:'triage', quietD:true, noticesD:false};
+
+  toggleSel(k){ this.setState(s => { const sel={...s.sel}; if(sel[k]) delete sel[k]; else sel[k]=true; return {sel}; }); }
+  clearSel(opt){ this.setState(s => { const sel={}; for(const k in s.sel) if(!k.startsWith(opt+':')) sel[k]=true; return {sel}; }); }
+  selCount(opt){ return Object.keys(this.state.sel).filter(k => k.startsWith(opt+':')).length; }
+
+  row(t, opt, depth = 0, o = {}) {
+    const w = this.props.sidebarWidth ?? 320, narrow = w < 250, recapMode = (this.props.line2 ?? 'folder') === 'recap';
+    const m = MAC[t.mac], col = C[t.state], k = opt+':'+t.id;
+    const sel = !!this.state.sel[k], hov = this.state.hover === k, foc = this.state.focus === t.id;
+    const anySel = this.selCount(opt) > 0;
+    const showActions = hov;
+    const folded = !!this.state.fold[k];
+    const under = t.cond ? desc(t.id) : [];
+    const needsUnder = under.filter(x => x.state === 'needs').length;
+    const showSummary = t.cond && (folded || o.rollup) && under.length > 0;
+    const stop = e => e.stopPropagation();
+    return {
+      title: t.title, name: t.name, ago: t.ago, macMono: m.mono, macColor: m.color,
+      line2: recapMode ? t.recap : t.folder,
+      showName: !!t.name && !narrow && !recapMode && !showSummary,
+      conductor: !!t.cond, skip: !!t.skip && !narrow, history: !!t.history, canRole: true,
+      status: t.state === 'needs' ? (narrow ? '' : 'needs you') : t.state === 'exited' ? 'exited 1' : '',
+      statusColor: col,
+      titleColor: t.open === false ? '#7d8087' : '#e8e9ec', titleStyle: 'normal',
+      weight: t.state === 'needs' ? 600 : 500,
+      bg: sel ? 'oklch(0.68 0.14 250 / 0.16)' : foc ? '#25272c' : hov ? '#1c1e22' : t.state === 'needs' ? 'oklch(0.80 0.15 75 / 0.07)' : 'transparent',
+      edge: t.state === 'needs' ? C.needs : sel ? C.blue : 'transparent',
+      shadow: sel ? 'inset 0 0 0 1px oklch(0.68 0.14 250 / 0.5)' : 'none',
+      opacity: o.dim ? 0.3 : 1,
+      dotBg: t.state === 'stopped' ? 'transparent' : col, dotColor: col,
+      dotRing: t.state === 'needs' ? '0 0 0 3px oklch(0.80 0.15 75 / 0.22)' : t.unread ? '0 0 0 2px #121316, 0 0 0 3.5px ' + col : 'none',
+      showCheck: hov || anySel, showDot: !(hov || anySel), selected: sel,
+      checkBg: sel ? C.blue : 'transparent', checkBorder: sel ? C.blue : '#7d8087',
+      showActions, hideActions: !showActions,
+      pad: (8 + depth * 16) + 'px',
+      guides: Array.from({length: depth}, (_, i) => ({left: (8 + i * 16 + 7) + 'px'})),
+      hasCaret: !!o.caret && !!t.cond, caretRot: folded ? 'rotate(-90deg)' : 'none',
+      showSummary, summary: under.length + ' under',
+      showSummaryNeeds: showSummary && needsUnder > 0, summaryNeeds: needsUnder + ' need you',
+      tip: LABEL[t.state] + ' · ' + t.ago + (t.open === false ? ' · running, not open in any window' : ''),
+      onClick: e => { if (e.metaKey || e.ctrlKey || e.shiftKey) this.toggleSel(k); else { this.setState({focus: t.id}); if (anySel) this.clearSel(opt); } },
+      onCheck: e => { e.stopPropagation(); this.toggleSel(k); },
+      onEnter: () => this.setState({hover: k}),
+      onLeave: () => this.setState(s => s.hover === k ? {hover: null} : null),
+      onFold: e => { e.stopPropagation(); this.setState(s => ({fold: {...s.fold, [k]: !s.fold[k]}})); },
+      stop
+    };
+  }
+
+  walk(pid, opt, depth, o, out) {
+    for (const t of kids(pid)) {
+      if (o.rootsOnlyCond && pid === null && !t.cond) continue;
+      out.push(this.row(t, opt, depth, {...o, caret: true, dim: o.dimMac && t.mac !== o.dimMac}));
+      if (t.cond && !this.state.fold[opt+':'+t.id]) this.walk(t.id, opt, depth + 1, o, out);
+    }
+    return out;
+  }
+
+  tray(opt) {
+    const n = this.selCount(opt), tgt = this.state.target[opt] || 'new';
+    const setT = v => () => this.setState(s => ({target: {...s.target, [opt]: v}}));
+    const pct = v => v + '%';
+    return {show: n > 0, tray: {
+      label: n + ' selected', count: n,
+      hint: 'Pick a layout with ' + n + ' slot' + (n === 1 ? '' : 's') + ' · ⌘-click or tick rows to add',
+      onClear: () => this.clearSel(opt),
+      newBg: tgt === 'new' ? '#2e3137' : 'transparent', newColor: tgt === 'new' ? '#e8e9ec' : '#8b8e95',
+      mainBg: tgt === 'main' ? '#2e3137' : 'transparent', mainColor: tgt === 'main' ? '#e8e9ec' : '#8b8e95',
+      onNew: setT('new'), onMain: setT('main'),
+      layouts: LAYOUTS.map(L => { const on = L.length === n; return {
+        cells: L.map(([l, t, w, h]) => ({l: pct(l), t: pct(t), w: pct(w), h: pct(h)})),
+        border: on ? 'oklch(0.68 0.14 250 / 0.8)' : '#2a2c31', fill: on ? 'oklch(0.68 0.14 250 / 0.55)' : '#2a2c31',
+        opacity: on ? 1 : 0.55, tip: L.length + ' slots', onPick: () => this.clearSel(opt)
+      }; })
+    }};
+  }
+
+  triage(opt) {
+    const needsT = TILES.filter(t => t.state === 'needs');
+    const quietT = TILES.filter(t => !['needs', 'working'].includes(t.state));
+    return {
+      needs: needsT.map(t => ({title: t.title, ago: t.ago, recap: t.recap, folder: t.folder, macMono: MAC[t.mac].mono, macColor: MAC[t.mac].color,
+        conductor: !!t.cond, isPerm: t.kind === 'perm', isQ: t.kind === 'q',
+        bg: this.state.focus === t.id ? 'oklch(0.80 0.15 75 / 0.14)' : 'oklch(0.80 0.15 75 / 0.07)',
+        onClick: () => this.setState({focus: t.id})})),
+      needsCount: needsT.length + 1,
+      working: TILES.filter(t => t.state === 'working').map(t => this.row(t, opt)),
+      workingCount: TILES.filter(t => t.state === 'working').length,
+      quiet: quietT.map(t => this.row(t, opt)),
+      quietCount: quietT.length
+    };
+  }
+
+  groupsA() { return this.groups(this.state.groupA, 'a'); }
+
+  groups(mode, opt) {
+    const needsOf = arr => arr.filter(t => t.state === 'needs').length;
+    const mk = (label, arr, extra = {}) => ({
+      showHeader: true, label, count: arr.length, needs: needsOf(arr), showNeeds: needsOf(arr) > 0,
+      showMono: false, showDot: false, rows: arr.map(t => this.row(t, opt)),
+      onSelectAll: () => this.setState(s => { const sel = {...s.sel}; arr.forEach(t => sel[opt+':'+t.id] = true); return {sel}; }),
+      ...extra
+    });
+    if (mode === 'flat') return [{...mk('', TILES), showHeader: false}];
+    if (mode === 'tree') return [{showHeader: false, rows: this.walk(null, opt, 0, {}, [])}];
+    if (mode === 'machine') return Object.keys(MAC).map(id => mk(MAC[id].name, TILES.filter(t => t.mac === id), {showMono: true, mono: MAC[id].mono, monoColor: MAC[id].color}));
+    if (mode === 'time') {
+      const mins = a => a === 'now' ? 0 : parseInt(a) * ({m: 1, h: 60, d: 1440}[a.slice(-1)]);
+      const sorted = [...TILES].sort((x, y) => mins(x.ago) - mins(y.ago));
+      const B = [['Last hour', 0, 60], ['Today', 60, 1440], ['This week', 1440, 10080], ['Older', 10080, 1e9]];
+      return B.map(([l, a, b]) => mk(l, sorted.filter(t => mins(t.ago) >= a && mins(t.ago) < b))).filter(g => g.count);
+    }
+    if (mode === 'status') return ORDER.map(s => mk(LABEL[s], TILES.filter(t => t.state === s), {showDot: true, dotColor: C[s], showNeeds: false})).filter(g => g.count);
+    const folders = [...new Set(TILES.map(t => t.folder))];
+    return folders.map(f => mk(f, TILES.filter(t => t.folder === f)));
+  }
+
+  renderVals() {
+    const w = this.props.sidebarWidth ?? 320;
+    const macs = Object.keys(MAC).map(id => { const m = MAC[id]; const ts = TILES.filter(t => t.mac === id); const needs = ts.filter(t => t.state === 'needs').length;
+      return {...m, cpuPct: m.cpu + '%', dot: m.warn ? C.needs : C.working, needs, showNeeds: needs > 0, claude: m.claude + ' ◦', count: ts.length}; });
+    macs.forEach(m => m.claude = String(m.count));
+    const needsT = TILES.filter(t => t.state === 'needs');
+    const quietT = TILES.filter(t => !['needs', 'working'].includes(t.state));
+    const f = this.state.filterC;
+    return {
+      sbw: w + 'px',
+      macs,
+      noticeCount: 3,
+      noticesOpen: this.state.notices,
+      toggleNotices: () => this.setState(s => ({notices: !s.notices})),
+      notices: [
+        {color: C.needs, text: 'Sync error · pull failed for martins-mac-mini-2: not reachable', action: 'Retry'},
+        {color: '#8b8e95', text: '3 sessions running outside this workspace', action: 'Close…'},
+        {color: C.blue, text: 'Update ready · v0.9.5 (tiles keep running)', action: 'Restart'}
+      ],
+      groupOpts: [['flat','Flat'],['machine','Mac'],['status','Status'],['folder','Folder'],['tree','Tree']].map(([id, label]) => ({
+        label, bg: this.state.groupA === id ? '#2e3137' : 'transparent', color: this.state.groupA === id ? '#e8e9ec' : '#8b8e95',
+        onClick: () => this.setState({groupA: id})
+      })),
+      groupsA: this.groupsA(),
+      groupOptsD: [['machine','Mac'],['triage','Triage'],['folder','Folder'],['tree','Tree'],['time','Time']].map(([id, label]) => ({
+        label, bg: this.state.groupD === id ? '#2e3137' : 'transparent', color: this.state.groupD === id ? '#e8e9ec' : '#8b8e95',
+        weight: this.state.groupD === id ? 600 : 400,
+        onClick: () => this.setState({groupD: id})
+      })),
+      isTriageD: this.state.groupD === 'triage', notTriageD: this.state.groupD !== 'triage',
+      groupsD: this.state.groupD === 'triage' ? [] : this.groups(this.state.groupD, 'd'),
+      triD: this.triage('d'),
+      quietDOpen: this.state.quietD, quietDRot: this.state.quietD ? 'none' : 'rotate(-90deg)',
+      toggleQuietD: () => this.setState(s => ({quietD: !s.quietD})),
+      trayD: this.tray('d'),
+      noticesDOpen: this.state.noticesD,
+      toggleNoticesD: () => this.setState(s => ({noticesD: !s.noticesD})),
+      trayA: this.tray('a'), trayB: this.tray('b'), trayC: this.tray('c'),
+      macsAOpen: this.state.macsA, macsARot: this.state.macsA ? 'none' : 'rotate(-90deg)',
+      toggleMacsA: () => this.setState(s => ({macsA: !s.macsA})),
+      needsCount: needsT.length + 1,
+      needsB: needsT.map(t => ({title: t.title, ago: t.ago, recap: t.recap, folder: t.folder, macMono: MAC[t.mac].mono, macColor: MAC[t.mac].color,
+        conductor: !!t.cond, isPerm: t.kind === 'perm', isQ: t.kind === 'q',
+        bg: this.state.focus === t.id ? 'oklch(0.80 0.15 75 / 0.14)' : 'oklch(0.80 0.15 75 / 0.07)',
+        onClick: () => this.setState({focus: t.id})})),
+      workingB: TILES.filter(t => t.state === 'working').map(t => this.row(t, 'b')),
+      workingCount: TILES.filter(t => t.state === 'working').length,
+      quietCount: quietT.length, quietOpen: this.state.quiet, quietRot: this.state.quiet ? 'none' : 'rotate(-90deg)',
+      toggleQuiet: () => this.setState(s => ({quiet: !s.quiet})),
+      quietB: quietT.map(t => { const k = 'b:' + t.id, hov = this.state.hover === k, foc = this.state.focus === t.id; return {
+        title: t.title, ago: t.ago, macMono: MAC[t.mac].mono, macColor: MAC[t.mac].color,
+        status: t.state === 'exited' ? 'exited 1' : '', statusColor: C.exited,
+        dotBg: t.state === 'stopped' ? 'transparent' : C[t.state], dotColor: C[t.state],
+        titleColor: t.open === false ? '#7d8087' : '#c4c6cc', titleStyle: 'normal',
+        bg: foc ? '#25272c' : hov ? '#1c1e22' : 'transparent',
+        onClick: () => this.setState({focus: t.id}), onEnter: () => this.setState({hover: k}), onLeave: () => this.setState(s => s.hover === k ? {hover: null} : null)
+      }; }),
+      fleet: Object.keys(MAC).map(id => { const m = MAC[id]; const ts = TILES.filter(t => t.mac === id); const needs = ts.filter(t => t.state === 'needs').length; const on = f === id; return {
+        mono: m.mono, alias: m.alias, color: m.color, count: ts.length + ' tiles', needs, showNeeds: needs > 0, ping: m.ping,
+        pingColor: m.ping.startsWith('↯') ? C.needs : '#6f727a', cpuPct: m.cpu + '%',
+        bg: on ? '#23262b' : '#17181b', border: on ? m.color : m.warn ? 'oklch(0.80 0.15 75 / 0.35)' : '#24262b',
+        onClick: () => this.setState(s => ({filterC: s.filterC === id ? null : id}))
+      }; }),
+      treeC: this.walk(null, 'c', 0, {rollup: true, dimMac: f, rootsOnlyCond: true}, []),
+      looseC: TILES.filter(t => !t.parent && !t.cond).map(t => this.row(t, 'c', 0, {dim: f && t.mac !== f})),
+      looseCount: TILES.filter(t => !t.parent && !t.cond).length
+    };
+  }
+}
+</script>
+</body>
+</html>

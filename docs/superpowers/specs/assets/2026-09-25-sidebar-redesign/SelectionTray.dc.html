@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<div style="border-top:1px solid #26282d;background:#17181b;padding:10px 10px 9px;display:flex;flex-direction:column;gap:8px;font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif">
+  <div style="display:flex;align-items:center;gap:8px">
+    <div style="width:8px;height:8px;border-radius:2px;background:oklch(0.68 0.14 250)"></div>
+    <span style="font-size:12px;font-weight:600;color:#e8e9ec;flex:1">{{ tray.label }}</span>
+    <div onClick="{{ tray.onClear }}" style="font-size:11px;color:#9a9ca3;padding:2px 6px;border-radius:4px;cursor:default" style-hover="background:#26282d;color:#e8e9ec">Clear</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:#8b8e95">
+    <span>Open in</span>
+    <div style="display:flex;background:#0f1012;border-radius:5px;padding:2px;gap:2px;flex:1">
+      <div onClick="{{ tray.onNew }}" style="flex:1;text-align:center;padding:3px 0;border-radius:4px;background:{{ tray.newBg }};color:{{ tray.newColor }}">New window</div>
+      <div onClick="{{ tray.onMain }}" style="flex:1;text-align:center;padding:3px 0;border-radius:4px;background:{{ tray.mainBg }};color:{{ tray.mainColor }}">Main window</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px">
+    <sc-for list="{{ tray.layouts }}" as="lay" hint-placeholder-count="8">
+      <div onClick="{{ lay.onPick }}" title="{{ lay.tip }}" style="position:relative;aspect-ratio:16/10;border-radius:4px;border:1px solid {{ lay.border }};background:#0f1012;opacity:{{ lay.opacity }};cursor:default">
+        <sc-for list="{{ lay.cells }}" as="c"><div style="position:absolute;left:{{ c.l }};top:{{ c.t }};width:{{ c.w }};height:{{ c.h }};padding:2px;box-sizing:border-box"><div style="width:100%;height:100%;border-radius:2px;background:{{ lay.fill }}"></div></div></sc-for>
+      </div>
+    </sc-for>
+  </div>
+  <div style="font-size:10.5px;color:#6f727a;text-wrap:pretty">{{ tray.hint }}</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:320,&quot;height&quot;:200},&quot;tray&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;object&quot;}}"></script>
+</body>
+</html>
