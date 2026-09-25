@@ -37,8 +37,8 @@ class SettingsTest {
             produceFile = { file },
         )
         assertEquals(androidx.datastore.preferences.core.emptyPreferences(), store.data.first())
-        store.edit { it[K.language] = "en-GB" }
-        assertEquals("en-GB", store.data.first()[K.language])
+        store.edit { it[K.listWidth] = 320 }
+        assertEquals(320, store.data.first()[K.listWidth])
         scope.cancel()
     }
 
@@ -50,7 +50,6 @@ class SettingsTest {
         a.setPaired(Paired("mini", "me", "Fold"))
         a.markSeen(TileKey("mini", "t1"), Instant.ofEpochSecond(100))
         a.put("mini:22", "SHA256:abc")
-        a.setDictationLanguage("en-GB")
         a.setBackgroundWatch(false)
         a.flushPins()
         scope1.cancel()
@@ -60,13 +59,11 @@ class SettingsTest {
         val idle = CoroutineScope(SupervisorJob() + kotlinx.coroutines.test.StandardTestDispatcher())
         val early = DataStoreSettings(ctx, idle)
         assertEquals(Paired("mini", "me", "Fold"), early.paired.value)
-        assertEquals("en-GB", early.dictationLanguage.value)
         assertEquals(false, early.backgroundWatch.value)
         idle.cancel()
         assertEquals(Paired("mini", "me", "Fold"), b.paired.first { it != null })
         assertEquals(Instant.ofEpochSecond(100), b.seen.first { it.isNotEmpty() }[TileKey("mini", "t1")])
         assertEquals("SHA256:abc", b.get("mini:22"))
-        assertEquals("en-GB", b.dictationLanguage.first { it != null })
         assertEquals(false, b.backgroundWatch.first { !it })
         b.forgetPairing()
         assertNull(b.paired.first { it == null })

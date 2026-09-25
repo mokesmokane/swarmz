@@ -1,9 +1,6 @@
 package dev.swarmz.phone.ui.tile
 
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onFirst
@@ -11,11 +8,11 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import dev.swarmz.phone.data.HostConnector
 import dev.swarmz.phone.data.MemorySettings
 import dev.swarmz.phone.data.Paired
+import dev.swarmz.phone.data.OUTPUT_LINES
 import dev.swarmz.phone.data.Repository
 import dev.swarmz.phone.installBouncyCastle
 import dev.swarmz.phone.keys.Ed25519
@@ -53,7 +50,7 @@ class TileScreenTest {
     private val permissionPending =
         """{"pending":{"tool":"Bash","summary":"npm test","options":[{"n":1,"label":"Yes"},{"n":2,"label":"Yes, always"},{"n":3,"label":"No"}]},"v":1}"""
 
-    private fun controller(tile: String, row: String, messages: String? = null, pending: String = permissionPending): TileController {
+    private fun controller(tile: String, row: String, pending: String = permissionPending): TileController {
         installBouncyCastle()
         conn = FakeConn { cmd ->
             when (cmd) {
@@ -74,17 +71,11 @@ class TileScreenTest {
         }
         runBlocking {
             conn.stream(Cmd.watch()).send("""{"tiles":[$row],"type":"snapshot","v":1}""")
-            conn.stream(Cmd.transcript("t1", follow = true)).send(
-                messages ?: """{"hasMore":false,"messages":[{"id":"u","role":"user","text":"fix the build"},""" +
-                    """{"id":"a","role":"assistant","text":"Done. Run:\n```\nnpm test\n```","tools":[{"name":"Bash","summary":"npm run build","ok":true}]}],"v":1}""",
-            )
-            conn.stream(Cmd.output("s1", lines = 300, follow = true)).send(
+            conn.stream(Cmd.output("s1", lines = OUTPUT_LINES, follow = true)).send(
                 """{"cols":80,"rows":24,"lines":[[{"text":"$ ls"}],[{"text":"file.txt"}]],"v":1}""",
             )
-            // A full window of history, so the screen only shows its newest lines when it is pinned to the bottom.
-            val filler = (0 until 58).joinToString(",") { """[{"text":"screen-fill-$it"}]""" }
-            conn.stream(Cmd.output("t1", lines = 300, follow = true)).send(
-                """{"cols":80,"rows":24,"lines":[$filler,[{"text":"Select login method:"}],[{"text":"1. Claude account"}]],"v":1}""",
+            conn.stream(Cmd.output("t1", lines = OUTPUT_LINES, follow = true)).send(
+                """{"cols":80,"rows":24,"lines":[[{"text":"> fix the build"}],[{"text":"Select login method:"}],[{"text":"1. Claude account"}]],"v":1}""",
             )
         }
         val settings = MemorySettings().also { runBlocking { it.setPaired(Paired("mini", "me", "Fold")) } }
@@ -97,18 +88,19 @@ class TileScreenTest {
         """{"cwd":"/Users/me/api","id":"t1","kind":"claude","mode":"acceptEdits","name":"api","needs":"permission","running":true,"since":"2026-09-17T10:00:00Z","status":"blocked"}"""
 
     @Test
-    fun conversationPermissionAndComposer() {
+    fun aClaudeTileShowsItsTerminalWithThePermissionCardAndComposer() {
         val c = controller("t1", permissionRow)
         var back = 0
         compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = { back++ }) } }
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("> fix the build")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("api").assertIsDisplayed()
         compose.onNodeWithText("ACCEPT EDITS").assertIsDisplayed()
         compose.onNodeWithText("Mini · api").assertIsDisplayed()
-        compose.onNodeWithText("Done. Run:", substring = true).assertIsDisplayed()
-        compose.onNodeWithContentDescription("Copy code").assertIsDisplayed()
-        compose.onNodeWithText("Bash", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("waiting on you").assertIsDisplayed()
+        // The tile is its terminal: no conversation view, no toggle and no microphone.
+        compose.onNodeWithText("Select login method:").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Screen").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Conversation").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Hold to talk").assertDoesNotExist()
         compose.onNodeWithText("Run npm test?", substring = true).assertIsDisplayed()
         compose.onNodeWithText("Yes, always").assertIsDisplayed()
         compose.onNodeWithText("Yes").performClick()
@@ -159,26 +151,6 @@ class TileScreenTest {
         compose.waitUntil(5_000) { Cmd.send("s1", "ls") in conn.ran }
     }
 
-    @Test
-    fun theScreenToggleSwapsTheBodyAndKeepsTheConversation() {
-        val c = controller("t1", permissionRow)
-        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithContentDescription("Screen").performClick()
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Select login method:")).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("1. Claude account").assertIsDisplayed()
-        compose.onNodeWithText("fix the build").assertDoesNotExist()
-        // The Claude keys and composer stay: sending types into the tile, which answers what is on screen.
-        compose.onNodeWithText("Esc").assertIsDisplayed()
-        compose.onNodeWithText("^C").assertIsDisplayed()
-        compose.onNodeWithText("⇧Tab accept edits").assertIsDisplayed()
-        compose.onNodeWithText("Message api…").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Conversation").performClick()
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("Done. Run:", substring = true).assertIsDisplayed()
-        assertTrue("the transcript session was never closed", conn.ran.count { it == Cmd.transcript("t1", follow = true) } == 1)
-    }
-
     private val questionRow =
         """{"cwd":"/Users/me/api","id":"t1","kind":"claude","mode":"default","name":"api","needs":"question","running":true,"since":"2026-09-17T10:00:00Z","status":"blocked","summary":"Which colour should the button be?"}"""
 
@@ -202,7 +174,7 @@ class TileScreenTest {
         val row = questionRow.replace(""","summary":"Which colour should the button be?"""", "")
         val c = controller("t1", row)
         compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("> fix the build")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Esc").assertIsDisplayed()
         assertTrue(conn.ran.none { it == Cmd.pending("t1") })
         compose.onNodeWithText("QUESTION").assertDoesNotExist()
@@ -250,7 +222,7 @@ class TileScreenTest {
     fun anAttachmentIsSentAndItsPathLandsInTheDraft() {
         val c = controller("t1", permissionRow)
         compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("> fix the build")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("attach").assertIsDisplayed()
         compose.onNodeWithTag("composer").performTextInput("look at ")
         c.attach("photo.jpg", byteArrayOf(1, 2, 3))
@@ -273,7 +245,7 @@ class TileScreenTest {
     fun aTileWithoutACardShowsItsNameAndNoRecap() {
         val c = controller("t1", permissionRow)
         compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("> fix the build")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Mini · api").assertIsDisplayed()
         compose.onNodeWithTag("tile-title").performClick()
         compose.onNodeWithText("No recap yet").assertIsDisplayed()
@@ -288,61 +260,15 @@ class TileScreenTest {
         // answered by moving through it and confirming with the keys under the screen.
         val c = controller("t1", permissionRow)
         compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithContentDescription("Screen").performClick()
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Select login method:")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("> fix the build")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Select login method:").assertIsDisplayed()
         compose.onNodeWithText("↓").performClick()
         compose.waitUntil(5_000) { Cmd.key("t1", Key.Down) in conn.ran }
         compose.onNodeWithText("↑").performClick()
         compose.waitUntil(5_000) { Cmd.key("t1", Key.Up) in conn.ran }
         compose.onNodeWithText("Enter").performClick()
         compose.waitUntil(5_000) { Cmd.key("t1", Key.Enter) in conn.ran }
-        // Pressing a key never types a message: nothing was sent and no bubble was added.
+        // Pressing a key never types a message.
         assertTrue(conn.ran.none { " 'send' " in it })
-        assertTrue(c.outgoing.value.isEmpty())
-    }
-
-    @Test
-    fun theScreenToggleSurvivesARecomposition() {
-        val c = controller("t1", permissionRow)
-        val unfolded = mutableStateOf(false)
-        compose.setContent { SwarmzTheme { key(unfolded.value) { TileScreen(c, unfolded.value, onBack = null) } } }
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("fix the build")).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithContentDescription("Screen").performClick()
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Select login method:")).fetchSemanticsNodes().isNotEmpty() }
-        // Unfolding throws away everything TileScreen remembers; the toggle lives in the controller.
-        compose.runOnIdle { unfolded.value = true }
-        compose.waitForIdle()
-        compose.onNodeWithText("Select login method:").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Conversation").assertIsDisplayed()
-    }
-
-    @Test
-    fun theScreenFollowsEvenWhenTheConversationWasScrolledUp() {
-        // A conversation long enough to scroll back through.
-        val many = (0 until 40).joinToString(",") { """{"id":"m$it","role":"assistant","text":"message $it"}""" }
-        val c = controller("t1", permissionRow, """{"hasMore":false,"messages":[$many],"v":1}""")
-        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("message 39")).fetchSemanticsNodes().isNotEmpty() }
-        // Scroll the conversation back through its history, so its index is well above the bottom.
-        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(20)
-        compose.waitForIdle()
-        val at = c.listState.firstVisibleItemIndex
-        assertTrue("the conversation really did scroll back (was $at)", at > 1)
-        compose.onNodeWithContentDescription("Screen").performClick()
-        // The screen has its own list state, so it still shows the newest lines rather than the conversation's index.
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("1. Claude account")).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("1. Claude account").assertIsDisplayed()
-        compose.onNodeWithText("Select login method:").assertIsDisplayed()
-        assertEquals("and the conversation keeps the position it was left at", at, c.listState.firstVisibleItemIndex)
-    }
-
-    @Test
-    fun aShellTileHasNoScreenToggle() {
-        val c = controller("s1", """{"cwd":"/p","id":"s1","kind":"shell","name":"sh","running":true,"status":"offline"}""")
-        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("$ ls")).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithContentDescription("Screen").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Conversation").assertDoesNotExist()
     }
 }

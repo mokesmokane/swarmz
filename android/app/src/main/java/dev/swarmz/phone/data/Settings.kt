@@ -61,7 +61,6 @@ interface SettingsStore : HostKeyPins {
     val pairings: StateFlow<List<Paired>>
     val macs: StateFlow<List<KnownMac>>
     val seen: StateFlow<Map<TileKey, Instant>>
-    val dictationLanguage: StateFlow<String?>
     val backgroundWatch: StateFlow<Boolean>
     val notifyKinds: StateFlow<Set<String>>
     /** The unfolded tile list's width in dp, always within [LIST_MIN_DP]..[LIST_MAX_DP]. */
@@ -74,7 +73,6 @@ interface SettingsStore : HostKeyPins {
     suspend fun addPairing(p: Paired)
     suspend fun setMacs(list: List<KnownMac>)
     suspend fun markSeen(key: TileKey, at: Instant)
-    suspend fun setDictationLanguage(tag: String?)
     suspend fun setBackgroundWatch(on: Boolean)
     suspend fun setNotifyKinds(kinds: Set<String>)
     suspend fun setListWidth(dp: Int)
@@ -98,7 +96,6 @@ class MemorySettings : SettingsStore {
     }
     override val macs = MutableStateFlow<List<KnownMac>>(emptyList())
     override val seen = MutableStateFlow<Map<TileKey, Instant>>(emptyMap())
-    override val dictationLanguage = MutableStateFlow<String?>(null)
     override val backgroundWatch = MutableStateFlow(true)
     override val notifyKinds = MutableStateFlow(DEFAULT_NOTIFY)
     override val listWidth = MutableStateFlow(LIST_DEFAULT_DP)
@@ -115,7 +112,6 @@ class MemorySettings : SettingsStore {
         macs.value = list
     }
     override suspend fun markSeen(key: TileKey, at: Instant) { seen.update { it + (key to at) } }
-    override suspend fun setDictationLanguage(tag: String?) { dictationLanguage.value = tag }
     override suspend fun setBackgroundWatch(on: Boolean) { backgroundWatch.value = on }
     override suspend fun setNotifyKinds(kinds: Set<String>) { notifyKinds.value = kinds }
     override suspend fun setListWidth(dp: Int) { listWidth.value = clampListWidth(dp) }
@@ -139,7 +135,6 @@ internal object K {
     val macs = stringPreferencesKey("macs")
     val seen = stringPreferencesKey("seen")
     val pins = stringPreferencesKey("pins")
-    val language = stringPreferencesKey("dictation_language")
     val background = booleanPreferencesKey("background_watch")
     val notify = stringSetPreferencesKey("notify_kinds")
     val listWidth = intPreferencesKey("list_width")
@@ -197,7 +192,6 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
     override val seen = field { p ->
         seenTimes(p).entries.mapNotNull { (k, v) -> parseSeenKey(k)?.let { it to Instant.ofEpochMilli(v) } }.toMap()
     }
-    override val dictationLanguage = field { p -> p[K.language] }
     override val backgroundWatch = field { p -> p[K.background] ?: true }
     override val notifyKinds = field { p -> p[K.notify] ?: DEFAULT_NOTIFY }
     override val listWidth = field { p -> clampListWidth(p[K.listWidth] ?: LIST_DEFAULT_DP) }
@@ -252,9 +246,6 @@ class DataStoreSettings(context: Context, private val scope: CoroutineScope) : S
         }
     }
 
-    override suspend fun setDictationLanguage(tag: String?) {
-        store.edit { if (tag == null) it.remove(K.language) else it[K.language] = tag }
-    }
 
     override suspend fun setBackgroundWatch(on: Boolean) {
         store.edit { it[K.background] = on }

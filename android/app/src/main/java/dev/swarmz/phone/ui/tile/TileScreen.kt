@@ -4,6 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,9 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -81,7 +80,6 @@ fun TileScreen(
     // Editing the title happens inline under the header, not inside the dialog.
     var titleDraft by remember { mutableStateOf<String?>(null) }
     val r = row
-    val screenMode = c.screenMode.value
     // Times only move on screen for a working tile ("working · 12s") or an offline Mac ("last seen 3m ago").
     val ticking = (r?.running == true && r.status == "working") || !online
     val lifecycle = LocalLifecycleOwner.current
@@ -111,14 +109,6 @@ fun TileScreen(
                 val where = "$macLabel · ${r?.let { folderName(it.cwd) } ?: ""}"
                 Text(if (r?.hasTitle == true) "${r.name} · $where" else where, style = MonoSmall, maxLines = 1)
             }
-            if (r != null && r.kind != "shell") {
-                // Anything Claude draws but never writes to the transcript (`/login`, `/model`, `/cost`) is only
-                // reachable on the live screen.
-                IconButton(onClick = c::toggleScreen, modifier = Modifier.size(36.dp)) {
-                    val icon = if (screenMode) Icons.AutoMirrored.Filled.Chat else Icons.Filled.Terminal
-                    Icon(icon, contentDescription = if (screenMode) "Conversation" else "Screen", tint = Sw.Title, modifier = Modifier.size(20.dp))
-                }
-            }
             if (r != null) Badge(modeLabel(r), modifier = Modifier.padding(end = 12.dp))
         }
         HorizontalDivider(color = Sw.Border)
@@ -145,13 +135,8 @@ fun TileScreen(
         }
         streamError?.let { Text(it, color = Sw.ErrorLine, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) }
         val body = Modifier.weight(1f).fillMaxWidth()
-        if (r != null && (r.kind == "shell" || screenMode)) {
-            ShellBody(c, r, body)
-        } else {
-            val t by c.transcript.collectAsStateWithLifecycle()
-            val outgoing by c.outgoing.collectAsStateWithLifecycle()
-            ClaudeConversation(c, t.messages, outgoing, t.hasMore, unfolded, r?.let { statusLine(it, clock) } ?: "", c.listState, body)
-        }
+        // The terminal is the tile, for Claude and shell alike (phone terminal-only spec §1).
+        if (r != null) ShellBody(c, r, body) else Box(body)
         notice?.let {
             Text(it, color = Sw.ErrorLine, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth())
             // Keyed on the round, not the text: the same notice twice in a row must restart the 5 s timer.

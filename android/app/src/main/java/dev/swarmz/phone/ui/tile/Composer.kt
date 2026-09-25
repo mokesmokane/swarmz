@@ -22,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import dev.swarmz.phone.ui.components.LocalMic
 import dev.swarmz.phone.ui.theme.Sw
 
 @Composable
@@ -57,6 +56,5 @@ fun Composer(
                 { IconButton(onClick = onSend) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Sw.Title) } }
             } else null,
         )
-        if (enabled) LocalMic.current.Content(state, Modifier.size(52.dp).clip(CircleShape).background(Sw.Primary))
     }
 }

@@ -1877,10 +1877,10 @@ fn commands_on_a_missing_or_bad_tile_say_so() {
     assert_eq!((code, v["code"].as_str()), (1, Some("usage")), "{v}");
     let (code, v) = tool_env(&h.path, &["output", "nope", "--lines", "0"], MINI);
     assert_eq!((code, v["code"].as_str()), (1, Some("usage")));
-    // A follower watches at most 1000 lines; a one-off read may ask for more.
-    let (code, v) = tool_env(&h.path, &["output", "nope", "--follow", "--lines", "1001"], MINI);
+    // A follower watches at most 5000 lines; a one-off read may ask for more.
+    let (code, v) = tool_env(&h.path, &["output", "nope", "--follow", "--lines", "5001"], MINI);
     assert_eq!((code, v["code"].as_str()), (1, Some("usage")), "{v}");
-    let (code, v) = tool_env(&h.path, &["output", "nope", "--follow", "--lines", "1000"], MINI);
+    let (code, v) = tool_env(&h.path, &["output", "nope", "--follow", "--lines", "5000"], MINI);
     assert_eq!((code, v["code"].as_str()), (1, Some("not_running")), "{v}");
     let (code, v) = tool_env(&h.path, &["output", "nope", "--lines", "3000"], MINI);
     assert_eq!((code, v["code"].as_str()), (1, Some("not_running")), "{v}");

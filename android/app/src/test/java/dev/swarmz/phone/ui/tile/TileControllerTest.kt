@@ -4,6 +4,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import dev.swarmz.phone.data.HostConnector
 import dev.swarmz.phone.data.MemorySettings
 import dev.swarmz.phone.data.Paired
+import dev.swarmz.phone.data.OUTPUT_LINES
 import dev.swarmz.phone.data.Repository
 import dev.swarmz.phone.installBouncyCastle
 import dev.swarmz.phone.keys.Ed25519
@@ -13,12 +14,10 @@ import dev.swarmz.phone.link.VERSION_OK
 import dev.swarmz.phone.proto.Cmd
 import dev.swarmz.phone.proto.Key
 import dev.swarmz.phone.proto.Opt
-import dev.swarmz.phone.proto.ToolFailure
 import dev.swarmz.phone.state.TileKey
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import dev.swarmz.phone.link.LinkDown
-import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -59,7 +58,6 @@ class TileControllerTest {
         cmd.startsWith(sendPrefix("t1")) || cmd.startsWith(sendPrefix("s1")) ->
             if (sendFails) """{"code":"not_running","error":"api is not running","v":1}""" else """{"sent":true,"v":1}"""
         cmd == Cmd.key("t1", Key.Esc) -> """{"sent":true,"v":1}"""
-        cmd == Cmd.image("t1", "i1") -> """{"code":"failed","error":"image gone","v":1}"""
         else -> VERSION_OK
     }
 
@@ -74,125 +72,32 @@ class TileControllerTest {
     }
 
     @Test
-    fun claudeTilesFollowTheTranscriptAndTrackSends() = runTest {
+    fun claudeTilesFollowOutputAndSendByTyping() = runTest {
         val (repo, conn) = setup()
         conn.stream(Cmd.watch()).send(snapshot(null))
         runCurrent()
         val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
         runCurrent()
-        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
+        val out = Cmd.output("t1", lines = OUTPUT_LINES, follow = true)
+        assertEquals("a Claude tile follows its terminal", 1, conn.ran.count { it == out })
+        assertFalse("and never its transcript", conn.ran.any { "transcript" in it })
+        conn.stream(out).send("""{"cols":80,"rows":1,"lines":[[{"text":"> hello"}]],"v":1}""")
         runCurrent()
-        assertEquals(listOf("hello"), c.transcript.value.messages.map { it.text })
+        assertEquals("> hello", c.screen.value.lines[0][0].text)
         c.draft.value = TextFieldValue("  run the tests ")
         c.send()
         runCurrent()
         assertEquals("", c.draft.value.text)
         assertTrue(Cmd.send("t1", "run the tests") in conn.ran)
-        assertEquals(SendState.Sent, c.outgoing.value.single().state)
-        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"message":{"id":"u1","role":"user","text":"run the tests"},"type":"message","v":1}""")
-        runCurrent()
-        assertTrue(c.outgoing.value.isEmpty())
         sendFails = true
         c.draft.value = TextFieldValue("again")
         c.send()
         runCurrent()
-        assertEquals(SendState.Failed, c.outgoing.value.single().state)
-        sendFails = false
-        c.retry(c.outgoing.value.single().id)
-        runCurrent()
-        assertEquals(SendState.Sent, c.outgoing.value.single().state)
+        assertEquals("a failed send restores the draft", "again", c.draft.value.text)
+        assertEquals("Couldn't send: api is not running", c.notice.value)
         c.key(Key.Esc)
         runCurrent()
         assertTrue(Cmd.key("t1", Key.Esc) in conn.ran)
-        c.close()
-    }
-
-    @Test
-    fun aSlashCommandSendsWithNoOutgoingBubble() = runTest {
-        val (repo, conn) = setup()
-        conn.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
-        runCurrent()
-        c.draft.value = TextFieldValue("/login")
-        c.send()
-        runCurrent()
-        assertEquals("", c.draft.value.text)
-        assertTrue(Cmd.send("t1", "/login") in conn.ran)
-        assertTrue("a slash command never gets a bubble stuck at the bottom", c.outgoing.value.isEmpty())
-        // A failed slash command restores the draft, the way a shell send does.
-        sendFails = true
-        c.draft.value = TextFieldValue("/login")
-        c.send()
-        runCurrent()
-        assertEquals("/login", c.draft.value.text)
-        assertEquals("Couldn't send: api is not running", c.notice.value)
-        assertTrue(c.outgoing.value.isEmpty())
-        c.close()
-    }
-
-    @Test
-    fun aSentEntryDisappearsAfterTheTimeout() = runTest {
-        val (repo, conn) = setup()
-        conn.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
-        runCurrent()
-        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
-        runCurrent()
-        c.draft.value = TextFieldValue("run the tests")
-        c.send()
-        runCurrent()
-        assertEquals(SendState.Sent, c.outgoing.value.single().state)
-        advanceTimeBy(SENT_TIMEOUT_MS - 100)
-        runCurrent()
-        assertEquals("still shown just before the timeout", 1, c.outgoing.value.size)
-        advanceTimeBy(200)
-        runCurrent()
-        assertTrue("a Sent entry can never stick, even with no echo at all", c.outgoing.value.isEmpty())
-        c.close()
-    }
-
-    @Test
-    fun aSentEntryDisappearsWhenLaterMessagesArriveWithoutIt() = runTest {
-        val (repo, conn) = setup()
-        conn.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
-        runCurrent()
-        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
-        runCurrent()
-        c.draft.value = TextFieldValue("run the tests")
-        c.send()
-        runCurrent()
-        assertEquals(SendState.Sent, c.outgoing.value.single().state)
-        // The turn moved on: a later message shows up, but it is not this entry's echo.
-        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"message":{"id":"u1","role":"user","text":"something else"},"type":"message","v":1}""")
-        runCurrent()
-        assertTrue("the turn moved on without echoing it", c.outgoing.value.isEmpty())
-        c.close()
-    }
-
-    @Test
-    fun aFailedEntrySurvivesTheTimeoutAndLaterMessages() = runTest {
-        val (repo, conn) = setup()
-        conn.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
-        runCurrent()
-        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
-        runCurrent()
-        sendFails = true
-        c.draft.value = TextFieldValue("run the tests")
-        c.send()
-        runCurrent()
-        assertEquals(SendState.Failed, c.outgoing.value.single().state)
-        advanceTimeBy(SENT_TIMEOUT_MS + 1_000)
-        runCurrent()
-        assertEquals("a Failed entry never expires", SendState.Failed, c.outgoing.value.single().state)
-        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"message":{"id":"u1","role":"user","text":"something else"},"type":"message","v":1}""")
-        runCurrent()
-        assertEquals("a Failed entry is untouched by later messages too", SendState.Failed, c.outgoing.value.single().state)
         c.close()
     }
 
@@ -224,7 +129,7 @@ class TileControllerTest {
         runCurrent()
         val c = TileController(TileKey("mini", "s1"), repo, backgroundScope) { Instant.EPOCH }
         runCurrent()
-        conn.stream(Cmd.output("s1", lines = 300, follow = true)).send("""{"cols":80,"rows":2,"cursor":[1,2],"lines":[[{"text":"$ ls"}],[{"text":"$ "}]],"v":1}""")
+        conn.stream(Cmd.output("s1", lines = OUTPUT_LINES, follow = true)).send("""{"cols":80,"rows":2,"cursor":[1,2],"lines":[[{"text":"$ ls"}],[{"text":"$ "}]],"v":1}""")
         runCurrent()
         assertEquals("$ ls", c.screen.value.lines[0][0].text)
         sendFails = true
@@ -233,7 +138,6 @@ class TileControllerTest {
         runCurrent()
         assertEquals("make", c.draft.value.text)
         assertEquals("Couldn't send: api is not running", c.notice.value)
-        assertTrue(c.outgoing.value.isEmpty())
         c.close()
     }
 
@@ -295,44 +199,15 @@ class TileControllerTest {
     }
 
     @Test
-    fun aDisconnectedTranscriptReopensWhenTheMacIsBack() = runTest {
-        val (repo, conn) = setup()
-        conn.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
-        runCurrent()
-        conn.stream(Cmd.transcript("t1", follow = true)).send("""{"hasMore":true,"messages":[{"id":"a0","role":"assistant","text":"earlier"},{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
-        runCurrent()
-        // Pairing again stops every link and ends its sessions.
-        settings.setPaired(Paired("mini", "me", "Fold 2"))
-        runCurrent()
-        assertEquals("Disconnected", c.streamError.value)
-        assertEquals(listOf("earlier", "hello"), c.transcript.value.messages.map { it.text })
-        conn2.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        assertTrue(Cmd.transcript("t1", follow = true) in conn2.ran)
-        assertNull(c.streamError.value)
-        assertEquals("the conversation stays on screen while it reloads", listOf("earlier", "hello"), c.transcript.value.messages.map { it.text })
-        conn2.stream(Cmd.transcript("t1", follow = true)).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"},{"id":"a2","role":"assistant","text":"back"}],"v":1}""")
-        runCurrent()
-        assertEquals(listOf("earlier", "hello", "back"), c.transcript.value.messages.map { it.text })
-        assertTrue(c.transcript.value.hasMore)
-        conn2.stream(Cmd.transcript("t1", follow = true)).send("""{"message":{"id":"a3","role":"assistant","text":"live"},"type":"message","v":1}""")
-        runCurrent()
-        assertEquals("live", c.transcript.value.messages.last().text)
-        c.close()
-    }
-
-    @Test
     fun aFailedFirstOpenIsRetriedWhenTheLinkComesBack() = runTest {
         val (repo, conn) = setup()
         conn.stream(Cmd.watch()).send(snapshot(null))
         runCurrent()
         val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
-        c.openTranscript = { throw LinkDown("mini is not connected") }
+        c.openOutput = { throw LinkDown("mini is not connected") }
         runCurrent()
         assertEquals("mini is not connected", c.streamError.value)
-        c.openTranscript = { repo.openTranscript(it) }
+        c.openOutput = { repo.openOutput(it) }
         // The watch ends, so the link drops, then reconnects on the next connection a second later.
         conn.stream(Cmd.watch()).close()
         runCurrent()
@@ -341,28 +216,9 @@ class TileControllerTest {
         runCurrent()
         assertTrue(c.macOnline.value)
         assertNull(c.streamError.value)
-        conn2.stream(Cmd.transcript("t1", follow = true)).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
+        conn2.stream(Cmd.output("t1", lines = OUTPUT_LINES, follow = true)).send(screenOne)
         runCurrent()
-        assertEquals(listOf("hello"), c.transcript.value.messages.map { it.text })
-        c.close()
-    }
-
-    @Test
-    fun failedImagesAreFetchedAgainNextTime() = runTest {
-        val (repo, conn) = setup()
-        conn.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
-        c.decoder = StandardTestDispatcher(testScheduler)
-        c.loadImage("i1")
-        c.loadImage("i1")
-        runCurrent()
-        assertEquals(1, conn.ran.count { it == Cmd.image("t1", "i1") })
-        assertTrue("i1" in c.images.value)
-        assertNull(c.images.value["i1"])
-        c.loadImage("i1")
-        runCurrent()
-        assertEquals(2, conn.ran.count { it == Cmd.image("t1", "i1") })
+        assertEquals("$ ", c.screen.value.lines[0][0].text)
         c.close()
     }
 
@@ -378,7 +234,7 @@ class TileControllerTest {
         runCurrent()
         val c = TileController(TileKey("mini", "s1"), repo, backgroundScope) { Instant.EPOCH }
         runCurrent()
-        val out = Cmd.output("s1", lines = 300, follow = true)
+        val out = Cmd.output("s1", lines = OUTPUT_LINES, follow = true)
         conn.stream(out).send(screenOne)
         // The shell exits: the tool reports it and ends the stream cleanly, with no error.
         conn.stream(out).send("""{"type":"exit","v":1}""")
@@ -407,8 +263,8 @@ class TileControllerTest {
         runCurrent()
         val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
         runCurrent()
-        val open = Cmd.transcript("t1", follow = true)
-        conn.stream(open).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
+        val open = Cmd.output("t1", lines = OUTPUT_LINES, follow = true)
+        conn.stream(open).send(screenOne)
         conn.stream(open).close()
         runCurrent()
         assertNull(c.streamError.value)
@@ -419,119 +275,6 @@ class TileControllerTest {
         runCurrent()
         assertTrue(c.macOnline.value)
         assertTrue(open in conn2.ran)
-        assertEquals(listOf("hello"), c.transcript.value.messages.map { it.text })
-        c.close()
-    }
-
-    @Test
-    fun screenModeOpensAndClosesTheOutputSessionAndKeepsTheTranscript() = runTest {
-        val (repo, conn) = setup()
-        conn.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
-        runCurrent()
-        val tr = Cmd.transcript("t1", follow = true)
-        val out = Cmd.output("t1", lines = 300, follow = true)
-        conn.stream(tr).send("""{"hasMore":false,"messages":[{"id":"a1","role":"assistant","text":"hello"}],"v":1}""")
-        runCurrent()
-        assertFalse("a Claude tile starts on its conversation", c.screenMode.value)
-        assertEquals("no output stream until the screen is asked for", 0, conn.ran.count { it == out })
-
-        c.toggleScreen()
-        runCurrent()
-        assertTrue(c.screenMode.value)
-        assertEquals(1, conn.ran.count { it == out })
-        conn.stream(out).send("""{"cols":80,"rows":1,"lines":[[{"text":"Select login method:"}]],"v":1}""")
-        runCurrent()
-        assertEquals("Select login method:", c.screen.value.lines[0][0].text)
-        assertEquals("the transcript session was never reopened", 1, conn.ran.count { it == tr })
-        assertEquals(listOf("hello"), c.transcript.value.messages.map { it.text })
-
-        c.toggleScreen()
-        runCurrent()
-        assertFalse(c.screenMode.value)
-        assertTrue("the output session is closed again", c.screen.value.lines.isEmpty())
-        assertEquals("the transcript session stayed open throughout", 1, conn.ran.count { it == tr })
-        assertEquals(listOf("hello"), c.transcript.value.messages.map { it.text })
-        c.close()
-    }
-
-    @Test
-    fun anOldHoldersScreenErrorIsVisibleInScreenMode() = runTest {
-        val (repo, conn) = setup()
-        val out = Cmd.output("t1", lines = 300, follow = true)
-        conn.lineFailures = { if (it == out) ToolFailure("old_session", "restart this tile to use it from the phone") else null }
-        conn.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
-        runCurrent()
-        c.toggleScreen()
-        runCurrent()
-        assertEquals("restart this tile to use it from the phone", c.streamError.value)
-        c.close()
-    }
-
-    @Test
-    fun aScreenModeTileReopensBothSessionsWhenTheMacIsBack() = runTest {
-        val (repo, conn) = setup()
-        conn.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
-        runCurrent()
-        c.toggleScreen()
-        runCurrent()
-        val tr = Cmd.transcript("t1", follow = true)
-        val out = Cmd.output("t1", lines = 300, follow = true)
-        assertEquals(1, conn.ran.count { it == out })
-        // Both streams end, then the watch ends, so the link drops and reconnects a second later.
-        conn.stream(tr).close()
-        conn.stream(out).close()
-        runCurrent()
-        conn.stream(Cmd.watch()).close()
-        runCurrent()
-        advanceTimeBy(1_100)
-        runCurrent()
-        assertTrue(c.macOnline.value)
-        assertTrue("the transcript is followed again", tr in conn2.ran)
-        assertTrue("and so is the screen", out in conn2.ran)
-        c.close()
-    }
-
-    @Test
-    fun closingInScreenModeClosesBothSessions() = runTest {
-        val (repo, conn) = setup()
-        conn.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        val c = TileController(TileKey("mini", "t1"), repo, backgroundScope) { Instant.EPOCH }
-        runCurrent()
-        c.toggleScreen()
-        runCurrent()
-        val tr = Cmd.transcript("t1", follow = true)
-        val out = Cmd.output("t1", lines = 300, follow = true)
-        assertEquals(1, conn.ran.count { it == tr })
-        assertEquals(1, conn.ran.count { it == out })
-        c.close()
-        runCurrent()
-        // Neither stream is followed again: both sessions, and the controller's scope, are gone.
-        conn.stream(Cmd.watch()).send(snapshot(null).replace("idle", "working"))
-        runCurrent()
-        assertEquals(1, conn.ran.count { it == tr })
-        assertEquals(1, conn.ran.count { it == out })
-    }
-
-    @Test
-    fun aShellTileIgnoresTheScreenToggle() = runTest {
-        val (repo, conn) = setup()
-        conn.stream(Cmd.watch()).send(snapshot(null))
-        runCurrent()
-        val c = TileController(TileKey("mini", "s1"), repo, backgroundScope) { Instant.EPOCH }
-        runCurrent()
-        val out = Cmd.output("s1", lines = 300, follow = true)
-        assertEquals(1, conn.ran.count { it == out })
-        c.toggleScreen()
-        runCurrent()
-        assertFalse("screenMode is meaningless on a shell tile", c.screenMode.value)
-        assertEquals("its one output session is untouched", 1, conn.ran.count { it == out })
         c.close()
     }
 }

@@ -40,7 +40,6 @@ import dev.swarmz.phone.ui.theme.MonoSmall
 import dev.swarmz.phone.ui.theme.Sw
 import kotlinx.coroutines.launch
 
-val LANGUAGES = listOf(null to "Phone default", "en-US" to "English (US)", "en-GB" to "English (UK)", "de-DE" to "Deutsch", "fr-FR" to "Français", "es-ES" to "Español")
 val NOTIFY_KINDS = listOf("permission" to "Permission requests", "question" to "Questions", "finished" to "Finished turns")
 
 @Composable
@@ -51,7 +50,6 @@ fun SettingsScreen(vm: AppViewModel, onBack: (() -> Unit)?) {
     val paired = pairings.firstOrNull()
     val background by vm.settings.backgroundWatch.collectAsStateWithLifecycle()
     val kinds by vm.settings.notifyKinds.collectAsStateWithLifecycle()
-    val language by vm.settings.dictationLanguage.collectAsStateWithLifecycle()
     var confirming by remember { mutableStateOf(false) }
     var revokeError by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -100,13 +98,6 @@ fun SettingsScreen(vm: AppViewModel, onBack: (() -> Unit)?) {
                 }
             }
             Text("Alerts arrive in a later update.", style = MaterialTheme.typography.bodySmall)
-            Text("DICTATION", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 12.dp))
-            LANGUAGES.forEach { (tag, label) ->
-                Row(Modifier.fillMaxWidth().clickable { vm.setLanguage(tag) }, verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = language == tag, onClick = { vm.setLanguage(tag) })
-                    Text(label, style = MaterialTheme.typography.bodyLarge)
-                }
-            }
             Text("THIS PHONE", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 12.dp))
             paired?.let { Text(it.device, style = MaterialTheme.typography.bodyLarge) }
             QuietButton("Revoke this phone", onClick = { confirming = true; revokeError = null }, color = Sw.ErrorLine)
