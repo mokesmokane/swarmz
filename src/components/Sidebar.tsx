@@ -16,7 +16,7 @@ import { identifyMark } from "./IdentifyLabel";
 import { CaretIcon, CheckIcon, CloseIcon, HistoryIcon, MoreIcon, PlusIcon, ReloadIcon, TreeIcon } from "./sidebar/icons";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
 import { displayTitle, hasTitle } from "../lib/card";
-import { agentName, type AgentKind } from "../lib/workspace";
+import { agentName } from "../lib/workspace";
 import { SessionHistory } from "./SessionHistory";
 import { loadFoldedSections, saveFoldedSections } from "../lib/activityBar";
 import { buildConductorTree, descendants, findNode } from "../lib/conductorTree";
@@ -427,11 +427,6 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
               {showName && !tree?.summary && (
                 <span className="max-w-[45%] flex-none truncate font-mono text-[10px] text-[#7d8087]" title="Tile name">{t.name}</span>
               )}
-              {codex && (
-                <span className="flex-none rounded-[3px] border border-line px-[3px] font-mono text-[9.5px] leading-[13px] text-ink-3" title="This tile runs Codex" data-testid={`codex-chip-${id}`}>
-                  codex
-                </span>
-              )}
               {skip && (
                 <span
                   className="flex-none rounded-[3px] border border-exited/50 px-[3px] font-mono text-[9.5px] leading-[13px] text-exited"
@@ -522,7 +517,6 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
   const lastCwd = useStore((s) => s.lastCwd);
   const createTerminal = useStore((s) => s.createTerminal);
   const createConductorTerminal = useStore((s) => s.createConductorTerminal);
-  const createAgentTerminal = useStore((s) => s.createAgentTerminal);
   const reloadWorkspace = useStore((s) => s.reloadWorkspace);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -589,32 +583,17 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
     }
   };
 
-  // Codex tiles spec §1: a local tile that starts Codex in a folder you pick.
-  const addCodex = async () => {
-    setMenu("closed");
-    setBusy(true);
-    setError(null);
-    try {
-      const picked = await open({ directory: true, multiple: false, defaultPath: lastCwd ?? undefined });
-      if (typeof picked === "string") await createAgentTerminal(picked, "codex");
-    } catch (e) {
-      setError(typeof e === "string" ? e : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Conductor spec §6: a local agent tile (Claude, or Codex: Codex tiles spec §1) in a folder of
-  // the user's choosing, `~/.swarmz/conductor` (created with its CLAUDE.md) by default, made the
-  // conductor at once.
-  const addConductor = async (agent: AgentKind) => {
+  // Conductor spec §6: a local Claude tile in a folder of the user's choosing,
+  // `~/.swarmz/conductor` (created with its CLAUDE.md) by default, made the conductor at once. A
+  // Codex tile becomes a conductor from its row's 🎛 menu, like any other agent tile.
+  const addConductor = async () => {
     setMenu("closed");
     setBusy(true);
     setError(null);
     try {
       const dir = await ipc.conductorDir();
       const picked = await open({ directory: true, multiple: false, defaultPath: dir });
-      if (typeof picked === "string") await createConductorTerminal(picked, undefined, agent);
+      if (typeof picked === "string") await createConductorTerminal(picked);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
@@ -654,9 +633,7 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
             [
               ["Local terminal…", "A shell on this Mac, in a folder you pick", () => void addTerminal()],
               ["Remote terminal…", "A shell on another Mac on your tailnet", () => setMenu("ssh")],
-              ["Local Codex…", "A tile on this Mac that starts Codex, in a folder you pick", () => void addCodex()],
-              ["Conductor…", "A Claude tile that acts on the other tiles, in ~/.swarmz/conductor or a folder you pick", () => void addConductor("claude")],
-              ["Conductor (Codex)…", "A Codex tile that acts on the other tiles, in ~/.swarmz/conductor or a folder you pick", () => void addConductor("codex")],
+              ["Conductor…", "A Claude tile that acts on the other tiles, in ~/.swarmz/conductor or a folder you pick", () => void addConductor()],
             ] as const
           ).map(([label, hint, act]) => (
             <button key={label} className="rounded px-2 py-1 text-left text-ink-2 hover:bg-hover hover:text-ink" title={hint} onClick={act}>
