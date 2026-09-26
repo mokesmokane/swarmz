@@ -88,17 +88,67 @@ pub fn clean(v: &Value) -> Option<Value> {
     obj(vec![("scheme", scheme), ("overview", overview), ("plan", plan), ("changes", changes), ("questions", questions), ("swarm", swarm)])
 }
 
-/// Writes the tile's board (atomically) and announces it on the hook log. Returns what was kept.
-pub fn write(home: &Path, tile: &str, board: &Value, at: &str) -> Result<Value, String> {
+/// The most conversations a tile's board history keeps.
+pub const HISTORY_MAX: usize = 20;
+
+fn safe_session(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+fn write_json(path: &Path, v: &Value) -> Result<(), String> {
+    let d = path.parent().ok_or("no folder")?;
+    std::fs::create_dir_all(d).map_err(|e| format!("could not create {}: {e}", d.display()))?;
+    let tmp = d.join(format!(".{}.tmp", path.file_name().and_then(|n| n.to_str()).unwrap_or("board")));
+    std::fs::write(&tmp, serde_json::to_vec(v).unwrap()).map_err(|e| format!("could not write the board: {e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("could not write the board: {e}"))
+}
+
+/// Writes the tile's board (atomically) and, when the conversation is known, that conversation's
+/// copy for History (tile board spec §5), then announces it on the hook log. Returns what was kept.
+pub fn write(home: &Path, tile: &str, board: &Value, at: &str, session: Option<&str>) -> Result<Value, String> {
     let kept = clean(board).ok_or_else(|| "the board is empty: nothing it knows (overview, plan, changes, questions, swarm, scheme) was given".to_string())?;
-    let d = dir(home);
-    std::fs::create_dir_all(&d).map_err(|e| format!("could not create {}: {e}", d.display()))?;
-    let final_path = path(home, tile);
-    let tmp = d.join(format!(".{tile}.json.tmp"));
-    std::fs::write(&tmp, serde_json::to_vec(&json!({"at": at, "board": kept})).unwrap()).map_err(|e| format!("could not write the board: {e}"))?;
-    std::fs::rename(&tmp, &final_path).map_err(|e| format!("could not write the board: {e}"))?;
-    announce(home, tile, at, &json!({"board": kept}))?;
+    let session = session.filter(|s| safe_session(s));
+    write_json(&path(home, tile), &json!({"at": at, "sessionId": session, "board": kept}))?;
+    if let Some(s) = session {
+        write_json(&dir(home).join(tile).join(format!("{s}.json")), &json!({"at": at, "sessionId": s, "board": kept}))?;
+        prune(home, tile);
+    }
+    announce(home, tile, at, &json!({"board": kept, "sessionId": session}))?;
     Ok(kept)
+}
+
+/// Each conversation's latest board in the tile, newest first (at most `HISTORY_MAX`).
+pub fn history(home: &Path, tile: &str) -> Vec<Value> {
+    let Ok(rd) = std::fs::read_dir(dir(home).join(tile)) else { return vec![] };
+    let mut out: Vec<Value> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".json") && !n.starts_with('.')))
+        .filter_map(|e| serde_json::from_slice::<Value>(&std::fs::read(e.path()).ok()?).ok())
+        .filter(|v| v["board"].is_object() && v["sessionId"].is_string())
+        .collect();
+    out.sort_by(|a, b| b["at"].as_str().unwrap_or("").cmp(a["at"].as_str().unwrap_or("")));
+    out.truncate(HISTORY_MAX);
+    out
+}
+
+/// Drops the oldest conversations past `HISTORY_MAX`.
+fn prune(home: &Path, tile: &str) {
+    let all = {
+        let Ok(rd) = std::fs::read_dir(dir(home).join(tile)) else { return };
+        let mut v: Vec<(String, PathBuf)> = rd
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".json") && !n.starts_with('.')))
+            .map(|e| {
+                let at = std::fs::read(e.path()).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|v| v["at"].as_str().map(str::to_string)).unwrap_or_default();
+                (at, e.path())
+            })
+            .collect();
+        v.sort_by(|a, b| b.0.cmp(&a.0));
+        v
+    };
+    for (_, p) in all.into_iter().skip(HISTORY_MAX) {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 /// Removes the tile's board; the header goes (an empty `Board` event says so).
@@ -159,15 +209,39 @@ mod tests {
     }
 
     #[test]
+    fn keeps_each_conversations_latest_board_newest_first() {
+        let home = std::env::temp_dir().join(format!("szbh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        write(&home, "t1", &json!({"overview": {"goal": "one"}}), "2026-09-26T10:00:00Z", Some("s1")).unwrap();
+        write(&home, "t1", &json!({"overview": {"goal": "one, later"}}), "2026-09-26T10:05:00Z", Some("s1")).unwrap();
+        write(&home, "t1", &json!({"overview": {"goal": "two"}}), "2026-09-26T11:00:00Z", Some("s2")).unwrap();
+        write(&home, "t1", &json!({"overview": {"goal": "odd"}}), "2026-09-26T12:00:00Z", Some("../x")).unwrap();
+        let h = history(&home, "t1");
+        let goals: Vec<&str> = h.iter().map(|v| v["board"]["overview"]["goal"].as_str().unwrap()).collect();
+        assert_eq!(goals, vec!["two", "one, later"]);
+        assert_eq!(h[0]["sessionId"], "s2");
+        // Clearing the current board keeps the history.
+        clear(&home, "t1", "2026-09-26T13:00:00Z").unwrap();
+        assert_eq!(history(&home, "t1").len(), 2);
+        for i in 0..(HISTORY_MAX + 3) {
+            write(&home, "t2", &json!({"overview": {"goal": format!("g{i}")}}), &format!("2026-09-26T10:{i:02}:00Z"), Some(&format!("s{i}"))).unwrap();
+        }
+        let h2 = history(&home, "t2");
+        assert_eq!(h2.len(), HISTORY_MAX);
+        assert_eq!(h2[0]["sessionId"], format!("s{}", HISTORY_MAX + 2));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn writes_the_file_and_announces_it_on_the_log_then_clears() {
         let home = std::env::temp_dir().join(format!("szb-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let kept = write(&home, "t1", &json!({"overview": {"goal": "G"}}), "2026-09-26T10:00:00Z").unwrap();
+        let kept = write(&home, "t1", &json!({"overview": {"goal": "G"}}), "2026-09-26T10:00:00Z", None).unwrap();
         assert_eq!(kept, json!({"overview": {"goal": "G"}}));
         assert_eq!(read(&home, "t1").unwrap()["board"], kept);
         let log = std::fs::read_to_string(home.join(".swarmz/agents/events.log")).unwrap();
-        assert_eq!(log, "2026-09-26T10:00:00Z\tt1\tBoard\t{\"board\":{\"overview\":{\"goal\":\"G\"}}}\n");
-        assert!(write(&home, "t1", &json!({}), "t").is_err());
+        assert_eq!(log, "2026-09-26T10:00:00Z\tt1\tBoard\t{\"board\":{\"overview\":{\"goal\":\"G\"}},\"sessionId\":null}\n");
+        assert!(write(&home, "t1", &json!({}), "t", None).is_err());
         assert!(clear(&home, "t1", "2026-09-26T10:01:00Z").unwrap());
         assert!(read(&home, "t1").is_none());
         assert!(std::fs::read_to_string(home.join(".swarmz/agents/events.log")).unwrap().ends_with("\tt1\tBoard\t{\"board\":null}\n"));

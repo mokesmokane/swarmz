@@ -22,7 +22,7 @@ const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_
 const MAX_FOLLOW_LINES: usize = 5000;
 
 const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set", "--parent", "--remove", "--assign", "--to"];
-const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once", "--sub", "--top", "--get"];
+const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once", "--sub", "--top", "--get", "--history"];
 
 /// The conductor guard (conductor spec §3) for a command run from a tile: `sub` against
 /// `target`. The desktop and the phone's gate carry no tile and pass.
@@ -463,10 +463,10 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             Ok(Some(cmd::key(&cmd::Env::from_process()?, &tile, &a.positional[2])?))
         }
         Some("board") => {
-            a.expect_positional(1, "board [--tile ID] [--get] [--clear] < board.json")?;
+            a.expect_positional(1, "board [--tile ID] [--get] [--history] [--clear] < board.json")?;
             let tile = a.opt("--tile").map(cmd::tile_arg).transpose()?;
             guard("board", tile.as_deref())?;
-            Ok(Some(cmd::board(&cmd::Env::from_process()?, tile.as_deref(), a.flag("--get"), a.flag("--clear"), &mut std::io::stdin())?))
+            Ok(Some(cmd::board(&cmd::Env::from_process()?, tile.as_deref(), a.flag("--get"), a.flag("--clear"), a.flag("--history"), &mut std::io::stdin())?))
         }
         Some("card") => {
             a.expect_positional(1, "card [--tile ID] [--title TEXT] [--recap TEXT] [--user]")?;

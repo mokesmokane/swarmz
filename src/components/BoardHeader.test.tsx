@@ -2,7 +2,13 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../lib/ipc", () => ({ ipc: { boardGet: vi.fn(async () => ({ board: null })), tileSend: vi.fn(async () => ({ sent: true })) } }));
+vi.mock("../lib/ipc", () => ({
+  ipc: {
+    boardGet: vi.fn(async () => ({ board: null })),
+    tileSend: vi.fn(async () => ({ sent: true })),
+    boardHistory: vi.fn(async () => ({ history: [{ sessionId: "old", at: "2026-09-25T10:00:00Z", board: { overview: { goal: "Last week's fix", now: "Merged." } } }] })),
+  },
+}));
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn(async () => "/home/me") }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(async () => true) }));
 
@@ -67,5 +73,37 @@ describe("BoardHeader", () => {
     render(<BoardHeader id="t1" />);
     expect(screen.queryByTestId("board-t1")).toBeNull();
     expect(ipc.boardGet).toHaveBeenCalledWith("t1", "mini-3");
+  });
+});
+
+describe("History tab", () => {
+  it("lists the tile's conversations with their last activity; a click goes back to one", async () => {
+    const selectSession = vi.fn(async () => {});
+    useStore.setState({
+      selectSession,
+      settings: { t1: { ssh: { host: "mokes@mini-3", cwd: "/p", machine: "mini-3" }, claude: { enabled: true, sessionId: "cur", skipPermissions: false, started: true }, command: null, extra: {}, sessions: [{ sessionId: "cur", cwd: "/p/app", skipPermissions: false, startedAt: "t", lastActiveAt: new Date().toISOString() }] } },
+    });
+    render(<BoardHeader id="t1" />);
+    fireEvent.click(screen.getByLabelText("Open the board"));
+    fireEvent.click(screen.getByRole("tab", { name: "History" }));
+    await screen.findByTestId("history-old");
+    expect(ipc.boardHistory).toHaveBeenCalledWith("t1", "mini-3");
+    expect(screen.getByTestId("history-cur").textContent).toContain("now");
+    expect(screen.getByTestId("history-old").textContent).toContain("Last week's fix");
+    expect(screen.getByTestId("history-old").getAttribute("title")).toBe("Merged.");
+    fireEvent.click(screen.getByTestId("history-old"));
+    expect(selectSession).toHaveBeenCalledWith("t1", "old", { connect: true });
+  });
+
+  it("shows the header with only History for a Claude tile that has past conversations but no board yet", async () => {
+    useStore.setState({
+      boards: { t1: { board: null, at: null } },
+      settings: { t1: { ssh: null, claude: { enabled: true, sessionId: "cur", skipPermissions: false, started: true }, command: null, extra: {}, sessions: [{ sessionId: "cur", cwd: "/p", skipPermissions: false, startedAt: "t", lastActiveAt: "t" }] } },
+    });
+    render(<BoardHeader id="t1" />);
+    expect(screen.getByTestId("board-t1").textContent).toContain("no board yet");
+    fireEvent.click(screen.getByLabelText("Open the board"));
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["History"]);
+    await screen.findByTestId("history-old");
   });
 });

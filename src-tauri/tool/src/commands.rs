@@ -401,8 +401,11 @@ fn this_tile(tile: Option<&str>, what: &str) -> Result<String, CliError> {
 
 /// `board [--tile ID] [--get] [--clear]` (tile board spec §2): replaces the tile's board with the
 /// JSON on stdin, prints it (`--get`), or removes it (`--clear`).
-pub fn board(env: &Env, tile: Option<&str>, get: bool, clear: bool, input: &mut dyn std::io::Read) -> Result<Value, CliError> {
-    let tile = this_tile(tile, "board [--tile <id>] [--get] [--clear] < board.json")?;
+pub fn board(env: &Env, tile: Option<&str>, get: bool, clear: bool, history: bool, input: &mut dyn std::io::Read) -> Result<Value, CliError> {
+    let tile = this_tile(tile, "board [--tile <id>] [--get] [--history] [--clear] < board.json")?;
+    if history {
+        return Ok(json!({"v": 1, "tile": tile, "history": crate::board::history(&env.home, &tile)}));
+    }
     if get {
         return Ok(match crate::board::read(&env.home, &tile) {
             Some(v) => json!({"v": 1, "tile": tile, "at": v["at"], "board": v["board"]}),
@@ -417,8 +420,10 @@ pub fn board(env: &Env, tile: Option<&str>, get: bool, clear: bool, input: &mut 
     let mut text = String::new();
     input.take(256 * 1024).read_to_string(&mut text).map_err(failed)?;
     let v: Value = serde_json::from_str(text.trim()).map_err(|e| CliError::new("usage", format!("the board on stdin is not JSON: {e}")))?;
-    let kept = crate::board::write(&env.home, &tile, &v, &at).map_err(|e| CliError::new("usage", e))?;
-    Ok(json!({"v": 1, "tile": tile, "at": at, "board": kept}))
+    // The conversation it belongs to, as the hook log says (its last SessionStart), for History.
+    let session = crate::agent::fold_log(&crate::agent::read_log(&env.home)).get(&tile).and_then(|f| f.session_id.clone());
+    let kept = crate::board::write(&env.home, &tile, &v, &at, session.as_deref()).map_err(|e| CliError::new("usage", e))?;
+    Ok(json!({"v": 1, "tile": tile, "at": at, "sessionId": session, "board": kept}))
 }
 
 pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&str>) -> Result<Value, CliError> {

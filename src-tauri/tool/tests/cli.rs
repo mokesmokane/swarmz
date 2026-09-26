@@ -2080,6 +2080,14 @@ fn a_tile_keeps_its_own_board_and_the_log_carries_it() {
     assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
     let (code, d) = tool_env_input(&h.path, &["board"], me, b"not json");
     assert_eq!((code, d["code"].as_str()), (1, Some("usage")));
+    // Written inside a conversation (the hook log's SessionStart), it lands in History too.
+    std::fs::write(h.path.join(".swarmz/agents/events.log"), "2026-09-26T09:00:00Z\tt1\tSessionStart\t{\"session_id\":\"sess-1\"}\n").unwrap();
+    let (code, v) = tool_env_input(&h.path, &["board"], me, br#"{"overview":{"goal":"In a conversation"}}"#);
+    assert_eq!((code, v["sessionId"].as_str()), (0, Some("sess-1")), "{v}");
+    let (code, hist) = tool_env(&h.path, &["board", "--tile", "t1", "--history"], user);
+    assert_eq!(code, 0, "{hist}");
+    assert_eq!(hist["history"][0]["sessionId"], "sess-1");
+    assert_eq!(hist["history"][0]["board"]["overview"]["goal"], "In a conversation");
     let (code, c) = tool_env(&h.path, &["board", "--clear"], me);
     assert_eq!((code, c["cleared"].as_bool()), (0, Some(true)));
     assert!(tool_env(&h.path, &["board", "--tile", "t1", "--get"], user).1["board"].is_null());

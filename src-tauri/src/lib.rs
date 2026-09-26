@@ -62,6 +62,7 @@ pub fn run() {
             commands::tile_answer,
             commands::terminal_bracketed_paste,
             commands::board_get,
+            commands::board_history,
             commands::tile_send,
             commands::conductor_dir,
             commands::telegram_get,

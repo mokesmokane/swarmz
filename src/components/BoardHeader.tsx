@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { useStore, tileMachine } from "../store";
 import { displayTitle } from "../lib/card";
 import { machineLabel } from "../lib/workspace";
-import { BOARD_TABS, loadBoardPrefs, NEEDS_COLOR, saveBoardPrefs, schemeColors, schemeOf, type Board, type BoardTab } from "../lib/board";
+import { BOARD_TABS, historyRows, loadBoardPrefs, NEEDS_COLOR, saveBoardPrefs, schemeColors, schemeOf, type Board, type BoardTab, type HistoryRow } from "../lib/board";
+import { ipc } from "../lib/ipc";
+import { relativeActivity } from "../lib/sidebarGroups";
 
 const mono = { fontFamily: "ui-monospace, 'SF Mono', Menlo, monospace" };
 
@@ -22,19 +24,25 @@ export function BoardHeader({ id }: { id: string }) {
     const m = tileMachine(s, id);
     return m ? machineLabel(m, s.machines[m]) : "";
   });
+  // A Claude tile with past conversations keeps its History reachable before it writes a board.
+  const hasPast = useStore((s) => {
+    const st = s.settings[id];
+    return !!st?.claude?.enabled && !st.command?.trim() && (st.sessions?.length ?? 0) > 0;
+  });
   const [prefs, setPrefs] = useState(() => loadBoardPrefs()[id] ?? {});
   useEffect(() => {
     if (!entry) void loadBoard(id);
   }, [entry, id, loadBoard]);
   const board = entry?.board ?? null;
-  if (!board) return null;
+  if (!board && !hasPast) return null;
 
-  const scheme = schemeOf(id, board.scheme, prefs.scheme);
+  const scheme = schemeOf(id, board?.scheme, prefs.scheme);
   const c = schemeColors(scheme.hue);
   const open = prefs.open === true;
-  const tab: BoardTab = prefs.tab ?? (board.questions?.length ? "questions" : "overview");
+  const tabs = board ? BOARD_TABS : BOARD_TABS.filter(([k]) => k === "history");
+  const tab: BoardTab = board ? (prefs.tab ?? (board.questions?.length ? "questions" : "overview")) : "history";
   const update = (patch: typeof prefs) => setPrefs(saveBoardPrefs(id, patch)[id] ?? {});
-  const needs = board.overview?.needsYou === true || (board.questions?.length ?? 0) > 0;
+  const needs = board?.overview?.needsYou === true || (board?.questions?.length ?? 0) > 0;
 
   return (
     <div className="flex-none border-b text-[11px]" style={{ background: c.headBg, borderColor: c.border }} data-testid={`board-${id}`}>
@@ -42,7 +50,8 @@ export function BoardHeader({ id }: { id: string }) {
         <span className="h-[7px] w-[7px] flex-none rounded-full" style={{ background: needs ? NEEDS_COLOR : c.acc }} />
         <span className="min-w-0 truncate text-[#dfe6e1]">{title}</span>
         <span className="flex-none text-[#6c7872]">{machine}</span>
-        {!open && board.overview?.now && <span className="min-w-0 flex-1 truncate text-[#8c9892]" title={board.overview.now}>{`· ${board.overview.now}`}</span>}
+        {!open && board?.overview?.now && <span className="min-w-0 flex-1 truncate text-[#8c9892]" title={board.overview.now}>{`· ${board.overview.now}`}</span>}
+        {!open && !board && <span className="min-w-0 flex-1 truncate text-[#6c7872]">· no board yet · history</span>}
         <div className="ml-auto flex flex-none items-center gap-1.5 text-[#8c9892]">
           <span className="h-2.5 w-2.5 rounded-sm" style={{ background: c.acc }} />
           <span>{scheme.name}</span>
@@ -63,9 +72,9 @@ export function BoardHeader({ id }: { id: string }) {
       {open && (
         <div className="flex flex-col border-t" style={{ borderColor: c.border }}>
           <div className="flex gap-[18px] overflow-x-auto border-b px-4" style={{ borderColor: c.border }} role="tablist">
-            {BOARD_TABS.map(([k, label]) => {
+            {tabs.map(([k, label]) => {
               const on = tab === k;
-              const n = k === "questions" ? (board.questions?.length ?? 0) : 0;
+              const n = k === "questions" ? (board?.questions?.length ?? 0) : 0;
               return (
                 <button
                   key={k}
@@ -86,7 +95,7 @@ export function BoardHeader({ id }: { id: string }) {
             })}
           </div>
           <div className="max-h-[45vh] min-h-[120px] overflow-y-auto px-[18px] pb-[18px] pt-4">
-            <TabBody id={id} tab={tab} board={board} c={c} />
+            {tab === "history" || !board ? <HistoryTab id={id} c={c} /> : <TabBody id={id} tab={tab} board={board} c={c} />}
           </div>
         </div>
       )}
@@ -95,6 +104,56 @@ export function BoardHeader({ id }: { id: string }) {
 }
 
 const label = "text-[10px] tracking-[0.1em] text-[#7d8a83]";
+
+/**
+ * Every conversation this tile has had, closed ones too (tile board spec §5): its title (the
+ * board's goal, else its folder) and when it was last active, newest first; where it got to is the
+ * row's tooltip. A click goes back to that conversation.
+ */
+function HistoryTab({ id, c }: { id: string; c: ReturnType<typeof schemeColors> }) {
+  const sessionsKey = useStore((s) => JSON.stringify(s.settings[id]?.sessions ?? []));
+  const current = useStore((s) => s.settings[id]?.claude?.sessionId ?? null);
+  const machine = useStore((s) => s.settings[id]?.ssh?.machine ?? null);
+  const selectSession = useStore((s) => s.selectSession);
+  const [boards, setBoards] = useState<{ sessionId: string; at: string; board: unknown }[]>([]);
+  useEffect(() => {
+    let live = true;
+    ipc.boardHistory(id, machine).then(
+      (r) => live && setBoards(Array.isArray(r?.history) ? r.history : []),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [id, machine]);
+  const rows: HistoryRow[] = historyRows(JSON.parse(sessionsKey), boards, current);
+  const now = Date.now();
+  if (rows.length === 0) return <div className="text-sm text-[#a3afa8]">No conversations in this tile yet.</div>;
+  return (
+    <div className="flex flex-col" role="list" aria-label="Conversations in this tile">
+      {rows.map((r) => (
+        <button
+          key={r.sessionId}
+          role="listitem"
+          data-testid={`history-${r.sessionId}`}
+          className="flex items-baseline gap-3 border-b py-2 text-left last:border-b-0 hover:bg-white/5 disabled:cursor-default disabled:hover:bg-transparent"
+          style={{ borderColor: c.border }}
+          title={r.detail ?? undefined}
+          disabled={r.current}
+          onClick={() => void selectSession(id, r.sessionId, { connect: true })}
+        >
+          <span className="min-w-0 flex-1 truncate text-[13px] text-[#eef2ef]">{r.title}</span>
+          {r.current && (
+            <span className="flex-none rounded px-1.5 text-[10px] font-semibold" style={{ background: c.soft, color: c.acc }}>
+              now
+            </span>
+          )}
+          <span className="w-10 flex-none text-right text-[11px] text-[#8c9892]" style={mono}>{relativeActivity(r.lastActive, now) || "—"}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function TabBody({ id, tab, board, c }: { id: string; tab: BoardTab; board: Board; c: ReturnType<typeof schemeColors> }) {
   const answer = useStore((s) => s.answerBoard);
