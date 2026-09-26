@@ -81,3 +81,11 @@ now, next, needsYou, plan progress, branch, base, flags, open questions). A cond
 whole board of any tile below it (`board --tile <id> --get`, the same rule as a glance at its
 screen). The top conductor's briefing says to compare the boards, then the git state in the
 tiles' folders, when the user asks how the work streams stand against each other.
+
+## 7. Amendment: Refresh (same day)
+
+The board's line has **Refresh**: it asks the tile's Claude to update its board now
+(`board --request --tile <id>`, run on the tile's Mac, which types a short request with
+`send`). It never types into a prompt on screen, over text in the input box, or into a tile
+where Claude is not running; it says which instead, on the line, for a few seconds. For tiles it
+is a conductor's act, like `send`.
