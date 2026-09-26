@@ -182,6 +182,8 @@ export const ipc = {
   sshListDir: (host: string, path: string | null) => invoke<RemoteListing>("ssh_list_dir", { host, path }),
   terminalForegroundBusy: (id: string) => invoke<boolean>("terminal_foreground_busy", { id }),
   terminalCwd: (id: string) => invoke<string | null>("terminal_cwd", { id }),
+  /** Whether the tile's program has bracketed paste on, per its holder; null when it cannot say. */
+  terminalBracketedPaste: (id: string) => invoke<boolean | null>("terminal_bracketed_paste", { id }),
   setTerminalCwd: (id: string, cwd: string) => invoke<TerminalInfo>("set_terminal_cwd", { id, cwd }),
   tailscaleStatus: () => invoke<TailscaleStatus>("tailscale_status"),
   tailscaleOpen: () => invoke<void>("tailscale_open"),
