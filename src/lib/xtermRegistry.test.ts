@@ -43,6 +43,7 @@ vi.mock("@xterm/xterm", () => {
     cols = 80;
     rows = 24;
     buffer = { active: { type: "normal" as "normal" | "alternate" } };
+    modes = { bracketedPasteMode: false };
     write(data: unknown, done?: () => void) {
       this.writes.push({ data, done });
       this.log.push("write");
@@ -104,6 +105,7 @@ vi.mock("./ipc", () => ({
     onExit: vi.fn(async () => () => {}),
     terminalCwd: vi.fn(async () => null),
     terminalForegroundBusy: vi.fn(async () => true),
+    terminalBracketedPaste: vi.fn(async () => null as boolean | null),
     setTerminalCwd: vi.fn(async (id: string, cwd: string) => ({ id, name: "x", cwd, exited: null, error: null })),
     pasteImageToRemote: vi.fn(async () => null as string | null),
     remoteTileInfo: vi.fn(async () => ({ running: false }) as { running: boolean; cwd?: string | null }),
@@ -1108,7 +1110,7 @@ describe("resetTerminalModes", () => {
     vi.mocked(ipc.writeTerminal).mockClear();
     resetTerminalModes("rm1");
     expect(term.writes[term.writes.length - 1]?.data).toBe(TERMINAL_MODES_RESET);
-    expect(TERMINAL_MODES_RESET).toBe("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?2004l\x1b[?1004l\x1b[?1l\x1b>\x1b[?25h\x1b[0m");
+    expect(TERMINAL_MODES_RESET).toBe("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?1l\x1b>\x1b[?25h\x1b[0m");
     term.buffer.active.type = "alternate";
     resetTerminalModes("rm1");
     expect(term.writes[term.writes.length - 1]?.data).toBe("\x1b[?1049l" + TERMINAL_MODES_RESET);
@@ -1186,6 +1188,20 @@ describe("modes left on by replayed history", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(resets(term)).toHaveLength(0);
     dispose("mr2");
+  });
+
+  it("turns bracketed paste back on when the holder says the program has it but the replay lost it", async () => {
+    tile("mr9");
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(true);
+    vi.mocked(ipc.terminalBracketedPaste).mockResolvedValue(true);
+    await prepare("mr9");
+    const term = instances[instances.length - 1] as unknown as FakeTerm;
+    replayCallbacks.mr9(enc("\x1b[!plong claude session"), { cols: 80, rows: 24 });
+    term.writes[term.writes.length - 1].done?.();
+    await vi.waitFor(() => expect(term.writes.some((w) => w.data === "\x1b[?2004h")).toBe(true));
+    expect(ipc.terminalBracketedPaste).toHaveBeenCalledWith("mr9");
+    vi.mocked(ipc.terminalBracketedPaste).mockResolvedValue(null);
+    dispose("mr9");
   });
 
   it("keeps them when the check fails", async () => {

@@ -9,6 +9,10 @@ pub trait TerminalSession: Send + Sync {
     fn terminate(&self);
     fn foreground_busy(&self) -> Option<bool>;
     fn cwd(&self) -> Option<String>;
+    /// Whether the program in front has bracketed paste on, as the holder's screen model saw it.
+    fn bracketed_paste(&self) -> Option<bool> {
+        None
+    }
 }
 
 impl TerminalSession for PtySession {
@@ -46,5 +50,8 @@ impl TerminalSession for HolderClient {
     }
     fn cwd(&self) -> Option<String> {
         self.info(Duration::from_secs(2)).and_then(|i| i.cwd)
+    }
+    fn bracketed_paste(&self) -> Option<bool> {
+        self.info(Duration::from_millis(800)).and_then(|i| i.bracketed_paste)
     }
 }

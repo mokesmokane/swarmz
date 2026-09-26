@@ -359,6 +359,15 @@ pub async fn terminal_foreground_busy(state: State<'_, AppState>, id: String) ->
         .map_err(|e| e.to_string())
 }
 
+/// Whether the tile's program has bracketed paste on (its holder's screen model), so a pane
+/// rebuilt from a replay that no longer holds the escape that turned it on can turn it back on.
+#[tauri::command]
+pub async fn terminal_bracketed_paste(state: State<'_, AppState>, id: String) -> Result<Option<bool>, String> {
+    let session = state.sessions.lock().unwrap().get(&id).map(|(_, s)| s.clone());
+    let Some(session) = session else { return Ok(None) };
+    tauri::async_runtime::spawn_blocking(move || session.bracketed_paste()).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn terminal_cwd(state: State<'_, AppState>, id: String) -> Result<Option<String>, String> {
     let session = state.sessions.lock().unwrap().get(&id).map(|(_, s)| s.clone());

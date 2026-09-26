@@ -507,6 +507,12 @@ fn handle_viewer(shared: Arc<Shared>, stream: UnixStream) {
         } else {
             let mut r = REPLAY_PREFIX.to_vec();
             r.extend(ring.replay());
+            // The history is only the last RING_CAP bytes: a long session (Claude redraws a lot)
+            // has long since scrolled the escapes that turned its input modes on out of it, and
+            // the prefix above reset them. Restate them from the screen model (which saw every
+            // byte), so a rejoining pane still brackets pastes: without that, a multi-line paste
+            // reaches Claude as typed lines and only the last one stays in its input box.
+            r.extend(shared.screen.lock().unwrap().screen().input_mode_formatted());
             r
         };
         Shared::enqueue(&viewer, encode(Kind::Welcome, &json(&welcome)), usize::MAX);
@@ -1039,6 +1045,23 @@ mod tests {
         let c = Viewer::connect(&p, "window", 80, 24);
         assert!(c.replay.starts_with(b"\x1b[!p"));
         assert!(String::from_utf8_lossy(&c.replay).contains("past-7"));
+        a.send(b"exit 0\n");
+        assert!(a.wait_for("", 5));
+        h.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_replay_ends_by_restating_the_input_modes() {
+        let (_d, p, h) = start("modes", VIEWER_QUEUE_CAP);
+        let mut a = Viewer::connect(&p, "window", 80, 24);
+        a.send(b"printf '\\033[?2004h\\033[?1h'; echo modes-on\n");
+        assert!(a.wait_for("modes-on", 5));
+        std::thread::sleep(Duration::from_millis(100));
+        let c = Viewer::connect(&p, "window", 80, 24);
+        let text = String::from_utf8_lossy(&c.replay).into_owned();
+        let tail = &text[text.rfind("modes-on").unwrap()..];
+        assert!(tail.contains("\x1b[?2004h"), "bracketed paste restated after the history: {tail:?}");
+        assert!(tail.contains("\x1b[?1h"), "application cursor restated: {tail:?}");
         a.send(b"exit 0\n");
         assert!(a.wait_for("", 5));
         h.join().unwrap().unwrap();

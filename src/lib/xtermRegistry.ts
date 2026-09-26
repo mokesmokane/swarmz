@@ -438,9 +438,11 @@ export function claimSize(id: string): void {
   tryClaimSize(id, entry, () => entry.fit.fit());
 }
 
-/** Mouse tracking (every encoding), bracketed paste, focus reports, application cursor and
- * keypad modes off; cursor shown; text attributes reset. */
-export const TERMINAL_MODES_RESET = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?2004l\x1b[?1004l\x1b[?1l\x1b>\x1b[?25h\x1b[0m";
+/** Mouse tracking (every encoding), focus reports, application cursor and keypad modes off;
+ * cursor shown; text attributes reset. Bracketed paste is left alone: zsh wants it on too, the
+ * holder's replay restates its real state, and turning it off makes a multi-line paste arrive as
+ * typed lines. */
+export const TERMINAL_MODES_RESET = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?1l\x1b>\x1b[?25h\x1b[0m";
 
 /** Turns off what a remote program may have left on when its connection dropped (mouse tracking
  * in every encoding, bracketed paste, focus reports, application cursor and keypad modes, a
@@ -465,6 +467,25 @@ function resetModesIfShellIdle(id: string): void {
     .then(
       (busy) => {
         if (busy === false && entries.has(id)) resetTerminalModes(id);
+      },
+      () => {},
+    )
+    .then(() => restorePasteMode(id));
+}
+
+/**
+ * A replay holds only the last stretch of a session, so the escape that turned bracketed paste on
+ * (Claude sends it once, at start) may have scrolled out of it: ask the holder, whose screen model
+ * saw every byte, and turn it back on in the pane. Without it a multi-line paste reaches the
+ * program as typed lines, and only the last one stays in Claude's input box.
+ */
+function restorePasteMode(id: string): void {
+  void Promise.resolve()
+    .then(() => ipc.terminalBracketedPaste(id))
+    .then(
+      (on) => {
+        const entry = entries.get(id);
+        if (on === true && entry && !entry.term.modes?.bracketedPasteMode) entry.term.write("\x1b[?2004h");
       },
       () => {},
     );

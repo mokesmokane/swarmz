@@ -60,6 +60,7 @@ pub fn run() {
             commands::close_session,
             commands::conductor_action,
             commands::tile_answer,
+            commands::terminal_bracketed_paste,
             commands::conductor_dir,
             commands::telegram_get,
             commands::telegram_set,
