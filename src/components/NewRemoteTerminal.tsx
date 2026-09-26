@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { machineColor, useStore } from "../store";
-import { machineHost, machineLabel } from "../lib/workspace";
+import { machineHost, machineLabel, type AgentKind } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
 import { MachineSettings } from "./MachineSettings";
 import { ipc } from "../lib/ipc";
@@ -18,7 +18,7 @@ export function NewRemoteTerminal({ onClose }: { onClose: () => void }) {
   const refresh = useStore((s) => s.refreshTailscale);
   const [selected, setSelected] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
-  const [claudeOn, setClaudeOn] = useState(false);
+  const [agent, setAgent] = useState<"none" | AgentKind>("none");
   const [skip, setSkip] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -54,7 +54,7 @@ export function NewRemoteTerminal({ onClose }: { onClose: () => void }) {
         setStage("pick");
         return;
       }
-      const id = await createRemoteTerminal({ machine: selected, cwd: null, claude: claudeOn ? { skipPermissions: skip } : null });
+      const id = await createRemoteTerminal({ machine: selected, cwd: null, claude: agent === "none" ? null : { skipPermissions: skip, agent } });
       setCreatedId(id);
       setStage("connecting");
     } catch (e) {
@@ -99,7 +99,7 @@ export function NewRemoteTerminal({ onClose }: { onClose: () => void }) {
             onPick={(p) => {
               const done = createdId
                 ? chooseRemoteDir(createdId, p)
-                : createRemoteTerminal({ machine: selected, cwd: p, claude: claudeOn ? { skipPermissions: skip } : null }).then(() => undefined);
+                : createRemoteTerminal({ machine: selected, cwd: p, claude: agent === "none" ? null : { skipPermissions: skip, agent } }).then(() => undefined);
               done.catch(() => {}).finally(() => onClose());
             }}
             onClose={onClose}
@@ -172,12 +172,17 @@ export function NewRemoteTerminal({ onClose }: { onClose: () => void }) {
       </ul>
       {selected && (
         <>
-          <label className="mt-2 flex items-center gap-2 text-neutral-300">
-            <input type="checkbox" checked={claudeOn} onChange={(e) => setClaudeOn(e.target.checked)} />
-            Run Claude
-          </label>
+          <div className="mt-2 flex items-center gap-3 text-neutral-300" role="radiogroup" aria-label="Agent">
+            <span className="text-neutral-500">Agent</span>
+            {(["none", "claude", "codex"] as const).map((a) => (
+              <label key={a} className="flex items-center gap-1">
+                <input type="radio" name="new-remote-agent" checked={agent === a} onChange={() => setAgent(a)} />
+                {a === "none" ? "None" : a === "claude" ? "Claude" : "Codex"}
+              </label>
+            ))}
+          </div>
           <label className="mt-1 flex items-center gap-2 text-neutral-300">
-            <input type="checkbox" checked={skip} disabled={!claudeOn} onChange={(e) => setSkip(e.target.checked)} />
+            <input type="checkbox" checked={skip} disabled={agent === "none"} onChange={(e) => setSkip(e.target.checked)} />
             Skip permissions <span className="text-red-400">(dangerous)</span>
           </label>
         </>

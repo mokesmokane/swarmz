@@ -39,8 +39,13 @@ pub fn parse_vm_stat(out: &str) -> Option<u64> {
 
 /// Claude sessions by state, from this Mac's tile rows.
 pub fn claude_counts(rows: &[TileRow]) -> Value {
+    agent_counts(rows, "claude")
+}
+
+/// One agent's sessions by state (`kind` is `claude` or `codex`, Codex tiles spec §7).
+pub fn agent_counts(rows: &[TileRow], kind: &str) -> Value {
     let (mut working, mut needs, mut idle, mut stopped) = (0, 0, 0, 0);
-    for r in rows.iter().filter(|r| r.kind == "claude") {
+    for r in rows.iter().filter(|r| r.kind == kind) {
         if !r.running {
             stopped += 1;
         } else if r.status == Status::Blocked || r.needs.is_some() {
@@ -99,7 +104,9 @@ pub fn gather(rows: &[TileRow], build: u64) -> Value {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let uptime = boot.map(|b| now.saturating_sub(b));
     let app = Some(run("/usr/bin/plutil", &["-extract", "CFBundleShortVersionString", "raw", "/Applications/swarmz.app/Contents/Info.plist"]).trim().to_string()).filter(|v| !v.is_empty());
-    reply(cpu_sum, load1, cores, mem_total, mem_used, disk(), uptime, claude_counts(rows), app, build)
+    let mut v = reply(cpu_sum, load1, cores, mem_total, mem_used, disk(), uptime, claude_counts(rows), app, build);
+    v["codex"] = agent_counts(rows, "codex");
+    v
 }
 
 #[cfg(test)]
@@ -140,8 +147,10 @@ Pages occupied by compressor:             50000.
             row("claude", true, Status::Idle, false),
             row("claude", false, Status::Offline, false),
             row("shell", true, Status::Idle, false),
+            row("codex", true, Status::Working, false),
         ];
         assert_eq!(claude_counts(&rows), json!({"working": 1, "needsYou": 1, "idle": 1, "stopped": 1}));
+        assert_eq!(agent_counts(&rows, "codex"), json!({"working": 1, "needsYou": 0, "idle": 0, "stopped": 0}));
     }
 
     #[test]

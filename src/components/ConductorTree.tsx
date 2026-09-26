@@ -27,7 +27,7 @@ export function ConductorTree({ order, infos, renderRow }: { order: string[]; in
     return (
       <div>
         <div className="mx-1 mb-1 rounded border border-dashed border-neutral-700 px-2 py-1.5 text-xs text-neutral-500" data-testid="tree-no-conductor">
-          No conductor yet. Hover a Claude row and use 🎛 to make one; its tiles then nest under it here.
+          No conductor yet. Hover an agent row (Claude or Codex) and use 🎛 to make one; its tiles then nest under it here.
         </div>
         {order.map((id) => (
           <div key={id}>{renderRow(id)}</div>

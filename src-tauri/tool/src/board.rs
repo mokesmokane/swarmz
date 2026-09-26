@@ -271,7 +271,10 @@ mod tests {
         let h2 = history(&home, "t2");
         assert_eq!(h2.len(), HISTORY_MAX);
         let all = history_all(&home);
-        assert_eq!(all.keys().cloned().collect::<Vec<_>>(), vec!["t1".to_string(), "t2".to_string()]);
+        // Key order follows the folder listing when serde_json keeps insertion order.
+        let mut keys: Vec<String> = all.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["t1".to_string(), "t2".to_string()]);
         assert_eq!(h2[0]["sessionId"], format!("s{}", HISTORY_MAX + 2));
         let _ = std::fs::remove_dir_all(&home);
     }

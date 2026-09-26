@@ -33,10 +33,46 @@ pub struct TerminalDef {
     pub ssh: Option<SshConfig>,
     #[serde(default)]
     pub claude: Option<ClaudeConfig>,
+    /// A Codex tile's agent config, the shape of `claude` (Codex tiles spec §2). A key of its own
+    /// so an older tool or app, which keeps it in `extra`, never starts the tile with `claude`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<ClaudeConfig>,
     #[serde(default)]
     pub command: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// Which agent a tile runs (Codex tiles spec).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Agent {
+    Claude,
+    Codex,
+}
+
+impl Agent {
+    pub fn name(self) -> &'static str {
+        match self {
+            Agent::Claude => "Claude",
+            Agent::Codex => "Codex",
+        }
+    }
+}
+
+impl TerminalDef {
+    /// The tile's agent and its config, enabled or not; Codex's when a def has both.
+    pub fn agent(&self) -> Option<(Agent, &ClaudeConfig)> {
+        self.codex.as_ref().map(|c| (Agent::Codex, c)).or_else(|| self.claude.as_ref().map(|c| (Agent::Claude, c)))
+    }
+
+    /// The enabled agent, as `agent` gives it.
+    pub fn live_agent(&self) -> Option<(Agent, &ClaudeConfig)> {
+        self.agent().filter(|(_, c)| c.enabled)
+    }
+
+    pub fn agent_mut(&mut self) -> Option<&mut ClaudeConfig> {
+        if self.codex.is_some() { self.codex.as_mut() } else { self.claude.as_mut() }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -125,6 +161,7 @@ mod tests {
                     skip_permissions: true,
                     started: false,
                 }),
+                codex: None,
                 command: None,
                 extra: serde_json::Map::new(),
             }],
@@ -202,6 +239,7 @@ mod tests {
                 cwd: "/tmp".into(),
                 ssh: Some(SshConfig { host: "mokes@martins-mac-mini".into(), cwd: None, machine: Some("martins-mac-mini".into()) }),
                 claude: None,
+                codex: None,
                 command: None,
                 extra: serde_json::Map::new(),
             }],

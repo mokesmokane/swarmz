@@ -211,7 +211,7 @@ private fun PermissionHomeCard(view: TileView, ask: Pending, onOpen: (TileKey) -
         CardTitle(view) { Badge("permission", color = Sw.NeedsYou) }
         Text(
             buildAnnotatedString {
-                append("Claude wants to run ")
+                append("${view.row.agentName} wants to run ")
                 withStyle(SpanStyle(fontFamily = Mono, color = Sw.Code)) { append(ask.summary) }
                 append(" in ${folderName(view.row.cwd)}")
             },

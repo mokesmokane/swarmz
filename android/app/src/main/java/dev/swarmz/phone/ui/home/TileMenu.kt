@@ -17,7 +17,7 @@ import dev.swarmz.phone.state.TileView
 /**
  * The long-press menu of a tile row or chip (phone spec §6.5, amended 2026-09-23): **Open**, and
  * **Stop** for a running tile (ends its session on the Mac, after a confirm: the shell and any
- * Claude in it end; Start brings the conversation back) or **Start** for a stopped one (`restart`).
+ * agent in it end; Start brings the conversation back) or **Start** for a stopped one (`restart`).
  */
 @Composable
 fun TileMenu(view: TileView, expanded: Boolean, onDismiss: () -> Unit, onOpen: () -> Unit, onStop: () -> Unit, onStart: () -> Unit) {
@@ -34,7 +34,10 @@ fun TileMenu(view: TileView, expanded: Boolean, onDismiss: () -> Unit, onOpen: (
         AlertDialog(
             onDismissRequest = { confirmStop = false },
             title = { Text("Stop ${view.row.shownTitle}?") },
-            text = { Text("The shell on ${view.macLabel} ends, and Claude with it. Start brings the conversation back.") },
+            text = {
+                val r = view.row
+                Text(if (r.isShell) "The shell on ${view.macLabel} ends." else "The shell on ${view.macLabel} ends, and ${r.agentName} with it. Start brings the conversation back.")
+            },
             confirmButton = { TextButton(onClick = { confirmStop = false; onStop() }) { Text("Stop") } },
             dismissButton = { TextButton(onClick = { confirmStop = false }) { Text("Cancel") } },
         )

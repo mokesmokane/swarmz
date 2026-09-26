@@ -150,6 +150,8 @@ async function pollCwd(id: string, entry: Entry): Promise<void> {
   const remoteHost = remoteInfoHost(id);
   if (remoteHost) return pollRemoteCwd(id, remoteHost, entry);
   if (!localTileAlive(id)) return;
+  // Codex may exit without a SessionEnd: the same tick asks whether its shell is back in front.
+  void useStore.getState().checkAgentExited(id);
   try {
     const cwd = await ipc.terminalCwd(id);
     // Asking the holder is a round trip; the tile may have exited or turned into an ssh tile
@@ -224,6 +226,12 @@ function userInput(entry: Entry): void {
   if (entry.remoteReplay && !entry.remoteReplayMarked) endRemoteReplay(entry);
 }
 
+/** Whether `text` holds Claude's (`No conversation found with session ID <id>`) or Codex's
+ * (`No saved session found with ID <id>`) report that a resumed session does not exist. */
+export function resumeGoneIn(text: string, sessionId: string): boolean {
+  return text.includes(`No conversation found with session ID ${sessionId}`) || text.includes(`No saved session found with ID ${sessionId}`);
+}
+
 /** The resume-failure scan, run once xterm has parsed `bytes` so the replay state is exact. */
 function scanLiveOutput(id: string, entry: Entry, bytes: Uint8Array): void {
   const boundary = entry.replayBoundary;
@@ -248,7 +256,7 @@ function scanLiveOutput(id: string, entry: Entry, bytes: Uint8Array): void {
     text = text.slice(end + REPLAY_END_MARKER.length);
   }
   entry.tail = (entry.tail + text).slice(-400);
-  if (entry.tail.includes(`No conversation found with session ID ${watch.sessionId}`)) {
+  if (resumeGoneIn(entry.tail, watch.sessionId)) {
     entry.tail = "";
     useStore.getState().noteResumeFailure(id, watch.sessionId);
   }

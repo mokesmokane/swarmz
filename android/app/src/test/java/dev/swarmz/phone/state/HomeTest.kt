@@ -70,6 +70,11 @@ class HomeTest {
         assertEquals("accept edits", modeLabel(row("a", mode = "acceptEdits")))
         assertEquals("skip permissions", modeLabel(row("a", mode = "bypassPermissions")))
         assertEquals("default", modeLabel(row("a")))
+        assertEquals("default", modeLabel(row("a", kind = "codex")))
+        assertEquals("skip permissions", modeLabel(row("a", kind = "codex", mode = "bypassPermissions")))
+        // A mode this app does not know (Codex reports its own) shows nothing.
+        assertNull(modeLabel(row("a", kind = "codex", mode = "on-request")))
+        assertNull(modeLabel(row("a", mode = "somethingNew")))
         val now = Instant.parse("2026-09-17T10:00:00Z")
         assertEquals("now", relativeTime(now.minusSeconds(20), now))
         assertEquals("3m", relativeTime(now.minusSeconds(180), now))
@@ -78,5 +83,13 @@ class HomeTest {
         assertEquals("projects", folderName("/Users/me/projects/"))
         assertEquals("/", folderName("/"))
         assertNull(parseTime("junk"))
+    }
+
+    @Test
+    fun agentKinds() {
+        assertEquals("Claude", row("a").agentName)
+        assertEquals("Codex", row("a", kind = "codex").agentName)
+        assertEquals(false, row("a", kind = "codex").isShell)
+        assertEquals(true, row("a", kind = "shell").isShell)
     }
 }

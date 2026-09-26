@@ -4,6 +4,7 @@ import dev.swarmz.phone.keys.PhoneKey
 import dev.swarmz.phone.link.LinkDown
 import dev.swarmz.phone.link.LinkState
 import dev.swarmz.phone.link.MacLink
+import dev.swarmz.phone.proto.Agent
 import dev.swarmz.phone.proto.AnswerReply
 import dev.swarmz.phone.proto.Card
 import dev.swarmz.phone.proto.CardReply
@@ -428,8 +429,8 @@ class Repository(
     /** The user typed a title for the tile's card; empty hands it back to the agent or the fallback. */
     suspend fun setTitle(key: TileKey, title: String): Card? = link(key.mac).call<CardReply>(Cmd.cardTitle(key.id, title)).card
 
-    suspend fun newTile(mac: String, folder: String, skipPermissions: Boolean): TileKey =
-        TileKey(mac, link(mac).call<TileReply>(Cmd.newTile(folder, skipPermissions)).tile.id)
+    suspend fun newTile(mac: String, folder: String, skipPermissions: Boolean, agent: Agent = Agent.Claude): TileKey =
+        TileKey(mac, link(mac).call<TileReply>(Cmd.newTile(folder, skipPermissions, agent = agent)).tile.id)
 
     suspend fun folders(mac: String, path: String?): Folders = link(mac).call(Cmd.folders(path))
 

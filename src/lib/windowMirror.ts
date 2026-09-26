@@ -46,6 +46,7 @@ export const PROXIED_ACTIONS = [
   "dismissClosedNotice",
   "windowFocus",
   "setTerminalCwd",
+  "checkAgentExited",
   "flashCopied",
   "flashPasted",
   "identifyTile",

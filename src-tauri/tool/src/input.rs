@@ -52,11 +52,16 @@ pub fn still_in_box(lines: &[String], text: &str) -> bool {
     if head.is_empty() {
         return false;
     }
-    let box_line = lines.iter().rev().map(|l| l.trim()).find(|l| l.starts_with("> ") || l.starts_with("❯ ") || *l == ">" || *l == "❯");
+    let box_line = lines.iter().rev().map(|l| l.trim()).find(|l| is_box_line(l));
     match box_line {
         Some(l) => l[l.chars().next().unwrap().len_utf8()..].trim_start().starts_with(&head),
         None => false,
     }
+}
+
+/// A line of the input box: Claude's prompt is `>` or `❯`, Codex's `›` (Codex tiles spec §6).
+fn is_box_line(l: &str) -> bool {
+    ["> ", "❯ ", "› "].iter().any(|p| l.starts_with(p)) || l == ">" || l == "❯" || l == "›"
 }
 
 /// What Claude's input box holds (the last line starting with its `>` prompt that is not an
@@ -67,7 +72,7 @@ pub fn still_in_box(lines: &[String], text: &str) -> bool {
 pub fn box_text(lines: &[String], echoed: &[bool], cursor: Option<(usize, u16)>) -> Option<String> {
     let i = (0..lines.len()).rev().find(|&i| {
         let l = lines[i].trim();
-        !echoed.get(i).copied().unwrap_or(false) && (l.starts_with("> ") || l.starts_with("❯ ") || l == ">" || l == "❯")
+        !echoed.get(i).copied().unwrap_or(false) && is_box_line(l)
     })?;
     let raw = &lines[i];
     let indent = raw.chars().take_while(|c| *c == ' ').count();
@@ -110,6 +115,17 @@ mod tests {
         assert_eq!(box_text(&lines, &[], Some((1, 7))), Some("push the branch".into()));
         // A multi-line draft: the cursor is on a later line.
         assert_eq!(box_text(&l(&["❯ first", "  second"]), &[], Some((1, 8))), Some("first".into()));
+    }
+
+    #[test]
+    fn codexs_input_box_is_read_too() {
+        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Codex 0.157.1: an echoed prompt, a reply, then the box with its placeholder.
+        let lines = l(&["› fix the tests", "• Done.", "› Ask Codex to do anything", "  GPT-6 · ~/p"]);
+        assert_eq!(box_text(&lines, &[], Some((2, 2))), Some(String::new()));
+        let lines = l(&["› fix the tests", "• Done.", "› draft text", "  GPT-6 · ~/p"]);
+        assert_eq!(box_text(&lines, &[], Some((2, 12))), Some("draft text".into()));
+        assert!(still_in_box(&lines, "draft text"));
     }
 
     #[test]

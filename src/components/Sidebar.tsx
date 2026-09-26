@@ -15,6 +15,7 @@ import { identifyMark } from "./IdentifyLabel";
 import { CaretIcon, CheckIcon, CloseIcon, HistoryIcon, MoreIcon, PlusIcon, ReloadIcon, TreeIcon } from "./sidebar/icons";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
 import { displayTitle, hasTitle } from "../lib/card";
+import { agentName, type AgentKind } from "../lib/workspace";
 import { SessionHistory } from "./SessionHistory";
 import { loadFoldedSections, saveFoldedSections } from "../lib/activityBar";
 import { buildConductorTree, descendants, findNode } from "../lib/conductorTree";
@@ -55,6 +56,7 @@ function HoverCard({ id }: { id: string }) {
   const t = useStore((s) => s.terminals[id]);
   const card = useStore((s) => s.settings[id]?.card ?? null);
   const agent = useStore((s) => s.agentState[id]);
+  const agentLabel = useStore((s) => agentName(s.settings[id]?.claude));
   const machineName = useStore((s) => s.settings[id]?.ssh?.machine ?? null);
   const machineCwd = useStore((s) => s.settings[id]?.ssh?.cwd ?? "");
   const online = useStore((s) => (machineName ? (s.tailscale?.peers.find((p) => p.name === machineName)?.online ?? null) : null));
@@ -85,7 +87,7 @@ function HoverCard({ id }: { id: string }) {
       {!isTop && !sub && owner && <div className="text-neutral-500">{`Answers to 🎛 ${ownerTitle}`}</div>}
       <div className="mt-1 whitespace-pre-wrap break-words text-neutral-300">{body ?? "No recap yet"}</div>
       {card?.updatedAt && (
-        <div className="mt-1 text-neutral-500">{`updated ${relativeTime(card.updatedAt)} by ${card.by === "user" ? "you" : "Claude"}`}</div>
+        <div className="mt-1 text-neutral-500">{`updated ${relativeTime(card.updatedAt)} by ${card.by === "user" ? "you" : agentLabel}`}</div>
       )}
     </div>
   );
@@ -202,6 +204,7 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
   const machineColor = info?.machine.color ?? "#525252";
   const machineOffline = info?.machine.online === false;
   const skip = !!(settings?.claude?.enabled && settings.claude.skipPermissions);
+  const codex = !!(settings?.claude?.enabled && settings.claude.agent === "codex");
   const showName = hasTitle(card, agent) && info && t.name !== info.folder;
   const tip = `${state === "needs you" ? "Needs you" : state[0].toUpperCase() + state.slice(1)}${info?.since ? ` · ${relativeActivity(info.since, now)}` : ""}${shownIn ? "" : " · running, not open in any window"}`;
   const stopClick = (e: { stopPropagation(): void }) => e.stopPropagation();
@@ -423,8 +426,16 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
               {showName && !tree?.summary && (
                 <span className="max-w-[45%] flex-none truncate font-mono text-[10px] text-[#7d8087]" title="Tile name">{t.name}</span>
               )}
+              {codex && (
+                <span className="flex-none rounded-[3px] border border-line px-[3px] font-mono text-[9.5px] leading-[13px] text-ink-3" title="This tile runs Codex" data-testid={`codex-chip-${id}`}>
+                  codex
+                </span>
+              )}
               {skip && (
-                <span className="flex-none rounded-[3px] border border-exited/50 px-[3px] font-mono text-[9.5px] leading-[13px] text-exited" title="Claude runs with --dangerously-skip-permissions">
+                <span
+                  className="flex-none rounded-[3px] border border-exited/50 px-[3px] font-mono text-[9.5px] leading-[13px] text-exited"
+                  title={codex ? "Codex runs with --dangerously-bypass-approvals-and-sandbox" : "Claude runs with --dangerously-skip-permissions"}
+                >
                   no-prompt
                 </span>
               )}
@@ -510,6 +521,7 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
   const lastCwd = useStore((s) => s.lastCwd);
   const createTerminal = useStore((s) => s.createTerminal);
   const createConductorTerminal = useStore((s) => s.createConductorTerminal);
+  const createAgentTerminal = useStore((s) => s.createAgentTerminal);
   const reloadWorkspace = useStore((s) => s.reloadWorkspace);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -568,16 +580,32 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
     }
   };
 
-  // Conductor spec §6: a local Claude tile in a folder of the user's choosing, `~/.swarmz/conductor`
-  // (created with its CLAUDE.md) by default, made the conductor at once.
-  const addConductor = async () => {
+  // Codex tiles spec §1: a local tile that starts Codex in a folder you pick.
+  const addCodex = async () => {
+    setMenu("closed");
+    setBusy(true);
+    setError(null);
+    try {
+      const picked = await open({ directory: true, multiple: false, defaultPath: lastCwd ?? undefined });
+      if (typeof picked === "string") await createAgentTerminal(picked, "codex");
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Conductor spec §6: a local agent tile (Claude, or Codex: Codex tiles spec §1) in a folder of
+  // the user's choosing, `~/.swarmz/conductor` (created with its CLAUDE.md) by default, made the
+  // conductor at once.
+  const addConductor = async (agent: AgentKind) => {
     setMenu("closed");
     setBusy(true);
     setError(null);
     try {
       const dir = await ipc.conductorDir();
       const picked = await open({ directory: true, multiple: false, defaultPath: dir });
-      if (typeof picked === "string") await createConductorTerminal(picked);
+      if (typeof picked === "string") await createConductorTerminal(picked, undefined, agent);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
@@ -617,7 +645,9 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
             [
               ["Local terminal…", "A shell on this Mac, in a folder you pick", () => void addTerminal()],
               ["Remote terminal…", "A shell on another Mac on your tailnet", () => setMenu("ssh")],
-              ["Conductor…", "A Claude tile that acts on the other tiles, in ~/.swarmz/conductor or a folder you pick", () => void addConductor()],
+              ["Local Codex…", "A tile on this Mac that starts Codex, in a folder you pick", () => void addCodex()],
+              ["Conductor…", "A Claude tile that acts on the other tiles, in ~/.swarmz/conductor or a folder you pick", () => void addConductor("claude")],
+              ["Conductor (Codex)…", "A Codex tile that acts on the other tiles, in ~/.swarmz/conductor or a folder you pick", () => void addConductor("codex")],
             ] as const
           ).map(([label, hint, act]) => (
             <button key={label} className="rounded px-2 py-1 text-left text-ink-2 hover:bg-hover hover:text-ink" title={hint} onClick={act}>

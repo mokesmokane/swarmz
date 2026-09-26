@@ -110,6 +110,36 @@ describe("NewRemoteTerminal", () => {
     __stopAllPolling();
   });
 
+  it("offers None, Claude or Codex, with skip permissions for either agent", async () => {
+    vi.mocked(ipc.tailscaleStatus).mockResolvedValue({
+      running: true,
+      message: null,
+      user: "mokes",
+      self: null,
+      peers: [{ name: "box", hostName: "box", ip: "100.1.1.2", os: "macOS", online: true }],
+    });
+    render(<NewRemoteTerminal onClose={vi.fn()} />);
+    const options = await screen.findAllByRole("option");
+    fireEvent.click(within(options[0]).getByText("box"));
+    const skip = screen.getByLabelText(/Skip permissions/) as HTMLInputElement;
+    expect(skip.disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText("Codex"));
+    expect(skip.disabled).toBe(false);
+    fireEvent.click(skip);
+    vi.mocked(ipc.sshOpenMaster).mockResolvedValue(true);
+    vi.mocked(ipc.sshListDir).mockResolvedValue({ path: "/Users/mokes", parent: "/Users", dirs: [] });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Connect"));
+    });
+    await screen.findByText("Use this folder");
+    await act(async () => {
+      fireEvent.click(screen.getByText("Use this folder"));
+    });
+    const id = useStore.getState().order[useStore.getState().order.length - 1];
+    expect(useStore.getState().settings[id].claude).toEqual({ enabled: true, sessionId: "", skipPermissions: true, started: false, agent: "codex" });
+    __stopAllPolling();
+  });
+
   it("not running state offers Retry and Open Tailscale", async () => {
     vi.mocked(ipc.tailscaleStatus).mockResolvedValue({
       running: false,

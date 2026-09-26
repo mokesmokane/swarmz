@@ -28,20 +28,22 @@ fun KeyChip(label: String, onClick: () -> Unit, enabled: Boolean = true) {
 }
 
 /**
- * The Claude tile's key row. `↑`, `↓` and `Enter` move through and confirm whatever prompt is on
- * the tile's screen, which is how a question the permission card does not recognise (Claude's
- * own multiple-choice questions, the `/resume` picker) is answered from the phone.
+ * An agent tile's key row (Claude or Codex). `↑`, `↓` and `Enter` move through and confirm whatever
+ * prompt is on the tile's screen, which is how a question the permission card does not recognise
+ * (the agent's own multiple-choice questions, the `/resume` picker) is answered from the phone.
+ * `⇧Tab` (Claude's mode cycle) shows only when [onShiftTab] is given, with [mode] when it is known.
  */
 @Composable
-fun ClaudeQuickKeys(
-    mode: String,
+fun AgentQuickKeys(
+    mode: String?,
     enabled: Boolean,
+    slashCommands: List<String>,
     onEsc: () -> Unit,
     onCtrlC: () -> Unit,
     onUp: () -> Unit,
     onDown: () -> Unit,
     onEnter: () -> Unit,
-    onShiftTab: () -> Unit,
+    onShiftTab: (() -> Unit)?,
     onSlash: (String) -> Unit,
 ) {
     var picking by remember { mutableStateOf(false) }
@@ -54,11 +56,11 @@ fun ClaudeQuickKeys(
         KeyChip("↑", onUp, enabled)
         KeyChip("↓", onDown, enabled)
         KeyChip("Enter", onEnter, enabled)
-        KeyChip("⇧Tab $mode", onShiftTab, enabled)
+        if (onShiftTab != null) KeyChip(if (mode != null) "⇧Tab $mode" else "⇧Tab", onShiftTab, enabled)
         Box {
             KeyChip("/", { picking = true }, enabled)
             DropdownMenu(expanded = picking, onDismissRequest = { picking = false }) {
-                SLASH_COMMANDS.forEach { cmd ->
+                slashCommands.forEach { cmd ->
                     DropdownMenuItem(text = { Text(cmd, fontFamily = Mono) }, onClick = {
                         picking = false
                         onSlash(cmd)

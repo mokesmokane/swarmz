@@ -403,6 +403,29 @@ describe("the conductor", () => {
     expect(screen.queryByTestId("claim-bar")).toBeNull();
   });
 
+  it("marks a Codex tile with a codex chip and names its no-prompt flag", () => {
+    useStore.setState({ settings: { [ID]: { ssh: null, claude: { enabled: true, sessionId: "", skipPermissions: true, started: false, agent: "codex" }, command: null, extra: {} } } });
+    render(<Sidebar />);
+    expect(screen.getByTestId(`codex-chip-${ID}`).textContent).toBe("codex");
+    expect(screen.getByTitle("Codex runs with --dangerously-bypass-approvals-and-sandbox").textContent).toBe("no-prompt");
+  });
+
+  it("offers a Codex conductor and a local Codex tile in the + menu", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValue(null);
+    render(<Sidebar />);
+    fireEvent.click(screen.getByTitle("New terminal"));
+    await act(async () => {
+      fireEvent.click(screen.getByText("Conductor (Codex)…"));
+    });
+    expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ directory: true, defaultPath: "/home/me/.swarmz/conductor" }));
+    fireEvent.click(screen.getByTitle("New terminal"));
+    await act(async () => {
+      fireEvent.click(screen.getByText("Local Codex…"));
+    });
+    expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ directory: true }));
+  });
+
   it("offers Conductor… in the + menu, which picks a folder from the conductor's default", async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
     vi.mocked(open).mockResolvedValueOnce(null);

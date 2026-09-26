@@ -2,7 +2,7 @@
 
 use crate::client::HolderClient;
 use crate::hold::{detach, hold, CliError, HoldRequest};
-use crate::newtile::{bump_revision, add_def, claude_line, empty_workspace, keep_def, kept_def_file, list_folders, session_started, startup_line, unique_name, workspace_file, KeptDef};
+use crate::newtile::{bump_revision, add_def, agent_line, empty_workspace, keep_def, kept_def_file, list_folders, session_started, startup_line, unique_name, workspace_file, KeptDef};
 use crate::paths::{live_session, pid_alive, read_meta, session_paths, sessions_dir_in, valid_tile_id};
 use crate::proto::{Hello, PROTOCOL_VERSION};
 use crate::screen::line_text;
@@ -17,7 +17,7 @@ use crate::screen::{diff_lines, LinesUpdate};
 use crate::transcript::{after, guess_path, image as transcript_image, page, resolve_continued, Change, Normaliser};
 use crate::tiles::{apply_screen, homed_defs, prune as prune_sessions, session_rows, stamp, tile_rows, try_tile_rows_with_folds, watch_events, LastTextCache, Stamp, TileRow};
 use crate::util::{new_uuid, now_iso_ms, sh_quote, valid_abs_path};
-use crate::workspace::{load_from, read_from, save_to, ClaudeConfig, TerminalDef, Workspace};
+use crate::workspace::{load_from, read_from, save_to, Agent, ClaudeConfig, TerminalDef, Workspace};
 use serde_json::{json, Map, Value};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -164,7 +164,13 @@ fn screen_view(client: &HolderClient) -> Option<ScreenView> {
 
 /// What a tile's screen shows, for its row; None when it could not (or must not) be asked.
 fn dialog_for(env: &Env, tile: &str) -> Option<ScreenView> {
-    screen_view(&connect_screen(env, tile).ok()?)
+    let c = connect_screen(env, tile).ok()?;
+    let mut view = screen_view(&c)?;
+    // A quiet screen may be a shell whose agent has exited (Codex tiles spec §4).
+    if view.dialog.is_none() && !view.interruptible {
+        view.shell_in_front = c.info(Duration::from_secs(2)).and_then(|i| i.foreground_busy).map(|busy| !busy);
+    }
+    Some(view)
 }
 
 fn live_cwd(env: &Env, tile: &str) -> Option<String> {
@@ -465,7 +471,7 @@ pub fn board(env: &Env, tile: Option<&str>, get: bool, clear: bool, history: boo
     Ok(json!({"v": 1, "tile": tile, "at": at, "sessionId": session, "board": kept}))
 }
 
-pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&str>) -> Result<Value, CliError> {
+pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&str>, agent: Agent) -> Result<Value, CliError> {
     check_folder(folder)?;
     let machine = env.machine.clone().ok_or_else(|| CliError::new("no_machine", "this Mac's name is unknown (is Tailscale running?)"))?;
     let base = name.map(str::to_string).unwrap_or_else(|| Path::new(folder).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
@@ -473,17 +479,22 @@ pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&s
     // when the tile is recorded.
     let tentative = unique_name(&base, &names(&env.workspace()?.unwrap_or_else(empty_workspace)));
     let id = new_uuid();
-    let claude = ClaudeConfig { enabled: true, session_id: new_uuid(), skip_permissions, started: false };
+    let config = ClaudeConfig { enabled: true, session_id: new_uuid(), skip_permissions, started: false };
     // Held and typed before the workspace names the tile: an app that adopts it then finds the
-    // session running and never types a second Claude line.
-    let Some(pid) = hold_and_type(env, &id, &tentative, folder, Some(&claude_line(&claude)))? else {
+    // session running and never types a second agent line.
+    let Some(pid) = hold_and_type(env, &id, &tentative, folder, Some(&agent_line(agent, &config)))? else {
         return Err(failed(format!("a session for the new tile {id} was already running")));
     };
     // Reloaded just before saving, so changes made while the session started are kept.
     let recorded = env.workspace_to_write().and_then(|ws| {
         let mut ws = ws.unwrap_or_else(empty_workspace);
         let name = unique_name(&base, &names(&ws));
-        let def = TerminalDef { id: id.clone(), name, cwd: folder.to_string(), ssh: None, claude: Some(claude), command: None, extra: Map::new() };
+        let def = TerminalDef { id: id.clone(), name, cwd: folder.to_string(), ssh: None, claude: None, codex: None, command: None, extra: Map::new() };
+        let mut def = def;
+        match agent {
+            Agent::Claude => def.claude = Some(config),
+            Agent::Codex => def.codex = Some(config),
+        }
         add_def(&mut ws, def.clone(), &machine, &now_iso_ms());
         save_to(&workspace_file(&env.home), &ws).map_err(failed)?;
         let revision = ws.extra.get("sync").and_then(|s| s.get("revision")).and_then(|r| r.as_u64()).unwrap_or(0);
@@ -1002,7 +1013,7 @@ pub fn restart(env: &Env, tile: &str) -> Result<Value, CliError> {
         return resume_in_shell(env, tile, &def);
     }
     let started = session_started(&env.home, &def);
-    if let Some(c) = def.claude.as_mut() {
+    if let Some(c) = def.agent_mut() {
         c.started = started;
     }
     if hold_and_type(env, tile, &def.name, &def.cwd, startup_line(&def).as_deref())?.is_none() {
@@ -1014,11 +1025,11 @@ pub fn restart(env: &Env, tile: &str) -> Result<Value, CliError> {
 /// `restart` on a tile whose shell is still up (conductor tree spec §3, the phone's Start): when
 /// Claude has exited and the shell is idle, Claude is started again in it, resuming the tile's
 /// newest conversation, so a conductor (or the phone) can bring a session back without typing
-/// into the shell. Anything still running in front, or a tile that is not a Claude tile, is
-/// refused as before.
+/// into the shell. Anything still running in front, or a tile that runs no agent, is refused as
+/// before. Codex tiles resume the same way (Codex tiles spec §3).
 fn resume_in_shell(env: &Env, tile: &str, def: &TerminalDef) -> Result<Value, CliError> {
     let running = || CliError::new("running", format!("{} is already running", def.name));
-    let Some(claude) = def.claude.as_ref().filter(|c| c.enabled) else { return Err(running()) };
+    let Some((agent, claude)) = def.live_agent() else { return Err(running()) };
     if def.command.as_deref().is_some_and(|c| !c.trim().is_empty()) {
         return Err(running());
     }
@@ -1032,12 +1043,17 @@ fn resume_in_shell(env: &Env, tile: &str, def: &TerminalDef) -> Result<Value, Cl
         .into_iter()
         .find(|r| r.id == tile)
         .and_then(|r| r.session_id)
-        .filter(|id| crate::util::valid_uuid(id))
-        .unwrap_or_else(|| claude.session_id.clone());
+        .filter(|id| crate::util::valid_uuid(id));
     let mut cfg = claude.clone();
-    cfg.session_id = session;
-    cfg.started = true;
-    c.write(format!("{}\r", claude_line(&cfg)).as_bytes()).map_err(failed)?;
+    match session {
+        Some(id) => {
+            cfg.session_id = id;
+            cfg.started = true;
+        }
+        // Codex's id is only ever one it reported: with none, it starts afresh.
+        None => cfg.started = agent == Agent::Claude || cfg.started,
+    }
+    c.write(format!("{}\r", agent_line(agent, &cfg)).as_bytes()).map_err(failed)?;
     let mut v = row(env, tile)?;
     v["resumed"] = json!(true);
     Ok(v)
@@ -1095,7 +1111,7 @@ pub fn board_request(env: &Env, tile: &str) -> Result<Value, CliError> {
     let echoed: Vec<bool> = snap.lines[start..].iter().map(|l| l.iter().any(|s| s.bg.is_some() && !s.text.trim().is_empty())).collect();
     let cursor = snap.cursor.and_then(|(r, c)| r.checked_sub(start).map(|r| (r, c)));
     match crate::input::box_text(&texts[start..], &echoed, cursor) {
-        None => return Err(CliError::new("no_claude", "Claude isn't running in that tile")),
+        None => return Err(CliError::new("no_claude", "No agent is running in that tile")),
         Some(t) if !t.is_empty() => return Err(CliError::new("draft", format!("there is text in its input box ({}); send or clear it first", t.chars().take(40).collect::<String>()))),
         Some(_) => {}
     }
@@ -1177,6 +1193,23 @@ pub fn answer(env: &Env, tile: &str, choice: &str, expect_summary: Option<&str>)
     let answer = resolve(choice, &q.dialog).map_err(|e| CliError::new("no_option", e))?;
     let (bytes, option) = match answer {
         Answer::Esc => (b"\x1b".to_vec(), Value::Null),
+        // Codex takes an option's hotkey, else Enter on it after moving its cursor there.
+        Answer::Option(o) if q.dialog.codex => {
+            let bytes = match crate::dialog::codex_key(&o.label) {
+                Some("esc") => b"\x1b".to_vec(),
+                Some(k) => k.as_bytes().to_vec(),
+                None => {
+                    let from = q.dialog.cursor.unwrap_or(1);
+                    let step: &[u8] = if o.n > from { b"\x1b[B" } else { b"\x1b[A" };
+                    for _ in 0..o.n.abs_diff(from) {
+                        c.write(step).map_err(failed)?;
+                        std::thread::sleep(Duration::from_millis(30));
+                    }
+                    b"\r".to_vec()
+                }
+            };
+            (bytes, json!(o))
+        }
         Answer::Option(o) => (o.n.to_string().into_bytes(), json!(o)),
         Answer::Submit { downs } => {
             // Each ↓ is its own write so the dialog moves one entry at a time before Enter lands.
@@ -1246,6 +1279,7 @@ pub fn output(env: &Env, tile: &str, lines: usize, follow: bool, out: &mut dyn W
 /// The tile's current transcript: the hook's path, else where Claude would keep the session.
 /// Only this Mac's own tiles are guessed: an ssh tile's or another Mac's transcript is not here.
 fn transcript_path(env: &Env, tile: &str) -> Result<(PathBuf, Option<String>), CliError> {
+    refuse_codex(env, tile)?;
     transcript_path_from(env, tile, fold_for(env, tile).unwrap_or_default())
 }
 
@@ -1255,6 +1289,16 @@ fn transcript_path_from(env: &Env, tile: &str, fold: Fold) -> Result<(PathBuf, O
     let (path, session) = known_transcript_path(env, tile, fold)?;
     let (path, moved) = resolve_continued(&path);
     Ok((path, moved.or(session)))
+}
+
+/// Codex keeps its conversations in its own format, which the tool does not read (Codex tiles
+/// spec §4).
+fn refuse_codex(env: &Env, tile: &str) -> Result<(), CliError> {
+    let ws = env.workspace()?.unwrap_or_else(empty_workspace);
+    if ws.terminals.iter().any(|d| d.id == tile && matches!(d.agent(), Some((Agent::Codex, _)))) {
+        return Err(CliError::new("unsupported", "Codex conversations cannot be read here; use output"));
+    }
+    Ok(())
 }
 
 fn known_transcript_path(env: &Env, tile: &str, fold: Fold) -> Result<(PathBuf, Option<String>), CliError> {

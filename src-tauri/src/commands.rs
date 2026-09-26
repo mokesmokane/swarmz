@@ -852,20 +852,23 @@ pub async fn tile_answer(tile: String, choice: String, machine: Option<String>) 
     .map_err(|e| e.to_string())?
 }
 
-/// The conductor's default folder, `~/.swarmz/conductor`, created with a `CLAUDE.md` that says
+/// The conductor's default folder, `~/.swarmz/conductor`, created with a `CLAUDE.md` and an `AGENTS.md` that say
 /// what it is for (conductor spec §6); returns its path.
 #[tauri::command]
 pub fn conductor_dir() -> Result<String, String> {
     let dir = swarmz_tool::paths::home_dir().join(".swarmz").join("conductor");
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    let claude_md = dir.join("CLAUDE.md");
-    if !claude_md.exists() {
-        std::fs::write(&claude_md, CONDUCTOR_CLAUDE_MD).map_err(|e| format!("could not write {}: {e}", claude_md.display()))?;
+    // Claude reads CLAUDE.md, Codex AGENTS.md (Codex tiles spec §5).
+    for name in ["CLAUDE.md", "AGENTS.md"] {
+        let path = dir.join(name);
+        if !path.exists() {
+            std::fs::write(&path, CONDUCTOR_CLAUDE_MD).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        }
     }
     Ok(dir.to_string_lossy().into_owned())
 }
 
-const CONDUCTOR_CLAUDE_MD: &str = "# The conductor\n\nThis folder is the home of the swarmz conductor: the one Claude session allowed to act on the other tiles in the workspace, on every Mac. There is no code here to work on. The user asks the conductor what the other tiles are doing, hands work to them through it, and is reached by it on Telegram when away.\n\nWhat you may do and how is told to you at the start of every session (`~/.swarmz/bin/swarmz briefing` prints it again). Keep notes you want to survive between sessions in this folder.\n";
+const CONDUCTOR_CLAUDE_MD: &str = "# The conductor\n\nThis folder is the home of the swarmz conductor: the one agent session allowed to act on the other tiles in the workspace, on every Mac. There is no code here to work on. The user asks the conductor what the other tiles are doing, hands work to them through it, and is reached by it on Telegram when away.\n\nWhat you may do and how is told to you at the start of every session (`~/.swarmz/bin/swarmz briefing` prints it again). Keep notes you want to survive between sessions in this folder.\n";
 
 /// A Mac's numbers for the Machines view (activity bar and machines spec §4): `swarmz stats`
 /// here, or on `host` over ssh with the sync's options. A tool too old to know `stats` is

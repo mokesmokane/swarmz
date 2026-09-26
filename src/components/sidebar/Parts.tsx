@@ -357,7 +357,7 @@ function MachineLine({ name, onOpen }: { name: string; onOpen: () => void }) {
   const label = useStore((s) => machineLabel(name, s.machines[name]));
   const color = useStore((s) => machineColor(s, name));
   const glyph = useStore((s) => machineGlyph(name, s.machines[name]));
-  const needs = m?.stats?.claude.needsYou ?? 0;
+  const needs = (m?.stats?.claude.needsYou ?? 0) + (m?.stats?.codex?.needsYou ?? 0);
   const ping = m?.ping?.ms != null ? `${m.ping.direct ? "" : "↯ "}${m.ping.ms} ms` : "";
   return (
     <button className="flex w-full items-center gap-[7px] px-3 py-1 text-left text-[11px] text-[#b9bbc1] hover:bg-hover" onClick={onOpen} data-testid={`machine-line-${name}`} title={name}>

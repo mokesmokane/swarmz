@@ -79,12 +79,13 @@ fun dotOf(row: TileRow, need: Need?): Dot = when {
     else -> Dot.Idle
 }
 
-fun modeLabel(row: TileRow): String = when {
-    row.kind == "shell" -> "shell"
-    row.mode == null -> "default"
-    row.mode == "acceptEdits" || row.mode == "accept edits" -> "accept edits"
-    row.mode == "bypassPermissions" -> "skip permissions"
-    else -> row.mode
+/** A tile's permission mode in words; null for a mode this app does not know (Codex reports its own). */
+fun modeLabel(row: TileRow): String? = if (row.isShell) "shell" else when (row.mode) {
+    null, "default" -> "default"
+    "acceptEdits", "accept edits" -> "accept edits"
+    "bypassPermissions" -> "skip permissions"
+    "plan" -> "plan"
+    else -> null
 }
 
 fun relativeTime(then: Instant, now: Instant): String {

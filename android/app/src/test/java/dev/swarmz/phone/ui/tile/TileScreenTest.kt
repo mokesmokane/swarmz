@@ -128,6 +128,21 @@ class TileScreenTest {
     }
 
     @Test
+    fun aCodexTileGetsTheAgentKeysWithCodexCommands() {
+        val c = controller("t1", """{"cwd":"/Users/me/api","id":"t1","kind":"codex","mode":"on-request","name":"api","running":true,"status":"idle"}""")
+        compose.setContent { SwarmzTheme { TileScreen(c, unfolded = true, onBack = null) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Esc")).fetchSemanticsNodes().isNotEmpty() }
+        // An unknown mode shows no badge, and Codex has no Shift+Tab mode cycle.
+        compose.onNodeWithText("ON-REQUEST").assertDoesNotExist()
+        compose.onNodeWithText("⇧Tab", substring = true).assertDoesNotExist()
+        compose.onNodeWithTag("attach").assertExists()
+        compose.onNodeWithText("/").performClick()
+        compose.onNodeWithText("/status").assertIsDisplayed()
+        compose.onNodeWithText("/new").performClick()
+        assertTrue(c.draft.value.text == "/new ")
+    }
+
+    @Test
     fun stoppedTilesOfferRestart() {
         val c = controller("t1", """{"cwd":"/Users/me/api","exitCode":1,"id":"t1","kind":"claude","name":"api","running":false,"status":"offline"}""")
         compose.setContent { SwarmzTheme { TileScreen(c, unfolded = false, onBack = {}) } }

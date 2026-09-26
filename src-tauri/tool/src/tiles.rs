@@ -5,7 +5,7 @@ use crate::agent::{fold_log, read_log, Fold, Needs, Status};
 use crate::dialog::{Kind, ScreenView};
 use crate::paths::{live_session, read_meta, session_paths, sessions_dir_in, socket_live};
 use crate::transcript::{continued_in, guess_path, last_assistant_text, resolve_continued, resolve_continued_by};
-use crate::workspace::{read_from, TerminalDef, Workspace};
+use crate::workspace::{read_from, Agent, TerminalDef, Workspace};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -188,7 +188,8 @@ fn rows_from(
         .map(|def| {
             let is_running = running(&def.id);
             let meta = session_paths(&dir, &def.id).ok().and_then(|p| read_meta(&p.meta));
-            let claude = def.claude.as_ref().filter(|c| c.enabled);
+            let agent = def.live_agent().map(|(a, _)| a);
+            let claude = def.live_agent().filter(|(a, _)| *a == Agent::Claude).map(|(_, c)| c);
             let mut fold: Fold = folds.get(&def.id).cloned().unwrap_or_default();
             if !is_running {
                 fold.status = Status::Offline;
@@ -199,6 +200,14 @@ fn rows_from(
                 // A holder that does not answer Screen keeps the fold as it is.
                 if let Some(view) = dialog(&def.id) {
                     apply_screen(&mut fold, &view);
+                    // Codex can exit without a `SessionEnd` (Codex tiles spec §4): its shell in
+                    // front means it is not running.
+                    if agent == Some(Agent::Codex) && view.shell_in_front == Some(true) {
+                        fold.status = Status::Offline;
+                        fold.needs = None;
+                        fold.summary = None;
+                        fold.tool = None;
+                    }
                 }
             }
             let transcript = fold.transcript_path.clone().map(PathBuf::from).or_else(|| {
@@ -213,7 +222,8 @@ fn rows_from(
                 }
                 None => (None, None),
             };
-            let last_message = transcript.as_deref().and_then(last_text);
+            // Codex's rollouts are not read: its `Stop` hook carries the last reply.
+            let last_message = if agent == Some(Agent::Codex) { fold.last_message.clone() } else { transcript.as_deref().and_then(last_text) };
             let card = crate::card::read(&def.extra);
             let card_str = |k: &str| card.as_ref().and_then(|c| c.get(k)).and_then(|v| v.as_str()).map(str::to_string);
             TileRow {
@@ -222,7 +232,12 @@ fn rows_from(
                 card_at: card_str("updatedAt"),
                 card_by: card_str("by"),
                 cwd: if is_running { live_cwd(&def.id).unwrap_or_else(|| def.cwd.clone()) } else { def.cwd.clone() },
-                kind: if claude.is_some() { "claude" } else { "shell" }.to_string(),
+                kind: match agent {
+                    Some(Agent::Claude) => "claude",
+                    Some(Agent::Codex) => "codex",
+                    None => "shell",
+                }
+                .to_string(),
                 running: is_running,
                 exit_code: if is_running { None } else { meta.and_then(|m| m.exit_code) },
                 status: fold.status,
@@ -232,7 +247,7 @@ fn rows_from(
                 mode: fold.mode,
                 last_message,
                 turn_ended_at: fold.turn_ended_at,
-                session_id: moved.or(fold.session_id).or_else(|| claude.map(|c| c.session_id.clone())),
+                session_id: moved.or(fold.session_id).or_else(|| def.live_agent().filter(|(a, c)| *a == Agent::Claude || c.started).map(|(_, c)| c.session_id.clone())),
                 summary: fold.summary,
                 machine: self_machine.map(str::to_string),
                 conductor: tree.is_conductor(&def.id),
@@ -458,12 +473,12 @@ mod tests {
     }
 
     fn dialog(summary: &str) -> Dialog {
-        Dialog { kind: Kind::Permission, heading: "Bash command".into(), target: Some(summary.into()), description: None, options: vec![], multi: false, cursor: None, submit_at: None }
+        Dialog { kind: Kind::Permission, heading: "Bash command".into(), target: Some(summary.into()), description: None, options: vec![], multi: false, cursor: None, submit_at: None, codex: false }
     }
 
     fn question(text: &str) -> Option<ScreenView> {
         let d = Dialog { kind: Kind::Question, heading: "Colour".into(), target: Some(text.into()), ..dialog("") };
-        Some(ScreenView { dialog: Some(d), interruptible: false })
+        Some(ScreenView { dialog: Some(d), interruptible: false, shell_in_front: None })
     }
 
     #[test]
@@ -486,11 +501,11 @@ mod tests {
     }
 
     fn shown(summary: &str) -> Option<ScreenView> {
-        Some(ScreenView { dialog: Some(dialog(summary)), interruptible: false })
+        Some(ScreenView { dialog: Some(dialog(summary)), interruptible: false, shell_in_front: None })
     }
 
     fn nothing_shown(interruptible: bool) -> Option<ScreenView> {
-        Some(ScreenView { dialog: None, interruptible })
+        Some(ScreenView { dialog: None, interruptible, shell_in_front: None })
     }
 
     /// Session metadata for `id`, from a holder that answers Screen or not (every holder that
@@ -585,7 +600,7 @@ mod tests {
         apply_screen(&mut f, &ScreenView::default());
         assert_eq!((f.status, f.needs, f.summary, f.tool), (Status::Idle, None, None, None));
         let mut f = hooked();
-        apply_screen(&mut f, &ScreenView { dialog: None, interruptible: true });
+        apply_screen(&mut f, &ScreenView { dialog: None, interruptible: true, shell_in_front: None });
         assert_eq!((f.status, f.needs, f.summary, f.tool), (Status::Working, None, None, None));
         let mut working = Fold { status: Status::Working, ..Fold::default() };
         apply_screen(&mut working, &ScreenView::default());

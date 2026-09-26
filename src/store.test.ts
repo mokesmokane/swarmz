@@ -4169,3 +4169,127 @@ describe("tile boards", () => {
     expect(useStore.getState().hoveredTile).toBeNull();
   });
 });
+
+describe("Codex tiles", () => {
+  const ev = (terminal: string, event: string, extra: Partial<import("./lib/agentState").AgentEvent> = {}) => ({
+    host: null,
+    event: { ts: "2026-09-15T10:00:00Z", terminal, event, sessionId: "s1", notificationType: null, source: null, cwd: null, permissionMode: null, ...extra },
+  });
+
+  it("opens a def's codex key as a Codex tile and saves it back under codex", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+        version: 1,
+        terminals: [{ id: "t1", name: "one", cwd: "/tmp/one", ssh: null, claude: null, command: null, codex: { enabled: true, sessionId: "cx1", skipPermissions: true, started: true } } as TerminalDef],
+        layout: null,
+      });
+      await useStore.getState().loadWorkspace();
+      const s = useStore.getState();
+      expect(s.settings.t1.claude).toEqual({ enabled: true, sessionId: "cx1", skipPermissions: true, started: true, agent: "codex" });
+      expect(s.settings.t1.extra).toEqual({});
+      expect(s.startupNotes.t1).toBeUndefined();
+      useStore.getState().updateSettings("t1", { command: null });
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS + 1);
+      const saves = vi.mocked(ipc.saveWorkspace).mock.calls;
+      const ws = saves[saves.length - 1][0] as Workspace;
+      expect(ws.terminals[0].claude).toBeNull();
+      expect(ws.terminals[0].codex).toEqual({ enabled: true, sessionId: "cx1", skipPermissions: true, started: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a not-started Codex def with no id as it is", async () => {
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [{ id: "t1", name: "one", cwd: "/tmp/one", ssh: null, claude: null, command: null, codex: { enabled: true, sessionId: "", skipPermissions: false, started: false } } as TerminalDef],
+      layout: null,
+    });
+    await useStore.getState().loadWorkspace();
+    const s = useStore.getState();
+    expect(s.settings.t1.claude).toEqual({ enabled: true, sessionId: "", skipPermissions: false, started: false, agent: "codex" });
+    expect(s.startupNotes.t1).toBeUndefined();
+    expect(s.startupPending.t1).toBe(true);
+  });
+
+  it("starts a started Codex def with an unusable id afresh", async () => {
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [{ id: "t1", name: "one", cwd: "/tmp/one", ssh: null, claude: null, command: null, codex: { enabled: true, sessionId: "bad'id", skipPermissions: false, started: true } } as TerminalDef],
+      layout: null,
+    });
+    await useStore.getState().loadWorkspace();
+    expect(useStore.getState().settings.t1.claude).toEqual({ enabled: true, sessionId: "", skipPermissions: false, started: false, agent: "codex" });
+  });
+
+  it("createAgentTerminal starts plain codex in a fresh local tile", async () => {
+    const id = await useStore.getState().createAgentTerminal("/tmp/a", "codex");
+    expect(useStore.getState().settings[id].claude).toEqual({ enabled: true, sessionId: "", skipPermissions: false, started: false, agent: "codex" });
+    expect(ipc.writeTerminal).toHaveBeenCalledWith(id, "codex\r");
+  });
+
+  it("createConductorTerminal can start Codex", async () => {
+    vi.mocked(ipc.conductorAction).mockImplementation(async (action, id) => ({ conductor: action === "set" ? (id ?? null) : null, claim: null }));
+    const id = await useStore.getState().createConductorTerminal("/home/me/.swarmz/conductor", undefined, "codex");
+    expect(useStore.getState().settings[id].claude?.agent).toBe("codex");
+    expect(ipc.conductorAction).toHaveBeenCalledWith("set", id);
+  });
+
+  it("a Codex SessionStart adopts the tile as Codex, keeping its own skip flag; a Claude one turns it back", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(id, { claude: { enabled: true, sessionId: "", skipPermissions: true, started: false, agent: "codex" } });
+    useStore.getState().applyAgentEvent(ev(id, "SessionStart", { sessionId: "cx1", cwd: "/tmp/a", permissionMode: "default", agent: "codex" }));
+    let s = useStore.getState().settings[id];
+    expect(s.claude).toEqual({ enabled: true, sessionId: "cx1", skipPermissions: true, started: false, agent: "codex" });
+    expect(s.sessions?.[0]).toMatchObject({ sessionId: "cx1", agent: "codex", skipPermissions: true });
+    useStore.getState().applyAgentEvent(ev(id, "UserPromptSubmit", { sessionId: "cx1", agent: "codex" }));
+    expect(useStore.getState().settings[id].claude?.started).toBe(true);
+    useStore.getState().applyAgentEvent(ev(id, "SessionStart", { sessionId: "cl1", cwd: "/tmp/a", permissionMode: "bypassPermissions" }));
+    s = useStore.getState().settings[id];
+    expect(s.claude).toEqual({ enabled: true, sessionId: "cl1", skipPermissions: true, started: false });
+    // Going back to the Codex session resumes it with Codex.
+    useStore.getState().applyAgentEvent(ev(id, "SessionEnd", { sessionId: "cl1" }));
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValue(false);
+    await useStore.getState().selectSession(id, "cx1", { connect: false });
+    expect(useStore.getState().settings[id].claude?.agent).toBe("codex");
+    expect(ipc.writeTerminal).toHaveBeenCalledWith(id, "cd '/tmp/a' && codex resume cx1 --dangerously-bypass-approvals-and-sandbox\r");
+    expect(useStore.getState().resumeWatch[id]).toMatchObject({ sessionId: "cx1" });
+  });
+
+  it("a live local Codex tile whose shell is back in front reads offline", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(id, { claude: { enabled: true, sessionId: "cx1", skipPermissions: false, started: true, agent: "codex" } });
+    useStore.getState().applyAgentEvent({ host: null, event: { ...ev(id, "SessionStart", { sessionId: "cx1", agent: "codex" }).event, ts: new Date().toISOString() } });
+    expect(useStore.getState().agentState[id].status).toBe("idle");
+    // Still running: nothing changes.
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValueOnce(true);
+    await useStore.getState().checkAgentExited(id);
+    expect(useStore.getState().agentState[id].status).toBe("idle");
+    // A holder that cannot say changes nothing either.
+    vi.mocked(ipc.terminalForegroundBusy).mockRejectedValueOnce("no holder");
+    await useStore.getState().checkAgentExited(id);
+    expect(useStore.getState().agentState[id].status).toBe("idle");
+    vi.mocked(ipc.terminalForegroundBusy).mockResolvedValueOnce(false);
+    await useStore.getState().checkAgentExited(id);
+    expect(useStore.getState().agentState[id].status).toBe("offline");
+  });
+
+  it("never asks about a Claude tile or an offline one", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(id, { claude: { enabled: true, sessionId: "s1", skipPermissions: false, started: true } });
+    useStore.getState().applyAgentEvent({ host: null, event: { ...ev(id, "SessionStart").event, ts: new Date().toISOString() } });
+    vi.mocked(ipc.terminalForegroundBusy).mockClear();
+    await useStore.getState().checkAgentExited(id);
+    expect(ipc.terminalForegroundBusy).not.toHaveBeenCalled();
+    const cx = await useStore.getState().createTerminal("/tmp/b");
+    useStore.getState().updateSettings(cx, { claude: { enabled: true, sessionId: "", skipPermissions: false, started: false, agent: "codex" } });
+    await useStore.getState().checkAgentExited(cx);
+    expect(ipc.terminalForegroundBusy).not.toHaveBeenCalled();
+  });
+
+  it("a remote Codex tile is created with the agent", async () => {
+    const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/w", claude: { skipPermissions: false, agent: "codex" } });
+    expect(useStore.getState().settings[id].claude).toEqual({ enabled: true, sessionId: "", skipPermissions: false, started: false, agent: "codex" });
+  });
+});
