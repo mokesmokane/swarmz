@@ -103,3 +103,12 @@ The conductor folder gets an `AGENTS.md` beside its `CLAUDE.md`.
   New session sends `--agent codex`.
 - Mixed versions: an older app or tool shows a Codex tile as a shell tile and never types a
   Claude line into it; its status still shows wherever the hooks are installed.
+
+## 8. Amendment: no Codex-only UI (same day)
+
+Codex is started the way Claude is, not through menu entries of its own: the + menu keeps
+Local terminal…, Remote terminal… and Conductor… (a Claude tile, as before). A local tile becomes a
+Codex tile when `codex` is typed in it, as `claude` makes a Claude tile; any agent tile, Codex
+included, is made a conductor from its row's 🎛 menu. The remote form's Agent choice (None,
+Claude, Codex) replaces its old Run Claude box. Rows carry no agent label (there is none for
+Claude), and hints say "agent tile" rather than naming both agents.
