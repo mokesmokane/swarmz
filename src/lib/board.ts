@@ -108,45 +108,50 @@ export function schemeColors(hue: number) {
 
 export const NEEDS_COLOR = "oklch(0.82 0.14 60)";
 
-export type BoardTab = "overview" | "plan" | "changes" | "questions" | "swarm" | "history";
+export type BoardTab = "overview" | "plan" | "changes" | "questions" | "swarm";
 export const BOARD_TABS: [BoardTab, string][] = [
   ["overview", "Where we are"],
   ["plan", "Plan"],
   ["changes", "Changes"],
   ["questions", "Questions"],
   ["swarm", "Swarm"],
-  ["history", "History"],
 ];
 
-/** One conversation in the History tab (tile board spec §5). */
+/** One conversation in the sidebar's History view (tile board spec §5, as amended). */
 export interface HistoryRow {
+  tile: string;
   sessionId: string;
   title: string;
   lastActive: string;
+  /** The tile's live conversation. */
   current: boolean;
   /** Where it got to (the board's now and next), for the row's tooltip. */
   detail: string | null;
 }
 
 /**
- * The tile's conversations, newest activity first: its session records (closed ones included)
- * joined with each conversation's board, titled by the board's goal, else by its folder.
+ * Every conversation of every tile, newest activity first: each tile's session records (closed
+ * conversations included) joined with each conversation's board, titled by the board's goal,
+ * else by its folder.
  */
 export function historyRows(
-  sessions: { sessionId: string; cwd: string; lastActiveAt: string }[],
-  boards: { sessionId: string; at: string; board: unknown }[],
-  current: string | null,
+  tiles: { id: string; current: string | null; sessions: { sessionId: string; cwd: string; lastActiveAt: string }[] }[],
+  boards: Record<string, { sessionId: string; at: string; board: unknown }[]>,
 ): HistoryRow[] {
-  const byId = new Map<string, HistoryRow>();
   const folder = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
-  for (const s of sessions) byId.set(s.sessionId, { sessionId: s.sessionId, title: `Conversation in ${folder(s.cwd)}`, lastActive: s.lastActiveAt, current: s.sessionId === current, detail: null });
-  for (const b of boards) {
-    const o = readBoard(b.board)?.overview;
-    const row = byId.get(b.sessionId) ?? { sessionId: b.sessionId, title: "Conversation", lastActive: b.at, current: b.sessionId === current, detail: null };
-    const detail = [o?.now, o?.next ? `Next: ${o.next}` : null].filter(Boolean).join("\n") || null;
-    byId.set(b.sessionId, { ...row, title: o?.goal ?? row.title, detail, lastActive: row.lastActive > b.at ? row.lastActive : b.at });
+  const out: HistoryRow[] = [];
+  for (const t of tiles) {
+    const byId = new Map<string, HistoryRow>();
+    for (const s of t.sessions) byId.set(s.sessionId, { tile: t.id, sessionId: s.sessionId, title: `Conversation in ${folder(s.cwd)}`, lastActive: s.lastActiveAt, current: s.sessionId === t.current, detail: null });
+    for (const b of boards[t.id] ?? []) {
+      const o = readBoard(b.board)?.overview;
+      const row = byId.get(b.sessionId) ?? { tile: t.id, sessionId: b.sessionId, title: "Conversation", lastActive: b.at, current: b.sessionId === t.current, detail: null };
+      const detail = [o?.now, o?.next ? `Next: ${o.next}` : null].filter(Boolean).join("\n") || null;
+      byId.set(b.sessionId, { ...row, title: o?.goal ?? row.title, detail, lastActive: row.lastActive > b.at ? row.lastActive : b.at });
+    }
+    out.push(...byId.values());
   }
-  return [...byId.values()].sort((a, b) => (a.lastActive < b.lastActive ? 1 : a.lastActive > b.lastActive ? -1 : 0));
+  return out.sort((a, b) => (a.lastActive < b.lastActive ? 1 : a.lastActive > b.lastActive ? -1 : 0));
 }
 
 /** Per tile on this Mac: whether its board is open, which tab, and a ↻ scheme choice. */

@@ -428,7 +428,11 @@ fn this_tile(tile: Option<&str>, what: &str) -> Result<String, CliError> {
 
 /// `board [--tile ID] [--get] [--clear]` (tile board spec §2): replaces the tile's board with the
 /// JSON on stdin, prints it (`--get`), or removes it (`--clear`).
-pub fn board(env: &Env, tile: Option<&str>, get: bool, clear: bool, history: bool, input: &mut dyn std::io::Read) -> Result<Value, CliError> {
+pub fn board(env: &Env, tile: Option<&str>, get: bool, clear: bool, history: bool, all: bool, input: &mut dyn std::io::Read) -> Result<Value, CliError> {
+    // Every tile's conversations on this Mac, for the desktop's History view.
+    if history && all {
+        return Ok(json!({"v": 1, "tiles": crate::board::history_all(&env.home)}));
+    }
     let tile = this_tile(tile, "board [--tile <id>] [--get] [--history] [--clear] < board.json")?;
     if history {
         return Ok(json!({"v": 1, "tile": tile, "history": crate::board::history(&env.home, &tile)}));

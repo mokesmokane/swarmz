@@ -131,6 +131,23 @@ pub fn history(home: &Path, tile: &str) -> Vec<Value> {
     out
 }
 
+/// Every tile's conversation boards on this Mac, by tile (the sidebar's History view).
+pub fn history_all(home: &Path) -> Map<String, Value> {
+    let mut out = Map::new();
+    let Ok(rd) = std::fs::read_dir(dir(home)) else { return out };
+    for e in rd.filter_map(|e| e.ok()) {
+        let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
+        if !e.path().is_dir() || !crate::paths::valid_tile_id(&name) {
+            continue;
+        }
+        let h = history(home, &name);
+        if !h.is_empty() {
+            out.insert(name, Value::Array(h));
+        }
+    }
+    out
+}
+
 /// Drops the oldest conversations past `HISTORY_MAX`.
 fn prune(home: &Path, tile: &str) {
     let all = {
@@ -228,6 +245,8 @@ mod tests {
         }
         let h2 = history(&home, "t2");
         assert_eq!(h2.len(), HISTORY_MAX);
+        let all = history_all(&home);
+        assert_eq!(all.keys().cloned().collect::<Vec<_>>(), vec!["t1".to_string(), "t2".to_string()]);
         assert_eq!(h2[0]["sessionId"], format!("s{}", HISTORY_MAX + 2));
         let _ = std::fs::remove_dir_all(&home);
     }

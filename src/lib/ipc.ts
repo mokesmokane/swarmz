@@ -205,7 +205,9 @@ export const ipc = {
   tileAnswer: (tile: string, choice: "yes" | "no", machine: string | null) => invoke<unknown>("tile_answer", { tile, choice, machine }),
   /** A tile's board (tile board spec §2), from its Mac: `{board, at}`, board null when it has none. */
   boardGet: (tile: string, machine: string | null) => invoke<{ board: unknown; at?: string }>("board_get", { tile, machine }),
-  /** Each conversation's latest board in a tile, newest first (the History tab). */
+  /** Every tile's conversation boards on one Mac (null: this one), for the History view. */
+  boardHistoryAll: (machine: string | null) => invoke<{ tiles: Record<string, { sessionId: string; at: string; board: unknown }[]> }>("board_history_all", { machine }),
+  /** Each conversation's latest board in a tile, newest first. */
   boardHistory: (tile: string, machine: string | null) => invoke<{ history: { sessionId: string; at: string; board: unknown }[] }>("board_history", { tile, machine }),
   /** Types `text` into the tile and submits it (a board's answer button). */
   tileSend: (tile: string, text: string, machine: string | null) => invoke<unknown>("tile_send", { tile, text, machine }),

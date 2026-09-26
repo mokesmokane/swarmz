@@ -41,6 +41,7 @@ vi.mock("../lib/ipc", () => ({
     tailscalePing: vi.fn(async () => null),
     conductorAction: vi.fn(async () => ({ conductor: null, claim: null })),
     tileAnswer: vi.fn(async () => ({ v: 1, answered: true })),
+    boardHistoryAll: vi.fn(async (m: string | null) => (m === null ? { tiles: { [ID]: [{ sessionId: "old", at: "2026-09-20T10:00:00Z", board: { overview: { goal: "Last week's fix", now: "Merged." } } }] } } : { tiles: {} })),
     conductorDir: vi.fn(async () => "/home/me/.swarmz/conductor"),
     phones: vi.fn(async () => []),
     revokePhone: vi.fn(async () => ({ removed: 1, machines: [] })),
@@ -668,5 +669,29 @@ describe("updates in the sidebar", () => {
     fireEvent.click(btn);
     expect(checkForUpdates).toHaveBeenCalledWith({ manual: true });
     act(() => useStore.setState({ update: before }));
+  });
+});
+
+describe("History view (tile board spec §5)", () => {
+  it("lists every tile's conversations, closed ones too, and a click goes back to one", async () => {
+    const selectSession = vi.fn(async () => {});
+    useStore.setState({
+      selectSession,
+      settings: { [ID]: { ssh: { host: "mokes@box", cwd: "/p", machine: "box" }, claude: { enabled: true, sessionId: "cur", skipPermissions: false, started: true }, command: null, extra: {}, sessions: [{ sessionId: "cur", cwd: "/p/app", skipPermissions: false, startedAt: "t", lastActiveAt: new Date().toISOString() }] } },
+    });
+    render(<Sidebar />);
+    fireEvent.click(screen.getByRole("radio", { name: "History" }));
+    await screen.findByTestId("history-old");
+    expect(ipc.boardHistoryAll).toHaveBeenCalledWith(null);
+    expect(ipc.boardHistoryAll).toHaveBeenCalledWith("box");
+    const rows = screen.getAllByRole("listitem").map((r) => r.getAttribute("data-testid"));
+    expect(rows).toEqual(["history-cur", "history-old"]);
+    expect(screen.getByTestId("history-cur").textContent).toContain("live");
+    expect(screen.getByTestId("history-old").textContent).toContain("Last week's fix");
+    expect(screen.getByTestId("history-old").getAttribute("title")).toBe("Merged.");
+    fireEvent.click(screen.getByTestId("history-old"));
+    expect(selectSession).toHaveBeenCalledWith(ID, "old", { connect: true });
+    fireEvent.click(screen.getByRole("radio", { name: "Triage" }));
+    localStorage.removeItem("swarmz.sidebarGroupBy");
   });
 });
