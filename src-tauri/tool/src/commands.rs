@@ -188,6 +188,14 @@ pub fn stats(env: &Env) -> Result<Value, CliError> {
 
 pub fn ls(env: &Env) -> Result<Value, CliError> {
     let mut v = json!({"v": 1, "tiles": rows(env)});
+    // Each tile's board in brief (tile board spec §6), so `fleet` shows every Mac's work streams.
+    if let Some(rows) = v["tiles"].as_array_mut() {
+        for r in rows {
+            if let Some(s) = r["id"].as_str().and_then(|id| crate::board::summary(&env.home, id)) {
+                r["board"] = s;
+            }
+        }
+    }
     merge_conductor(&mut v, &conductor_state(env));
     Ok(v)
 }

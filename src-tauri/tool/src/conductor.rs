@@ -129,7 +129,7 @@ pub fn caller_tile() -> Option<String> {
 /// conductor included (spec §2).
 const READ_OTHER: &[&str] = &["transcript", "image"];
 /// A screenful of another tile is the conductor's to see (spec §2, capped in `main`).
-const SCREEN: &[&str] = &["output"];
+const SCREEN: &[&str] = &["output", "board-get"];
 /// The most lines the conductor may read of another tile's screen.
 pub const SCREEN_MAX: usize = 200;
 /// Commands that act on another tile: its own conductor's alone (conductor tree spec §3).
@@ -654,6 +654,11 @@ mod tests {
         assert!(ok("s1", "notify", None).is_ok());
         assert!(ok("s1", "telegram-follow", None).is_err());
         assert!(ok("a", "notify", None).is_err());
+        // Any conductor above a tile may read its board; nobody else's but the tile's own.
+        assert!(ok("c1", "board-get", Some("a")).is_ok());
+        assert!(ok("s1", "board-get", Some("o")).is_err());
+        assert!(ok("a", "board-get", Some("b")).is_err());
+        assert!(ok("a", "board", Some("b")).is_err());
         assert!(ok("a", "send", Some("a")).is_ok());
         assert!(ok("a", "send", Some("o")).is_err());
         assert!(ok("s1", "conductor-set", None).is_err());

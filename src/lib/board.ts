@@ -149,7 +149,18 @@ export function historyRows(
       const detail = [o?.now, o?.next ? `Next: ${o.next}` : null].filter(Boolean).join("\n") || null;
       byId.set(b.sessionId, { ...row, title: o?.goal ?? row.title, detail, lastActive: row.lastActive > b.at ? row.lastActive : b.at });
     }
-    out.push(...byId.values());
+    // Claude starts a new session when a conversation is cleared, compacted or resumed: rows of
+    // one tile with the same title are one conversation to the user, shown once (the newest).
+    const byTitle = new Map<string, HistoryRow>();
+    for (const r of byId.values()) {
+      const seen = byTitle.get(r.title);
+      if (!seen) byTitle.set(r.title, r);
+      else {
+        const newer = seen.lastActive >= r.lastActive ? seen : r;
+        byTitle.set(r.title, { ...newer, current: seen.current || r.current, sessionId: seen.current ? seen.sessionId : r.current ? r.sessionId : newer.sessionId, detail: newer.detail ?? seen.detail ?? r.detail });
+      }
+    }
+    out.push(...byTitle.values());
   }
   return out.sort((a, b) => (a.lastActive < b.lastActive ? 1 : a.lastActive > b.lastActive ? -1 : 0));
 }

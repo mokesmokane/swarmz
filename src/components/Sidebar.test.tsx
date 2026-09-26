@@ -672,18 +672,19 @@ describe("updates in the sidebar", () => {
   });
 });
 
-describe("History view (tile board spec §5)", () => {
+describe("History (tile board spec §5)", () => {
   it("lists every tile's conversations, closed ones too, and a click goes back to one", async () => {
+    const { HistoryPanel } = await import("./sidebar/HistoryView");
     const selectSession = vi.fn(async () => {});
     useStore.setState({
       selectSession,
-      settings: { [ID]: { ssh: { host: "mokes@box", cwd: "/p", machine: "box" }, claude: { enabled: true, sessionId: "cur", skipPermissions: false, started: true }, command: null, extra: {}, sessions: [{ sessionId: "cur", cwd: "/p/app", skipPermissions: false, startedAt: "t", lastActiveAt: new Date().toISOString() }] } },
+      settings: { [ID]: { ssh: { host: "mokes@box", cwd: "/p", machine: "box" }, claude: { enabled: true, sessionId: "cur", skipPermissions: false, started: true }, command: null, extra: {}, sessions: [{ sessionId: "cur", cwd: "/p/app", skipPermissions: false, startedAt: "t", lastActiveAt: new Date().toISOString() }, { sessionId: "dup", cwd: "/p/app", skipPermissions: false, startedAt: "t", lastActiveAt: "2026-09-01T00:00:00Z" }] } },
     });
-    render(<Sidebar />);
-    fireEvent.click(screen.getByRole("radio", { name: "History" }));
+    render(<HistoryPanel />);
     await screen.findByTestId("history-old");
     expect(ipc.boardHistoryAll).toHaveBeenCalledWith(null);
     expect(ipc.boardHistoryAll).toHaveBeenCalledWith("box");
+    // "dup" (a cleared or resumed session with the same title) folds into the live one.
     const rows = screen.getAllByRole("listitem").map((r) => r.getAttribute("data-testid"));
     expect(rows).toEqual(["history-cur", "history-old"]);
     expect(screen.getByTestId("history-cur").textContent).toContain("live");
@@ -691,7 +692,5 @@ describe("History view (tile board spec §5)", () => {
     expect(screen.getByTestId("history-old").getAttribute("title")).toBe("Merged.");
     fireEvent.click(screen.getByTestId("history-old"));
     expect(selectSession).toHaveBeenCalledWith(ID, "old", { connect: true });
-    fireEvent.click(screen.getByRole("radio", { name: "Triage" }));
-    localStorage.removeItem("swarmz.sidebarGroupBy");
   });
 });
