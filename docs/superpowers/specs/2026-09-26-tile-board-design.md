@@ -63,11 +63,21 @@ The phone, editing a board by hand, and history of boards.
   `~/.swarmz/boards/<tile>/<session>.json` (`{at, sessionId, board}`); the session is the tile's
   current Claude session as the hook log says (its last `SessionStart`). `board --history` lists
   them, newest first (at most 20). Clearing a board leaves its history.
-- **History is a sidebar view**, beside Mac, Triage, Folder, Tree and Time (not a tab in the
-  header: boards are for the tiles themselves). It lists every conversation of every tile, from
+- **History is a side bar view of its own** (an activity bar icon under Terminals; not a tab in
+  the header, and not a Terminals grouping: boards are for the tiles themselves). Sessions of one
+  tile with the same title (Claude starts a new session when a conversation is cleared,
+  compacted or resumed) are one conversation and show once, the newest. It lists every conversation of every tile, from
   each tile's session records (the last 20 per tile, closed ones included) joined with the
   conversation boards (`board --history --all`, asked of this Mac and every Mac with a tile),
   newest activity first. A row is the conversation's title (its board's goal, else "Conversation
   in <folder>"), the tile it ran in with its Mac, and when it was last active; the live one is
   marked. Where it got to (its board's now and next) is only the row's tooltip. A click opens the
   tile, going back to that conversation when it is not the live one; hovering outlines the tile.
+
+## 6. Amendment: the conductor sees every board (same day)
+
+`swarmz ls`, and so `fleet`, carry each tile's board in brief (`board`: when it was written, goal,
+now, next, needsYou, plan progress, branch, base, flags, open questions). A conductor may read the
+whole board of any tile below it (`board --tile <id> --get`, the same rule as a glance at its
+screen). The top conductor's briefing says to compare the boards, then the git state in the
+tiles' folders, when the user asks how the work streams stand against each other.
