@@ -63,11 +63,11 @@ The phone, editing a board by hand, and history of boards.
   `~/.swarmz/boards/<tile>/<session>.json` (`{at, sessionId, board}`); the session is the tile's
   current Claude session as the hook log says (its last `SessionStart`). `board --history` lists
   them, newest first (at most 20). Clearing a board leaves its history.
-- The header gets a sixth tab, **History**: every conversation the tile has had, from the tile's
-  session records (the last 20, closed ones included) joined with those boards, newest first.
-  Each shows when it was last active, its folder, and its board's goal and where it got to (or
-  "No board" for a conversation that never wrote one); the current one is marked. Choosing one
-  shows the rest of its board (next, plan progress) and **Resume**, which goes back to that
-  conversation in the tile (as the session history does).
+- The header gets a sixth tab, **History**: a list of every conversation the tile has had, from
+  the tile's session records (the last 20, closed ones included) joined with those boards: each
+  row is its title (the board's goal, else "Conversation in <folder>") and when it was last
+  active, newest first, the current one marked "now". Boards are for the tiles themselves, so a
+  row shows no more of its board than a tooltip (where it got to, and next). A click goes back to
+  that conversation in the tile (as the session history does).
 - A Claude tile with past conversations shows the header even before its current conversation
   writes a board, so History stays reachable.
