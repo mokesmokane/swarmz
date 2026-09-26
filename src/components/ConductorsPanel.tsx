@@ -142,8 +142,8 @@ export function ConductorsPanel() {
 function NoTop({ ids, busy, onMake }: { ids: string[]; busy: boolean; onMake: (id: string) => void }) {
   return (
     <div className="p-2">
-      <div className="mb-2 text-neutral-400">No conductor yet. Pick the agent tile (Claude or Codex) that should look after the others:</div>
-      {ids.length === 0 && <div className="text-neutral-500">No Claude or Codex tiles open.</div>}
+      <div className="mb-2 text-neutral-400">No conductor yet. Pick the agent tile that should look after the others:</div>
+      {ids.length === 0 && <div className="text-neutral-500">No agent tiles open.</div>}
       {ids.map((id) => (
         <div key={id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-neutral-800">
           <TileLabel id={id} />
