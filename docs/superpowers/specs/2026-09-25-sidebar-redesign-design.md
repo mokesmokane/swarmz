@@ -42,3 +42,13 @@ and script are the reference for sizes, colours and states.
 - **Machines footer:** always shown: MACHINES and the app version (click: check for updates),
   then a line per Mac with its status dot, chip, alias, CPU bar, ping and needs count; a click
   opens the Machines view.
+
+## Amendment: what needs you (2026-09-26)
+
+"Needs you" was too eager: every finished turn you had not looked at, and Claude's "waiting for
+input" nudge, flagged the tile. A tile now needs you only when its board asks questions (tile
+board spec) or a permission prompt is waiting. The status word says which: "2 questions", or
+"permission"; a Needs card shows the board's first question, and a permission keeps Deny/Allow.
+The dot is amber only for a waiting permission. The activity bar badge, group and Tree counts and
+the Machines footer's count (`swarmz stats`) follow the same rule. Every tile's board is fetched
+once so the count is known for tiles not open in a pane.
