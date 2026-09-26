@@ -85,11 +85,38 @@ impl Env {
     }
 }
 
+/// A tile named on the command line: its full id, a unique start of it (at least four
+/// characters, as an agent tends to shorten a uuid), or a tile's exact name or title. Without this
+/// a shortened id matched no tile, and the conductor guard said the tile "is not under you".
 pub fn tile_arg(s: &str) -> Result<String, CliError> {
-    if valid_tile_id(s) {
-        Ok(s.to_string())
-    } else {
-        Err(CliError::new("invalid", format!("invalid tile id {s:?}")))
+    let ws = read_from(&workspace_file(&crate::paths::home_dir())).ok().flatten();
+    resolve_tile(ws.as_ref(), s)
+}
+
+/// `tile_arg` against a given workspace (None: none readable, the argument as it stands).
+pub fn resolve_tile(ws: Option<&Workspace>, s: &str) -> Result<String, CliError> {
+    let s = s.trim();
+    let Some(ws) = ws else {
+        return if valid_tile_id(s) { Ok(s.to_string()) } else { Err(CliError::new("invalid", format!("invalid tile id {s:?}"))) };
+    };
+    if ws.terminals.iter().any(|d| d.id == s) {
+        return Ok(s.to_string());
+    }
+    let describe = |ids: &[&str]| ids.iter().map(|id| format!("{} ({id})", crate::conductor::title_of(ws, id))).collect::<Vec<_>>().join(", ");
+    if valid_tile_id(s) && s.len() >= 4 {
+        let starts: Vec<&str> = ws.terminals.iter().map(|d| d.id.as_str()).filter(|id| id.starts_with(s)).collect();
+        match starts.len() {
+            1 => return Ok(starts[0].to_string()),
+            0 => {}
+            _ => return Err(CliError::new("ambiguous", format!("{s} starts several tiles' ids: {}; give more of it", describe(&starts)))),
+        }
+    }
+    let named: Vec<&str> = ws.terminals.iter().filter(|d| d.name == s || crate::conductor::title_of(ws, &d.id) == s).map(|d| d.id.as_str()).collect();
+    match named.len() {
+        1 => Ok(named[0].to_string()),
+        0 if valid_tile_id(s) => Ok(s.to_string()),
+        0 => Err(CliError::new("invalid", format!("no tile with id or name {s:?}"))),
+        _ => Err(CliError::new("ambiguous", format!("{s:?} names several tiles: {}; use an id", describe(&named)))),
     }
 }
 
@@ -1462,6 +1489,29 @@ pub fn ssh_gate(env: &Env) -> CliError {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_tile_is_found_by_a_start_of_its_id_or_its_name() {
+        let def = |id: &str, name: &str| serde_json::json!({"id": id, "name": name, "cwd": "/"});
+        let ws: Workspace = serde_json::from_value(serde_json::json!({"version": 1, "layout": null, "terminals": [
+            def("698b8991-ab16-4d8b-9474-78653684ffe0", "ops-dash"),
+            def("698c0000-0000-0000-0000-000000000000", "other"),
+            def("f66a3927-8fb3-4f7d-9ec0-2cd5e2b70041", "certifyip-ui-2"),
+        ]})).unwrap();
+        let full = "698b8991-ab16-4d8b-9474-78653684ffe0";
+        assert_eq!(resolve_tile(Some(&ws), full).unwrap(), full);
+        assert_eq!(resolve_tile(Some(&ws), "698b8991").unwrap(), full);
+        assert_eq!(resolve_tile(Some(&ws), "ops-dash").unwrap(), full);
+        assert_eq!(resolve_tile(Some(&ws), "698").unwrap(), "698", "too short to be a start: left as is");
+        assert_eq!(resolve_tile(Some(&ws), "698b").unwrap(), full);
+        assert_eq!(resolve_tile(Some(&ws), "698c").unwrap(), "698c0000-0000-0000-0000-000000000000");
+        assert_eq!(resolve_tile(Some(&ws), "6989").unwrap(), "6989", "no tile starts with it: left as is");
+        let dup: Workspace = serde_json::from_value(serde_json::json!({"version": 1, "layout": null, "terminals": [def("aaaa1111", "x"), def("aaaa2222", "y")]})).unwrap();
+        assert_eq!(resolve_tile(Some(&dup), "aaaa").unwrap_err().code, "ambiguous");
+        assert_eq!(resolve_tile(None, "anything-1").unwrap(), "anything-1");
+        assert_eq!(resolve_tile(Some(&ws), "no such tile").unwrap_err().code, "invalid");
+    }
+
     use super::*;
     use crate::paths::{write_meta, Meta};
     use std::os::unix::process::ExitStatusExt;
