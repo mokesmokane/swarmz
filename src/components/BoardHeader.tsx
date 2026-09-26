@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useStore, tileMachine } from "../store";
 import { displayTitle } from "../lib/card";
 import { machineLabel } from "../lib/workspace";
+import { ipc } from "../lib/ipc";
 import { BOARD_TABS, loadBoardPrefs, NEEDS_COLOR, saveBoardPrefs, schemeColors, schemeOf, type Board, type BoardTab } from "../lib/board";
 
 const mono = { fontFamily: "ui-monospace, 'SF Mono', Menlo, monospace" };
@@ -23,6 +24,21 @@ export function BoardHeader({ id }: { id: string }) {
     return m ? machineLabel(m, s.machines[m]) : "";
   });
   const [prefs, setPrefs] = useState(() => loadBoardPrefs()[id] ?? {});
+  const machineName = useStore((s) => s.settings[id]?.ssh?.machine ?? null);
+  // Refresh: asks the tile to rewrite its board, and says so, or why not.
+  const [refresh, setRefresh] = useState<{ busy: boolean; note: string | null }>({ busy: false, note: null });
+  useEffect(() => {
+    if (!refresh.note) return;
+    const t = setTimeout(() => setRefresh((r) => ({ ...r, note: null })), 5000);
+    return () => clearTimeout(t);
+  }, [refresh.note]);
+  const askForUpdate = () => {
+    setRefresh({ busy: true, note: null });
+    ipc.boardRequest(id, machineName).then(
+      () => setRefresh({ busy: false, note: "Asked it to update its board" }),
+      (e) => setRefresh({ busy: false, note: typeof e === "string" ? e : String(e) }),
+    );
+  };
   useEffect(() => {
     if (!entry) void loadBoard(id);
   }, [entry, id, loadBoard]);
@@ -45,6 +61,19 @@ export function BoardHeader({ id }: { id: string }) {
         <span className="flex-none text-[#6c7872]">{machine}</span>
         {!open && board.overview?.now && <span className="min-w-0 flex-1 truncate text-[#8c9892]" title={board.overview.now}>{`· ${board.overview.now}`}</span>}
         <div className="ml-auto flex flex-none items-center gap-1.5 text-[#8c9892]">
+          {refresh.note && <span className="max-w-[220px] truncate text-[#b9c4be]" title={refresh.note} data-testid={`board-refresh-note-${id}`}>{refresh.note}</span>}
+          <button
+            className="rounded px-1.5 text-[#b9c4be] hover:bg-white/10 hover:text-white disabled:opacity-50"
+            title="Ask the tile to update its board now"
+            aria-label="Refresh the board"
+            disabled={refresh.busy}
+            onClick={(e) => {
+              e.stopPropagation();
+              askForUpdate();
+            }}
+          >
+            {refresh.busy ? "asking…" : "Refresh"}
+          </button>
           <span className="h-2.5 w-2.5 rounded-sm" style={{ background: c.acc }} />
           <span>{scheme.name}</span>
           <button
