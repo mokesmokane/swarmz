@@ -56,3 +56,18 @@ when it finishes; plain language that describes the work, not tool output; pick 
 ## 4. Out of scope
 
 The phone, editing a board by hand, and history of boards.
+
+## 5. Amendment: a board per conversation, and History (same day)
+
+- The tool also keeps the latest board of each conversation in the tile,
+  `~/.swarmz/boards/<tile>/<session>.json` (`{at, sessionId, board}`); the session is the tile's
+  current Claude session as the hook log says (its last `SessionStart`). `board --history` lists
+  them, newest first (at most 20). Clearing a board leaves its history.
+- The header gets a sixth tab, **History**: every conversation the tile has had, from the tile's
+  session records (the last 20, closed ones included) joined with those boards, newest first.
+  Each shows when it was last active, its folder, and its board's goal and where it got to (or
+  "No board" for a conversation that never wrote one); the current one is marked. Choosing one
+  shows the rest of its board (next, plan progress) and **Resume**, which goes back to that
+  conversation in the tile (as the session history does).
+- A Claude tile with past conversations shows the header even before its current conversation
+  writes a board, so History stays reachable.
