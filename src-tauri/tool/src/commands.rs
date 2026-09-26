@@ -1090,8 +1090,11 @@ pub fn board_request(env: &Env, tile: &str) -> Result<Value, CliError> {
     let rows = c.welcome().rows as usize;
     let snap = c.screen(if rows == 0 { 200 } else { rows }, Duration::from_secs(2)).ok_or_else(|| CliError::new("old_session", OLD_SESSION))?;
     let texts: Vec<String> = snap.lines.iter().map(line_text).collect();
-    let start = snap.visible_start.unwrap_or_else(|| texts.len().saturating_sub(snap.rows as usize));
-    match crate::input::box_text(&texts[start.min(texts.len())..]) {
+    let start = snap.visible_start.unwrap_or_else(|| texts.len().saturating_sub(snap.rows as usize)).min(texts.len());
+    // Claude draws past messages on a shaded background; the live box has none.
+    let echoed: Vec<bool> = snap.lines[start..].iter().map(|l| l.iter().any(|s| s.bg.is_some() && !s.text.trim().is_empty())).collect();
+    let cursor = snap.cursor.and_then(|(r, c)| r.checked_sub(start).map(|r| (r, c)));
+    match crate::input::box_text(&texts[start..], &echoed, cursor) {
         None => return Err(CliError::new("no_claude", "Claude isn't running in that tile")),
         Some(t) if !t.is_empty() => return Err(CliError::new("draft", format!("there is text in its input box ({}); send or clear it first", t.chars().take(40).collect::<String>()))),
         Some(_) => {}

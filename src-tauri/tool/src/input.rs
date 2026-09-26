@@ -59,11 +59,26 @@ pub fn still_in_box(lines: &[String], text: &str) -> bool {
     }
 }
 
-/// What Claude's input box holds (the last line starting with its `>` prompt), trimmed; None when
-/// the screen shows no box (a shell, or Claude not running).
-pub fn box_text(lines: &[String]) -> Option<String> {
-    let l = lines.iter().rev().map(|l| l.trim()).find(|l| l.starts_with("> ") || l.starts_with("❯ ") || *l == ">" || *l == "❯")?;
-    Some(l[l.chars().next().unwrap().len_utf8()..].trim().to_string())
+/// What Claude's input box holds (the last line starting with its `>` prompt that is not an
+/// echoed message), trimmed; None when the screen shows no box (a shell, or Claude not running).
+/// `echoed[i]` marks line `i` as a past message Claude drew on its shaded background. Claude also
+/// shows a suggested next prompt in an empty box, in plain text with the cursor still right after
+/// the prompt: text is a draft only when `cursor` (line, column) is not at the start of the box.
+pub fn box_text(lines: &[String], echoed: &[bool], cursor: Option<(usize, u16)>) -> Option<String> {
+    let i = (0..lines.len()).rev().find(|&i| {
+        let l = lines[i].trim();
+        !echoed.get(i).copied().unwrap_or(false) && (l.starts_with("> ") || l.starts_with("❯ ") || l == ">" || l == "❯")
+    })?;
+    let raw = &lines[i];
+    let indent = raw.chars().take_while(|c| *c == ' ').count();
+    let l = raw.trim();
+    let text = l[l.chars().next().unwrap().len_utf8()..].trim().to_string();
+    // The prompt and its space: where the cursor sits in an empty box.
+    let start = (indent + 2) as u16;
+    match cursor {
+        Some((row, col)) if row == i && col <= start => Some(String::new()),
+        _ => Some(text),
+    }
 }
 
 /// What `send` types: a bracketed paste unless the program has said it does not take one
@@ -78,9 +93,32 @@ mod tests {
     #[test]
     fn reads_what_the_input_box_holds() {
         let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(box_text(&l(&["> old prompt", "reply", "────", "❯ do both", "────"])), Some("do both".into()));
-        assert_eq!(box_text(&l(&["────", "❯ ", "────"])), Some(String::new()));
-        assert_eq!(box_text(&l(&["$ ls", "file"])), None);
+        let lines = l(&["> old prompt", "reply", "────", "❯ do both", "────"]);
+        assert_eq!(box_text(&lines, &[], Some((3, 9))), Some("do both".into()));
+        assert_eq!(box_text(&lines, &[], None), Some("do both".into()));
+        assert_eq!(box_text(&l(&["────", "❯ ", "────"]), &[], Some((1, 2))), Some(String::new()));
+        assert_eq!(box_text(&l(&["$ ls", "file"]), &[], Some((1, 0))), None);
+    }
+
+    #[test]
+    fn a_suggested_prompt_is_not_a_draft() {
+        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Claude's suggestion: the cursor waits right after the prompt.
+        let lines = l(&["────", "❯ push the branch", "────"]);
+        assert_eq!(box_text(&lines, &[], Some((1, 2))), Some(String::new()));
+        // A draft typed with the cursor moved back into it is still a draft.
+        assert_eq!(box_text(&lines, &[], Some((1, 7))), Some("push the branch".into()));
+        // A multi-line draft: the cursor is on a later line.
+        assert_eq!(box_text(&l(&["❯ first", "  second"]), &[], Some((1, 8))), Some("first".into()));
+    }
+
+    #[test]
+    fn echoed_messages_are_not_the_box() {
+        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let lines = l(&["❯ [conductor X] please update your board", "reply", "❯ "]);
+        assert_eq!(box_text(&lines, &[true, false, false], Some((2, 2))), Some(String::new()));
+        // Only an echo on screen: no box to read.
+        assert_eq!(box_text(&lines[..1], &[true], Some((0, 2))), None);
     }
 
     use super::*;
