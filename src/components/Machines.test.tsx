@@ -89,6 +89,18 @@ describe("machines", () => {
     expect(screen.queryByTestId("machine-card-phone")).toBeNull();
   });
 
+  it("shows Codex sessions beside Claude's only when there are any", async () => {
+    vi.mocked(ipc.machineStats).mockImplementation(async (host: string | null) =>
+      host === null ? stats({ codex: { working: 1, needsYou: 1, idle: 0, stopped: 0 } }) : stats({ codex: { working: 0, needsYou: 0, idle: 0, stopped: 0 } }),
+    );
+    await act(async () => {
+      render(<MachinesView />);
+    });
+    const mini = screen.getByTestId("machine-card-mini");
+    expect(mini.textContent).toContain("Codex1 working · 1 need you · 0 idle · 0 stopped");
+    expect(screen.getByTestId("machine-card-far").textContent).not.toContain("Codex");
+  });
+
   it("sets a Mac's colour and theme from its card, Automatic by default", async () => {
     await act(async () => {
       render(<MachinesView />);

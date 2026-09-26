@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -25,9 +26,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.swarmz.phone.data.Repository
+import dev.swarmz.phone.proto.Agent
 import dev.swarmz.phone.proto.Folders
 import dev.swarmz.phone.state.MacInfo
 import dev.swarmz.phone.state.TileKey
@@ -50,6 +53,8 @@ data class NewSessionState(
     val folders: Folders? = null,
     val recent: List<String> = emptyList(),
     val skip: Boolean = false,
+    /** Which agent the session starts (Codex tiles spec §1); Claude unless picked. */
+    val agent: Agent = Agent.Claude,
     val loading: Boolean = false,
     val starting: Boolean = false,
     val error: String? = null,
@@ -63,7 +68,9 @@ class NewSessionModel(private val repo: Repository, private val scope: Coroutine
 
     fun pickMac(mac: String) {
         browsing?.cancel()
-        _state.value = NewSessionState(mac = mac, recent = repo.recentFolders(mac))
+        // The agent and skip choices carry over to another Mac; the folder does not.
+        val keep = _state.value
+        _state.value = NewSessionState(mac = mac, recent = repo.recentFolders(mac), skip = keep.skip, agent = keep.agent)
         startPath = null
         browse(null)
     }
@@ -88,6 +95,8 @@ class NewSessionModel(private val repo: Repository, private val scope: Coroutine
 
     fun setSkip(on: Boolean) = _state.update { it.copy(skip = on) }
 
+    fun setAgent(agent: Agent) = _state.update { it.copy(agent = agent) }
+
     val atStart: Boolean get() = _state.value.folders?.path == startPath
 
     /** Starts the session; null when it did not start, including a second tap while one is starting. */
@@ -98,7 +107,7 @@ class NewSessionModel(private val repo: Repository, private val scope: Coroutine
         val folder = s.folders?.path ?: return null
         _state.update { it.copy(starting = true, error = null) }
         return try {
-            repo.newTile(mac, folder, s.skip).also { _state.update { it.copy(starting = false) } }
+            repo.newTile(mac, folder, s.skip, s.agent).also { _state.update { it.copy(starting = false) } }
         } catch (e: CancellationException) {
             _state.update { it.copy(starting = false) }
             throw e
@@ -107,6 +116,12 @@ class NewSessionModel(private val repo: Repository, private val scope: Coroutine
             null
         }
     }
+}
+
+/** What skipping permissions means for [agent] (Codex: `--dangerously-bypass-approvals-and-sandbox`). */
+fun skipWarning(agent: Agent): String = when (agent) {
+    Agent.Claude -> "Claude will run commands and edit files without asking."
+    Agent.Codex -> "Codex will run commands and edit files without asking, outside its sandbox."
 }
 
 private fun child(parent: String, name: String) = if (parent.endsWith("/")) parent + name else "$parent/$name"
@@ -153,6 +168,17 @@ fun NewSessionScreen(model: NewSessionModel, macs: List<MacInfo>, onStarted: (Ti
         val f = s.folders
         if (s.mac != null && f != null) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Agent", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    Agent.entries.forEach { a ->
+                        FilterChip(
+                            selected = s.agent == a,
+                            onClick = { model.setAgent(a) },
+                            label = { Text(a.label) },
+                            modifier = Modifier.testTag("agent-${a.arg}"),
+                        )
+                    }
+                }
                 Row(
                     Modifier.fillMaxWidth().clickable { model.setSkip(!s.skip) },
                     verticalAlignment = Alignment.CenterVertically,
@@ -160,7 +186,7 @@ fun NewSessionScreen(model: NewSessionModel, macs: List<MacInfo>, onStarted: (Ti
                     Text("Skip permissions", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
                     Switch(checked = s.skip, onCheckedChange = model::setSkip, colors = SwitchDefaults.colors(checkedTrackColor = Sw.ErrorLine))
                 }
-                if (s.skip) Text("Claude will run commands and edit files without asking.", color = Sw.ErrorLine, style = MaterialTheme.typography.bodySmall)
+                if (s.skip) Text(skipWarning(s.agent), color = Sw.ErrorLine, style = MaterialTheme.typography.bodySmall)
                 PrimaryButton(
                     "Start in ${folderName(f.path)}",
                     enabled = !s.starting && !s.loading,

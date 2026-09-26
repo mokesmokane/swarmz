@@ -36,6 +36,10 @@ data class TileRow(
     /** What rows and headers show: the title when there is one, else the name. */
     val shownTitle: String get() = title?.takeIf { it.isNotBlank() } ?: name
     val hasTitle: Boolean get() = !title.isNullOrBlank()
+    /** A shell tile; every other kind (Claude, Codex, or one a newer tool adds) is an agent tile. */
+    val isShell: Boolean get() = kind == "shell"
+    /** The agent's name for wording ("Codex wants to run …"); Claude for any agent kind this app does not know. */
+    val agentName: String get() = agentLabel(kind)
     /** [shownTitle] with the conductor's mark in front when this tile is the conductor. */
     val badgedTitle: String get() = if (conductor) "$CONDUCTOR_MARK $shownTitle" else shownTitle
 }
@@ -125,3 +129,9 @@ data class AnswerReply(val answered: Boolean = false, val option: Opt? = null, v
 @Serializable data class PhoneAddReply(val added: Boolean, val machines: List<MachineResult> = emptyList())
 @Serializable data class ImageReply(val mime: String, val base64: String)
 @Serializable data class SessionClosed(val closed: Boolean)
+
+/** The agents a new session can start (`swarmz new --agent`, Codex tiles spec §3). */
+enum class Agent(val arg: String, val label: String) { Claude("claude", "Claude"), Codex("codex", "Codex") }
+
+/** The display name of a tile kind's agent: Codex for `codex`, else Claude. */
+fun agentLabel(kind: String): String = if (kind == Agent.Codex.arg) Agent.Codex.label else Agent.Claude.label

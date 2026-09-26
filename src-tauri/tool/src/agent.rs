@@ -21,6 +21,8 @@ pub struct Event {
     pub tool_input: Option<Value>,
     /// `UserPromptSubmit`'s prompt text.
     pub prompt: Option<String>,
+    /// Codex's `Stop` carries the turn's last reply (Codex tiles spec §4).
+    pub last_assistant_message: Option<String>,
 }
 
 pub fn parse_line(line: &str) -> Option<Event> {
@@ -44,6 +46,7 @@ pub fn parse_line(line: &str) -> Option<Event> {
         tool_name: s("tool_name"),
         tool_input: v.get("tool_input").cloned(),
         prompt: s("prompt"),
+        last_assistant_message: s("last_assistant_message"),
     })
 }
 
@@ -81,6 +84,9 @@ pub struct Fold {
     /// The session's first prompt as a title (conversation cards spec §2.1), until its agent
     /// sets one; cleared by `SessionStart`.
     pub title: Option<String>,
+    /// The last reply a `Stop` reported (Codex's; Claude's rows read the transcript instead).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<String>,
 }
 
 impl Fold {
@@ -114,6 +120,9 @@ impl Fold {
             }
             "Stop" | "StopFailure" => {
                 self.turn_ended_at = Some(ev.ts.clone());
+                if let Some(m) = ev.last_assistant_message.as_deref().filter(|m| !m.trim().is_empty()) {
+                    self.last_message = Some(m.chars().take(2000).collect());
+                }
                 self.clear_block();
             }
             "Notification" => {
@@ -177,7 +186,11 @@ pub fn permission_summary(tool: &str, input: Option<&Value>) -> String {
         "Edit" | "Write" | "MultiEdit" => field("file_path"),
         "NotebookEdit" => field("notebook_path"),
         "WebFetch" => field("url"),
-        _ => None,
+        // Codex's tools (Codex tiles spec §6): a command, as a string or as argv.
+        _ => field("command")
+            .or_else(|| input.and_then(|i| i.get("command")).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" ")))
+            .map(|c| c.lines().next().unwrap_or("").to_string())
+            .or_else(|| field("description")),
     };
     let s = raw.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| tool.to_string());
     s.chars().take(200).collect()
@@ -193,6 +206,22 @@ pub fn mode_label(mode: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_events_fold_with_its_last_reply_and_command() {
+        let log = [
+            "2026-09-26T10:00:00Z\tx\tSessionStart\t{\"agent\":\"codex\",\"session_id\":\"s\",\"permission_mode\":\"default\"}",
+            "2026-09-26T10:00:01Z\tx\tPermissionRequest\t{\"agent\":\"codex\",\"session_id\":\"s\",\"tool_name\":\"exec_command\",\"tool_input\":{\"command\":[\"touch\",\"/tmp/a\"]}}",
+        ]
+        .join("\n");
+        let f = fold_log(&log).remove("x").unwrap();
+        assert_eq!((f.status, f.summary.as_deref()), (Status::Blocked, Some("touch /tmp/a")));
+        let log = format!("{log}\n2026-09-26T10:00:05Z\tx\tStop\t{{\"agent\":\"codex\",\"session_id\":\"s\",\"last_assistant_message\":\"Done.\"}}");
+        let f = fold_log(&log).remove("x").unwrap();
+        assert_eq!((f.status, f.last_message.as_deref()), (Status::Idle, Some("Done.")));
+        assert_eq!(permission_summary("shell", Some(&json!({"command": "ls -la\nmore"}))), "ls -la");
+        assert_eq!(permission_summary("apply_patch", Some(&json!({"description": "Edit a file"}))), "Edit a file");
+    }
     use serde_json::{json, Value};
 
     fn line(ts: &str, tile: &str, event: &str, input: &Value) -> String {

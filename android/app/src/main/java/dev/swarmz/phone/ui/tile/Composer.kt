@@ -37,7 +37,7 @@ fun Composer(
         verticalAlignment = Alignment.Bottom,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // A Claude tile takes files (phone attachments spec §4.3): the path lands in the draft.
+        // An agent tile (Claude or Codex) takes files (phone attachments spec §4.3): the path lands in the draft.
         if (onAttach != null) {
             IconButton(onClick = onAttach, enabled = enabled, modifier = Modifier.size(52.dp).testTag("attach")) {
                 Icon(Icons.Filled.AttachFile, contentDescription = "Attach", tint = Sw.Title)

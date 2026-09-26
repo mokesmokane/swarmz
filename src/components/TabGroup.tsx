@@ -1,7 +1,7 @@
 import { useEffect, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { allGroups, type GroupNode, type Side } from "../lib/layout";
 import { useStore, terminalColor, isConductorTile, type Placement } from "../store";
-import { machineLabel } from "../lib/workspace";
+import { agentKindOf, machineLabel } from "../lib/workspace";
 import { windowNames } from "../lib/windowMirror";
 import { MAIN } from "../lib/windowLayouts";
 import { GalleryButton } from "./LayoutGallery";
@@ -144,7 +144,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
   // opens a local shell in the same directory.
   const openWith = (placement: Placement) => {
     if (activeSsh?.host) {
-      const claude = activeClaude?.enabled ? { skipPermissions: activeClaude.skipPermissions } : null;
+      const claude = activeClaude?.enabled ? { skipPermissions: activeClaude.skipPermissions, agent: agentKindOf(activeClaude) } : null;
       createSshTerminal(
         {
           host: activeSsh.host,

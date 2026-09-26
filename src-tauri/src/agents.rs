@@ -7,7 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-pub const HOOK_VERSION: u32 = 4;
+pub const HOOK_VERSION: u32 = 5;
 
 pub const HOOK_EVENTS: [&str; 8] = [
     "SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "Notification", "SessionEnd", "PermissionRequest", "PostToolUse",
@@ -23,9 +23,26 @@ pub const BRIEFING_MARKER: &str = ".swarmz/briefing.md";
 /// bare `swarmz` on a PATH that has it.
 pub const AGENT_PERMISSIONS: [&str; 4] = ["Bash(~/.swarmz/bin/swarmz card:*)", "Bash(swarmz card:*)", "Bash(~/.swarmz/bin/swarmz board:*)", "Bash(swarmz board:*)"];
 
+/// The Codex events swarmz logs (Codex tiles spec §4); Codex has no `Notification` or `StopFailure`.
+pub const CODEX_EVENTS: [&str; 6] = ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "PermissionRequest", "PostToolUse"];
+
+pub const CODEX_MARKER: &str = ".swarmz/hooks/codex.sh";
+
+/// Codex's hooks run this; its command line never changes, so Codex's trust in it (kept against
+/// the hook's hash) survives updates to `claude.sh`.
+pub const CODEX_WRAPPER: &str = "#!/bin/sh\n# installed by swarmz; reinstalling overwrites this file.\nexec sh \"$HOME/.swarmz/hooks/claude.sh\" \"${1:-}\" codex\n";
+
+/// Codex's equivalent of `AGENT_PERMISSIONS`: the card and board run outside its sandbox (which
+/// cannot write `~/.swarmz`) without asking.
+pub const CODEX_RULES: &str = "# installed by swarmz; reinstalling overwrites this file.\n\
+prefix_rule(pattern=[\"~/.swarmz/bin/swarmz\", \"card\"], decision=\"allow\")\n\
+prefix_rule(pattern=[\"swarmz\", \"card\"], decision=\"allow\")\n\
+prefix_rule(pattern=[\"~/.swarmz/bin/swarmz\", \"board\"], decision=\"allow\")\n\
+prefix_rule(pattern=[\"swarmz\", \"board\"], decision=\"allow\")\n";
+
 pub const HOOK_SCRIPT: &str = r#"#!/bin/sh
 # installed by swarmz; reinstalling overwrites this file.
-# SWARMZ_HOOK_VERSION=4
+# SWARMZ_HOOK_VERSION=5
 set -u
 id="${SWARMZ_TERMINAL_ID:-}"
 [ -n "$id" ] || exit 0
@@ -40,6 +57,10 @@ if [ "$event" = "PostToolUse" ]; then
 /' | sed -n '2s/".*$//p' | tr -cd 'A-Za-z0-9-')
   input="{\"session_id\":\"$sid\"}"
 fi
+# Codex's hooks run this script through codex.sh, which names the agent (Codex tiles spec §4).
+if [ "${2:-}" = "codex" ] && [ -n "$input" ]; then
+  input=$(printf '%s' "$input" | sed '1s/^{/{"agent":"codex",/')
+fi
 dir="$HOME/.swarmz/agents"
 mkdir -p "$dir" 2>/dev/null || exit 0
 log="$dir/events.log"
@@ -51,7 +72,7 @@ printf '%s\t%s\t%s\t%s\n' "$ts" "$id" "$event" "$input" >> "$log"
 # A new session is told about its tile (conversation cards spec §4.1, conductor spec §4): the
 # tool prints the briefing for this tile (the common file with <name> filled in, plus the
 # conductor section when this tile is the conductor); without the tool, the file alone. Either
-# way it goes back to Claude Code as additional context, JSON-escaped by awk.
+# way it goes back to the agent (Claude Code or Codex, which reads the same shape) as additional context, JSON-escaped by awk.
 briefing="$HOME/.swarmz/briefing.md"
 tool="$HOME/.swarmz/bin/swarmz"
 escape='BEGIN{ORS=""} { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); print $0 "\\n" }'
@@ -79,9 +100,13 @@ pub fn script_version(text: &str) -> Option<u32> {
 }
 
 pub fn hook_entry(event: &str) -> Value {
+    entry_for(SCRIPT_MARKER, event)
+}
+
+fn entry_for(marker: &str, event: &str) -> Value {
     let mut entry = Map::new();
     entry.insert("type".into(), json!("command"));
-    entry.insert("command".into(), json!(format!("sh \"$HOME/{SCRIPT_MARKER}\" {event}")));
+    entry.insert("command".into(), json!(format!("sh \"$HOME/{marker}\" {event}")));
     // Synchronous events are logged before Claude moves on: `SessionEnd` so the end is never
     // lost, `PostToolUse` so it can never land after the next `PermissionRequest`, and
     // `SessionStart` because only a synchronous hook's output reaches Claude (the briefing).
@@ -93,10 +118,77 @@ pub fn hook_entry(event: &str) -> Value {
 }
 
 fn is_swarmz_group(group: &Value) -> bool {
+    has_marker(group, SCRIPT_MARKER)
+}
+
+fn has_marker(group: &Value, marker: &str) -> bool {
     group["hooks"]
         .as_array()
-        .map(|hs| hs.iter().any(|h| h["command"].as_str().map(|c| c.contains(SCRIPT_MARKER)).unwrap_or(false)))
+        .map(|hs| hs.iter().any(|h| h["command"].as_str().map(|c| c.contains(marker)).unwrap_or(false)))
         .unwrap_or(false)
+}
+
+/// Merges swarmz's entries into a Codex `hooks.json` text (Codex tiles spec §4), as
+/// `install_hooks` does for Claude's settings: foreign hooks and unknown keys are kept, malformed
+/// input is an error, never overwritten.
+pub fn install_codex_hooks(text: Option<&str>) -> Result<(String, bool), String> {
+    let mut root: Value = match text {
+        Some(t) if !t.trim().is_empty() => serde_json::from_str(t).map_err(|e| format!("hooks.json is not valid JSON: {e}"))?,
+        _ => json!({}),
+    };
+    if !root.is_object() {
+        return Err("hooks.json is not a JSON object".into());
+    }
+    let before = serde_json::to_string(&root).map_err(|e| e.to_string())?;
+    let hooks = root.as_object_mut().unwrap().entry("hooks").or_insert_with(|| json!({}));
+    let hooks = hooks.as_object_mut().ok_or("hooks.json \"hooks\" is not an object")?;
+    for ev in CODEX_EVENTS {
+        let groups = hooks.entry(ev).or_insert_with(|| json!([]));
+        let arr = groups.as_array_mut().ok_or_else(|| format!("hooks.json hooks.{ev} is not an array"))?;
+        let entry = entry_for(CODEX_MARKER, ev);
+        // Rewritten only when it differs: Codex asks the user to trust a changed hook again.
+        if arr.iter().filter(|g| has_marker(g, CODEX_MARKER)).count() == 1 && arr.iter().any(|g| *g == entry) {
+            continue;
+        }
+        arr.retain(|g| !has_marker(g, CODEX_MARKER));
+        arr.push(entry);
+    }
+    let after = serde_json::to_string(&root).map_err(|e| e.to_string())?;
+    let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+    Ok((pretty, before != after))
+}
+
+/// Installs the Codex side under `home` when Codex is set up there (`~/.codex` exists): the
+/// wrapper, the hook entries and the rules. Returns true when something was written.
+pub fn install_codex_in(home: &Path) -> Result<bool, String> {
+    let codex = home.join(".codex");
+    if !codex.is_dir() {
+        return Ok(false);
+    }
+    let mut wrote = false;
+    let wrapper = home.join(CODEX_MARKER);
+    if std::fs::read_to_string(&wrapper).ok().as_deref() != Some(CODEX_WRAPPER) {
+        write_atomic(&wrapper, CODEX_WRAPPER)?;
+        wrote = true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("could not chmod {}: {e}", wrapper.display()))?;
+    }
+    let rules = codex.join("rules").join("swarmz.rules");
+    if std::fs::read_to_string(&rules).ok().as_deref() != Some(CODEX_RULES) {
+        write_atomic(&rules, CODEX_RULES)?;
+        wrote = true;
+    }
+    let hooks_path = codex.join("hooks.json");
+    let existing = std::fs::read_to_string(&hooks_path).ok();
+    let (merged, changed) = install_codex_hooks(existing.as_deref())?;
+    if changed || existing.is_none() {
+        write_atomic(&hooks_path, &format!("{merged}\n"))?;
+        wrote = true;
+    }
+    Ok(wrote)
 }
 
 /// Merges swarmz's hook entries into a settings.json text. Returns the new text and whether it
@@ -185,6 +277,9 @@ pub fn install_local_in(home: &Path) -> Result<bool, String> {
     let (merged, changed) = install_hooks(existing.as_deref())?;
     if changed || existing.is_none() {
         write_atomic(&settings_path, &format!("{merged}\n"))?;
+        wrote = true;
+    }
+    if install_codex_in(home)? {
         wrote = true;
     }
     Ok(wrote)
@@ -315,10 +410,62 @@ pub fn install_remote(host: &str) -> Result<bool, String> {
         }
         wrote = true;
     }
+    if install_remote_codex(&host)? {
+        wrote = true;
+    }
     // The Telegram setup rides along (conductor spec §5), so the conductor can run on any Mac.
     // Only ever copied from here: a Mac without it must not remove it there.
     if crate::telegram::push(&host, false)? {
         wrote = true;
+    }
+    Ok(wrote)
+}
+
+/// Reads the Codex side of a Mac: a first line `codex` when `~/.codex` exists, then the wrapper,
+/// the rules and the hooks file between separators.
+pub fn remote_codex_read_command() -> String {
+    format!("[ -d ~/.codex ] && echo codex || echo none; cat ~/{CODEX_MARKER} 2>/dev/null; printf '\\n%s\\n' {REMOTE_SEPARATOR}; cat ~/.codex/rules/swarmz.rules 2>/dev/null; printf '\\n%s\\n' {REMOTE_SEPARATOR}; cat ~/.codex/hooks.json 2>/dev/null; true")
+}
+
+/// Writes `len` bytes of stdin to `path` (under `~`), atomically and only at full length.
+pub fn remote_write_file_command(path: &str, len: usize, mode: Option<&str>) -> String {
+    let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or(".");
+    let chmod = mode.map(|m| format!(" && chmod {m} ~/{path}.tmp.$$")).unwrap_or_default();
+    format!("mkdir -p ~/{dir} && cat > ~/{path}.tmp.$$ && [ \"$(wc -c < ~/{path}.tmp.$$ | tr -d ' ')\" -eq {len} ]{chmod} && mv -f ~/{path}.tmp.$$ ~/{path} || {{ rm -f ~/{path}.tmp.$$; exit 1; }}")
+}
+
+/// The Codex side of `install_remote`: nothing when the Mac has no `~/.codex`.
+fn install_remote_codex(host: &str) -> Result<bool, String> {
+    let mut cmd = ssh_command(host)?;
+    cmd.arg(remote_codex_read_command());
+    let done = run_with_timeout(cmd, Duration::from_secs(10), "ssh")?;
+    if !done.status.success() {
+        return Err(ssh_failure(&done, "remote Codex read"));
+    }
+    let (present, rest) = done.stdout.split_once('\n').unwrap_or((done.stdout.as_str(), ""));
+    if present.trim() != "codex" {
+        return Ok(false);
+    }
+    let (wrapper, rules, hooks) = split_remote_read(rest);
+    let mut writes: Vec<(&str, String, Option<&str>)> = Vec::new();
+    if wrapper.as_deref() != Some(CODEX_WRAPPER) {
+        writes.push((CODEX_MARKER, CODEX_WRAPPER.to_string(), Some("755")));
+    }
+    if rules.as_deref() != Some(CODEX_RULES) {
+        writes.push((".codex/rules/swarmz.rules", CODEX_RULES.to_string(), None));
+    }
+    let (merged, changed) = install_codex_hooks(hooks.as_deref())?;
+    if changed || hooks.is_none() {
+        writes.push((".codex/hooks.json", format!("{merged}\n"), None));
+    }
+    let wrote = !writes.is_empty();
+    for (path, text, mode) in writes {
+        let mut cmd = ssh_command(host)?;
+        cmd.arg(remote_write_file_command(path, text.len(), mode));
+        let done = run_with_timeout_input(cmd, Duration::from_secs(10), "ssh", Some(text.as_bytes()))?;
+        if !done.status.success() {
+            return Err(ssh_failure(&done, "remote Codex write"));
+        }
     }
     Ok(wrote)
 }
@@ -340,6 +487,9 @@ pub struct AgentEvent {
     /// A `Board` event's board (tile board spec §2): null when it was cleared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub board: Option<Value>,
+    /// `codex` for an event from Codex's hooks (Codex tiles spec §4); absent for Claude.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// One log line: `ts \t terminal \t event \t json`. None when malformed.
@@ -365,6 +515,7 @@ pub fn parse_line(line: &str) -> Option<AgentEvent> {
         permission_mode: s("permission_mode"),
         prompt: if event == "UserPromptSubmit" { s("prompt").map(|p| p.chars().take(500).collect()) } else { None },
         board: if event == "Board" { Some(v.get("board").cloned().unwrap_or(Value::Null)) } else { None },
+        agent: s("agent"),
     })
 }
 
@@ -814,6 +965,104 @@ mod tests {
             .unwrap();
         child.stdin.take().unwrap().write_all(payload).unwrap();
         child.wait().unwrap().success()
+    }
+
+    #[test]
+    fn codex_hooks_are_merged_once_and_foreign_ones_kept() {
+        let foreign = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"bash other.sh session","timeout":10}]}]},"x":1}"#;
+        let (text, changed) = install_codex_hooks(Some(foreign)).unwrap();
+        assert!(changed);
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["x"], 1);
+        assert_eq!(v["hooks"]["SessionStart"].as_array().unwrap().len(), 2);
+        for ev in CODEX_EVENTS {
+            let ours: Vec<&Value> = v["hooks"][ev].as_array().unwrap().iter().filter(|g| has_marker(g, CODEX_MARKER)).collect();
+            assert_eq!(ours.len(), 1, "{ev}");
+            let cmd = ours[0]["hooks"][0]["command"].as_str().unwrap();
+            assert_eq!(cmd, format!("sh \"$HOME/{CODEX_MARKER}\" {ev}"));
+        }
+        assert!(v["hooks"]["SessionStart"][1]["hooks"][0].get("async").is_none());
+        assert_eq!(v["hooks"]["Stop"][0]["hooks"][0]["async"], true);
+        let (again, changed) = install_codex_hooks(Some(&text)).unwrap();
+        assert!(!changed);
+        assert_eq!(again, text);
+        assert!(install_codex_hooks(Some("[1]")).is_err());
+        assert!(install_codex_hooks(Some("{nope")).is_err());
+    }
+
+    #[test]
+    fn codex_is_installed_only_where_codex_is_set_up() {
+        let home = std::env::temp_dir().join(format!("swarmz-codex-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(!install_codex_in(&home).unwrap());
+        assert!(!home.join(CODEX_MARKER).exists());
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        assert!(install_codex_in(&home).unwrap());
+        assert_eq!(std::fs::read_to_string(home.join(CODEX_MARKER)).unwrap(), CODEX_WRAPPER);
+        assert_eq!(std::fs::read_to_string(home.join(".codex/rules/swarmz.rules")).unwrap(), CODEX_RULES);
+        assert!(std::fs::read_to_string(home.join(".codex/hooks.json")).unwrap().contains(CODEX_MARKER));
+        assert!(!install_codex_in(&home).unwrap());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn codex_events_are_logged_with_their_agent() {
+        let home = std::env::temp_dir().join(format!("swarmz-codex-hook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".swarmz/hooks")).unwrap();
+        std::fs::write(home.join(".swarmz/hooks/claude.sh"), HOOK_SCRIPT).unwrap();
+        std::fs::write(home.join(CODEX_MARKER), CODEX_WRAPPER).unwrap();
+        let run = |event: &str, input: &str| {
+            use std::io::Write;
+            let mut child = std::process::Command::new("sh")
+                .arg(home.join(CODEX_MARKER))
+                .arg(event)
+                .env("HOME", &home)
+                .env("SWARMZ_TERMINAL_ID", "t-9")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+            assert!(child.wait().unwrap().success());
+        };
+        run("Stop", r#"{"session_id":"s1","last_assistant_message":"done"}"#);
+        run("PostToolUse", r#"{"session_id":"s1","tool_input":{"cmd":"x"}}"#);
+        let log = std::fs::read_to_string(home.join(".swarmz/agents/events.log")).unwrap();
+        let events: Vec<AgentEvent> = log.lines().map(|l| parse_line(l).unwrap()).collect();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|e| e.agent.as_deref() == Some("codex") && e.session_id.as_deref() == Some("s1")));
+        let claude = parse_line("2026-01-01T00:00:00Z\tt\tStop\t{\"session_id\":\"s\"}").unwrap();
+        assert_eq!(claude.agent, None);
+        assert!(!serde_json::to_string(&claude).unwrap().contains("agent"));
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn the_remote_codex_read_and_writes_work_on_a_bare_home() {
+        let home = std::env::temp_dir().join(format!("swarmz-codex-remote-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let read = || {
+            let out = std::process::Command::new("sh").arg("-c").arg(remote_codex_read_command()).env("HOME", &home).output().unwrap();
+            assert!(out.status.success());
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        assert!(read().starts_with("none\n"));
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        let out = read();
+        let (present, rest) = out.split_once('\n').unwrap();
+        assert_eq!(present, "codex");
+        assert_eq!(split_remote_read(rest), (None, None, None));
+        assert!(run_remote_write(&remote_write_file_command(CODEX_MARKER, CODEX_WRAPPER.len(), Some("755")), &home, CODEX_WRAPPER.as_bytes()));
+        assert!(run_remote_write(&remote_write_file_command(".codex/rules/swarmz.rules", CODEX_RULES.len(), None), &home, CODEX_RULES.as_bytes()));
+        assert!(!run_remote_write(&remote_write_file_command(".codex/hooks.json", 50, None), &home, b"short"));
+        assert!(!home.join(".codex/hooks.json").exists());
+        let out = read();
+        let (w, r, h) = split_remote_read(out.split_once('\n').unwrap().1);
+        assert_eq!((w.as_deref(), r.as_deref(), h), (Some(CODEX_WRAPPER), Some(CODEX_RULES), None));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]

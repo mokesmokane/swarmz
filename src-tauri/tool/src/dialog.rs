@@ -1,4 +1,4 @@
-//! Claude Code's permission dialog read from the screen (spec §4.4).
+//! Claude Code's and Codex's permission dialogs read from the screen (spec §4.4, Codex tiles spec §6).
 
 use serde::Serialize;
 
@@ -50,6 +50,9 @@ pub struct Dialog {
     /// A multi-select question's Submit entry, as the position after its last numbered entry
     /// (`Type something` included), reached with `↓` from an option and confirmed with Enter.
     pub submit_at: Option<u32>,
+    /// Codex drew it: an option is chosen by its hotkey (`(y)`), else by moving the `›` cursor
+    /// to it and pressing Enter, never by its digit.
+    pub codex: bool,
 }
 
 impl Dialog {
@@ -82,7 +85,7 @@ fn indent(line: &str) -> usize {
 /// `^\s*[❯>]?\s*(\d+)\.\s+(.+)$`
 fn option_line(line: &str) -> Option<Opt> {
     let t = clean(line);
-    let t = t.strip_prefix('❯').or_else(|| t.strip_prefix('>')).unwrap_or(t).trim_start();
+    let t = t.strip_prefix('❯').or_else(|| t.strip_prefix('>')).or_else(|| t.strip_prefix('›')).unwrap_or(t).trim_start();
     let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
         return None;
@@ -113,19 +116,85 @@ fn option_line(line: &str) -> Option<Opt> {
 }
 
 /// The footer line of the dialog nearest the bottom, and which kind of dialog it ends.
-fn find_footer(lines: &[String]) -> Option<(usize, Kind)> {
-    lines.iter().rposition(|l| footer_kind(l).is_some()).map(|i| (i, footer_kind(&lines[i]).unwrap()))
+fn find_footer(lines: &[String]) -> Option<(usize, Kind, bool)> {
+    lines.iter().rposition(|l| footer_kind(l).is_some()).map(|i| {
+        let (kind, codex) = footer_kind(&lines[i]).unwrap();
+        (i, kind, codex)
+    })
 }
 
-fn footer_kind(line: &str) -> Option<Kind> {
+/// Which dialog a footer ends, and whether Codex drew it: its approval ends `Press enter to
+/// confirm or esc to cancel`, its other pickers `enter select · esc back` and the like.
+fn footer_kind(line: &str) -> Option<(Kind, bool)> {
     let t = clean(line);
     if t.starts_with("Esc to cancel") {
-        Some(Kind::Permission)
+        Some((Kind::Permission, false))
     } else if t.starts_with("Enter to select") {
-        Some(Kind::Question)
+        Some((Kind::Question, false))
+    } else if t.starts_with("Press enter to confirm or esc to cancel") {
+        Some((Kind::Permission, true))
+    } else if t.starts_with("enter ") && t.contains(" · ") && t.contains("esc ") {
+        Some((Kind::Question, true))
     } else {
         None
     }
+}
+
+/// A Codex option's hotkey, from the label's trailing `(y)`: a single character, or `esc`.
+pub fn codex_key(label: &str) -> Option<&str> {
+    let inner = label.trim_end().strip_suffix(')')?.rsplit_once(" (")?.1;
+    (inner == "esc" || inner.chars().count() == 1).then_some(inner)
+}
+
+/// Codex's approval and pickers, captured from Codex CLI 0.157.1 (2026-09-26): the heading
+/// (`Would you like to run the following command?`), `Environment:`/`Reason:` lines and the
+/// command after `$ `, then the options, the chosen one marked `›`, each ending in its hotkey,
+/// and the footer. A picker has a title and a question line above its options instead.
+fn parse_codex(lines: &[String], footer: usize, kind: Kind) -> Option<Dialog> {
+    let start = footer.saturating_sub(40);
+    let last_opt = (start..footer).rev().find(|&i| option_line(&lines[i]).is_some())?;
+    // Up through the options; a wrapped label's second line sits deeper, under an option.
+    let mut first_opt = last_opt;
+    while first_opt > start {
+        let above = &lines[first_opt - 1];
+        let wrapped = !clean(above).is_empty() && indent(above) >= 5 && first_opt >= 2 && option_line(&lines[first_opt - 2]).is_some();
+        if option_line(above).is_some() || wrapped {
+            first_opt -= 1;
+        } else {
+            break;
+        }
+    }
+    let mut options: Vec<Opt> = Vec::new();
+    let mut cursor = None;
+    for line in &lines[first_opt..=last_opt] {
+        if let Some(o) = option_line(line) {
+            if clean(line).starts_with('›') {
+                cursor = Some(o.n);
+            }
+            options.push(o);
+        } else if let Some(last) = options.last_mut() {
+            last.label = join_wrapped(&last.label, clean(line));
+        }
+    }
+    let above: Vec<String> = (first_opt.saturating_sub(12)..first_opt).map(|i| clean(&lines[i]).to_string()).collect();
+    // A picker's title and question: the block of text right above the options.
+    let header: Vec<String> = above.rsplit(|l| l.is_empty()).find(|b| !b.is_empty()).map(|b| b.to_vec()).unwrap_or_default();
+    let (heading, target, description) = match kind {
+        Kind::Permission => {
+            // The approval spaces its heading, reason and command apart with blank lines.
+            let at = above.iter().rposition(|l| l.starts_with("Would you like to"));
+            let block: Vec<String> = at.map(|i| above[i..].to_vec()).unwrap_or_else(|| header.clone());
+            let heading = at.map(|i| above[i].clone()).unwrap_or_else(|| "Codex wants to go ahead".to_string());
+            let target = block.iter().find_map(|l| l.strip_prefix("$ ")).map(str::to_string);
+            let description = block.iter().find_map(|l| l.strip_prefix("Reason:")).map(|r| r.trim().to_string());
+            (heading, target, description)
+        }
+        Kind::Question => {
+            let heading = header.first().cloned().unwrap_or_else(|| "Question".to_string());
+            (heading, header.last().cloned().filter(|_| header.len() > 1), None)
+        }
+    };
+    Some(Dialog { kind, heading, target, description, options, multi: false, cursor, submit_at: None, codex: true })
 }
 
 /// An entry of a question's option list that is not an answer: choosing it means typing next.
@@ -192,7 +261,7 @@ fn parse_question(lines: &[String], footer: usize) -> Option<Dialog> {
         Some(h) => h.trim_start_matches(['☐', '☑', '☒', '✔', '✓']).trim().to_string(),
         None => "Question".to_string(),
     };
-    Some(Dialog { kind: Kind::Question, heading, target: Some(clean(&lines[question]).to_string()), description: None, options, multi, cursor, submit_at })
+    Some(Dialog { kind: Kind::Question, heading, target: Some(clean(&lines[question]).to_string()), description: None, options, multi, cursor, submit_at, codex: false })
 }
 
 fn is_rule(line: &str) -> bool {
@@ -210,8 +279,9 @@ fn join_wrapped(a: &str, b: &str) -> String {
 
 pub fn parse_dialog(lines: &[String]) -> Option<Dialog> {
     match find_footer(lines)? {
-        (footer, Kind::Question) => parse_question(lines, footer),
-        (footer, Kind::Permission) => parse_permission(lines, footer),
+        (footer, kind, true) => parse_codex(lines, footer, kind),
+        (footer, Kind::Question, false) => parse_question(lines, footer),
+        (footer, Kind::Permission, false) => parse_permission(lines, footer),
     }
 }
 
@@ -253,14 +323,14 @@ fn parse_permission(lines: &[String], footer: usize) -> Option<Dialog> {
         let description = if flat.len() == 3 { flat.last().cloned() } else { None };
         (target, description)
     };
-    Some(Dialog { kind: Kind::Permission, heading, target, description, options, multi: false, cursor: None, submit_at: None })
+    Some(Dialog { kind: Kind::Permission, heading, target, description, options, multi: false, cursor: None, submit_at: None, codex: false })
 }
 
 /// The dialog Claude is showing now: its footer is on the visible screen (at or below
 /// `visible_start`, the index of the first visible row in `lines`) with nothing but blank lines
 /// below it. A dialog in scrollback, or quoted in output that has more below it, is not one.
 pub fn live_dialog(lines: &[String], visible_start: usize) -> Option<Dialog> {
-    let (footer, _) = find_footer(lines)?;
+    let (footer, _, _) = find_footer(lines)?;
     if footer < visible_start || lines[footer + 1..].iter().any(|l| !clean(l).is_empty()) {
         return None;
     }
@@ -275,6 +345,9 @@ pub struct ScreenView {
     /// Claude's "esc to interrupt" hint is on the visible screen: a turn (such as a long
     /// approved tool run) is in progress.
     pub interruptible: bool,
+    /// The tile's own shell is in front (its agent has exited); asked only when the screen shows
+    /// neither a dialog nor a turn in progress, None when not asked or the holder cannot say.
+    pub shell_in_front: Option<bool>,
 }
 
 pub fn read_screen(lines: &[String], visible_start: usize) -> ScreenView {
@@ -282,6 +355,7 @@ pub fn read_screen(lines: &[String], visible_start: usize) -> ScreenView {
     ScreenView {
         dialog: live_dialog(lines, visible_start),
         interruptible: visible.iter().any(|l| l.to_lowercase().contains("esc to interrupt")),
+        shell_in_front: None,
     }
 }
 
@@ -309,9 +383,92 @@ pub fn resolve(choice: &str, d: &Dialog) -> Result<Answer, String> {
 mod tests {
     use super::*;
 
+    /// Codex CLI 0.157.1's approval for an escalated command (captured 2026-09-26).
+    fn codex_approval() -> Vec<String> {
+        lines(&[
+            "› Run exactly this shell command with escalated permissions and nothing else: touch /tmp/cx-probe-",
+            "  swarmz",
+            "• I’ll request escalated permissions for the exact command.",
+            "• Running touch /tmp/cx-probe-swarmz",
+            "",
+            "  Would you like to run the following command?",
+            "",
+            "  Environment: local",
+            "",
+            "  Reason: Allow running the exact command with escalated permissions?",
+            "",
+            "  $ touch /tmp/cx-probe-swarmz",
+            "",
+            "› 1. Yes, proceed (y)",
+            "  2. Yes, and don't ask again for commands that start with `touch /tmp/cx-probe-swarmz` (p)",
+            "  3. No, and tell Codex what to do differently (esc)",
+            "",
+            "  Press enter to confirm or esc to cancel",
+            "",
+        ])
+    }
+
+    #[test]
+    fn codexs_approval_is_a_permission() {
+        let d = live_dialog(&codex_approval(), 0).unwrap();
+        assert_eq!(d.kind, Kind::Permission);
+        assert!(d.codex);
+        assert_eq!(d.heading, "Would you like to run the following command?");
+        assert_eq!(d.target.as_deref(), Some("touch /tmp/cx-probe-swarmz"));
+        assert_eq!(d.description.as_deref(), Some("Allow running the exact command with escalated permissions?"));
+        assert_eq!(d.options.len(), 3);
+        assert_eq!(d.cursor, Some(1));
+        assert_eq!(d.summary(), "touch /tmp/cx-probe-swarmz");
+        let pick = |c: &str| match resolve(c, &d).unwrap() {
+            Answer::Option(o) => o,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(codex_key(&pick("yes").label), Some("y"));
+        assert_eq!(codex_key(&pick("always").label), Some("p"));
+        assert_eq!(codex_key(&pick("no").label), Some("esc"));
+        // A command's output quoting it, with more below, is not a live dialog.
+        let mut quoted = codex_approval();
+        quoted.push("• Ran it".into());
+        assert!(live_dialog(&quoted, 0).is_none());
+    }
+
+    #[test]
+    fn codexs_pickers_are_questions() {
+        let screen = lines(&[
+            "• The command completed with no output.",
+            "",
+            "  Approaching rate limits",
+            "  Switch to gpt-6-luna for lower credit usage?",
+            "",
+            "› 1. Switch to gpt-6-luna                   Fast and affordable model for easier tasks.",
+            "  2. Keep current model",
+            "  3. Keep current model (never show again)  Hide future rate limit reminders about switching models",
+            "",
+            "  enter select · esc back",
+        ]);
+        let d = live_dialog(&screen, 0).unwrap();
+        assert_eq!(d.kind, Kind::Question);
+        assert!(d.codex);
+        assert_eq!(d.heading, "Approaching rate limits");
+        assert_eq!(d.target.as_deref(), Some("Switch to gpt-6-luna for lower credit usage?"));
+        assert_eq!(d.options.iter().map(|o| o.n).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(d.cursor, Some(1));
+        assert_eq!(codex_key(&d.options[1].label), None);
+        // Codex's idle footer is no dialog.
+        assert!(live_dialog(&lines(&["› Ask Codex to do anything", "  ? for shortcuts"]), 0).is_none());
+    }
+
+    #[test]
+    fn hotkeys_come_from_the_labels_end() {
+        assert_eq!(codex_key("Yes, proceed (y)"), Some("y"));
+        assert_eq!(codex_key("No (esc)"), Some("esc"));
+        assert_eq!(codex_key("Keep current model (never show again)"), None);
+        assert_eq!(codex_key("Keep current model"), None);
+    }
+
     /// An empty permission dialog to build test dialogs from.
     fn permission(heading: &str) -> Dialog {
-        Dialog { kind: Kind::Permission, heading: heading.into(), target: None, description: None, options: vec![], multi: false, cursor: None, submit_at: None }
+        Dialog { kind: Kind::Permission, heading: heading.into(), target: None, description: None, options: vec![], multi: false, cursor: None, submit_at: None, codex: false }
     }
 
     fn lines(v: &[&str]) -> Vec<String> {

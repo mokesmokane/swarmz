@@ -26,6 +26,8 @@ export interface AgentEvent {
   prompt?: string | null;
   /** A `Board` event's board (tile board spec §2); null when it was cleared. */
   board?: unknown;
+  /** `"codex"` when Codex's hook logged the event (Codex tiles spec §4); absent for Claude. */
+  agent?: string | null;
 }
 
 export const OFFLINE: AgentState = { status: "offline", sessionId: null, since: "", lastEvent: "", unseen: false, title: null, firstPrompt: null };

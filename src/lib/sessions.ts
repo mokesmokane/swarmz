@@ -5,6 +5,8 @@ export interface SessionRecord {
   sessionId: string;
   cwd: string;
   skipPermissions: boolean;
+  /** The agent that ran it (Codex tiles spec §2); absent means Claude. */
+  agent?: "codex";
   startedAt: string;
   lastActiveAt: string;
 }
@@ -15,7 +17,7 @@ export function isSafeFolder(p: string): boolean {
 
 export function upsertSession(
   list: SessionRecord[] | undefined,
-  rec: { sessionId: string; cwd: string; skipPermissions: boolean },
+  rec: { sessionId: string; cwd: string; skipPermissions: boolean; agent?: "codex" },
   now: string,
 ): SessionRecord[] {
   const rest = (list ?? []).filter((r) => r.sessionId !== rec.sessionId);

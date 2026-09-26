@@ -39,6 +39,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import dev.swarmz.phone.proto.Agent
 import dev.swarmz.phone.proto.Key
 import dev.swarmz.phone.proto.TileRow
 import dev.swarmz.phone.state.Need
@@ -103,13 +104,13 @@ fun TileScreen(
             }
             if (r != null) StatusDot(dotOf(r, when (r.needs) { "permission" -> Need.Permission; "question" -> Need.Question; else -> null }), Modifier.padding(horizontal = 6.dp))
             // The title opens the tile's card: its recap, and a way to retitle it (conversation cards spec §6).
-            val titleTap = if (r != null && r.kind != "shell") Modifier.clickable { recapOpen = true } else Modifier
+            val titleTap = if (r != null && !r.isShell) Modifier.clickable { recapOpen = true } else Modifier
             Column(Modifier.weight(1f).padding(start = 6.dp).then(titleTap).testTag("tile-title")) {
                 Text(r?.badgedTitle ?: c.key.id, style = MaterialTheme.typography.titleMedium, maxLines = 1)
                 val where = "$macLabel · ${r?.let { folderName(it.cwd) } ?: ""}"
                 Text(if (r?.hasTitle == true) "${r.name} · $where" else where, style = MonoSmall, maxLines = 1)
             }
-            if (r != null) Badge(modeLabel(r), modifier = Modifier.padding(end = 12.dp))
+            r?.let { modeLabel(it) }?.let { Badge(it, modifier = Modifier.padding(end = 12.dp)) }
         }
         HorizontalDivider(color = Sw.Border)
         if (recapOpen && r != null) {
@@ -135,7 +136,7 @@ fun TileScreen(
         }
         streamError?.let { Text(it, color = Sw.ErrorLine, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) }
         val body = Modifier.weight(1f).fillMaxWidth()
-        // The terminal is the tile, for Claude and shell alike (phone terminal-only spec §1).
+        // The terminal is the tile, for agents and shell alike (phone terminal-only spec §1).
         if (r != null) ShellBody(c, r, body) else Box(body)
         notice?.let {
             Text(it, color = Sw.ErrorLine, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth())
@@ -148,25 +149,28 @@ fun TileScreen(
         if (r != null && !r.running) {
             Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(statusLine(r, clock), style = MonoSmall, modifier = Modifier.weight(1f))
-                PrimaryButton(if (r.kind == "shell") "Restart shell" else "Restart", onClick = c::restart, enabled = online)
+                PrimaryButton(if (r.isShell) "Restart shell" else "Restart", onClick = c::restart, enabled = online)
             }
             return@Column
         }
         pending?.let { p -> if (online) PermissionCard(p, horizontal = unfolded, onAnswer = c::answer, onSubmit = c::submit) }
         val canType = online && r != null
-        if (r?.kind == "shell") {
+        if (r?.isShell == true) {
             ShellQuickKeys(canType, onCtrlC = { c.key(Key.CtrlC) }, onUp = { c.key(Key.Up) }, onTab = { c.key(Key.Tab) })
             Composer(c.draft, "Type a command…", canType, c::send)
         } else {
-            ClaudeQuickKeys(
-                mode = r?.let { modeLabel(it) } ?: "default",
+            val codex = r?.kind == Agent.Codex.arg
+            AgentQuickKeys(
+                mode = r?.let { modeLabel(it) },
                 enabled = canType,
+                slashCommands = slashCommandsFor(r?.kind ?: ""),
                 onEsc = { c.key(Key.Esc) },
                 onCtrlC = { c.key(Key.CtrlC) },
                 onUp = { c.key(Key.Up) },
                 onDown = { c.key(Key.Down) },
                 onEnter = { c.key(Key.Enter) },
-                onShiftTab = { c.key(Key.ShiftTab) },
+                // Shift+Tab is Claude's mode cycle; Codex has none.
+                onShiftTab = if (codex) null else ({ c.key(Key.ShiftTab) }),
                 onSlash = { cmd -> c.draft.value = TextFieldValue("$cmd ", TextRange(cmd.length + 1)) },
             )
             // Attach: the system picker (any type); each item is read off the main thread and sent.
@@ -204,7 +208,7 @@ private fun RecapDialog(r: TileRow, clock: Instant, onEditTitle: () -> Unit, onD
                 Text(body, style = MaterialTheme.typography.bodyMedium)
                 parseTime(r.cardAt)?.let { at ->
                     val ago = relativeTime(at, clock).let { if (it == "now") "just now" else "$it ago" }
-                    Text("updated $ago by ${if (r.cardBy == "user") "you" else "Claude"}", style = MaterialTheme.typography.bodySmall, color = Sw.Secondary)
+                    Text("updated $ago by ${if (r.cardBy == "user") "you" else r.agentName}", style = MaterialTheme.typography.bodySmall, color = Sw.Secondary)
                 }
             }
         },

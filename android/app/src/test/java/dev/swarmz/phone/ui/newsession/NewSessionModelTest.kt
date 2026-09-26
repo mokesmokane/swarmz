@@ -9,6 +9,7 @@ import dev.swarmz.phone.keys.Ed25519
 import dev.swarmz.phone.keys.PhoneKey
 import dev.swarmz.phone.link.FakeConn
 import dev.swarmz.phone.link.VERSION_OK
+import dev.swarmz.phone.proto.Agent
 import dev.swarmz.phone.proto.Cmd
 import dev.swarmz.phone.state.TileKey
 import kotlinx.coroutines.CompletableDeferred
@@ -75,5 +76,31 @@ class NewSessionModelTest {
         assertEquals(TileKey("mini", "n1"), first.await())
         assertEquals("two taps, one new session", 1, conn.ran.count { it == newCmd })
         assertFalse(model.state.value.starting)
+    }
+
+    @Test
+    fun codexIsChosenAndStartsWithItsAgent() = runTest {
+        val newCmd = Cmd.newTile("/Users/me", skipPermissions = true, agent = Agent.Codex)
+        val conn = FakeConn { cmd ->
+            when (cmd) {
+                Cmd.machines() -> """{"machines":[],"v":1}"""
+                Cmd.folders(null) -> """{"dirs":[],"parent":"/Users","path":"/Users/me","v":1}"""
+                newCmd -> """{"tile":{"cwd":"/Users/me","id":"x1","kind":"codex","name":"me","running":true},"v":1}"""
+                else -> VERSION_OK
+            }
+        }
+        val settings = MemorySettings().also { it.setPaired(Paired("mini", "me", "Fold")) }
+        val repo = Repository(settings, { PhoneKey(Ed25519.generate()) }, HostConnector(mapOf("mini" to ArrayDeque(listOf(conn)))), backgroundScope)
+        repo.start()
+        val model = NewSessionModel(repo, backgroundScope)
+        assertEquals("Claude by default", Agent.Claude, model.state.value.agent)
+        model.setAgent(Agent.Codex)
+        model.setSkip(true)
+        model.pickMac("mini")
+        assertEquals("the choice survives picking a Mac", Agent.Codex, model.state.value.agent)
+        model.state.first { it.folders != null }
+        assertEquals(TileKey("mini", "x1"), model.start())
+        assertTrue(newCmd in conn.ran)
+        assertEquals("Codex will run commands and edit files without asking, outside its sandbox.", skipWarning(Agent.Codex))
     }
 }

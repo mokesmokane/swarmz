@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore, terminalColor, tileTheme } from "../store";
 import { attach, claimSize, fitAndFocus } from "../lib/xtermRegistry";
-import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary } from "../lib/workspace";
+import { agentName, EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
 import { SessionHistory } from "./SessionHistory";
 import { IdentifyLabel } from "./IdentifyLabel";
@@ -134,7 +134,7 @@ export function TerminalPane({ id }: { id: string }) {
       )}
       {bar === "folder" && (
         <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-300">
-          <span className="shrink-0">Choose a folder for Claude:</span>
+          <span className="shrink-0">{`Choose a folder for ${settings.claude?.enabled ? agentName(settings.claude) : "this tile"}:`}</span>
           <input
             className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 font-mono text-neutral-100 outline-none focus:border-blue-500"
             placeholder="/path/on/remote"

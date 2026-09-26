@@ -528,7 +528,7 @@ mod tests {
     use serde_json::Map;
 
     fn ws(conductor: Option<&str>) -> Workspace {
-        let def = |id: &str, name: &str| TerminalDef { id: id.into(), name: name.into(), cwd: "/p".into(), ssh: None, claude: None, command: None, extra: Map::new() };
+        let def = |id: &str, name: &str| TerminalDef { id: id.into(), name: name.into(), cwd: "/p".into(), ssh: None, claude: None, codex: None, command: None, extra: Map::new() };
         let mut w = Workspace { version: 1, terminals: vec![def("c1", "api"), def("t2", "web")], layout: Value::Null, extra: Map::new() };
         if let Some(c) = conductor {
             w.extra.insert("conductor".into(), json!(c));
@@ -567,7 +567,7 @@ mod tests {
     /// top c1 → certify s1 (tiles a, r, and the stale id "gone") → desk s2 (tile b); o is in no
     /// list, so it answers to the top.
     fn tree_ws() -> Workspace {
-        let def = |id: &str| TerminalDef { id: id.into(), name: id.into(), cwd: "/p".into(), ssh: None, claude: None, command: None, extra: Map::new() };
+        let def = |id: &str| TerminalDef { id: id.into(), name: id.into(), cwd: "/p".into(), ssh: None, claude: None, codex: None, command: None, extra: Map::new() };
         let mut w = Workspace {
             version: 1,
             terminals: ["c1", "s1", "s2", "a", "b", "o", "r"].iter().map(|id| def(id)).collect(),

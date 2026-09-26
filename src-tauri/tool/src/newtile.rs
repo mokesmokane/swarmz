@@ -2,7 +2,7 @@
 
 use crate::transcript::guess_path;
 use crate::util::{now_iso_ms, valid_abs_path};
-use crate::workspace::{load_from, read_from, save_to, ClaudeConfig, TerminalDef, Workspace};
+use crate::workspace::{load_from, read_from, save_to, Agent, ClaudeConfig, TerminalDef, Workspace};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -97,19 +97,48 @@ pub fn claude_line(c: &ClaudeConfig) -> String {
     parts.join(" ")
 }
 
+/// Codex cannot be given a session id up front (Codex tiles spec §3): a tile that has not started
+/// runs plain `codex`, and one that has resumes the id its `SessionStart` reported.
+pub fn codex_line(c: &ClaudeConfig) -> String {
+    let mut parts = vec!["codex".to_string()];
+    if c.started && crate::util::valid_uuid(&c.session_id) {
+        parts.push("resume".into());
+        parts.push(c.session_id.clone());
+    }
+    if c.skip_permissions {
+        parts.push("--dangerously-bypass-approvals-and-sandbox".into());
+    }
+    parts.join(" ")
+}
+
+/// The line that starts (or resumes) a tile's agent.
+pub fn agent_line(agent: Agent, c: &ClaudeConfig) -> String {
+    match agent {
+        Agent::Claude => claude_line(c),
+        Agent::Codex => codex_line(c),
+    }
+}
+
 /// The line a local tile types when it starts (same rules as `startupSteps` in the app for a
 /// local tile).
 pub fn startup_line(def: &TerminalDef) -> Option<String> {
     if let Some(cmd) = def.command.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
         return Some(cmd.to_string());
     }
-    def.claude.as_ref().filter(|c| c.enabled && crate::util::valid_uuid(&c.session_id)).map(claude_line)
+    match def.live_agent()? {
+        (Agent::Codex, c) => Some(codex_line(c)),
+        (Agent::Claude, c) => crate::util::valid_uuid(&c.session_id).then(|| claude_line(c)),
+    }
 }
 
-/// Whether the tile's Claude session has a transcript, so it must be resumed rather than
-/// started with its id again.
+/// Whether the tile's session has a transcript, so it must be resumed rather than started with
+/// its id again. Codex's is known only from `started`.
 pub fn session_started(home: &Path, def: &TerminalDef) -> bool {
-    def.claude.as_ref().is_some_and(|c| c.started || guess_path(home, &def.cwd, &c.session_id).is_some_and(|p| p.exists()))
+    match def.agent() {
+        Some((Agent::Codex, c)) => c.started,
+        Some((Agent::Claude, c)) => c.started || guess_path(home, &def.cwd, &c.session_id).is_some_and(|p| p.exists()),
+        None => false,
+    }
 }
 
 pub fn empty_workspace() -> Workspace {
@@ -205,6 +234,30 @@ mod tests {
     use serde_json::{json, Map};
     use std::path::PathBuf;
 
+    #[test]
+    fn codex_starts_plain_and_resumes_the_id_it_reported() {
+        let cfg = |started: bool, skip: bool, id: &str| ClaudeConfig { enabled: true, session_id: id.into(), skip_permissions: skip, started };
+        let id = "01a0de45-45f6-7fb0-852f-eb1933ff94d4";
+        assert_eq!(codex_line(&cfg(false, false, id)), "codex");
+        assert_eq!(codex_line(&cfg(false, true, "")), "codex --dangerously-bypass-approvals-and-sandbox");
+        assert_eq!(codex_line(&cfg(true, false, id)), format!("codex resume {id}"));
+        assert_eq!(codex_line(&cfg(true, true, id)), format!("codex resume {id} --dangerously-bypass-approvals-and-sandbox"));
+        // An id that is not one never reaches the line.
+        assert_eq!(codex_line(&cfg(true, false, "x; rm -rf ~")), "codex");
+        let mut d = TerminalDef { id: "t".into(), name: "t".into(), cwd: "/p".into(), ssh: None, claude: None, codex: Some(cfg(false, false, "")), command: None, extra: Map::new() };
+        assert_eq!(startup_line(&d).as_deref(), Some("codex"));
+        assert!(!session_started(Path::new("/nowhere"), &d));
+        d.codex.as_mut().unwrap().enabled = false;
+        assert_eq!(startup_line(&d), None);
+        // The def is written under `codex` and read back, and an older reader keeps it as extra.
+        d.codex.as_mut().unwrap().enabled = true;
+        let v = serde_json::to_value(&d).unwrap();
+        assert!(v["claude"].is_null() && v["codex"]["enabled"] == json!(true));
+        let back: TerminalDef = serde_json::from_value(v).unwrap();
+        assert_eq!(back, d);
+        assert_eq!(back.agent().map(|(a, _)| a), Some(Agent::Codex));
+    }
+
     fn tmp(tag: &str) -> PathBuf {
         let d = PathBuf::from(format!("/tmp/szc-{}-newtile-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -213,7 +266,7 @@ mod tests {
     }
 
     fn def(id: &str, claude: Option<ClaudeConfig>, command: Option<&str>) -> TerminalDef {
-        TerminalDef { id: id.into(), name: id.into(), cwd: "/p/app".into(), ssh: None, claude, command: command.map(str::to_string), extra: Map::new() }
+        TerminalDef { id: id.into(), name: id.into(), cwd: "/p/app".into(), ssh: None, claude, codex: None, command: command.map(str::to_string), extra: Map::new() }
     }
 
     fn cc(started: bool, skip: bool) -> ClaudeConfig {

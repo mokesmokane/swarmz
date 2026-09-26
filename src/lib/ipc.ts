@@ -88,6 +88,8 @@ export interface MachineStats {
   disk: { freePercent: number | null; freeBytes: number | null };
   uptimeSeconds: number | null;
   claude: { working: number; needsYou: number; idle: number; stopped: number };
+  /** Codex sessions, counted the same way (Codex tiles spec §7); absent from older tools. */
+  codex?: { working: number; needsYou: number; idle: number; stopped: number };
   app: string | null;
   tool: string;
   build: number;

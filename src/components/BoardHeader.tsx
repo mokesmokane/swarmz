@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore, tileMachine } from "../store";
 import { displayTitle } from "../lib/card";
-import { machineLabel } from "../lib/workspace";
+import { agentName, machineLabel } from "../lib/workspace";
 import { ipc } from "../lib/ipc";
 import { BOARD_TABS, loadBoardPrefs, NEEDS_COLOR, saveBoardPrefs, schemeColors, schemeOf, type Board, type BoardTab } from "../lib/board";
 
@@ -128,6 +128,7 @@ const label = "text-[10px] tracking-[0.1em] text-[#7d8a83]";
 
 function TabBody({ id, tab, board, c }: { id: string; tab: BoardTab; board: Board; c: ReturnType<typeof schemeColors> }) {
   const answer = useStore((s) => s.answerBoard);
+  const agent = useStore((s) => agentName(s.settings[id]?.claude));
   const [sent, setSent] = useState<string | null>(null);
   if (tab === "overview") {
     const o = board.overview ?? {};
@@ -213,7 +214,7 @@ function TabBody({ id, tab, board, c }: { id: string; tab: BoardTab; board: Boar
   }
   if (tab === "questions") {
     const qs = board.questions ?? [];
-    if (qs.length === 0) return <div className="text-sm text-[#a3afa8]">Nothing to answer right now. Claude isn't waiting on you.</div>;
+    if (qs.length === 0) return <div className="text-sm text-[#a3afa8]">{`Nothing to answer right now. ${agent} isn't waiting on you.`}</div>;
     return (
       <div className="flex flex-col gap-3">
         {qs.map((q) => (

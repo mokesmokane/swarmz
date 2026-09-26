@@ -6,6 +6,10 @@ import {
   attachLine,
   bumpSync,
   claudeLine,
+  codexLine,
+  agentOfDef,
+  newAgentConfig,
+  resumedSessionIn,
   hostLabel,
   isLayoutNode,
   isMachineColor,
@@ -735,5 +739,80 @@ describe("attach mode", () => {
     const s = { ssh: { host: "me@box", cwd: null }, claude: null, command: null };
     expect(startupSteps(s, "t-1", { attach: true })[0].line).toBe(attachLine("me@box", "t-1", null, "t-1"));
     expect(startupSteps({ ...s, command: "htop" }, "t-1", { attach: true })).toEqual([{ via: "local", line: "htop" }]);
+  });
+});
+
+describe("Codex tiles", () => {
+  const codex = (over: Partial<ClaudeConfig> = {}): ClaudeConfig => ({ enabled: true, sessionId: "", skipPermissions: false, started: false, agent: "codex", ...over });
+
+  it("types plain codex until it has started, then resumes its session", () => {
+    expect(codexLine(codex())).toBe("codex");
+    expect(codexLine(codex({ skipPermissions: true }))).toBe("codex --dangerously-bypass-approvals-and-sandbox");
+    expect(claudeLine(codex({ sessionId: "abc-1", started: true }))).toBe("codex resume abc-1");
+    expect(claudeLine(codex({ sessionId: "abc-1", started: true, skipPermissions: true }))).toBe("codex resume abc-1 --dangerously-bypass-approvals-and-sandbox");
+    // A Claude config is untouched.
+    expect(claudeLine({ ...claude, started: true })).toBe(`claude --resume ${claude.sessionId}`);
+  });
+
+  it("ignores the id while not started, and refuses an unsafe one once started", () => {
+    const s = { ...EMPTY_SETTINGS, claude: codex({ sessionId: "bad'id" }) };
+    expect(startupSteps(s)).toEqual([{ via: "local", line: "codex" }]);
+    expect(startupSteps({ ...s, claude: codex({ sessionId: "bad'id", started: true }) })).toEqual([]);
+    expect(startupUsesClaude({ ...EMPTY_SETTINGS, claude: codex() })).toBe(true);
+  });
+
+  it("types the remote steps the way Claude's are typed", () => {
+    const s = { ...EMPTY_SETTINGS, ssh: { host: "me@box", cwd: "/w" }, claude: codex({ sessionId: "s1", started: true }) };
+    expect(startupSteps(s, "tile-1")).toEqual([
+      { via: "local", line: sshLine("me@box") },
+      { via: "remote", line: "export SWARMZ_TERMINAL_ID=tile-1 && cd '/w' && codex resume s1" },
+    ]);
+  });
+
+  it("names the agent in the summary", () => {
+    expect(startupSummary({ ...EMPTY_SETTINGS, claude: codex() }, {})).toBe("Start Codex");
+    expect(startupSummary({ ...EMPTY_SETTINGS, claude: codex({ sessionId: "s", started: true, skipPermissions: true }) }, {})).toBe("Resume Codex (permissions skipped)");
+    expect(startupSummary({ ...EMPTY_SETTINGS, claude }, {})).toBe("Start Claude");
+  });
+
+  it("reads the resumed id from either agent's line", () => {
+    expect(resumedSessionIn("codex resume abc-1 --dangerously-bypass-approvals-and-sandbox")).toBe("abc-1");
+    expect(resumedSessionIn("cd '/x' && claude --resume abc-2")).toBe("abc-2");
+    expect(resumedSessionIn("codex")).toBeNull();
+  });
+
+  it("starts a new Codex config with no id, a Claude one with one", () => {
+    expect(newAgentConfig("codex", true)).toEqual({ enabled: true, sessionId: "", skipPermissions: true, started: false, agent: "codex" });
+    const c = newAgentConfig("claude", false);
+    expect(c.agent).toBeUndefined();
+    expect(isSafeSessionId(c.sessionId)).toBe(true);
+  });
+
+  it("reads a def's codex key as a Codex config and writes it back under codex", () => {
+    const fileCodex = { enabled: true, sessionId: "s1", skipPermissions: false, started: true };
+    const def: TerminalDef = { id: "a", name: "A", cwd: "/a", ssh: null, claude: null, command: null, codex: fileCodex };
+    expect(agentOfDef(def)).toEqual({ ...fileCodex, agent: "codex" });
+    const opening = openingFor(def, null, {}, "", new Set());
+    expect(opening.settings.claude).toEqual({ ...fileCodex, agent: "codex" });
+    const ws = toWorkspace({ order: ["a"], terminals: { a: { id: "a", name: "A", cwd: "/a" } }, settings: { a: opening.settings }, layout: null, machines: {} });
+    expect(ws.terminals[0].claude).toBeNull();
+    expect(ws.terminals[0].codex).toEqual(fileCodex);
+  });
+
+  it("leaves an old-shape Claude def alone", () => {
+    const def: TerminalDef = { id: "a", name: "A", cwd: "/a", ssh: null, claude, command: null };
+    expect(agentOfDef(def)).toBe(claude);
+    const ws = toWorkspace({ order: ["a"], terminals: { a: { id: "a", name: "A", cwd: "/a" } }, settings: { a: { ...EMPTY_SETTINGS, claude } }, layout: null, machines: {} });
+    expect(ws.terminals[0].claude).toEqual(claude);
+    expect("codex" in ws.terminals[0]).toBe(false);
+  });
+
+  it("compares a Codex def by its config, whichever way it is written", () => {
+    const fileCodex = { enabled: true, sessionId: "s1", skipPermissions: false, started: true };
+    const base = (t: Partial<TerminalDef>): Workspace => ({ version: 1, terminals: [{ id: "a", name: "A", cwd: "/a", ssh: null, claude: null, command: null, ...t }], layout: null });
+    expect(sameWorkspaceContent(base({ codex: fileCodex }), base({ claude: { ...fileCodex, agent: "codex" } }))).toBe(true);
+    expect(sameWorkspaceContent(base({ codex: fileCodex }), base({ codex: { ...fileCodex, started: false } }))).toBe(false);
+    // The same config as Claude's is a different tile.
+    expect(sameWorkspaceContent(base({ codex: fileCodex }), base({ claude: fileCodex }))).toBe(false);
   });
 });

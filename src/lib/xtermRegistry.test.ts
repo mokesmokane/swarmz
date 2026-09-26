@@ -138,6 +138,7 @@ import {
   parseAttachMarker,
   prepare,
   resetTerminalModes,
+  resumeGoneIn,
   TERMINAL_MODES_RESET,
 } from "./xtermRegistry";
 
@@ -477,6 +478,19 @@ describe("resume failure scanning", () => {
     expect(note).not.toHaveBeenCalled();
     writes.forEach((w) => w.done?.());
     expect(note).toHaveBeenCalledWith("r", "abc");
+  });
+  it("recognises Codex's report of a missing session as well as Claude's", () => {
+    expect(resumeGoneIn("Error: No saved session found with ID abc\r\n", "abc")).toBe(true);
+    expect(resumeGoneIn("No conversation found with session ID abc", "abc")).toBe(true);
+    expect(resumeGoneIn("No saved session found with ID abd", "abc")).toBe(false);
+  });
+  it("reports Codex's phrase for the watched session", async () => {
+    const note = vi.fn();
+    useStore.setState({ noteResumeFailure: note, resumeWatch: { cx: { sessionId: "abc", until: Date.now() + 10_000 } }, terminals: { cx: { id: "cx", name: "cx", cwd: "/", exited: null, error: null } }, settings: { cx: { ssh: null, claude: null, command: null, extra: {} } } });
+    await prepare("cx");
+    dataCallbacks.cx(new TextEncoder().encode("No saved session found with ID abc\r\n"));
+    (instances[instances.length - 1] as unknown as { writes: Array<{ done?: () => void }> }).writes.forEach((w) => w.done?.());
+    expect(note).toHaveBeenCalledWith("cx", "abc");
   });
   it("ignores output when no watch is active or the id differs", async () => {
     const note = vi.fn();

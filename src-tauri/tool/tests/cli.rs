@@ -2108,3 +2108,42 @@ fn a_board_request_never_types_into_a_shell_and_is_a_conductors_act() {
     assert_eq!((code, d["code"].as_str()), (1, Some("denied")), "{d}");
     let _ = tool_env(&h.path, &["close", "t1"], user);
 }
+
+#[test]
+fn a_codex_tile_is_started_recorded_under_codex_and_restarted_afresh() {
+    let h = home("new-codex");
+    let proj = h.path.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let folder = proj.to_string_lossy().into_owned();
+    write_ws(&h.path, serde_json::json!([]), serde_json::json!({}));
+    let (code, bad) = tool_env(&h.path, &["new", "--folder", &folder, "--agent", "gemini"], MINI);
+    assert_eq!((code, bad["code"].as_str()), (1, Some("usage")));
+
+    let (code, v) = tool_env(&h.path, &["new", "--folder", &folder, "--agent", "codex", "--skip-permissions"], MINI);
+    let id = v["tile"]["id"].as_str().unwrap_or_default().to_string();
+    let paths = swarmz_tool::paths::session_paths(&h.path.join(".swarmz/sessions"), &id).unwrap();
+    h.track(paths.socket.to_str().unwrap());
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["tile"]["kind"], "codex");
+    let ws: serde_json::Value = serde_json::from_slice(&std::fs::read(h.path.join(".swarmz/workspace.json")).unwrap()).unwrap();
+    let def = &ws["terminals"][0];
+    assert!(def.get("claude").map_or(true, |c| c.is_null()), "{def}");
+    assert_eq!((def["codex"]["started"].as_bool(), def["codex"]["skipPermissions"].as_bool()), (Some(false), Some(true)));
+
+    let c = tool_client(paths.socket.to_str().unwrap());
+    assert!(wait_until(|| screen_has(&c, "codex --dangerously-bypass-approvals-and-sandbox")));
+    // No Codex on the test PATH, so the shell is in front: the row says it is not running there,
+    // and restart starts it afresh (it never reported a session to resume).
+    assert!(wait_until(|| c.info(Duration::from_secs(2)).and_then(|i| i.foreground_busy) == Some(false)));
+    let (code, r) = tool_env(&h.path, &["restart", &id], MINI);
+    assert_eq!((code, r["resumed"].as_bool()), (0, Some(true)), "{r}");
+    assert!(!screen_has(&c, "codex resume"));
+    let (code, ls) = tool_env(&h.path, &["ls"], MINI);
+    assert_eq!(code, 0);
+    let row = ls["tiles"].as_array().unwrap().iter().find(|t| t["id"] == id.as_str()).unwrap().clone();
+    assert_eq!((row["kind"].as_str(), row["status"].as_str()), (Some("codex"), Some("offline")));
+    // Its conversations are not read here.
+    let (code, t) = tool_env(&h.path, &["transcript", &id], MINI);
+    assert_eq!((code, t["code"].as_str()), (1, Some("unsupported")));
+    tool_env(&h.path, &["close", &id], MINI);
+}

@@ -21,7 +21,7 @@ const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_
 /// The most lines `output --follow` watches.
 const MAX_FOLLOW_LINES: usize = 5000;
 
-const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set", "--parent", "--remove", "--assign", "--to"];
+const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set", "--parent", "--remove", "--assign", "--to", "--agent"];
 const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once", "--sub", "--top", "--get", "--history", "--all", "--request"];
 
 /// The conductor guard (conductor spec §3) for a command run from a tile: `sub` against
@@ -422,11 +422,16 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             Ok(Some(cmd::folders(&cmd::Env::from_process()?, a.positional.get(1).map(String::as_str))?))
         }
         Some("new") => {
-            a.expect_positional(1, "new --folder <dir> [--skip-permissions] [--name <name>]")?;
+            a.expect_positional(1, "new --folder <dir> [--skip-permissions] [--name <name>] [--agent claude|codex]")?;
             guard("new", None)?;
             let folder = a.opt("--folder").ok_or_else(|| CliError::new("usage", "missing --folder"))?;
+            let agent = match a.opt("--agent") {
+                None | Some("claude") => swarmz_tool::workspace::Agent::Claude,
+                Some("codex") => swarmz_tool::workspace::Agent::Codex,
+                Some(other) => return Err(CliError::new("usage", format!("unknown agent {other:?}: use claude or codex"))),
+            };
             let env = cmd::Env::from_process()?;
-            let made = cmd::new_tile(&env, folder, a.flag("--skip-permissions"), a.opt("--name"))?;
+            let made = cmd::new_tile(&env, folder, a.flag("--skip-permissions"), a.opt("--name"), agent)?;
             // A tile a sub-conductor starts is its own (conductor tree spec §3).
             if let (Some(caller), Some(id)) = (swarmz_tool::conductor::caller_tile(), made["tile"]["id"].as_str()) {
                 let ws = cmd::guard_workspace(&env)?;

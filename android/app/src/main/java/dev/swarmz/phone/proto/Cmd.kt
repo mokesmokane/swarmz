@@ -54,8 +54,10 @@ object Cmd {
     fun pending(tile: String) = of("pending", tile(tile))
     fun answer(tile: String, choice: String, summary: String) = of("answer", tile(tile), choice, "--summary", summary)
 
-    fun newTile(folder: String, skipPermissions: Boolean, name: String? = null): String {
+    fun newTile(folder: String, skipPermissions: Boolean, name: String? = null, agent: Agent = Agent.Claude): String {
         val words = mutableListOf("new", "--folder", folder)
+        // Claude is the tool's default, so only Codex is named (an older tool knows no `--agent`).
+        if (agent == Agent.Codex) words += listOf("--agent", agent.arg)
         if (skipPermissions) words += "--skip-permissions"
         if (name != null) words += listOf("--name", name)
         return of(*words.toTypedArray())

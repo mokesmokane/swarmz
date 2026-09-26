@@ -13,6 +13,28 @@ export interface ClaudeConfig {
   sessionId: string;
   skipPermissions: boolean;
   started: boolean;
+  /** Which agent the tile runs (Codex tiles spec §2); absent means Claude. Never written to the
+   * file: a Codex config is saved under the def's `codex` key instead of `claude`. */
+  agent?: "codex";
+}
+
+export type AgentKind = "claude" | "codex";
+
+export function agentKindOf(c: ClaudeConfig | null | undefined): AgentKind {
+  return c?.agent === "codex" ? "codex" : "claude";
+}
+
+/** A fresh agent config for a new tile: Claude gets its session id up front; Codex learns its id
+ * from `SessionStart` (Codex tiles spec §3), so it starts with none. */
+export function newAgentConfig(agent: AgentKind, skipPermissions: boolean): ClaudeConfig {
+  return agent === "codex"
+    ? { enabled: true, sessionId: "", skipPermissions, started: false, agent: "codex" }
+    : { enabled: true, sessionId: crypto.randomUUID(), skipPermissions, started: false };
+}
+
+/** The agent's name as the user reads it. */
+export function agentName(c: ClaudeConfig | null | undefined): string {
+  return agentKindOf(c) === "codex" ? "Codex" : "Claude";
 }
 
 export interface TerminalSettings {
@@ -35,6 +57,26 @@ export interface TerminalDef extends TerminalSettings {
   id: string;
   name: string;
   cwd: string;
+  /** A Codex tile's config in the file, shaped like `claude` (Codex tiles spec §2); read into
+   * `claude` with `agent: "codex"` by `agentOfDef`. */
+  codex?: ClaudeConfig | null;
+}
+
+/** A def's agent config as the app holds it: `claude`, or `codex` folded in with `agent: "codex"`
+ * (a def carries one of them at most; Codex wins if a file has both, as in the tool: only an older
+ * app, adopting a Codex session as Claude's, adds the second). */
+export function agentOfDef(def: { claude?: ClaudeConfig | null; codex?: ClaudeConfig | null }): ClaudeConfig | null {
+  if (def.codex && typeof def.codex === "object") {
+    const { agent: _agent, ...c } = def.codex;
+    return { ...c, agent: "codex" };
+  }
+  return def.claude ?? null;
+}
+
+/** The config as written to the file: `agent` is carried by which key holds it. */
+function fileAgentConfig(c: ClaudeConfig): ClaudeConfig {
+  const { agent: _agent, ...rest } = c;
+  return rest;
 }
 
 export interface SyncMeta {
@@ -184,10 +226,25 @@ export function shellQuote(s: string): string {
 }
 
 export function claudeLine(c: ClaudeConfig): string {
+  if (c.agent === "codex") return codexLine(c);
   const parts = ["claude"];
   if (c.skipPermissions) parts.push("--dangerously-skip-permissions");
   parts.push(c.started ? "--resume" : "--session-id", c.sessionId);
   return parts.join(" ");
+}
+
+/** Codex cannot be handed a session id up front (Codex tiles spec §3): a new tile runs plain
+ * `codex` and learns its id from `SessionStart`; a started one resumes it. */
+export function codexLine(c: ClaudeConfig): string {
+  const parts = c.started ? ["codex", "resume", c.sessionId] : ["codex"];
+  if (c.skipPermissions) parts.push("--dangerously-bypass-approvals-and-sandbox");
+  return parts.join(" ");
+}
+
+/** The session id a startup line resumes (`claude --resume <id>`, `codex resume <id>`), or null. */
+export function resumedSessionIn(line: string): string | null {
+  const m = /(?:--resume|codex resume) ([A-Za-z0-9-]{1,64})/.exec(line);
+  return m ? m[1] : null;
 }
 
 export function isSafeSessionId(id: string): boolean {
@@ -199,8 +256,15 @@ function trimmedCommand(s: TerminalSettings): string | null {
   return c ? c : null;
 }
 
+/** Whether an agent config's session id is fit to type: a Codex tile that has not started ignores
+ * its id (plain `codex`), so any id, even none, is fine there. */
+export function agentIdOk(c: ClaudeConfig): boolean {
+  if (c.agent === "codex" && !c.started) return true;
+  return isSafeSessionId(c.sessionId);
+}
+
 function safeClaude(s: TerminalSettings): ClaudeConfig | null {
-  return s.claude?.enabled && isSafeSessionId(s.claude.sessionId) ? s.claude : null;
+  return s.claude?.enabled && agentIdOk(s.claude) ? s.claude : null;
 }
 
 export function startupUsesClaude(s: TerminalSettings): boolean {
@@ -294,7 +358,7 @@ export function startupSummary(s: TerminalSettings, machines: Machines): string 
   const command = trimmedCommand(s);
   if (command) return `Run ${command}`;
   const c = safeClaude(s);
-  const claudePart = c ? `${c.started ? "resume" : "start"} Claude${c.skipPermissions ? " (permissions skipped)" : ""}` : null;
+  const claudePart = c ? `${c.started ? "resume" : "start"} ${agentName(c)}${c.skipPermissions ? " (permissions skipped)" : ""}` : null;
   const host = validHost(s);
   if (host) {
     const machine = s.ssh?.machine;
@@ -517,7 +581,7 @@ export function openingFor(
   knownMachines: Set<string>,
 ): { cwd: string | null; settings: TerminalSettings; note: string | null } {
   const origin = def.origin ?? null;
-  const base: TerminalSettings = { ssh: def.ssh ?? null, claude: def.claude ?? null, command: def.command ?? null, origin, card: cardOf(def.card) };
+  const base: TerminalSettings = { ssh: def.ssh ?? null, claude: agentOfDef(def), command: def.command ?? null, origin, card: cardOf(def.card) };
   // A remote created elsewhere that points at THIS machine is really one of ours: open it as a
   // local in the remote folder. It is then saved as a local def with `origin` = self, which the
   // rule below turns back into a remote on every other machine.
@@ -594,7 +658,7 @@ export function sameWorkspaceContent(a: Workspace, b: Workspace): boolean {
         name: t.name,
         cwd: t.cwd,
         ssh: t.ssh ?? null,
-        claude: t.claude ?? null,
+        claude: agentOfDef(t),
         command: t.command ?? null,
         origin: t.origin ?? null,
         sessions: t.sessions ?? [],
@@ -632,7 +696,8 @@ export function toWorkspace(input: {
         name: t.name,
         cwd: foreign ? foreign.cwd : t.cwd,
         ssh: foreign ? null : s.ssh,
-        claude: s.claude,
+        claude: s.claude && s.claude.agent !== "codex" ? fileAgentConfig(s.claude) : null,
+        ...(s.claude?.agent === "codex" ? { codex: fileAgentConfig(s.claude) } : {}),
         command: s.command,
         ...(s.origin ? { origin: s.origin } : {}),
         ...(s.sessions?.length ? { sessions: s.sessions } : {}),

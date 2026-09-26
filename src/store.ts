@@ -25,7 +25,13 @@ import {
   isMachineColor,
   isNewer,
   isSafeRemotePath,
-  isSafeSessionId,
+  agentIdOk,
+  agentOfDef,
+  newAgentConfig,
+  agentName,
+  type AgentKind,
+  type ClaudeConfig,
+  resumedSessionIn,
   machineHost,
   machineLabel,
   mergeForFirstSync,
@@ -135,12 +141,6 @@ const DEFAULT_ROWS = 24;
 export const SAVE_DEBOUNCE_MS = 500;
 
 export const RESUME_WATCH_MS = 10_000;
-
-/** The session id typed in a `--resume <id>` line, or null when the line doesn't resume one. */
-function resumedSessionIn(line: string): string | null {
-  const m = /--resume ([A-Za-z0-9-]{1,64})/.exec(line);
-  return m ? m[1] : null;
-}
 
 export const SSH_POLL_MS = 500;
 export const SSH_POLL_TIMEOUT_MS = 120_000;
@@ -409,7 +409,8 @@ function statsError(reason: unknown): string {
 export interface SshTerminalOptions {
   host: string;
   cwd?: string | null;
-  claude?: { skipPermissions: boolean } | null;
+  /** The agent to start (Codex tiles spec §1); `agent` absent means Claude. */
+  claude?: { skipPermissions: boolean; agent?: AgentKind } | null;
   name?: string;
   machine?: string | null;
 }
@@ -536,7 +537,7 @@ export interface WorkbenchState {
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
   createSshTerminal(opts: SshTerminalOptions, placement?: Placement): Promise<string>;
   createRemoteTerminal(
-    opts: { machine: string; cwd: string | null; claude: { skipPermissions: boolean } | null },
+    opts: { machine: string; cwd: string | null; claude: { skipPermissions: boolean; agent?: AgentKind } | null },
     placement?: Placement,
   ): Promise<string>;
   closeTerminal(id: string): Promise<void>;
@@ -566,8 +567,10 @@ export interface WorkbenchState {
   removeSubConductor(id: string): Promise<void>;
   /** Answers the pending claim (conductor spec §3): Approve makes the claimant the conductor, Deny clears the claim; either tells the claimant. */
   decideClaim(approve: boolean): Promise<void>;
-  /** A local Claude tile in `cwd` (the conductor's folder by default), made the conductor at once (conductor spec §6). */
-  createConductorTerminal(cwd: string, placement?: Placement): Promise<string>;
+  /** A local agent tile (Claude unless `agent` says Codex) in `cwd` (the conductor's folder by default), made the conductor at once (conductor spec §6). */
+  createConductorTerminal(cwd: string, placement?: Placement, agent?: AgentKind): Promise<string>;
+  /** A local tile in `cwd` that starts `agent` at once (Codex tiles spec §1). */
+  createAgentTerminal(cwd: string, agent: AgentKind, placement?: Placement): Promise<string>;
   /** Records whether Telegram is set up on this Mac (the Notifications panel and startup tell it). */
   setTelegramConfigured(configured: boolean): void;
   /** Opens `path` (absolute or `~`-relative) as tile `id` sees it, at `line` (file viewing spec §3). */
@@ -652,6 +655,9 @@ export interface WorkbenchState {
   refreshTailscale(): Promise<void>;
   updateMachine(name: string, patch: { alias?: string | null; user?: string | null; color?: string | null; icon?: string | null; theme?: string | null }): Promise<string | null>;
   applyAgentEvent(payload: AgentEventPayload): void;
+  /** A local Codex tile whose shell is back in front has ended its session, even without a
+   * `SessionEnd` (Codex tiles spec §4): its status then reads offline. Run by the folder poll. */
+  checkAgentExited(id: string): Promise<void>;
   setWindowFocused(focused: boolean): void;
   flashCopied(id: string): void;
   flashPasted(id: string): void;
@@ -961,7 +967,7 @@ function machineDropNote(dropped: number): string {
   return `${dropped} machine ${dropped === 1 ? "entry" : "entries"} in workspace.json were invalid and were dropped`;
 }
 
-const KNOWN_DEF_KEYS = new Set(["id", "name", "cwd", "ssh", "claude", "command", "origin", "sessions", "card"]);
+const KNOWN_DEF_KEYS = new Set(["id", "name", "cwd", "ssh", "claude", "codex", "command", "origin", "sessions", "card"]);
 
 /** Fields on a loaded def that this app version does not know about; kept so they round-trip on save. */
 function extraFromDef(def: TerminalDef): Record<string, unknown> {
@@ -1002,10 +1008,14 @@ function knownMachineNames(): Set<string> {
 }
 
 function regenerateIfUnsafe(def: TerminalDef): { def: TerminalDef; note: string | null } {
-  let out = def;
+  // A `codex` def is held as `claude` with `agent: "codex"` (Codex tiles spec §2).
+  const { codex: _codex, ...plain } = def;
+  let out: TerminalDef = { ...plain, claude: agentOfDef(def) };
   let note: string | null = null;
-  if (out.claude?.enabled && !isSafeSessionId(out.claude.sessionId)) {
-    out = { ...out, claude: { ...out.claude, sessionId: crypto.randomUUID(), started: false } };
+  if (out.claude?.enabled && !agentIdOk(out.claude)) {
+    // Codex cannot be given an id up front: an unusable resume id just starts it afresh.
+    const sessionId = out.claude.agent === "codex" ? "" : crypto.randomUUID();
+    out = { ...out, claude: { ...out.claude, sessionId, started: false } };
     note = UNSAFE_SESSION_NOTE;
   }
   // Keep the ssh settings as loaded (so the user can fix them in the panel); just flag them.
@@ -1232,7 +1242,10 @@ function machineOf(id: string, host: string): string {
   return machine ? machineLabel(machine, s.machines[machine]) : hostLabel(host);
 }
 
-export const SWITCH_BUSY_NOTE = "Claude is still running in the session on ";
+/** The note when a picked session cannot be switched to yet; names the tile's agent. */
+export function switchBusyNote(agent: string, machine: string): string {
+  return `${agent} is still running in the session on ${machine}; exit it to switch`;
+}
 
 /** Types the picked session's remote step into an attached tile when its session's shell is idle,
  * or explains why not. */
@@ -1253,7 +1266,7 @@ async function applyPendingSwitch(id: string): Promise<void> {
     return;
   }
   const machine = machineOf(id, host);
-  const note = error !== null ? `could not check the session on ${machine}: ${error}` : `${SWITCH_BUSY_NOTE}${machine}; exit it to switch`;
+  const note = error !== null ? `could not check the session on ${machine}: ${error}` : switchBusyNote(agentName(useStore.getState().settings[id]?.claude), machine);
   useStore.setState((st) => ({ startupNotes: { ...st.startupNotes, [id]: note } }));
 }
 
@@ -1575,8 +1588,8 @@ function resetSessionIfFolderChanged(cur: TerminalSettings, next: TerminalSettin
   const after = next.ssh?.cwd ?? null;
   if (next.claude?.enabled && next.claude.started && before !== after) {
     return {
-      settings: { ...next, claude: { ...next.claude, sessionId: crypto.randomUUID(), started: false } },
-      note: "folder changed; Claude will start a new session",
+      settings: { ...next, claude: { ...next.claude, sessionId: next.claude.agent === "codex" ? "" : crypto.randomUUID(), started: false } },
+      note: `folder changed; ${agentName(next.claude)} will start a new session`,
     };
   }
   return { settings: next, note: null };
@@ -1752,9 +1765,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     const settings: TerminalSettings = {
       ...EMPTY_SETTINGS,
       ssh: { host: opts.host.trim(), cwd: rememberedOrGivenCwd, ...(machineName ? { machine: machineName } : {}) },
-      claude: opts.claude
-        ? { enabled: true, sessionId: crypto.randomUUID(), skipPermissions: opts.claude.skipPermissions, started: false }
-        : null,
+      claude: opts.claude ? newAgentConfig(opts.claude.agent ?? "claude", opts.claude.skipPermissions) : null,
       origin: useStore.getState().selfMachine ?? null,
     };
     set((s) => {
@@ -2496,13 +2507,18 @@ export const useStore = create<WorkbenchState>((set) => ({
     await conductorViaTool(approve ? ["set", claim.tile] : ["deny"]);
   },
 
-  async createConductorTerminal(cwd, placement): Promise<string> {
+  async createConductorTerminal(cwd, placement, agent = "claude"): Promise<string> {
+    const id = await useStore.getState().createAgentTerminal(cwd, agent, placement);
+    await useStore.getState().setConductor(id);
+    return id;
+  },
+
+  async createAgentTerminal(cwd, agent, placement): Promise<string> {
     const id: string = await useStore.getState().createTerminal(cwd, placement);
-    useStore.getState().updateSettings(id, { claude: { enabled: true, sessionId: crypto.randomUUID(), skipPermissions: false, started: false } });
-    // Claude starts as any local Claude tile does: the startup line is typed into the fresh shell.
+    useStore.getState().updateSettings(id, { claude: newAgentConfig(agent, false) });
+    // The agent starts as any local agent tile does: the startup line is typed into the fresh shell.
     set((s) => ({ startupPending: { ...s.startupPending, [id]: true } }));
     await useStore.getState().runStartup(id);
-    await useStore.getState().setConductor(id);
     return id;
   },
 
@@ -2510,7 +2526,8 @@ export const useStore = create<WorkbenchState>((set) => ({
     set((s) => {
       const current = s.settings[id] ?? EMPTY_SETTINGS;
       const next: TerminalSettings = { ...current, ...patch };
-      if (next.claude?.enabled && !next.claude.sessionId) {
+      // Codex has no id until its first SessionStart (Codex tiles spec §3).
+      if (next.claude?.enabled && !next.claude.sessionId && next.claude.agent !== "codex") {
         next.claude = { ...next.claude, sessionId: crypto.randomUUID() };
       }
       const { settings: finalSettings, note } = resetSessionIfFolderChanged(current, next);
@@ -2730,13 +2747,18 @@ export const useStore = create<WorkbenchState>((set) => ({
         const base = patch.settings?.[id] ?? settings;
         let next2: TerminalSettings | null = null;
         if (event.event === "SessionStart") {
-          const skipPermissions = event.permissionMode === "bypassPermissions";
+          // The event says which agent it came from (Codex tiles spec §4): a Codex session makes
+          // the tile a Codex tile, any other a Claude one. Only Claude's permission mode is read
+          // for skipped permissions; a Codex tile keeps the flag it was started with.
+          const codex = event.agent === "codex";
+          const skipPermissions = codex ? (base.claude?.skipPermissions ?? false) : event.permissionMode === "bypassPermissions";
           const cwd = event.cwd && isSafeFolder(event.cwd) ? event.cwd : (base.sessions?.find((r) => r.sessionId === event.sessionId)?.cwd ?? null);
           if (cwd) {
-            const sessions = upsertSession(base.sessions, { sessionId: event.sessionId, cwd, skipPermissions }, now);
-            const claude = base.claude?.enabled && base.claude.sessionId === event.sessionId
+            const sessions = upsertSession(base.sessions, { sessionId: event.sessionId, cwd, skipPermissions, ...(codex ? { agent: "codex" as const } : {}) }, now);
+            const same = base.claude?.enabled && base.claude.sessionId === event.sessionId && (base.claude.agent === "codex") === codex;
+            const claude: ClaudeConfig = same && base.claude
               ? base.claude
-              : { enabled: true, sessionId: event.sessionId, skipPermissions, started: false };
+              : { enabled: true, sessionId: event.sessionId, skipPermissions, started: false, ...(codex ? { agent: "codex" as const } : {}) };
             next2 = { ...base, sessions, claude };
             folderToApply = cwd;
           }
@@ -2757,6 +2779,23 @@ export const useStore = create<WorkbenchState>((set) => ({
       return patch;
     });
     if (folderToApply) void useStore.getState().setTerminalCwd(id, folderToApply, "hook");
+  },
+
+  async checkAgentExited(id) {
+    const s = useStore.getState();
+    const settings = s.settings[id];
+    const state = s.agentState[id];
+    if (!s.terminals[id] || s.terminals[id].exited !== null || settings?.ssh || settings?.claude?.agent !== "codex") return;
+    if (!state || state.status === "offline") return;
+    // Only a definite answer counts: a holder that could not say leaves the status alone.
+    if ((await foregroundBusyOrNull(id)) !== false) return;
+    const now = useStore.getState().agentState[id];
+    // A new session (or a real SessionEnd) arrived while the holder was asked.
+    if (!now || now.status === "offline" || now.sessionId !== state.sessionId) return;
+    useStore.getState().applyAgentEvent({
+      host: null,
+      event: { ts: new Date().toISOString(), terminal: id, event: "SessionEnd", sessionId: state.sessionId, notificationType: null, source: null, cwd: null, permissionMode: null, agent: "codex" },
+    });
   },
 
   flashCopied(id) {
@@ -2821,7 +2860,7 @@ export const useStore = create<WorkbenchState>((set) => ({
       return {
         settings: {
           ...st.settings,
-          [id]: { ...cur, claude: { enabled: true, sessionId, skipPermissions: rec.skipPermissions, started: true }, sessions: promoteSession(cur.sessions ?? [], sessionId, now) },
+          [id]: { ...cur, claude: { enabled: true, sessionId, skipPermissions: rec.skipPermissions, started: true, ...(rec.agent === "codex" ? { agent: "codex" as const } : {}) }, sessions: promoteSession(cur.sessions ?? [], sessionId, now) },
         },
         startupNotes: omit(st.startupNotes, id),
       };

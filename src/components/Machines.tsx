@@ -70,10 +70,14 @@ function sessionsText(m: MachineStatus | undefined): ReactNode {
   const c = m?.stats?.claude;
   if (!c) return null;
   const live = c.working + c.needsYou + c.idle;
+  const x = m?.stats?.codex;
+  const codexLive = x ? x.working + x.needsYou + x.idle : 0;
+  const needs = c.needsYou + (x?.needsYou ?? 0);
   return (
     <>
       <span>{`${live} Claude`}</span>
-      {c.needsYou > 0 && <span className="ml-1 rounded bg-red-900/60 px-1 text-red-200">{`${c.needsYou} need${c.needsYou === 1 ? "s" : ""} you`}</span>}
+      {codexLive > 0 && <span>{` · ${codexLive} Codex`}</span>}
+      {needs > 0 && <span className="ml-1 rounded bg-red-900/60 px-1 text-red-200">{`${needs} need${needs === 1 ? "s" : ""} you`}</span>}
     </>
   );
 }
@@ -219,6 +223,8 @@ function MachineCard({ name }: { name: string }) {
           {row("Memory", s.memory.usedPercent !== null ? `${s.memory.usedPercent}% of ${bytesText(s.memory.totalBytes)}` : "–", <Bar percent={s.memory.usedPercent} label={`${label} memory`} />)}
           {row("Disk", s.disk.freePercent !== null ? `${bytesText(s.disk.freeBytes)} free (${s.disk.freePercent}%)` : "–", <Bar percent={s.disk.freePercent === null ? null : 100 - s.disk.freePercent} warn={90} label={`${label} disk used`} />)}
           {row("Claude", `${s.claude.working} working · ${s.claude.needsYou} need you · ${s.claude.idle} idle · ${s.claude.stopped} stopped`)}
+          {s.codex && s.codex.working + s.codex.needsYou + s.codex.idle + s.codex.stopped > 0 &&
+            row("Codex", `${s.codex.working} working · ${s.codex.needsYou} need you · ${s.codex.idle} idle · ${s.codex.stopped} stopped`)}
           {row("Up", uptimeText(s.uptimeSeconds))}
           {row("swarmz", `${s.app ? `app ${s.app} · ` : ""}tool ${s.tool}`)}
           {m?.error && <div className="text-amber-400">{`Last ask failed: ${st.word}`}</div>}

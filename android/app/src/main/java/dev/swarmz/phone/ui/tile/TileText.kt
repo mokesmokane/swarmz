@@ -1,5 +1,6 @@
 package dev.swarmz.phone.ui.tile
 
+import dev.swarmz.phone.proto.Agent
 import dev.swarmz.phone.proto.TileRow
 import dev.swarmz.phone.state.parseTime
 import java.time.Duration
@@ -19,3 +20,9 @@ fun statusLine(row: TileRow, now: Instant): String = when {
 
 /** The slash commands the Claude quick keys offer. */
 val SLASH_COMMANDS = listOf("/clear", "/compact", "/context", "/cost", "/model", "/help")
+
+/** The slash commands the Codex quick keys offer (Codex tiles spec §7). */
+val CODEX_SLASH_COMMANDS = listOf("/compact", "/model", "/status", "/new")
+
+/** The slash commands an agent tile's quick keys offer, by its kind. */
+fun slashCommandsFor(kind: String): List<String> = if (kind == Agent.Codex.arg) CODEX_SLASH_COMMANDS else SLASH_COMMANDS
