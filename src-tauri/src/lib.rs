@@ -61,6 +61,8 @@ pub fn run() {
             commands::conductor_action,
             commands::tile_answer,
             commands::terminal_bracketed_paste,
+            commands::board_get,
+            commands::tile_send,
             commands::conductor_dir,
             commands::telegram_get,
             commands::telegram_set,

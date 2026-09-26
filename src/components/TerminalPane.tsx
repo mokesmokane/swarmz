@@ -5,6 +5,7 @@ import { EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary } from "
 import { RemoteDirPicker } from "./RemoteDirPicker";
 import { SessionHistory } from "./SessionHistory";
 import { IdentifyLabel } from "./IdentifyLabel";
+import { BoardHeader } from "./BoardHeader";
 
 /** How long the "Copied" and "Image sent to remote" pills stay after a copy or a remote paste. */
 export const COPIED_FLASH_MS = 1000;
@@ -101,7 +102,9 @@ export function TerminalPane({ id }: { id: string }) {
   }, [pastedAt]);
 
   return (
-    <div className="relative h-full w-full" style={{ backgroundColor: background }}>
+    <div className="flex h-full w-full flex-col" style={{ backgroundColor: background }}>
+      <BoardHeader id={id} />
+      <div className="relative min-h-0 w-full flex-1">
       {color && <div className="absolute inset-x-0 top-0 z-20 h-0.5" style={{ backgroundColor: color }} />}
       {overlay === "pending" && (
         <div className="absolute inset-0 z-10 flex items-center justify-center p-6">
@@ -179,6 +182,7 @@ export function TerminalPane({ id }: { id: string }) {
           </button>
         </div>
       )}
+      </div>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/ipc", () => ({
@@ -191,5 +191,17 @@ describe("windows and layouts", () => {
     await drag("none");
     expect(opened).toEqual(["win- 2000,300"]);
     windowHooks.open = async () => {};
+  });
+});
+
+describe("hovering a sidebar row", () => {
+  it("outlines the group that holds the tile and lights its tab", () => {
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
+    expect(screen.queryByTestId("hover-outline-g1")).toBeNull();
+    act(() => useStore.setState({ hoveredTile: ID }));
+    expect(screen.getByTestId("hover-outline-g1")).toBeTruthy();
+    expect(screen.getByTestId(`tab-${ID}`).className).toContain("bg-pick");
+    act(() => useStore.setState({ hoveredTile: null }));
+    expect(screen.queryByTestId("hover-outline-g1")).toBeNull();
   });
 });

@@ -49,6 +49,8 @@ export const PROXIED_ACTIONS = [
   "flashCopied",
   "flashPasted",
   "identifyTile",
+  "loadBoard",
+  "answerBoard",
 ] as const;
 export type ProxiedAction = (typeof PROXIED_ACTIONS)[number];
 
@@ -103,6 +105,8 @@ export const MIRRORED_KEYS = [
   "windowFocused",
   "focusedWindow",
   "identify",
+  "boards",
+  "hoveredTile",
 ] as const satisfies readonly (keyof WorkbenchState)[];
 
 export type WindowMirror = Pick<WorkbenchState, (typeof MIRRORED_KEYS)[number]> & {

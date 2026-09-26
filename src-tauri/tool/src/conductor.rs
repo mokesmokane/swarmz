@@ -140,6 +140,8 @@ const CONDUCTING: &[&str] = &["fleet", "new", "on", "notify"];
 /// Following the user's Telegram chat: the top conductor's Mac alone (Telegram gives one
 /// follower per bot); a message to any conductor is still routed to it.
 const TOP_ONLY: &[&str] = &["telegram-follow"];
+/// A tile keeps only its own board (tile board spec §2); the desktop reads anyone's.
+const OWN_ONLY: &[&str] = &["board"];
 /// Set, deny, clear and remove are the user's (desktop, phone) and never a tile's.
 const USER_ONLY: &[&str] = &["conductor-set", "conductor-clear"];
 
@@ -155,6 +157,9 @@ pub fn allowed(ws: &Workspace, caller: Option<&str>, sub: &str, target: Option<&
     }
     if own {
         return Ok(());
+    }
+    if OWN_ONLY.contains(&sub) && target.is_some() {
+        return denied("a tile keeps only its own board; leave off --tile".into());
     }
     if READ_OTHER.contains(&sub) {
         return denied("a tile's conversation is its own; ask it with `swarmz ask` instead".into());

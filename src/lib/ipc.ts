@@ -203,6 +203,10 @@ export const ipc = {
   /** Sets, denies or clears the conductor through the tool, which tells the tiles concerned (conductor spec §6). */
   /** Allow (`yes`) or Deny (`no`) a tile's permission dialog, on its Mac when that is another one. */
   tileAnswer: (tile: string, choice: "yes" | "no", machine: string | null) => invoke<unknown>("tile_answer", { tile, choice, machine }),
+  /** A tile's board (tile board spec §2), from its Mac: `{board, at}`, board null when it has none. */
+  boardGet: (tile: string, machine: string | null) => invoke<{ board: unknown; at?: string }>("board_get", { tile, machine }),
+  /** Types `text` into the tile and submits it (a board's answer button). */
+  tileSend: (tile: string, text: string, machine: string | null) => invoke<unknown>("tile_send", { tile, text, machine }),
   conductorAction: (action: "set" | "deny" | "clear" | "sub" | "assign" | "remove", id?: string, parent?: string) =>
     invoke<{ conductor: string | null; conductors?: SubConductors; claim: ConductorClaim | null; conductorAt?: string | null }>("conductor_action", {
       action,

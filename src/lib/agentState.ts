@@ -24,6 +24,8 @@ export interface AgentEvent {
   permissionMode: string | null;
   /** `UserPromptSubmit`'s prompt text, when the core forwarded it. */
   prompt?: string | null;
+  /** A `Board` event's board (tile board spec §2); null when it was cleared. */
+  board?: unknown;
 }
 
 export const OFFLINE: AgentState = { status: "offline", sessionId: null, since: "", lastEvent: "", unseen: false, title: null, firstPrompt: null };

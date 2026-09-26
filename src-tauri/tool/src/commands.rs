@@ -388,6 +388,39 @@ fn names(ws: &Workspace) -> Vec<String> {
     ws.terminals.iter().map(|t| t.name.clone()).collect()
 }
 
+/// The tile a command is about: `--tile`, else the calling tile.
+fn this_tile(tile: Option<&str>, what: &str) -> Result<String, CliError> {
+    match tile {
+        Some(t) => tile_arg(t),
+        None => match std::env::var("SWARMZ_TERMINAL_ID") {
+            Ok(t) if !t.is_empty() => tile_arg(&t),
+            _ => Err(CliError::new("usage", format!("usage: swarmz {what}: no tile given and SWARMZ_TERMINAL_ID is not set"))),
+        },
+    }
+}
+
+/// `board [--tile ID] [--get] [--clear]` (tile board spec §2): replaces the tile's board with the
+/// JSON on stdin, prints it (`--get`), or removes it (`--clear`).
+pub fn board(env: &Env, tile: Option<&str>, get: bool, clear: bool, input: &mut dyn std::io::Read) -> Result<Value, CliError> {
+    let tile = this_tile(tile, "board [--tile <id>] [--get] [--clear] < board.json")?;
+    if get {
+        return Ok(match crate::board::read(&env.home, &tile) {
+            Some(v) => json!({"v": 1, "tile": tile, "at": v["at"], "board": v["board"]}),
+            None => json!({"v": 1, "tile": tile, "board": null}),
+        });
+    }
+    let at = now_iso_ms();
+    if clear {
+        let cleared = crate::board::clear(&env.home, &tile, &at).map_err(failed)?;
+        return Ok(json!({"v": 1, "tile": tile, "cleared": cleared}));
+    }
+    let mut text = String::new();
+    input.take(256 * 1024).read_to_string(&mut text).map_err(failed)?;
+    let v: Value = serde_json::from_str(text.trim()).map_err(|e| CliError::new("usage", format!("the board on stdin is not JSON: {e}")))?;
+    let kept = crate::board::write(&env.home, &tile, &v, &at).map_err(|e| CliError::new("usage", e))?;
+    Ok(json!({"v": 1, "tile": tile, "at": at, "board": kept}))
+}
+
 pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&str>) -> Result<Value, CliError> {
     check_folder(folder)?;
     let machine = env.machine.clone().ok_or_else(|| CliError::new("no_machine", "this Mac's name is unknown (is Tailscale running?)"))?;

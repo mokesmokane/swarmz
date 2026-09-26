@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod attach;
+pub mod board;
 pub mod briefing;
 pub mod card;
 pub mod client;

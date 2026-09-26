@@ -225,11 +225,16 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
       }}
       onDoubleClick={() => startEditing("name")}
       onMouseEnter={() => {
+        // Where is it? Its pane and tab light up while the pointer is on the row.
+        useStore.getState().hoverTile(id);
         if (editing) return;
         if (hoverTimer.current) clearTimeout(hoverTimer.current);
         hoverTimer.current = setTimeout(() => setHovering(true), HOVER_CARD_MS);
       }}
-      onMouseLeave={stopHover}
+      onMouseLeave={() => {
+        stopHover();
+        if (useStore.getState().hoveredTile === id) useStore.getState().hoverTile(null);
+      }}
       onKeyDown={stopHover}
       data-testid={`row-${id}`}
       aria-selected={selected}
