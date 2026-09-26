@@ -28,25 +28,25 @@ describe("boards", () => {
 });
 
 describe("History", () => {
-  it("lists every conversation, closed ones too, titled by its board's goal, newest activity first", () => {
+  it("lists every conversation of every tile, closed ones too, titled by its board's goal, newest first", () => {
     const rows = historyRows(
       [
-        { sessionId: "s1", cwd: "/p/app", lastActiveAt: "2026-09-26T09:00:00Z" },
-        { sessionId: "s2", cwd: "/p/api", lastActiveAt: "2026-09-26T11:00:00Z" },
+        { id: "t1", current: "s2", sessions: [{ sessionId: "s1", cwd: "/p/app", lastActiveAt: "2026-09-26T09:00:00Z" }, { sessionId: "s2", cwd: "/p/api", lastActiveAt: "2026-09-26T11:00:00Z" }] },
+        { id: "t2", current: null, sessions: [{ sessionId: "x1", cwd: "/p/web", lastActiveAt: "2026-09-26T10:30:00Z" }] },
       ],
-      [
-        { sessionId: "s1", at: "2026-09-26T10:00:00Z", board: { overview: { goal: "Fix login", now: "Done.", next: "Merge it" } } },
-        { sessionId: "s0", at: "2026-09-25T10:00:00Z", board: { overview: { goal: "Older, not in the records" } } },
-      ],
-      "s2",
+      {
+        t1: [
+          { sessionId: "s1", at: "2026-09-26T10:00:00Z", board: { overview: { goal: "Fix login", now: "Done.", next: "Merge it" } } },
+          { sessionId: "s0", at: "2026-09-25T10:00:00Z", board: { overview: { goal: "Older, not in the records" } } },
+        ],
+      },
     );
-    expect(rows.map((r) => [r.sessionId, r.title, r.current])).toEqual([
-      ["s2", "Conversation in api", true],
-      ["s1", "Fix login", false],
-      ["s0", "Older, not in the records", false],
+    expect(rows.map((r) => [r.tile, r.sessionId, r.title, r.current])).toEqual([
+      ["t1", "s2", "Conversation in api", true],
+      ["t2", "x1", "Conversation in web", false],
+      ["t1", "s1", "Fix login", false],
+      ["t1", "s0", "Older, not in the records", false],
     ]);
-    expect(rows[1].lastActive).toBe("2026-09-26T10:00:00Z");
-    expect(rows[1].detail).toBe("Done.\nNext: Merge it");
-    expect(rows[0].detail).toBeNull();
+    expect(rows[2].detail).toBe("Done.\nNext: Merge it");
   });
 });

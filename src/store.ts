@@ -596,6 +596,10 @@ export interface WorkbenchState {
   boards: Record<string, BoardEntry>;
   /** Asks the tile's Mac for its board when none is known yet (a pane showing it for the first time). */
   loadBoard(id: string): Promise<void>;
+  /** Each tile's conversation boards (tile board spec §5), for the History view; by tile id. */
+  conversationBoards: Record<string, { sessionId: string; at: string; board: unknown }[]>;
+  /** Asks this Mac and every Mac with a tile for its conversation boards. */
+  loadConversationBoards(): Promise<void>;
   /** Types a board answer into the tile and submits it. */
   answerBoard(id: string, text: string): Promise<void>;
   /** Tiles showing their identify label (identify spec): one tile, or all of them numbered in list order. */
@@ -2155,6 +2159,28 @@ export const useStore = create<WorkbenchState>((set) => ({
   identify: null,
   boards: {},
   hoveredTile: null,
+  conversationBoards: {},
+
+  async loadConversationBoards() {
+    const s = useStore.getState();
+    // This Mac (null) and every other Mac a tile runs on.
+    const macs = new Set<string | null>([null]);
+    for (const id of s.order) {
+      const m = s.settings[id]?.ssh?.machine;
+      if (m) macs.add(m);
+    }
+    const results = await Promise.all(
+      [...macs].map((m) =>
+        ipc.boardHistoryAll(m).then(
+          (r) => r?.tiles ?? {},
+          () => ({}),
+        ),
+      ),
+    );
+    const merged: Record<string, { sessionId: string; at: string; board: unknown }[]> = {};
+    for (const tiles of results) for (const [tile, list] of Object.entries(tiles)) if (Array.isArray(list)) merged[tile] = [...(merged[tile] ?? []), ...list];
+    set({ conversationBoards: merged });
+  },
 
   hoverTile(id) {
     if (useStore.getState().hoveredTile !== id) set({ hoveredTile: id });

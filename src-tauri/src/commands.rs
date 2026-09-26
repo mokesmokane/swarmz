@@ -766,7 +766,21 @@ pub async fn board_get(tile: String, machine: Option<String>) -> Result<serde_js
     .map_err(|e| e.to_string())?
 }
 
-/// Each conversation's latest board in a tile (tile board spec §5), for the History tab.
+/// Every tile's conversation boards on one Mac (this one, or `machine`), for the History view.
+#[tauri::command]
+pub async fn board_history_all(machine: Option<String>) -> Result<serde_json::Value, String> {
+    let mut args = on_args(machine.as_deref()).ok_or("not a machine swarmz knows")?;
+    args.extend(["board".into(), "--history".into(), "--all".into()]);
+    tauri::async_runtime::spawn_blocking(move || {
+        let tool = crate::toolbin::ensure_installed()?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        crate::toolbin::run_tool_json(&tool, &args, Duration::from_secs(20))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Each conversation's latest board in a tile (tile board spec §5).
 #[tauri::command]
 pub async fn board_history(tile: String, machine: Option<String>) -> Result<serde_json::Value, String> {
     let mut args = on_args(machine.as_deref()).ok_or("not a machine swarmz knows")?;
