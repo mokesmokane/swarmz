@@ -63,11 +63,11 @@ The phone, editing a board by hand, and history of boards.
   `~/.swarmz/boards/<tile>/<session>.json` (`{at, sessionId, board}`); the session is the tile's
   current Claude session as the hook log says (its last `SessionStart`). `board --history` lists
   them, newest first (at most 20). Clearing a board leaves its history.
-- The header gets a sixth tab, **History**: a list of every conversation the tile has had, from
-  the tile's session records (the last 20, closed ones included) joined with those boards: each
-  row is its title (the board's goal, else "Conversation in <folder>") and when it was last
-  active, newest first, the current one marked "now". Boards are for the tiles themselves, so a
-  row shows no more of its board than a tooltip (where it got to, and next). A click goes back to
-  that conversation in the tile (as the session history does).
-- A Claude tile with past conversations shows the header even before its current conversation
-  writes a board, so History stays reachable.
+- **History is a sidebar view**, beside Mac, Triage, Folder, Tree and Time (not a tab in the
+  header: boards are for the tiles themselves). It lists every conversation of every tile, from
+  each tile's session records (the last 20 per tile, closed ones included) joined with the
+  conversation boards (`board --history --all`, asked of this Mac and every Mac with a tile),
+  newest activity first. A row is the conversation's title (its board's goal, else "Conversation
+  in <folder>"), the tile it ran in with its Mac, and when it was last active; the live one is
+  marked. Where it got to (its board's now and next) is only the row's tooltip. A click opens the
+  tile, going back to that conversation when it is not the live one; hovering outlines the tile.
