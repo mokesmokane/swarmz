@@ -2062,3 +2062,33 @@ fn reading_commands_leave_a_broken_workspace_in_place() {
     let entries: Vec<String> = std::fs::read_dir(h.path.join(".swarmz")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert!(!entries.iter().any(|n| n.contains("broken")), "{entries:?}");
 }
+
+#[test]
+fn a_tile_keeps_its_own_board_and_the_log_carries_it() {
+    let h = home("board");
+    let me: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "t1")];
+    let user: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "")];
+    let (code, v) = tool_env_input(&h.path, &["board"], me, br#"{"scheme":"moss","overview":{"goal":"Ship it","needsYou":true},"junk":1}"#);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["board"], serde_json::json!({"scheme": "Moss", "overview": {"goal": "Ship it", "needsYou": true}}));
+    let log = std::fs::read_to_string(h.path.join(".swarmz/agents/events.log")).unwrap();
+    assert!(log.contains("\tt1\tBoard\t{\"board\":{"), "{log}");
+    // Anyone may read it; only the tile writes it; bad input is refused.
+    let (code, g) = tool_env(&h.path, &["board", "--tile", "t1", "--get"], user);
+    assert_eq!((code, g["board"]["overview"]["goal"].as_str()), (0, Some("Ship it")));
+    let (code, d) = tool_env_input(&h.path, &["board", "--tile", "t2"], me, b"{\"overview\":{\"goal\":\"x\"}}");
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")));
+    let (code, d) = tool_env_input(&h.path, &["board"], me, b"not json");
+    assert_eq!((code, d["code"].as_str()), (1, Some("usage")));
+    // Written inside a conversation (the hook log's SessionStart), it lands in History too.
+    std::fs::write(h.path.join(".swarmz/agents/events.log"), "2026-09-26T09:00:00Z\tt1\tSessionStart\t{\"session_id\":\"sess-1\"}\n").unwrap();
+    let (code, v) = tool_env_input(&h.path, &["board"], me, br#"{"overview":{"goal":"In a conversation"}}"#);
+    assert_eq!((code, v["sessionId"].as_str()), (0, Some("sess-1")), "{v}");
+    let (code, hist) = tool_env(&h.path, &["board", "--tile", "t1", "--history"], user);
+    assert_eq!(code, 0, "{hist}");
+    assert_eq!(hist["history"][0]["sessionId"], "sess-1");
+    assert_eq!(hist["history"][0]["board"]["overview"]["goal"], "In a conversation");
+    let (code, c) = tool_env(&h.path, &["board", "--clear"], me);
+    assert_eq!((code, c["cleared"].as_bool()), (0, Some(true)));
+    assert!(tool_env(&h.path, &["board", "--tile", "t1", "--get"], user).1["board"].is_null());
+}

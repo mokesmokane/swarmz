@@ -18,9 +18,10 @@ pub const SCRIPT_MARKER: &str = ".swarmz/hooks/claude.sh";
 pub use swarmz_tool::briefing::{briefing_version, BRIEFING, BRIEFING_VERSION};
 pub const BRIEFING_MARKER: &str = ".swarmz/briefing.md";
 
-/// The two Bash rules that let an agent run `swarmz card` without a prompt in modes that ask
-/// (spec §4.2): as the briefing types it, and as a bare `swarmz` on a PATH that has it.
-pub const CARD_PERMISSIONS: [&str; 2] = ["Bash(~/.swarmz/bin/swarmz card:*)", "Bash(swarmz card:*)"];
+/// The Bash rules that let an agent keep its card (conversation cards spec §4.2) and its board
+/// (tile board spec §2) without a prompt in modes that ask: as the briefing types them, and as a
+/// bare `swarmz` on a PATH that has it.
+pub const AGENT_PERMISSIONS: [&str; 4] = ["Bash(~/.swarmz/bin/swarmz card:*)", "Bash(swarmz card:*)", "Bash(~/.swarmz/bin/swarmz board:*)", "Bash(swarmz board:*)"];
 
 pub const HOOK_SCRIPT: &str = r#"#!/bin/sh
 # installed by swarmz; reinstalling overwrites this file.
@@ -136,7 +137,7 @@ pub fn install_hooks(settings: Option<&str>) -> Result<(String, bool), String> {
         return Err("settings.json permissions.allow is not an array".into());
     }
     let allow = allow.as_array_mut().unwrap();
-    for rule in CARD_PERMISSIONS {
+    for rule in AGENT_PERMISSIONS {
         if !allow.iter().any(|r| r.as_str() == Some(rule)) {
             allow.push(json!(rule));
         }
@@ -336,6 +337,9 @@ pub struct AgentEvent {
     /// `UserPromptSubmit`'s prompt, first 500 characters (the fallback title needs 60; the
     /// tooltip shows the rest).
     pub prompt: Option<String>,
+    /// A `Board` event's board (tile board spec §2): null when it was cleared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board: Option<Value>,
 }
 
 /// One log line: `ts \t terminal \t event \t json`. None when malformed.
@@ -360,6 +364,7 @@ pub fn parse_line(line: &str) -> Option<AgentEvent> {
         cwd: s("cwd"),
         permission_mode: s("permission_mode"),
         prompt: if event == "UserPromptSubmit" { s("prompt").map(|p| p.chars().take(500).collect()) } else { None },
+        board: if event == "Board" { Some(v.get("board").cloned().unwrap_or(Value::Null)) } else { None },
     })
 }
 
@@ -454,6 +459,15 @@ pub fn spawn_watcher(app: AppHandle, host: Option<String>, gen: u64) -> Result<W
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+
+    #[test]
+    fn parse_line_carries_a_board() {
+        let ev = parse_line("t\tid\tBoard\t{\"board\":{\"overview\":{\"goal\":\"G\"}}}").unwrap();
+        assert_eq!(ev.board.as_ref().unwrap()["overview"]["goal"], "G");
+        assert_eq!(serde_json::to_value(&ev).unwrap()["board"]["overview"]["goal"], "G");
+        assert_eq!(parse_line("t\tid\tBoard\t{\"board\":null}").unwrap().board, Some(Value::Null));
+        assert!(serde_json::to_value(parse_line("t\tid\tStop\t{}").unwrap()).unwrap().get("board").is_none());
+    }
 
     #[test]
     fn parse_line_reads_cwd_and_permission_mode() {
@@ -577,7 +591,7 @@ mod tests {
         // The card permissions come with the hooks (conversation cards spec §4.2).
         let v: Value = serde_json::from_str(&out).unwrap();
         let allow: Vec<&str> = v["permissions"]["allow"].as_array().unwrap().iter().filter_map(|r| r.as_str()).collect();
-        assert_eq!(allow, CARD_PERMISSIONS.to_vec());
+        assert_eq!(allow, AGENT_PERMISSIONS.to_vec());
     }
 
     #[test]

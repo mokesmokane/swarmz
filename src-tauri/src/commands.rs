@@ -740,6 +740,71 @@ pub fn answer_args(tile: &str, choice: &str, machine: Option<&str>) -> Option<Ve
     Some(args)
 }
 
+/// `--on <machine>` for a tile on another Mac, checked; nothing for this Mac. None when unsafe.
+fn on_args(machine: Option<&str>) -> Option<Vec<String>> {
+    match machine {
+        None => Some(vec![]),
+        Some(m) if !m.is_empty() && m.len() <= 63 && !m.starts_with('-') && m.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') => Some(vec!["--on".into(), m.into()]),
+        Some(_) => None,
+    }
+}
+
+/// A tile's board (tile board spec §2), read by the tool on the tile's Mac.
+#[tauri::command]
+pub async fn board_get(tile: String, machine: Option<String>) -> Result<serde_json::Value, String> {
+    let mut args = on_args(machine.as_deref()).ok_or("not a machine swarmz knows")?;
+    if !swarmz_tool::paths::valid_tile_id(&tile) {
+        return Err("not a tile".into());
+    }
+    args.extend(["board".into(), "--tile".into(), tile, "--get".into()]);
+    tauri::async_runtime::spawn_blocking(move || {
+        let tool = crate::toolbin::ensure_installed()?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        crate::toolbin::run_tool_json(&tool, &args, Duration::from_secs(15))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Each conversation's latest board in a tile (tile board spec §5), for the History tab.
+#[tauri::command]
+pub async fn board_history(tile: String, machine: Option<String>) -> Result<serde_json::Value, String> {
+    let mut args = on_args(machine.as_deref()).ok_or("not a machine swarmz knows")?;
+    if !swarmz_tool::paths::valid_tile_id(&tile) {
+        return Err("not a tile".into());
+    }
+    args.extend(["board".into(), "--tile".into(), tile, "--history".into()]);
+    tauri::async_runtime::spawn_blocking(move || {
+        let tool = crate::toolbin::ensure_installed()?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        crate::toolbin::run_tool_json(&tool, &args, Duration::from_secs(15))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Types an answer from a board's Questions tab into the tile (`swarmz send`, which presses Enter
+/// until Claude's input box takes it), on the tile's Mac.
+#[tauri::command]
+pub async fn tile_send(tile: String, text: String, machine: Option<String>) -> Result<serde_json::Value, String> {
+    let mut args = on_args(machine.as_deref()).ok_or("not a machine swarmz knows")?;
+    if !swarmz_tool::paths::valid_tile_id(&tile) {
+        return Err("not a tile".into());
+    }
+    let text: String = text.chars().filter(|c| !c.is_control()).take(1000).collect();
+    if text.trim().is_empty() {
+        return Err("nothing to send".into());
+    }
+    args.extend(["send".into(), tile, "--".into(), text]);
+    tauri::async_runtime::spawn_blocking(move || {
+        let tool = crate::toolbin::ensure_installed()?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        crate::toolbin::run_tool_json(&tool, &args, Duration::from_secs(20))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Allow or Deny on a tile's permission dialog, from the sidebar's Needs you card. The tool reads
 /// the tile's screen and refuses when no permission dialog is showing, so a stale card answers
 /// nothing.

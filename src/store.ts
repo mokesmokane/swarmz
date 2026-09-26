@@ -79,6 +79,7 @@ import {
   type Layouts,
 } from "./lib/windowLayouts";
 import { arrange, presetById } from "./lib/presets";
+import { readBoard, type BoardEntry } from "./lib/board";
 import { isThemeId, machineAccent, PLAIN, PLAIN_BG, themeById, themeFor, type MachineTheme } from "./lib/themes";
 
 type Point = { x: number; y: number };
@@ -588,6 +589,15 @@ export interface WorkbenchState {
   closedNotice: ClosedNotice | null;
   /** In another window's mirror: every tile open in some window (the main window works it out). */
   openTileIds: string[];
+  /** The tile whose sidebar row the pointer is over: its pane and tab are outlined wherever they show. */
+  hoveredTile: string | null;
+  hoverTile(id: string | null): void;
+  /** Each tile's board as its agent last wrote it (tile board spec); absent until known. */
+  boards: Record<string, BoardEntry>;
+  /** Asks the tile's Mac for its board when none is known yet (a pane showing it for the first time). */
+  loadBoard(id: string): Promise<void>;
+  /** Types a board answer into the tile and submits it. */
+  answerBoard(id: string, text: string): Promise<void>;
   /** Tiles showing their identify label (identify spec): one tile, or all of them numbered in list order. */
   identify: { ids: string[]; numbered: boolean; at: number } | null;
   /** Shows where tile `id` is: its window comes forward, its tab shows, and a label flashes over its pane. */
@@ -837,6 +847,9 @@ function placeOf(s: WorkbenchState, id: string): { id: string; groupId: string |
   const label = windowOfTile(ls, id);
   return { id, groupId: label ? (findGroupOf(ls[label], id)?.id ?? null) : null };
 }
+
+/** Boards being fetched, so a pane mounting twice asks once. */
+const boardLoading = new Set<string>();
 
 /** How long an identify label stays (identify spec). */
 export const IDENTIFY_MS = 3500;
@@ -2140,6 +2153,32 @@ export const useStore = create<WorkbenchState>((set) => ({
   closedNotice: null,
   openTileIds: [],
   identify: null,
+  boards: {},
+  hoveredTile: null,
+
+  hoverTile(id) {
+    if (useStore.getState().hoveredTile !== id) set({ hoveredTile: id });
+  },
+
+  async loadBoard(id) {
+    const s = useStore.getState();
+    if (!s.terminals[id] || s.boards[id] || boardLoading.has(id)) return;
+    boardLoading.add(id);
+    try {
+      const r = await ipc.boardGet(id, s.settings[id]?.ssh?.machine ?? null);
+      const board = readBoard(r?.board);
+      set((st) => (st.boards[id] ? {} : { boards: { ...st.boards, [id]: { board, at: r?.at ?? null } } }));
+    } catch {
+      // An older tool, or the Mac is away: the board arrives with the next Board event.
+    } finally {
+      boardLoading.delete(id);
+    }
+  },
+
+  async answerBoard(id, text) {
+    const s = useStore.getState();
+    await ipc.tileSend(id, text, s.settings[id]?.ssh?.machine ?? null);
+  },
 
   identifyTile(id) {
     if (!useStore.getState().terminals[id]) return;
@@ -2647,6 +2686,8 @@ export const useStore = create<WorkbenchState>((set) => ({
       // still running in its holder keeps the history since that holder started (an older
       // holder's, e.g. from before a reboot, is stale too); every remote's history counts.
       if (event.ts < APP_LAUNCHED_AT && host === null && !preLaunchEventCounts(id, event.ts)) return {};
+      // A board (tile board spec §2) replaces the tile's; it says nothing about its status.
+      if (event.event === "Board") return { boards: { ...s.boards, [id]: { board: readBoard(event.board), at: event.ts } } };
       const focused = s.windowFocused && seenTile(s) === id;
       const next = foldAgentEvent(s.agentState[id], event, focused);
       const patch: Partial<WorkbenchState> = {};

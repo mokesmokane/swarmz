@@ -4150,3 +4150,22 @@ describe("identify", () => {
     }
   });
 });
+
+describe("tile boards", () => {
+  it("a Board event replaces the tile's board, and clearing it leaves none", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().applyAgentEvent({ host: null, event: { ts: new Date(Date.now() + 1000).toISOString(), terminal: a, event: "Board", sessionId: null, notificationType: null, source: null, cwd: null, permissionMode: null, board: { overview: { goal: "G" } } } });
+    expect(useStore.getState().boards[a].board?.overview?.goal).toBe("G");
+    // Its status is untouched.
+    expect(useStore.getState().agentState[a]).toBeUndefined();
+    useStore.getState().applyAgentEvent({ host: null, event: { ts: new Date(Date.now() + 2000).toISOString(), terminal: a, event: "Board", sessionId: null, notificationType: null, source: null, cwd: null, permissionMode: null, board: null } });
+    expect(useStore.getState().boards[a].board).toBeNull();
+  });
+
+  it("hovering a row marks its tile until the pointer leaves", () => {
+    useStore.getState().hoverTile("x");
+    expect(useStore.getState().hoveredTile).toBe("x");
+    useStore.getState().hoverTile(null);
+    expect(useStore.getState().hoveredTile).toBeNull();
+  });
+});

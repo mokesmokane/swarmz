@@ -124,6 +124,8 @@ export function TabGroup({ group }: { group: GroupNode }) {
   const windowTiles = useStore((s) => allGroups(s.layout).reduce((n, g) => n + g.tabs.length, 0));
   const soleGroup = useStore((s) => s.windowLabel !== MAIN && allGroups(s.layout).length === 1);
   const [menu, setMenu] = useState<{ id: string; at: { x: number; y: number } } | null>(null);
+  // The tile whose sidebar row is hovered, when it is in this group (shown or in a tab behind).
+  const hovered = useStore((s) => (s.hoveredTile && group.tabs.includes(s.hoveredTile) ? s.hoveredTile : null));
   const identified = useStore((s) => group.tabs.map((t) => identifyMark(s, t) ?? "").join("\n"));
   const markOf = (i: number) => identified.split("\n")[i] || null;
   const moveTerminal = useStore((s) => s.moveTerminal);
@@ -198,10 +200,17 @@ export function TabGroup({ group }: { group: GroupNode }) {
 
   return (
     <div
-      className={`flex h-full w-full flex-col ${isFocused ? "ring-1 ring-inset ring-blue-500/40" : ""}`}
+      className={`relative flex h-full w-full flex-col ${isFocused ? "ring-1 ring-inset ring-blue-500/40" : ""}`}
       onMouseDown={() => focusGroup(group.id)}
       data-drop-group={group.id}
+      data-hovered={hovered ? "true" : undefined}
     >
+      {hovered && (
+        <div
+          className="pointer-events-none absolute inset-0 z-30 rounded-sm border-2 border-pick shadow-[inset_0_0_0_9999px_color-mix(in_oklch,var(--color-pick)_8%,transparent)]"
+          data-testid={`hover-outline-${group.id}`}
+        />
+      )}
       <div
         className="flex h-8 shrink-0 items-stretch border-b border-neutral-800 bg-neutral-900"
         onDragOver={allowDrop}
@@ -239,7 +248,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
               onContextMenu={openMenu(id)}
               data-testid={`tab-${id}`}
               className={`group flex shrink-0 cursor-default select-none items-center gap-2 border-r border-neutral-800 px-3 text-xs ${
-                active ? "bg-[#0f1115] text-neutral-100" : "text-neutral-400 hover:bg-neutral-800"
+                hovered === id ? "bg-pick/30 text-neutral-100" : active ? "bg-[#0f1115] text-neutral-100" : "text-neutral-400 hover:bg-neutral-800"
               } ${mark ? "ring-2 ring-inset ring-amber-400" : ""}`}
             >
               {mark && mark !== "●" && <span className="rounded bg-amber-400 px-1 text-[10px] font-bold text-neutral-950" data-testid={`tab-mark-${id}`}>{mark}</span>}
