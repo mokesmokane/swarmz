@@ -64,10 +64,12 @@ describe("statusColor", () => {
     expect(statusColor(undefined)).toBeNull();
     expect(statusColor({ ...OFFLINE })).toBeNull();
     expect(statusColor({ ...OFFLINE, status: "working" })).toBe("#25BF35");
-    expect(statusColor({ ...OFFLINE, status: "blocked" })).toBe("#FFB21B");
-    expect(statusColor({ ...OFFLINE, status: "idle", unseen: true })).toBe("#FFB21B");
+    expect(statusColor({ ...OFFLINE, status: "blocked", lastEvent: "PermissionRequest" })).toBe("#FFB21B");
+    // Only a waiting permission is amber: Claude's idle nudge and an unseen finish are not.
+    expect(statusColor({ ...OFFLINE, status: "blocked", lastEvent: "Notification" })).toBe("#475569");
+    expect(statusColor({ ...OFFLINE, status: "idle", unseen: true })).toBe("#475569");
     expect(statusColor({ ...OFFLINE, status: "idle" })).toBe("#475569");
-    expect(needsYou({ ...OFFLINE, status: "idle", unseen: true })).toBe(true);
+    expect(needsYou({ ...OFFLINE, status: "idle", unseen: true })).toBe(false);
     expect(needsYou({ ...OFFLINE, status: "working", unseen: true })).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { groupRows, triage, loadGroupBy, relativeActivity, rowInfo, saveGroupBy, type GroupBy, type RowInfo } from "../lib/sidebarGroups";
+import { groupRows, triage, loadGroupBy, needsLabel, relativeActivity, rowInfo, saveGroupBy, type GroupBy, type RowInfo } from "../lib/sidebarGroups";
+import { questionCount } from "../lib/board";
 import { open } from "@tauri-apps/plugin-dialog";
 import { conductorFor, isConductorTile, knownMacs, layoutsOf, useStore } from "../store";
 import { machineAccent } from "../lib/themes";
@@ -206,7 +207,7 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
   const skip = !!(settings?.claude?.enabled && settings.claude.skipPermissions);
   const codex = !!(settings?.claude?.enabled && settings.claude.agent === "codex");
   const showName = hasTitle(card, agent) && info && t.name !== info.folder;
-  const tip = `${state === "needs you" ? "Needs you" : state[0].toUpperCase() + state.slice(1)}${info?.since ? ` · ${relativeActivity(info.since, now)}` : ""}${shownIn ? "" : " · running, not open in any window"}`;
+  const tip = `${state === "needs you" ? `Needs you: ${info?.questions ? needsLabel(info.questions) : "a permission is waiting"}` : state[0].toUpperCase() + state.slice(1)}${info?.since ? ` · ${relativeActivity(info.since, now)}` : ""}${shownIn ? "" : " · running, not open in any window"}`;
   const stopClick = (e: { stopPropagation(): void }) => e.stopPropagation();
   const iconBtn = "flex h-5 w-[22px] items-center justify-center rounded text-[#a4a7ae] hover:bg-[#2e3137] hover:text-ink";
 
@@ -354,7 +355,7 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
               {mark && !shownIn && <span className="shrink-0 text-[10px] text-needs" data-testid={`row-not-open-${id}`}>not open in a window</span>}
               <div className={`flex flex-none items-baseline gap-1.5 text-[11px] ${menuOpen ? "hidden" : "group-hover:hidden"}`}>
                 {(needs || exited) && (
-                  <span className={`font-semibold ${needs ? "text-needs" : "text-exited"}`} data-testid={`status-${id}`}>{needs ? "needs you" : exited}</span>
+                  <span className={`font-semibold ${needs ? "text-needs" : "text-exited"}`} data-testid={`status-${id}`}>{needs ? needsLabel(info?.questions ?? 0) : exited}</span>
                 )}
                 <span className="font-mono text-[10.5px] text-faint">{relativeActivity(info?.since ?? null, now)}</span>
               </div>
@@ -542,6 +543,14 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
   const terminals = useStore((s) => s.terminals);
   const settings = useStore((s) => s.settings);
   const agentState = useStore((s) => s.agentState);
+  // A tile needs you when its board asks questions, so every tile's board is known, not only
+  // the ones open in a pane (each is fetched once; later changes arrive as Board events).
+  const boards = useStore((s) => s.boards);
+  const loadBoard = useStore((s) => s.loadBoard);
+  const orderKey = order.join("\n");
+  useEffect(() => {
+    for (const id of orderKey ? orderKey.split("\n") : []) void loadBoard(id);
+  }, [orderKey, loadBoard]);
   const selfMachine = useStore((s) => s.selfMachine);
   const machines = useStore((s) => s.machines);
   const peers = useStore((s) => s.tailscale?.peers ?? null);
@@ -556,7 +565,7 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
     const t = terminals[id];
     if (!t) continue;
     const s = settings[id];
-    infos.set(id, rowInfo({ id, name: t.name, cwd: t.cwd, exited: t.exited, ssh: s?.ssh ?? null, foreign: s?.foreign ?? null, sessions: s?.sessions, agent: agentState[id] }, { selfMachine, machines, online, colorOf }));
+    infos.set(id, rowInfo({ id, name: t.name, cwd: t.cwd, exited: t.exited, ssh: s?.ssh ?? null, foreign: s?.foreign ?? null, sessions: s?.sessions, agent: agentState[id], questions: questionCount(boards[id]) }, { selfMachine, machines, online, colorOf }));
   }
   const groups = groupRows(order, infos, groupBy, now);
   const tri = triage(order, infos);

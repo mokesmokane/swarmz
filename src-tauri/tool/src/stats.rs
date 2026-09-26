@@ -2,7 +2,7 @@
 //! Claude sessions, for the desktop's Machines view. The parsers are pure, over the outputs of
 //! `ps`, `sysctl` and `vm_stat`, so fixtures test them.
 
-use crate::agent::Status;
+use crate::agent::{Needs, Status};
 use crate::tiles::TileRow;
 use serde_json::{json, Value};
 use std::process::Command;
@@ -39,16 +39,18 @@ pub fn parse_vm_stat(out: &str) -> Option<u64> {
 
 /// Claude sessions by state, from this Mac's tile rows.
 pub fn claude_counts(rows: &[TileRow]) -> Value {
-    agent_counts(rows, "claude")
+    agent_counts(rows, "claude", &|_| 0)
 }
 
-/// One agent's sessions by state (`kind` is `claude` or `codex`, Codex tiles spec §7).
-pub fn agent_counts(rows: &[TileRow], kind: &str) -> Value {
+/// One agent's sessions by state (`kind` is `claude` or `codex`, Codex tiles spec §7). A session
+/// needs you when its board asks questions (`questions` counts them) or a permission is waiting,
+/// never merely for being idle.
+pub fn agent_counts(rows: &[TileRow], kind: &str, questions: &dyn Fn(&str) -> usize) -> Value {
     let (mut working, mut needs, mut idle, mut stopped) = (0, 0, 0, 0);
     for r in rows.iter().filter(|r| r.kind == kind) {
         if !r.running {
             stopped += 1;
-        } else if r.status == Status::Blocked || r.needs.is_some() {
+        } else if r.needs == Some(Needs::Permission) || questions(&r.id) > 0 {
             needs += 1;
         } else if r.status == Status::Working {
             working += 1;
@@ -97,15 +99,16 @@ pub fn reply(cpu_sum: f64, load1: Option<f64>, cores: Option<u32>, mem_total: Op
 }
 
 /// This Mac's numbers now.
-pub fn gather(rows: &[TileRow], build: u64) -> Value {
+pub fn gather(home: &std::path::Path, rows: &[TileRow], build: u64) -> Value {
+    let questions = |id: &str| crate::board::summary(home, id).and_then(|s| s["questions"].as_u64()).unwrap_or(0) as usize;
     let cpu_sum = parse_ps_cpu(&run("/bin/ps", &["-A", "-o", "%cpu"]));
     let (load1, cores, mem_total, boot) = parse_sysctl(&run("/usr/sbin/sysctl", &["-n", "vm.loadavg", "hw.ncpu", "hw.memsize", "kern.boottime"]));
     let mem_used = parse_vm_stat(&run("/usr/bin/vm_stat", &[]));
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let uptime = boot.map(|b| now.saturating_sub(b));
     let app = Some(run("/usr/bin/plutil", &["-extract", "CFBundleShortVersionString", "raw", "/Applications/swarmz.app/Contents/Info.plist"]).trim().to_string()).filter(|v| !v.is_empty());
-    let mut v = reply(cpu_sum, load1, cores, mem_total, mem_used, disk(), uptime, claude_counts(rows), app, build);
-    v["codex"] = agent_counts(rows, "codex");
+    let mut v = reply(cpu_sum, load1, cores, mem_total, mem_used, disk(), uptime, agent_counts(rows, "claude", &questions), app, build);
+    v["codex"] = agent_counts(rows, "codex", &questions);
     v
 }
 
@@ -138,7 +141,7 @@ Pages occupied by compressor:             50000.
             kind: kind.into(),
             running,
             status,
-            needs: needs.then_some(crate::agent::Needs::Question),
+            needs: needs.then_some(crate::agent::Needs::Permission),
             ..Default::default()
         };
         let rows = vec![
@@ -150,7 +153,11 @@ Pages occupied by compressor:             50000.
             row("codex", true, Status::Working, false),
         ];
         assert_eq!(claude_counts(&rows), json!({"working": 1, "needsYou": 1, "idle": 1, "stopped": 1}));
-        assert_eq!(agent_counts(&rows, "codex"), json!({"working": 1, "needsYou": 0, "idle": 0, "stopped": 0}));
+        assert_eq!(agent_counts(&rows, "codex", &|_| 0), json!({"working": 1, "needsYou": 0, "idle": 0, "stopped": 0}));
+        // Only a waiting permission or the board's questions need you: Claude's idle nudge does not.
+        let nudged = vec![TileRow { kind: "claude".into(), running: true, status: Status::Blocked, needs: Some(crate::agent::Needs::Question), ..Default::default() }];
+        assert_eq!(claude_counts(&nudged), json!({"working": 0, "needsYou": 0, "idle": 1, "stopped": 0}));
+        assert_eq!(agent_counts(&nudged, "claude", &|_| 2), json!({"working": 0, "needsYou": 1, "idle": 0, "stopped": 0}));
     }
 
     #[test]

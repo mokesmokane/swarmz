@@ -75,6 +75,7 @@ beforeEach(() => {
     persistError: null,
     machines: { box: { alias: "desk", color: "#f59e0b", lastUsed: "t" } },
     agentState: {},
+    boards: {},
     agentHooksError: null,
     tailscale: {
       running: true,
@@ -218,9 +219,9 @@ describe("Sidebar", () => {
     expect(screen.getByTestId("triage-quiet").textContent).toContain("QUIET");
     expect(screen.getByTestId("line2-local").textContent).toBe("Mother");
     fireEvent.click(screen.getByRole("radio", { name: "Mac" }));
-    // This Mac's group comes first; a row in the Mac view says "needs you".
+    // This Mac's group comes first; a row that needs you says why (a permission here).
     expect(screen.getAllByTestId(/^group-/).map((h) => h.getAttribute("data-testid"))).toEqual(["group-mini", "group-box"]);
-    expect(screen.getByTestId(`status-${ID}`).textContent).toBe("needs you");
+    expect(screen.getByTestId(`status-${ID}`).textContent).toBe("permission");
     expect(screen.getByTestId("group-box").textContent).toContain("1");
     fireEvent.click(screen.getByRole("radio", { name: "Time" }));
     expect(screen.getAllByTestId(/^group-/).length).toBeGreaterThan(0);
@@ -444,7 +445,8 @@ describe("agent status dot", () => {
     useStore.setState({
       settings: { [ID]: { ssh: null, claude: null, command: null, extra: {} } },
       machines: {},
-      agentState: { [ID]: { status: "blocked", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "Notification", unseen: true, title: null, firstPrompt: null } },
+      agentState: { [ID]: { status: "idle", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "Stop", unseen: true, title: null, firstPrompt: null } },
+      boards: { [ID]: { board: { questions: [{ q: "Which branch?" }, { q: "Ship it?" }] }, at: "t" } },
       agentHooksError: "could not install Claude hooks: nope",
     });
     localStorage.setItem("swarmz.sidebarGroupBy", "machine");
@@ -452,7 +454,8 @@ describe("agent status dot", () => {
     const dot = screen.getByTestId(`agent-dot-${ID}`);
     expect(dot.style.backgroundColor).toBe("var(--color-needs)");
     expect(dot.style.boxShadow).toContain("--color-needs");
-    expect(screen.getByTestId(`row-${ID}`).title).toContain("Needs you");
+    expect(screen.getByTestId(`row-${ID}`).title).toContain("Needs you: 2 questions");
+    expect(screen.getByTestId(`status-${ID}`).textContent).toBe("2 questions");
     fireEvent.click(screen.getByTestId("notices"));
     expect(screen.getByText("could not install Claude hooks: nope")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
@@ -634,8 +637,9 @@ describe("triage (sidebar redesign spec)", () => {
       layout: { kind: "group", id: "g1", tabs: ["p", "q", "z"], active: "z" },
       agentState: {
         p: { status: "blocked", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "PermissionRequest", unseen: false, title: null, firstPrompt: null },
-        q: { status: "blocked", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "Notification", unseen: false, title: null, firstPrompt: null },
+        q: { status: "idle", sessionId: "s", since: "2026-09-15T10:00:00Z", lastEvent: "Stop", unseen: false, title: null, firstPrompt: null },
       },
+      boards: { q: { board: { questions: [{ q: "Which colour should the button be?" }] }, at: "t" } },
     });
     render(<Sidebar />);
     const card = screen.getByTestId("needs-card-p");

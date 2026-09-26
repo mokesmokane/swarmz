@@ -21,7 +21,7 @@ import type { RowTree } from "./Sidebar";
 const tile = (id: string) => ({ id, name: id, cwd: `/p/${id}`, exited: null, error: null });
 const claude = { enabled: true, sessionId: "s", skipPermissions: false, started: true };
 const order = ["top", "s1", "a", "b", "o"];
-const info = (id: string, status: RowInfo["status"] = "idle"): RowInfo => ({ id, machine: { key: "m", glyph: "M", label: "m", alias: null, color: null, self: true, online: null }, folder: "f", status, since: null });
+const info = (id: string, status: RowInfo["status"] = "idle"): RowInfo => ({ id, machine: { key: "m", glyph: "M", label: "m", alias: null, color: null, self: true, online: null }, folder: "f", status, questions: 0, since: null });
 const infos = new Map<string, RowInfo>([["top", info("top")], ["s1", info("s1")], ["a", info("a", "needs you")], ["b", info("b")], ["o", info("o")]]);
 // A stand-in for the sidebar's row: its fold caret and folded summary come from the tree.
 const renderRow = (id: string, extra?: { depth?: number; tree?: RowTree }) => (

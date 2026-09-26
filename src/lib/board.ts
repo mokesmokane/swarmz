@@ -19,6 +19,11 @@ export interface Board {
   swarm?: { tiles?: { n: string; d?: string; bad?: boolean }[]; agents?: { n: string; t?: string; k?: string }[] };
 }
 
+/** How many questions a tile's board asks the user; with any, the tile needs you. */
+export function questionCount(entry: { board: Board | null } | undefined): number {
+  return entry?.board?.questions?.length ?? 0;
+}
+
 /** What the store keeps per tile: the board (null: it has none) and when it was written. */
 export interface BoardEntry {
   board: Board | null;
