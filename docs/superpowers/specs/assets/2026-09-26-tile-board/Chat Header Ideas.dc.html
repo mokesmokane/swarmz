@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap" rel="stylesheet">
+<style>body{margin:0;background:#090d0b;color:#c9d1cc}a{color:oklch(0.78 0.12 200)}a:hover{color:oklch(0.88 0.1 200)}</style>
+</helmet>
+<section style="padding:48px;display:flex;flex-direction:column;gap:28px;font-family:'IBM Plex Sans',sans-serif;border-bottom:1px solid #1d2822">
+  <div style="display:flex;flex-direction:column;gap:6px;max-width:900px">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#7d8a83;letter-spacing:.08em">TURN 3 · 1a–1e AS TABS · A COLOR SCHEME PER TILE</div>
+    <div style="font-size:26px;font-weight:600;color:#e6ece8">One header with tabs, each tile in its own colors</div>
+    <div style="font-size:14px;color:#8f9c95;text-wrap:pretty">Click the tabs to switch views. Claude picks each tile's color scheme when the chat starts, and ↻ swaps it. The Questions tab shows a count when Claude is waiting on you.</div>
+  </div>
+  <div id="3a" style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start">
+    <sc-for list="{{ tiles }}" as="t" hint-placeholder-count="3">
+      <div style="width:640px;display:flex;flex-direction:column;background:#0e1411;border:1px solid {{ t.border }};border-radius:8px;overflow:hidden">
+        <div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 10px;background:{{ t.headBg }};font-family:'JetBrains Mono',monospace;font-size:11px">
+          <span style="width:7px;height:7px;border-radius:50%;background:{{ t.dot }}"></span>
+          <span style="color:#dfe6e1">{{ t.title }}</span>
+          <span style="color:#6c7872">{{ t.machine }}</span>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:6px;color:#8c9892">
+            <span style="width:10px;height:10px;border-radius:2px;background:{{ t.acc }}"></span>
+            <span>{{ t.sName }}</span>
+            <span onClick="{{ t.reshuffle }}" style="cursor:pointer;padding:0 4px;color:#b9c4be" style-hover="color:#ffffff">↻</span>
+          </div>
+        </div>
+        <div style="background:{{ t.headBg }};border-bottom:1px solid {{ t.border }};display:flex;flex-direction:column">
+          <div style="display:flex;gap:18px;padding:0 16px;border-bottom:1px solid {{ t.border }}">
+            <sc-for list="{{ t.tabs }}" as="tab" hint-placeholder-count="5">
+              <div onClick="{{ tab.onClick }}" style="cursor:pointer;display:flex;align-items:center;gap:6px;padding:9px 0 8px;font-size:12px;font-weight:500;color:{{ tab.color }};border-bottom:2px solid {{ tab.line }};margin-bottom:-1px">
+                <span>{{ tab.label }}</span>
+                <sc-if value="{{ tab.hasBadge }}"><span style="font-size:10px;font-weight:600;min-width:15px;height:15px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:oklch(0.82 0.14 60);color:#1a1206;display:flex;align-items:center;justify-content:center">{{ tab.badge }}</span></sc-if>
+              </div>
+            </sc-for>
+          </div>
+          <div style="padding:16px 18px 18px;min-height:176px;box-sizing:border-box">
+            <sc-if value="{{ t.isOverview }}">
+              <div style="display:grid;grid-template-columns:1.25fr 1fr 1fr;gap:20px">
+                <div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:10px;letter-spacing:.1em;color:#7d8a83">GOAL</div><div style="font-size:16px;font-weight:600;line-height:1.35;color:#eef2ef;text-wrap:pretty">{{ t.overview.goal }}</div></div>
+                <div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:10px;letter-spacing:.1em;color:#7d8a83">WHERE IT IS NOW</div><div style="font-size:13px;line-height:1.5;color:#c9d1cc;text-wrap:pretty">{{ t.overview.now }}</div></div>
+                <div style="display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:6px;background:{{ t.soft }}"><div style="font-size:10px;letter-spacing:.1em;color:{{ t.acc }}">{{ t.nextLabel }}</div><div style="font-size:13px;line-height:1.5;color:#eef2ef;text-wrap:pretty">{{ t.overview.next }}</div></div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ t.isPlan }}">
+              <div style="display:flex;flex-direction:column;gap:14px">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px"><div style="font-size:16px;font-weight:600;color:#eef2ef">{{ t.plan.title }}</div><div style="font-size:12px;color:#8c9892">{{ t.planCount }}</div></div>
+                <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px">
+                  <sc-for list="{{ t.steps }}" as="s" hint-placeholder-count="5">
+                    <div style="display:flex;flex-direction:column;gap:6px;padding:{{ s.pad }};border-top:3px solid {{ s.bar }};background:{{ s.bg }};border-radius:0 0 6px 6px">
+                      <div style="font-size:12px;font-weight:600;line-height:1.35;color:{{ s.titleColor }}">{{ s.t }}</div>
+                      <sc-if value="{{ s.hasDesc }}"><div style="font-size:11px;line-height:1.5;color:#a3afa8;text-wrap:pretty">{{ s.d }}</div></sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ t.isChanges }}">
+              <div style="display:grid;grid-template-columns:190px 1fr;gap:22px">
+                <div style="display:flex;flex-direction:column;gap:7px">
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:{{ t.acc }}">{{ t.changes.branch }}</div>
+                  <div style="font-size:12px;color:#8c9892">{{ t.changes.base }}</div>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap"><sc-for list="{{ t.changes.flags }}" as="f" hint-placeholder-count="2"><span style="font-size:11px;padding:1px 7px;border:1px solid {{ t.border }};color:#c9d1cc;border-radius:3px">{{ f }}</span></sc-for></div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  <sc-if value="{{ t.changes.hasRows }}">
+                    <sc-for list="{{ t.changes.rows }}" as="r" hint-placeholder-count="3">
+                      <div style="display:grid;grid-template-columns:180px 1fr 72px;gap:10px;align-items:center;font-family:'JetBrains Mono',monospace;font-size:11px"><span style="color:#c9d1cc">{{ r.p }}</span><div style="height:6px;border-radius:1px;width:{{ r.width }};background:{{ r.bar }}"></div><span style="color:#8c9892;text-align:right">{{ r.stat }}</span></div>
+                    </sc-for>
+                  </sc-if>
+                  <div style="font-size:13px;line-height:1.5;color:#a3afa8;text-wrap:pretty">{{ t.changes.note }}</div>
+                </div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ t.isQuestions }}">
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <sc-for list="{{ t.questions }}" as="q" hint-placeholder-count="1">
+                  <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;padding-bottom:12px;border-bottom:1px solid {{ t.border }}">
+                    <div style="font-size:14px;line-height:1.4;color:#eef2ef;text-wrap:pretty">{{ q.q }}</div>
+                    <div style="display:flex;gap:6px"><sc-for list="{{ q.o }}" as="o" hint-placeholder-count="2"><span style="cursor:pointer;font-size:12px;padding:5px 11px;border:1px solid {{ t.border }};background:#0e1411;border-radius:4px;color:#dfe6e1" style-hover="border-color:#8c9892">{{ o }}</span></sc-for></div>
+                  </div>
+                </sc-for>
+                <sc-if value="{{ t.noQuestions }}"><div style="font-size:14px;color:#a3afa8">Nothing to answer right now. Claude isn't waiting on you.</div></sc-if>
+              </div>
+            </sc-if>
+            <sc-if value="{{ t.isSwarm }}">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:22px">
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  <div style="font-size:10px;letter-spacing:.1em;color:#7d8a83">TILES IT'S TALKING TO</div>
+                  <sc-for list="{{ t.swarmTiles }}" as="x" hint-placeholder-count="2"><div style="display:flex;flex-direction:column;gap:1px"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:{{ x.c }}">{{ x.n }}</span><span style="font-size:12px;color:#a3afa8">{{ x.d }}</span></div></sc-for>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  <div style="font-size:10px;letter-spacing:.1em;color:#7d8a83">{{ t.agentCount }}</div>
+                  <sc-for list="{{ t.swarm.agents }}" as="a" hint-placeholder-count="2"><div style="display:grid;grid-template-columns:1fr 54px 48px;gap:8px;font-family:'JetBrains Mono',monospace;font-size:11px"><span style="color:#dfe6e1">{{ a.n }}</span><span style="color:#8c9892">{{ a.t }}</span><span style="color:#8c9892;text-align:right">{{ a.k }}</span></div></sc-for>
+                  <sc-if value="{{ t.noAgents }}"><div style="font-size:12px;color:#a3afa8">No background agents running.</div></sc-if>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+        <div style="padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:#4d5a53">{{ t.ghost }}</div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+<section style="padding:48px;display:flex;flex-direction:column;gap:28px;font-family:'IBM Plex Sans',sans-serif;border-bottom:1px solid #1d2822">
+  <div style="display:flex;flex-direction:column;gap:6px;max-width:900px">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#7d8a83;letter-spacing:.08em">TURN 2 · 1b, MORE DESCRIPTIVE</div>
+    <div style="font-size:26px;font-weight:600;color:#e6ece8">The plan tracker, rewritten to describe the work</div>
+    <div style="font-size:14px;color:#8f9c95;text-wrap:pretty">Each step says what was actually done in plain language. Claude writes it for each chat.</div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:36px;align-items:flex-start">
+
+    <div id="2a" style="display:flex;flex-direction:column;gap:10px;width:820px">
+      <div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;background:oklch(0.78 0.14 150);color:#0b120e;padding:2px 7px;border-radius:3px">2a</span><span style="font-size:16px;font-weight:600;color:#e6ece8">Step cards</span><span style="font-size:13px;color:#7d8a83">1b's row of steps, where each finished step gets a short write-up.</span></div>
+      <div style="background:#0e1411;border:1px solid #24302a;border-radius:8px;overflow:hidden">
+        <div style="height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid #24302a;font-family:'JetBrains Mono',monospace;font-size:11px;color:#c9d1cc"><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.78 0.14 60)"></span>Run latest desktop app</div>
+        <div style="padding:18px 20px;background:#131b17;border-bottom:1px solid #24302a;display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px">
+            <div style="font-size:18px;font-weight:600;color:#e6ece8;text-wrap:pretty">Getting Team Flow Fixes onto staging</div>
+            <div style="font-size:12px;color:#7d8a83;white-space:nowrap">2 of 5 done</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1.2fr 1.2fr 1.2fr 0.8fr 0.8fr;gap:10px">
+            <div style="display:flex;flex-direction:column;gap:8px;padding-top:10px;border-top:3px solid oklch(0.78 0.14 150)">
+              <div style="font-size:13px;font-weight:600;color:#e6ece8">Designed the new team flow</div>
+              <div style="font-size:12px;line-height:1.5;color:#8f9c95;text-wrap:pretty">New screens for decisions, sealed dialogs and flow parts, plus small updates to the team data model.</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px;padding-top:10px;border-top:3px solid oklch(0.78 0.14 150)">
+              <div style="font-size:13px;font-weight:600;color:#e6ece8">Checked it doesn't clash</div>
+              <div style="font-size:12px;line-height:1.5;color:#8f9c95;text-wrap:pretty">All 557 team tests pass. The integration branch only gained a docs file since, so there are no conflicts.</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px;padding:10px 12px 12px;border-top:3px solid oklch(0.78 0.14 60);background:oklch(0.3 0.05 60 / 0.25);border-radius:0 0 6px 6px">
+              <div style="font-size:13px;font-weight:600;color:oklch(0.85 0.12 60)">Your turn: look at it</div>
+              <div style="font-size:12px;line-height:1.5;color:#c9d1cc;text-wrap:pretty">Open the desktop app on mini-3 and try the team screens. Nothing is committed until you're happy.</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px;padding-top:10px;border-top:3px solid #2a3630">
+              <div style="font-size:13px;font-weight:500;color:#9aa69f">Merge into integration</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px;padding-top:10px;border-top:3px solid #2a3630">
+              <div style="font-size:13px;font-weight:500;color:#9aa69f">Stack agent opens the PRs</div>
+            </div>
+          </div>
+        </div>
+        <div style="padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:#4d5a53">Once you've checked it visually on mini-3:<br>&nbsp;1. You tell the tile to commit and push feat/team-flow-fixes…</div>
+      </div>
+    </div>
+
+    <div id="2b" style="display:flex;flex-direction:column;gap:10px;width:820px">
+      <div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;background:oklch(0.78 0.14 150);color:#0b120e;padding:2px 7px;border-radius:3px">2b</span><span style="font-size:16px;font-weight:600;color:#e6ece8">Summary + timeline</span><span style="font-size:13px;color:#7d8a83">A plain-English summary on the left, the finished steps as a timeline on the right.</span></div>
+      <div style="background:#0e1411;border:1px solid #24302a;border-radius:8px;overflow:hidden">
+        <div style="height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid #24302a;font-family:'JetBrains Mono',monospace;font-size:11px;color:#c9d1cc"><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.78 0.14 60)"></span>Mac maintenance: disk, signups, slowness</div>
+        <div style="padding:20px;background:#131b17;border-bottom:1px solid #24302a;display:grid;grid-template-columns:1fr 1.1fr;gap:28px">
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div style="font-size:11px;letter-spacing:.1em;color:#7d8a83">WHAT THIS CHAT IS ABOUT</div>
+            <div style="font-size:19px;font-weight:600;line-height:1.3;color:#e6ece8;text-wrap:pretty">Finding out where new signups come from</div>
+            <div style="font-size:13px;line-height:1.6;color:#a9b5ae;text-wrap:pretty">The LinkedIn campaign is running, but nothing in the app records how people arrived. So far we've only been able to go on what people wrote in the signup survey, and most of them skipped it.</div>
+            <div style="display:flex;flex-direction:column;gap:6px;padding:10px 12px;background:oklch(0.3 0.05 60 / 0.25);border-radius:6px">
+              <div style="font-size:12px;font-weight:600;color:oklch(0.85 0.12 60)">Waiting on you</div>
+              <div style="font-size:13px;color:#c9d1cc;text-wrap:pretty">Should we add UTM tracking at signup, change the survey options, or both?</div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:0">
+            <div style="display:grid;grid-template-columns:18px 1fr;gap:12px">
+              <div style="display:flex;flex-direction:column;align-items:center"><span style="width:10px;height:10px;border-radius:50%;background:oklch(0.78 0.14 150);margin-top:4px"></span><span style="flex:1;width:2px;background:#2a3630"></span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;padding-bottom:14px"><div style="font-size:13px;font-weight:600;color:#e6ece8">Freed up disk space on mini-2</div><div style="font-size:12px;line-height:1.5;color:#8f9c95;text-wrap:pretty">Cleared old Xcode caches and simulator images, about 38 GB back.</div></div>
+            </div>
+            <div style="display:grid;grid-template-columns:18px 1fr;gap:12px">
+              <div style="display:flex;flex-direction:column;align-items:center"><span style="width:10px;height:10px;border-radius:50%;background:oklch(0.78 0.14 150);margin-top:4px"></span><span style="flex:1;width:2px;background:#2a3630"></span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;padding-bottom:14px"><div style="font-size:13px;font-weight:600;color:#e6ece8">Found what was slowing it down</div><div style="font-size:12px;line-height:1.5;color:#8f9c95;text-wrap:pretty">Spotlight was re-indexing the external SSD. It's now excluded.</div></div>
+            </div>
+            <div style="display:grid;grid-template-columns:18px 1fr;gap:12px">
+              <div style="display:flex;flex-direction:column;align-items:center"><span style="width:10px;height:10px;border-radius:50%;background:oklch(0.78 0.14 150);margin-top:4px"></span><span style="flex:1;width:2px;background:#2a3630"></span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;padding-bottom:14px"><div style="font-size:13px;font-weight:600;color:#e6ece8">Went through recent signups</div><div style="font-size:12px;line-height:1.5;color:#8f9c95;text-wrap:pretty">No one chose "Socials". One answered "Online" and two didn't answer, so the campaign can't be credited with any of them yet.</div></div>
+            </div>
+            <div style="display:grid;grid-template-columns:18px 1fr;gap:12px">
+              <div style="display:flex;flex-direction:column;align-items:center"><span style="width:10px;height:10px;border-radius:50%;border:2px solid oklch(0.78 0.14 60);box-sizing:border-box;margin-top:4px"></span></div>
+              <div style="display:flex;flex-direction:column;gap:3px"><div style="font-size:13px;font-weight:600;color:oklch(0.85 0.12 60)">Next: start tracking where signups come from</div></div>
+            </div>
+          </div>
+        </div>
+        <div style="padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:#4d5a53">Want me to add UTM capture at signup, the survey option change, or both?</div>
+      </div>
+    </div>
+
+    <div id="2c" style="display:flex;flex-direction:column;gap:10px;width:820px">
+      <div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;background:oklch(0.78 0.14 150);color:#0b120e;padding:2px 7px;border-radius:3px">2c</span><span style="font-size:16px;font-weight:600;color:#e6ece8">Done / doing / left</span><span style="font-size:13px;color:#7d8a83">Three columns, each written as short sentences. The quickest to read.</span></div>
+      <div style="background:#0e1411;border:1px solid #24302a;border-radius:8px;overflow:hidden">
+        <div style="height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid #24302a;font-family:'JetBrains Mono',monospace;font-size:11px;color:#c9d1cc"><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.78 0.14 150)"></span>Collaborative projects service</div>
+        <div style="padding:18px 20px;background:#131b17;border-bottom:1px solid #24302a;display:flex;flex-direction:column;gap:16px">
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="font-size:18px;font-weight:600;color:#e6ece8;text-wrap:pretty">Image uploads now fly into place when you post</div>
+            <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;max-width:260px"><div style="height:4px;background:oklch(0.78 0.14 150);border-radius:2px"></div><div style="height:4px;background:oklch(0.78 0.14 150);border-radius:2px"></div><div style="height:4px;background:oklch(0.78 0.14 150);border-radius:2px"></div><div style="height:4px;background:oklch(0.78 0.14 60);border-radius:2px"></div><div style="height:4px;background:#24302a;border-radius:2px"></div></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:22px">
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="font-size:11px;letter-spacing:.1em;color:oklch(0.78 0.14 150)">DONE</div>
+              <div style="font-size:13px;line-height:1.5;color:#c9d1cc;text-wrap:pretty">When you post, each thumbnail in the attach bar moves to its spot in the new card, taking about 0.4 seconds.</div>
+              <div style="font-size:13px;line-height:1.5;color:#c9d1cc;text-wrap:pretty">It's skipped for people who turn on reduced motion.</div>
+              <div style="font-size:13px;line-height:1.5;color:#c9d1cc;text-wrap:pretty">All 934 tests pass, including a new one for the loading placeholder.</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="font-size:11px;letter-spacing:.1em;color:oklch(0.82 0.13 60)">IN PROGRESS</div>
+              <div style="font-size:13px;line-height:1.5;color:#c9d1cc;text-wrap:pretty">Sending the status report to the conductor tile, which has confirmed it received it.</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="font-size:11px;letter-spacing:.1em;color:#7d8a83">WORTH KNOWING</div>
+              <div style="font-size:13px;line-height:1.5;color:#8f9c95;text-wrap:pretty">PDFs don't animate. They just appear.</div>
+              <div style="font-size:13px;line-height:1.5;color:#8f9c95;text-wrap:pretty">Teammates see a loading placeholder briefly before the image shows up.</div>
+            </div>
+          </div>
+        </div>
+        <div style="padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:#4d5a53">Hero flight from the attach bar. When you press Post or Enter, each thumbnail…</div>
+      </div>
+    </div>
+
+  </div>
+</section>
+<section style="padding:48px;display:flex;flex-direction:column;gap:28px;font-family:'IBM Plex Sans',sans-serif">
+  <div style="display:flex;flex-direction:column;gap:6px;max-width:900px">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#7d8a83;letter-spacing:.08em">SWARMZ · TILE HEADER PANEL · 5 IDEAS</div>
+    <div style="font-size:26px;font-weight:600;color:#e6ece8">A Claude-written HTML strip pinned above each terminal</div>
+    <div style="font-size:14px;color:#8f9c95;text-wrap:pretty">Claude rewrites it as the chat goes. The header uses a sans font so it reads as a summary, separate from the terminal text.</div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:32px;align-items:flex-start">
+
+    <div id="1a" style="display:flex;flex-direction:column;gap:10px;width:680px">
+      <div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;background:oklch(0.78 0.14 150);color:#0b120e;padding:2px 7px;border-radius:3px">1a</span><span style="font-size:16px;font-weight:600;color:#e6ece8">Where we are</span><span style="font-size:13px;color:#7d8a83">Goal, current state, what's next. A recap that stays up to date.</span></div>
+      <div style="background:#0e1411;border:1px solid #24302a;border-radius:6px;overflow:hidden">
+        <div style="height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid #24302a;font-family:'JetBrains Mono',monospace;font-size:11px;color:#c9d1cc"><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.78 0.14 150)"></span>certifyIP-desktop-4 · Team Flow Fixes</div>
+        <div style="padding:14px 16px;background:#131b17;border-bottom:1px solid #24302a;display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:18px">
+          <div style="display:flex;flex-direction:column;gap:4px"><div style="font-size:10px;letter-spacing:.1em;color:#7d8a83">GOAL</div><div style="font-size:14px;color:#e6ece8;text-wrap:pretty">Build Team Flow Fixes design for desktop team projects</div></div>
+          <div style="display:flex;flex-direction:column;gap:4px"><div style="font-size:10px;letter-spacing:.1em;color:#7d8a83">NOW</div><div style="font-size:13px;color:#c9d1cc;text-wrap:pretty">Built, 557 tests pass. Not committed yet.</div></div>
+          <div style="display:flex;flex-direction:column;gap:4px"><div style="font-size:10px;letter-spacing:.1em;color:oklch(0.78 0.14 60)">NEXT · NEEDS YOU</div><div style="font-size:13px;color:#e6ece8;text-wrap:pretty">Check it on mini-3, then say "commit"</div></div>
+        </div>
+        <div style="padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:#4d5a53">● Good news: no conflict so far. Team Flow Fixes is built on top of…<br>● Bash(echo "$(date -u +%H:%M) Team Flow Fixes (mini-3 tile…</div>
+      </div>
+    </div>
+
+    <div id="1b" style="display:flex;flex-direction:column;gap:10px;width:680px">
+      <div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;background:oklch(0.78 0.14 150);color:#0b120e;padding:2px 7px;border-radius:3px">1b</span><span style="font-size:16px;font-weight:600;color:#e6ece8">Plan tracker</span><span style="font-size:13px;color:#7d8a83">The steps Claude committed to, with a check as each one finishes.</span></div>
+      <div style="background:#0e1411;border:1px solid #24302a;border-radius:6px;overflow:hidden">
+        <div style="height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid #24302a;font-family:'JetBrains Mono',monospace;font-size:11px;color:#c9d1cc"><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.78 0.14 60)"></span>Run latest desktop app</div>
+        <div style="padding:14px 16px;background:#131b17;border-bottom:1px solid #24302a;display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:#7d8a83"><span>Ship Team Flow Fixes to staging</span><span style="font-family:'JetBrains Mono',monospace">2 / 5</span></div>
+          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px"><div style="height:4px;background:oklch(0.78 0.14 150);border-radius:2px"></div><div style="height:4px;background:oklch(0.78 0.14 150);border-radius:2px"></div><div style="height:4px;background:oklch(0.78 0.14 60);border-radius:2px"></div><div style="height:4px;background:#24302a;border-radius:2px"></div><div style="height:4px;background:#24302a;border-radius:2px"></div></div>
+          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;font-size:12px;line-height:1.35">
+            <div style="color:#7d8a83;text-decoration:line-through">Build design</div>
+            <div style="color:#7d8a83;text-decoration:line-through">Typecheck + tests</div>
+            <div style="color:oklch(0.82 0.13 60);font-weight:500">You check on mini-3</div>
+            <div style="color:#c9d1cc">Merge to integration</div>
+            <div style="color:#c9d1cc">Stack agent builds PRs</div>
+          </div>
+        </div>
+        <div style="padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:#4d5a53">Once you've checked it visually on mini-3:<br>&nbsp;1. You tell the tile to commit and push feat/team-flow-fixes…</div>
+      </div>
+    </div>
+
+    <div id="1c" style="display:flex;flex-direction:column;gap:10px;width:680px">
+      <div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;background:oklch(0.78 0.14 150);color:#0b120e;padding:2px 7px;border-radius:3px">1c</span><span style="font-size:16px;font-weight:600;color:#e6ece8">Change map</span><span style="font-size:13px;color:#7d8a83">Branch, commit state, and which files were touched, grouped by folder.</span></div>
+      <div style="background:#0e1411;border:1px solid #24302a;border-radius:6px;overflow:hidden">
+        <div style="height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid #24302a;font-family:'JetBrains Mono',monospace;font-size:11px;color:#c9d1cc"><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.78 0.14 150)"></span>Team projects test branch</div>
+        <div style="padding:14px 16px;background:#131b17;border-bottom:1px solid #24302a;display:grid;grid-template-columns:200px 1fr;gap:20px">
+          <div style="display:flex;flex-direction:column;gap:6px;font-size:12px">
+            <div style="font-family:'JetBrains Mono',monospace;color:oklch(0.78 0.12 200)">feat/team-flow-fixes</div>
+            <div style="color:#7d8a83">on 5614aa2 → integration</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap"><span style="font-size:11px;padding:1px 6px;border:1px solid oklch(0.78 0.14 60);color:oklch(0.82 0.13 60);border-radius:3px">uncommitted</span><span style="font-size:11px;padding:1px 6px;border:1px solid #33413a;color:#8f9c95;border-radius:3px">not pushed</span></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:5px;font-family:'JetBrains Mono',monospace;font-size:11px">
+            <div style="display:grid;grid-template-columns:170px 1fr 70px;gap:10px;align-items:center"><span style="color:#c9d1cc">components/team/skins/hifi</span><div style="height:6px;background:linear-gradient(90deg,oklch(0.72 0.14 150) 78%,oklch(0.68 0.16 25) 78%);width:100%;border-radius:1px"></div><span style="color:#7d8a83;text-align:right">+482 −140</span></div>
+            <div style="display:grid;grid-template-columns:170px 1fr 70px;gap:10px;align-items:center"><span style="color:#c9d1cc">data/team</span><div style="height:6px;background:linear-gradient(90deg,oklch(0.72 0.14 150) 55%,oklch(0.68 0.16 25) 55%);width:45%;border-radius:1px"></div><span style="color:#7d8a83;text-align:right">+158 −121</span></div>
+            <div style="display:grid;grid-template-columns:170px 1fr 70px;gap:10px;align-items:center"><span style="color:#c9d1cc">hooks/useTeamRoom</span><div style="height:6px;background:linear-gradient(90deg,oklch(0.72 0.14 150) 60%,oklch(0.68 0.16 25) 60%);width:14%;border-radius:1px"></div><span style="color:#7d8a83;text-align:right">+79 −43</span></div>
+            <div style="color:#7d8a83;padding-top:2px">25 modified · 3 new · overlap with integration: none</div>
+          </div>
+        </div>
+        <div style="padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:#4d5a53">– Changed files: 25 modified and 3 new (+719/−304). The UI changes are in…</div>
+      </div>
+    </div>
+
+    <div id="1d" style="display:flex;flex-direction:column;gap:10px;width:680px">
+      <div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;background:oklch(0.78 0.14 150);color:#0b120e;padding:2px 7px;border-radius:3px">1d</span><span style="font-size:16px;font-weight:600;color:#e6ece8">Open questions</span><span style="font-size:13px;color:#7d8a83">Decisions Claude is waiting on, with one-click replies typed into the prompt.</span></div>
+      <div style="background:#0e1411;border:1px solid #24302a;border-radius:6px;overflow:hidden">
+        <div style="height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid #24302a;font-family:'JetBrains Mono',monospace;font-size:11px;color:#c9d1cc"><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.78 0.14 60)"></span>Mac maintenance: disk, signups, slowness</div>
+        <div style="padding:12px 16px;background:#131b17;border-bottom:1px solid #24302a;display:flex;flex-direction:column;gap:10px">
+          <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center">
+            <div style="font-size:13px;color:#e6ece8;text-wrap:pretty">How should we find out where signups come from?</div>
+            <div style="display:flex;gap:6px"><span style="font-size:12px;padding:4px 10px;background:#1d2822;border:1px solid #33413a;border-radius:4px;color:#c9d1cc">UTM at signup</span><span style="font-size:12px;padding:4px 10px;background:#1d2822;border:1px solid #33413a;border-radius:4px;color:#c9d1cc">Survey option</span><span style="font-size:12px;padding:4px 10px;background:oklch(0.78 0.14 150);border-radius:4px;color:#0b120e;font-weight:500">Both</span></div>
+          </div>
+          <div style="height:1px;background:#24302a"></div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center">
+            <div style="font-size:13px;color:#8f9c95">Email David Akka and mohan about how they found you?</div>
+            <div style="display:flex;gap:6px"><span style="font-size:12px;padding:4px 10px;background:#1d2822;border:1px solid #33413a;border-radius:4px;color:#c9d1cc">Draft it</span><span style="font-size:12px;padding:4px 10px;background:#1d2822;border:1px solid #33413a;border-radius:4px;color:#c9d1cc">Skip</span></div>
+          </div>
+        </div>
+        <div style="padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:#4d5a53">Want me to add UTM capture at signup, the survey option change, or both?<br>&gt; message me when ▌</div>
+      </div>
+    </div>
+
+    <div id="1e" style="display:flex;flex-direction:column;gap:10px;width:680px">
+      <div style="display:flex;gap:10px;align-items:baseline"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;background:oklch(0.78 0.14 150);color:#0b120e;padding:2px 7px;border-radius:3px">1e</span><span style="font-size:16px;font-weight:600;color:#e6ece8">Swarm links</span><span style="font-size:13px;color:#7d8a83">Which tiles and background agents this chat is talking to, and what each is doing.</span></div>
+      <div style="background:#0e1411;border:1px solid #24302a;border-radius:6px;overflow:hidden">
+        <div style="height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid #24302a;font-family:'JetBrains Mono',monospace;font-size:11px;color:#c9d1cc"><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.78 0.14 150)"></span>Collaborative projects service</div>
+        <div style="padding:14px 16px;background:#131b17;border-bottom:1px solid #24302a;display:grid;grid-template-columns:1fr 1fr;gap:20px">
+          <div style="display:flex;flex-direction:column;gap:7px;font-size:12px">
+            <div style="font-size:10px;letter-spacing:.1em;color:#7d8a83">TILES</div>
+            <div style="display:flex;gap:8px;align-items:center"><span style="color:oklch(0.78 0.12 200)">↑ certifyip-ui-2</span><span style="color:#7d8a83">conductor · got status report</span></div>
+            <div style="display:flex;gap:8px;align-items:center"><span style="color:oklch(0.78 0.12 200)">↔ desktop-4</span><span style="color:#7d8a83">Team Flow Fixes · waiting on you</span></div>
+            <div style="display:flex;gap:8px;align-items:center"><span style="color:oklch(0.68 0.16 25)">✕ mini-2-3 relay</span><span style="color:#7d8a83">SSH key rejected</span></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:7px;font-family:'JetBrains Mono',monospace;font-size:11px">
+            <div style="font-family:'IBM Plex Sans',sans-serif;font-size:10px;letter-spacing:.1em;color:#7d8a83">BACKGROUND AGENTS · 3</div>
+            <div style="display:grid;grid-template-columns:1fr 50px 60px;gap:8px;color:#c9d1cc"><span>leave_project_test</span><span style="color:#7d8a83">1h 0m</span><span style="color:#7d8a83;text-align:right">303k tok</span></div>
+            <div style="display:grid;grid-template-columns:1fr 50px 60px;gap:8px;color:#c9d1cc"><span>projectReconciler</span><span style="color:#7d8a83">51m</span><span style="color:#7d8a83;text-align:right">375k tok</span></div>
+            <div style="display:grid;grid-template-columns:1fr 50px 60px;gap:8px;color:#c9d1cc"><span>collab crates</span><span style="color:#7d8a83">28m</span><span style="color:#7d8a83;text-align:right">126k tok</span></div>
+          </div>
+        </div>
+        <div style="padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:#4d5a53">● I sent the status report to my conductor (certifyip-ui-2) with swarmz reply…</div>
+      </div>
+    </div>
+
+  </div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const SCHEMES = [['Lagoon',185],['Heather',300],['Ember',55],['Moss',135],['Harbor',240],['Rosewood',15]];
+const TILES = [
+  { id:'tf', title:'Team Flow Fixes', machine:'certifyIP-desktop-4', scheme:0, tab:'overview',
+    overview:{ goal:'Build the Team Flow Fixes design for desktop team projects', now:'Built and tested. All 557 team tests pass, and nothing is committed yet.', next:'Open the app on mini-3 and try the team screens, then say "commit".', needsYou:true },
+    plan:{ title:'Getting Team Flow Fixes onto staging', steps:[
+      {t:'Designed the new team flow', d:'New decision, dialog and flow screens, plus small updates to the team data model.', s:'done'},
+      {t:'Checked it doesn\'t clash', d:'Tests pass. Integration only gained a docs file since, so there are no conflicts.', s:'done'},
+      {t:'Your turn: look at it', d:'Try it on mini-3. Nothing gets committed until you\'re happy.', s:'current'},
+      {t:'Merge into integration', s:'todo'},{t:'Stack agent opens PRs', s:'todo'}]},
+    changes:{ branch:'feat/team-flow-fixes', base:'on 5614aa2 → integration', flags:['uncommitted','not pushed'], rows:[
+      {p:'components/team/skins/hifi', a:482, r:140, w:100},{p:'data/team', a:158, r:121, w:45},{p:'hooks/useTeamRoom', a:79, r:43, w:14}], note:'25 files changed, 3 new. They don\'t overlap with integration.' },
+    questions:[{q:'Happy with the team screens on mini-3?', o:['Commit & push','Needs changes']}],
+    swarm:{ tiles:[{n:'↑ certifyip-ui-2', d:'Conductor. Gets a status update after the commit.'},{n:'↔ stack agent', d:'Building the services stack first'}], agents:[{n:'leave_project_test',t:'1h 0m',k:'303k'},{n:'projectReconciler',t:'51m',k:'375k'},{n:'collab crates',t:'28m',k:'126k'}]},
+    ghost:'Once you\'ve checked it visually on mini-3: 1. You tell the tile to commit and push…' },
+  { id:'mm', title:'Mac maintenance: disk, signups, slowness', machine:'martins-mac-mini-2', scheme:1, tab:'questions',
+    overview:{ goal:'Work out where new signups are coming from', now:'Went through the signup survey. Nobody picked "Socials" and most people skipped it.', next:'Choose: track the source at signup, change the survey, or both.', needsYou:true },
+    plan:{ title:'Tidying mini-2 and tracing signups', steps:[
+      {t:'Freed disk space', d:'Cleared old Xcode caches and simulator images, about 38 GB back.', s:'done'},
+      {t:'Fixed the slowness', d:'Spotlight kept re-indexing the external SSD. It\'s now excluded.', s:'done'},
+      {t:'Reviewed signups', d:'The campaign can\'t be credited with any signups yet. There\'s no source data.', s:'done'},
+      {t:'Start tracking the source', d:'Waiting for you to choose an approach.', s:'current'},{t:'Compare with campaign clicks', s:'todo'}]},
+    changes:{ branch:'main', base:'no code changes yet', flags:['investigating'], rows:[], note:'This chat has only investigated so far. No files have been changed.' },
+    questions:[{q:'How should we find out where signups come from?', o:['UTM at signup','Survey option','Both']},{q:'Email David Akka and mohan to ask how they found you?', o:['Draft it','Skip']}],
+    swarm:{ tiles:[{n:'↔ martins-mac-mini-2', d:'Ran the disk cleanup on this Mac'}], agents:[]},
+    ghost:'Want me to add UTM capture at signup, the survey option change, or both?' },
+  { id:'cp', title:'Collaborative projects service', machine:'certifyIP-5', scheme:2, tab:'swarm',
+    overview:{ goal:'Make uploaded images animate into the new post', now:'Done. Thumbnails fly into place and all 934 tests pass.', next:'Nothing needed from you. The relay to mini-2-3 is failing because its SSH key was rejected.', needsYou:false },
+    plan:{ title:'Hero flight from the attach bar', steps:[
+      {t:'Built the flight', d:'Each thumbnail moves to its spot in the new card, taking about 0.4 seconds.', s:'done'},
+      {t:'Respects reduced motion', d:'The animation is skipped for people who turn motion down.', s:'done'},
+      {t:'Tests pass', d:'934 tests, including a new one for the loading placeholder.', s:'done'},
+      {t:'Report to conductor', d:'Sent. The conductor confirmed it received it.', s:'current'},{t:'Fix mini-2-3 relay', s:'todo'}]},
+    changes:{ branch:'feat/hero-flight', base:'on 3887919 → integration', flags:['committed','not pushed'], rows:[
+      {p:'components/post/AttachBar', a:212, r:38, w:100},{p:'components/post/PostCard', a:96, r:22, w:44},{p:'tests/post', a:64, r:0, w:26}], note:'9 files changed. PDFs aren\'t animated and appear in place instead.' },
+    questions:[],
+    swarm:{ tiles:[{n:'↑ certifyip-ui-2', d:'Conductor. Status report received.'},{n:'↔ desktop-4', d:'Team Flow Fixes. Waiting on you.'},{n:'✕ mini-2-3 relay', d:'SSH key rejected', bad:true}], agents:[{n:'leave_project_test',t:'1h 0m',k:'303k'},{n:'projectReconciler',t:'51m',k:'375k'}]},
+    ghost:'I sent the status report to my conductor (certifyip-ui-2) with swarmz reply…' }
+];
+const TABS = [['overview','Where we are'],['plan','Plan'],['changes','Changes'],['questions','Questions'],['swarm','Swarm']];
+class Component extends DCLogic {
+  state = { tabs: Object.fromEntries(TILES.map(t => [t.id, t.tab])), schemes: Object.fromEntries(TILES.map(t => [t.id, t.scheme])) };
+  renderVals() {
+    const tiles = TILES.map(t => {
+      const [sName, h] = SCHEMES[this.state.schemes[t.id] % SCHEMES.length];
+      const acc = `oklch(0.8 0.12 ${h})`, cur = this.state.tabs[t.id];
+      const tabs = TABS.map(([k, l]) => {
+        const n = k === 'questions' ? t.questions.length : 0, on = cur === k;
+        return { label:l, badge:n, hasBadge:n > 0, color: on ? '#eef2ef' : '#8c9892', line: on ? acc : 'transparent',
+          onClick: () => this.setState(s => ({ tabs: { ...s.tabs, [t.id]: k } })) };
+      });
+      const steps = t.plan.steps.map(s => ({ ...s, hasDesc: !!s.d,
+        bar: s.s === 'done' ? acc : s.s === 'current' ? `oklch(0.88 0.13 ${h})` : '#2a3630',
+        titleColor: s.s === 'todo' ? '#8c9892' : s.s === 'current' ? `oklch(0.9 0.1 ${h})` : '#e6ece8',
+        bg: s.s === 'current' ? `oklch(0.32 0.06 ${h} / 0.4)` : 'transparent', pad: s.s === 'current' ? '10px 12px 12px' : '10px 0 0' }));
+      const done = t.plan.steps.filter(s => s.s === 'done').length;
+      return { ...t, tabs, acc, sName, ink:`oklch(0.2 0.03 ${h})`, headBg:`oklch(0.185 0.028 ${h})`, border:`oklch(0.32 0.045 ${h})`, soft:`oklch(0.32 0.06 ${h} / 0.4)`,
+        isOverview: cur==='overview', isPlan: cur==='plan', isChanges: cur==='changes', isQuestions: cur==='questions', isSwarm: cur==='swarm',
+        dot: t.overview.needsYou ? `oklch(0.82 0.14 60)` : acc, nextLabel: t.overview.needsYou ? 'NEXT · NEEDS YOU' : 'NEXT',
+        planCount: `${done} of ${t.plan.steps.length} done`, steps,
+        changes: { ...t.changes, hasRows: t.changes.rows.length > 0, noRows: !t.changes.rows.length,
+          rows: t.changes.rows.map(r => ({ ...r, stat:`+${r.a} −${r.r}`, width:`${r.w}%`, bar:`linear-gradient(90deg, ${acc} ${Math.round(r.a/(r.a+r.r)*100)}%, oklch(0.66 0.15 25) 0)` })) },
+        hasQuestions: t.questions.length > 0, noQuestions: !t.questions.length,
+        swarmTiles: t.swarm.tiles.map(x => ({ ...x, c: x.bad ? 'oklch(0.7 0.15 25)' : acc })),
+        hasAgents: t.swarm.agents.length > 0, noAgents: !t.swarm.agents.length, agentCount: `BACKGROUND AGENTS · ${t.swarm.agents.length}`,
+        reshuffle: () => this.setState(s => ({ schemes: { ...s.schemes, [t.id]: s.schemes[t.id] + 1 } })) };
+    });
+    return { tiles };
+  }
+}
+</script>
+</body>
+</html>
