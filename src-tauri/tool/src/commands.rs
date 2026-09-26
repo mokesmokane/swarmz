@@ -1077,6 +1077,31 @@ pub fn send(env: &Env, tile: &str, text: &str) -> Result<Value, CliError> {
     Ok(reply)
 }
 
+/// What the board's Refresh types into the tile (tile board spec §7).
+pub const BOARD_REQUEST: &str = "Please update your swarmz board now with where things stand: run ~/.swarmz/bin/swarmz board (~/.swarmz/bin/swarmz briefing has the format).";
+
+/// `board --request --tile <id>` (tile board spec §7): asks the tile's Claude to rewrite its board,
+/// but never types into a prompt on screen, over text in its input box, or into a shell.
+pub fn board_request(env: &Env, tile: &str) -> Result<Value, CliError> {
+    let c = connect_screen(env, tile)?;
+    if current_question(env, &c, tile)?.is_some() {
+        return Err(CliError::new("busy", "it is showing a prompt; answer that first"));
+    }
+    let rows = c.welcome().rows as usize;
+    let snap = c.screen(if rows == 0 { 200 } else { rows }, Duration::from_secs(2)).ok_or_else(|| CliError::new("old_session", OLD_SESSION))?;
+    let texts: Vec<String> = snap.lines.iter().map(line_text).collect();
+    let start = snap.visible_start.unwrap_or_else(|| texts.len().saturating_sub(snap.rows as usize));
+    match crate::input::box_text(&texts[start.min(texts.len())..]) {
+        None => return Err(CliError::new("no_claude", "Claude isn't running in that tile")),
+        Some(t) if !t.is_empty() => return Err(CliError::new("draft", format!("there is text in its input box ({}); send or clear it first", t.chars().take(40).collect::<String>()))),
+        Some(_) => {}
+    }
+    drop(c);
+    let mut r = send(env, tile, BOARD_REQUEST)?;
+    r["requested"] = json!(true);
+    Ok(r)
+}
+
 /// Whether the tile's visible screen still shows `text` in Claude's input box (`still_in_box`);
 /// None when the holder answers no screen.
 fn text_still_in_box(c: &HolderClient, text: &str) -> Option<bool> {

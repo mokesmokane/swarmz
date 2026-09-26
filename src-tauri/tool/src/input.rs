@@ -59,6 +59,13 @@ pub fn still_in_box(lines: &[String], text: &str) -> bool {
     }
 }
 
+/// What Claude's input box holds (the last line starting with its `>` prompt), trimmed; None when
+/// the screen shows no box (a shell, or Claude not running).
+pub fn box_text(lines: &[String]) -> Option<String> {
+    let l = lines.iter().rev().map(|l| l.trim()).find(|l| l.starts_with("> ") || l.starts_with("❯ ") || *l == ">" || *l == "❯")?;
+    Some(l[l.chars().next().unwrap().len_utf8()..].trim().to_string())
+}
+
 /// What `send` types: a bracketed paste unless the program has said it does not take one
 /// (`Some(false)`); a holder that cannot say (`None`) gets the paste.
 pub fn send_bytes(text: &str, bracketed_paste: Option<bool>) -> Result<Vec<u8>, String> {
@@ -67,6 +74,15 @@ pub fn send_bytes(text: &str, bracketed_paste: Option<bool>) -> Result<Vec<u8>, 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn reads_what_the_input_box_holds() {
+        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(box_text(&l(&["> old prompt", "reply", "────", "❯ do both", "────"])), Some("do both".into()));
+        assert_eq!(box_text(&l(&["────", "❯ ", "────"])), Some(String::new()));
+        assert_eq!(box_text(&l(&["$ ls", "file"])), None);
+    }
+
     use super::*;
 
     #[test]

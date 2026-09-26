@@ -133,7 +133,7 @@ const SCREEN: &[&str] = &["output", "board-get"];
 /// The most lines the conductor may read of another tile's screen.
 pub const SCREEN_MAX: usize = 200;
 /// Commands that act on another tile: its own conductor's alone (conductor tree spec §3).
-const ACT: &[&str] = &["send", "ask", "key", "answer", "pending", "close", "restart"];
+const ACT: &[&str] = &["send", "ask", "key", "answer", "pending", "close", "restart", "board-request"];
 /// Commands with no target tile that any conductor may run (a sub-conductor's `fleet` is
 /// filtered, and a tile its `new` starts joins its list).
 const CONDUCTING: &[&str] = &["fleet", "new", "on", "notify"];

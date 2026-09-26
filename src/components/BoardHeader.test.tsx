@@ -6,6 +6,7 @@ vi.mock("../lib/ipc", () => ({
   ipc: {
     boardGet: vi.fn(async () => ({ board: null })),
     tileSend: vi.fn(async () => ({ sent: true })),
+    boardRequest: vi.fn(async () => ({ requested: true })),
   },
 }));
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn(async () => "/home/me") }));
@@ -75,3 +76,17 @@ describe("BoardHeader", () => {
   });
 });
 
+
+describe("Refresh", () => {
+  it("asks the tile on its Mac to update its board, and says why when it can't", async () => {
+    render(<BoardHeader id="t1" />);
+    fireEvent.click(screen.getByLabelText("Refresh the board"));
+    expect(ipc.boardRequest).toHaveBeenCalledWith("t1", "mini-3");
+    expect((await screen.findByTestId("board-refresh-note-t1")).textContent).toBe("Asked it to update its board");
+    vi.mocked(ipc.boardRequest).mockRejectedValueOnce("there is text in its input box (do both); send or clear it first (draft)");
+    fireEvent.click(screen.getByLabelText("Refresh the board"));
+    await vi.waitFor(() => expect(screen.getByTestId("board-refresh-note-t1").textContent).toContain("send or clear it first"));
+    // The click did not open or close the board.
+    expect(screen.getByLabelText("Open the board")).toBeTruthy();
+  });
+});

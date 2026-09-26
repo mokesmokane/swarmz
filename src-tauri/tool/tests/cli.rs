@@ -2092,3 +2092,19 @@ fn a_tile_keeps_its_own_board_and_the_log_carries_it() {
     assert_eq!((code, c["cleared"].as_bool()), (0, Some(true)));
     assert!(tool_env(&h.path, &["board", "--tile", "t1", "--get"], user).1["board"].is_null());
 }
+
+#[test]
+fn a_board_request_never_types_into_a_shell_and_is_a_conductors_act() {
+    let h = home("boardreq");
+    let _s = held(&h, "t1");
+    let user: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "")];
+    std::thread::sleep(Duration::from_millis(500));
+    // A plain shell has no Claude input box: nothing is typed.
+    let (code, d) = tool_env(&h.path, &["board", "--request", "--tile", "t1"], user);
+    assert_eq!((code, d["code"].as_str()), (1, Some("no_claude")), "{d}");
+    // Another tile that is not its conductor may not ask.
+    let other: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "t9")];
+    let (code, d) = tool_env(&h.path, &["board", "--request", "--tile", "t1"], other);
+    assert_eq!((code, d["code"].as_str()), (1, Some("denied")), "{d}");
+    let _ = tool_env(&h.path, &["close", "t1"], user);
+}

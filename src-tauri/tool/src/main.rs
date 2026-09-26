@@ -22,7 +22,7 @@ const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_
 const MAX_FOLLOW_LINES: usize = 5000;
 
 const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set", "--parent", "--remove", "--assign", "--to"];
-const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once", "--sub", "--top", "--get", "--history", "--all"];
+const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once", "--sub", "--top", "--get", "--history", "--all", "--request"];
 
 /// The conductor guard (conductor spec §3) for a command run from a tile: `sub` against
 /// `target`. The desktop and the phone's gate carry no tile and pass.
@@ -465,7 +465,13 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         Some("board") => {
             a.expect_positional(1, "board [--tile ID] [--get] [--history [--all]] [--clear] < board.json")?;
             let tile = a.opt("--tile").map(cmd::tile_arg).transpose()?;
-            // Reading a board below you is a glance, as `output` is; writing one is the tile's own.
+            // Reading a board below you is a glance, as `output` is; asking a tile to rewrite it is
+            // acting on it, as `send` is; writing one is the tile's own.
+            if a.flag("--request") {
+                let t = tile.as_deref().ok_or_else(|| CliError::new("usage", "board --request needs --tile <id>"))?;
+                guard("board-request", Some(t))?;
+                return Ok(Some(cmd::board_request(&cmd::Env::from_process()?, t)?));
+            }
             guard(if a.flag("--get") || a.flag("--history") { "board-get" } else { "board" }, tile.as_deref())?;
             Ok(Some(cmd::board(&cmd::Env::from_process()?, tile.as_deref(), a.flag("--get"), a.flag("--clear"), a.flag("--history"), a.flag("--all"), &mut std::io::stdin())?))
         }

@@ -64,6 +64,7 @@ pub fn run() {
             commands::board_get,
             commands::board_history,
             commands::board_history_all,
+            commands::board_request,
             commands::tile_send,
             commands::conductor_dir,
             commands::telegram_get,
