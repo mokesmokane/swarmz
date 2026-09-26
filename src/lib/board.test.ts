@@ -48,5 +48,8 @@ describe("History", () => {
       ["t1", "s0", "Older, not in the records", false],
     ]);
     expect(rows[2].detail).toBe("Done.\nNext: Merge it");
+    // Sessions of one tile with the same title are one conversation, shown once.
+    const dup = historyRows([{ id: "t", current: "b", sessions: [{ sessionId: "a", cwd: "/p/x", lastActiveAt: "2026-09-26T08:00:00Z" }, { sessionId: "b", cwd: "/p/x", lastActiveAt: "2026-09-26T07:00:00Z" }] }], {});
+    expect(dup.map((r) => [r.sessionId, r.current, r.lastActive])).toEqual([["b", true, "2026-09-26T08:00:00Z"]]);
   });
 });

@@ -465,7 +465,8 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         Some("board") => {
             a.expect_positional(1, "board [--tile ID] [--get] [--history [--all]] [--clear] < board.json")?;
             let tile = a.opt("--tile").map(cmd::tile_arg).transpose()?;
-            guard("board", tile.as_deref())?;
+            // Reading a board below you is a glance, as `output` is; writing one is the tile's own.
+            guard(if a.flag("--get") || a.flag("--history") { "board-get" } else { "board" }, tile.as_deref())?;
             Ok(Some(cmd::board(&cmd::Env::from_process()?, tile.as_deref(), a.flag("--get"), a.flag("--clear"), a.flag("--history"), a.flag("--all"), &mut std::io::stdin())?))
         }
         Some("card") => {

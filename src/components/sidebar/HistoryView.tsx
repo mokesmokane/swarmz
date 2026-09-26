@@ -1,5 +1,7 @@
-import { useEffect } from "react";
-import { useStore } from "../../store";
+import { useEffect, useState } from "react";
+import { knownMacs, useStore } from "../../store";
+import { machineAccent } from "../../lib/themes";
+import { rowInfo } from "../../lib/sidebarGroups";
 import { displayTitle } from "../../lib/card";
 import { historyRows } from "../../lib/board";
 import { relativeActivity, type RowInfo } from "../../lib/sidebarGroups";
@@ -60,6 +62,49 @@ export function HistoryView({ infos, now }: { infos: Map<string, RowInfo>; now: 
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * History as its own side bar view (activity bar): a header and the list, working out each
+ * tile's Mac chip the way the Terminals list does.
+ */
+export function HistoryPanel() {
+  const order = useStore((s) => s.order);
+  const terminals = useStore((s) => s.terminals);
+  const settings = useStore((s) => s.settings);
+  const agentState = useStore((s) => s.agentState);
+  const selfMachine = useStore((s) => s.selfMachine);
+  const machines = useStore((s) => s.machines);
+  const peers = useStore((s) => s.tailscale?.peers ?? null);
+  const knownKey = useStore((s) => knownMacs(s).join("\n"));
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const known = knownKey ? knownKey.split("\n") : [];
+  const online: Record<string, boolean> = {};
+  for (const p of peers ?? []) online[p.name] = p.online;
+  const infos = new Map<string, RowInfo>();
+  for (const id of order) {
+    const t = terminals[id];
+    if (!t) continue;
+    const st = settings[id];
+    infos.set(id, rowInfo({ id, name: t.name, cwd: t.cwd, exited: t.exited, ssh: st?.ssh ?? null, foreign: st?.foreign ?? null, sessions: st?.sessions, agent: agentState[id] }, { selfMachine, machines, online, colorOf: (m) => machineAccent(m, machines[m], known) }));
+  }
+  return (
+    <div className="flex h-full flex-col bg-panel" data-testid="history-panel">
+      <div className="flex h-9 flex-none items-center pl-3 pr-1.5">
+        <span className="flex-1 text-[11px] font-semibold tracking-[0.07em] text-ink-3">HISTORY</span>
+        <button className="flex h-6 w-[26px] items-center justify-center rounded-[5px] text-[#a4a7ae] hover:bg-[#24262b] hover:text-ink" onClick={() => void useStore.getState().loadConversationBoards()} title="Ask every Mac again" aria-label="Refresh history">
+          ↻
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+        <HistoryView infos={infos} now={now} />
+      </div>
     </div>
   );
 }

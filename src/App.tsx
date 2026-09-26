@@ -6,6 +6,7 @@ import { FileViewer } from "./components/FileViewer";
 import { ConductorsPanel } from "./components/ConductorsPanel";
 import { ActivityBar } from "./components/ActivityBar";
 import { MachinesView } from "./components/Machines";
+import { HistoryPanel } from "./components/sidebar/HistoryView";
 import { PhonesPanel } from "./components/PhonesPanel";
 import { NotificationsPanel } from "./components/NotificationsPanel";
 import { clickView, loadSideFolded, loadSideView, saveSideFolded, saveSideView, type SideView } from "./lib/activityBar";
@@ -128,6 +129,7 @@ export default function App() {
       {!side.folded && side.view !== "terminals" && (
         <aside className="flex h-full shrink-0 flex-col overflow-y-auto border-r border-line bg-panel" style={{ width: sidebarWidth }} data-testid={`side-${side.view}`}>
           {side.view === "machines" && <MachinesView />}
+          {side.view === "history" && <HistoryPanel />}
           {side.view === "phones" && <PhonesPanel onClose={backToTerminals} />}
           {side.view === "notifications" && <NotificationsPanel onClose={backToTerminals} />}
         </aside>

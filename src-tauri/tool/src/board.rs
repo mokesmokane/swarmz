@@ -131,6 +131,31 @@ pub fn history(home: &Path, tile: &str) -> Vec<Value> {
     out
 }
 
+/// A board in brief, as `ls` and `fleet` carry it (tile board spec §6): enough for a conductor to
+/// compare work streams without reading every board.
+pub fn summary(home: &Path, tile: &str) -> Option<Value> {
+    let v = read(home, tile)?;
+    let b = &v["board"];
+    let steps = b["plan"]["steps"].as_array();
+    let plan = steps.map(|s| {
+        let done = s.iter().filter(|x| x["s"] == "done").count();
+        let current = s.iter().find(|x| x["s"] == "current").and_then(|x| x["t"].as_str()).unwrap_or("");
+        format!("{done} of {} done{}", s.len(), if current.is_empty() { String::new() } else { format!("; now: {current}") })
+    });
+    obj(vec![
+        ("at", v.get("at").cloned().filter(|a| a.is_string())),
+        ("goal", b["overview"]["goal"].as_str().map(|s| json!(s))),
+        ("now", b["overview"]["now"].as_str().map(|s| json!(s))),
+        ("next", b["overview"]["next"].as_str().map(|s| json!(s))),
+        ("needsYou", b["overview"]["needsYou"].as_bool().filter(|x| *x).map(Value::Bool)),
+        ("plan", plan.map(Value::String)),
+        ("branch", b["changes"]["branch"].as_str().map(|s| json!(s))),
+        ("base", b["changes"]["base"].as_str().map(|s| json!(s))),
+        ("flags", b["changes"]["flags"].as_array().map(|f| Value::Array(f.clone()))),
+        ("questions", b["questions"].as_array().map(|q| json!(q.len())).filter(|n| n != &json!(0))),
+    ])
+}
+
 /// Every tile's conversation boards on this Mac, by tile (the sidebar's History view).
 pub fn history_all(home: &Path) -> Map<String, Value> {
     let mut out = Map::new();
@@ -248,6 +273,17 @@ mod tests {
         let all = history_all(&home);
         assert_eq!(all.keys().cloned().collect::<Vec<_>>(), vec!["t1".to_string(), "t2".to_string()]);
         assert_eq!(h2[0]["sessionId"], format!("s{}", HISTORY_MAX + 2));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sums_a_board_up_for_the_fleet() {
+        let home = std::env::temp_dir().join(format!("szbs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        write(&home, "t1", &json!({"overview": {"goal": "G", "now": "N", "needsYou": true}, "plan": {"steps": [{"t": "a", "s": "done"}, {"t": "b", "s": "current"}, {"t": "c"}]}, "changes": {"branch": "feat/x", "base": "on abc → main", "flags": ["uncommitted"]}, "questions": [{"q": "?"}]}), "2026-09-26T10:00:00Z", None).unwrap();
+        let s = summary(&home, "t1").unwrap();
+        assert_eq!(s, json!({"at": "2026-09-26T10:00:00Z", "goal": "G", "now": "N", "needsYou": true, "plan": "1 of 3 done; now: b", "branch": "feat/x", "base": "on abc → main", "flags": ["uncommitted"], "questions": 1}));
+        assert!(summary(&home, "none").is_none());
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -4,8 +4,8 @@
  * `localStorage` like the side bar's width, never in the shared workspace.
  */
 
-export type SideView = "terminals" | "machines" | "phones" | "notifications";
-export const SIDE_VIEWS: SideView[] = ["terminals", "machines", "phones", "notifications"];
+export type SideView = "terminals" | "history" | "machines" | "phones" | "notifications";
+export const SIDE_VIEWS: SideView[] = ["terminals", "history", "machines", "phones", "notifications"];
 
 const VIEW_KEY = "swarmz.sideView";
 const FOLDED_KEY = "swarmz.sideFolded";

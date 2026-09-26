@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useStore } from "../store";
 import type { SideView } from "../lib/activityBar";
 import { rowStatus } from "../lib/sidebarGroups";
-import { BellIcon, PhoneIcon, TerminalIcon, TreeIcon } from "./sidebar/icons";
+import { BellIcon, HistoryIcon, PhoneIcon, TerminalIcon, TreeIcon } from "./sidebar/icons";
 
 /**
  * VS Code's activity bar for swarmz (activity bar and machines spec §2): views on top (Terminals,
@@ -55,6 +55,7 @@ export function ActivityBar({ view, folded, onPick }: { view: SideView; folded: 
         ) : null,
         () => onPick("terminals"),
       )}
+      {button("history", "History", <HistoryIcon size={18} />, null, () => onPick("history"))}
       <div className="flex-1" />
       {button(null, "Conductors", <TreeIcon size={18} strokeWidth={1.1} />, null, openConductors)}
       {button("phones", "Phones", <PhoneIcon />, null, () => onPick("phones"))}

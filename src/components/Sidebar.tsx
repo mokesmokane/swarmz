@@ -9,7 +9,6 @@ import { ipc } from "../lib/ipc";
 import { endTabDrag, startTerminalDrag } from "./TabGroup";
 import { windowOfTile } from "../lib/windowLayouts";
 import { SelectionTray } from "./SelectionTray";
-import { HistoryView } from "./sidebar/HistoryView";
 import { UpdateNotice } from "./UpdateNotice";
 import { Caret, ClaimCard, GroupHeader, MachinesFooter, MacChip, NeedsCard, Notices, SectionHeader, ViewPicker } from "./sidebar/Parts";
 import { identifyMark } from "./IdentifyLabel";
@@ -680,16 +679,14 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
             )}
           </>
         )}
-        {groupBy !== "triage" && groupBy !== "history" && claimOpen && (
+        {groupBy !== "triage" && claimOpen && (
           <div className="px-2 pt-2">
             <ClaimCard />
           </div>
         )}
         {groupBy === "conductor" && <ConductorTree order={order} infos={infos} renderRow={renderRow} />}
-        {groupBy === "history" && <HistoryView infos={infos} now={now} />}
         {groupBy !== "conductor" &&
           groupBy !== "triage" &&
-          groupBy !== "history" &&
           groups.map((g) => (
             <div key={g.key}>
               <GroupHeader

@@ -4,14 +4,13 @@ import type { SessionRecord } from "./sessions";
 import { hostLabel, machineGlyph, machineLabel, type Machines } from "./workspace";
 
 /** How the sidebar lists tiles (sidebar redesign spec: Mac · Triage · Folder · Tree · Time), a per-machine preference. */
-export type GroupBy = "machine" | "triage" | "folder" | "conductor" | "time" | "history";
+export type GroupBy = "machine" | "triage" | "folder" | "conductor" | "time";
 export const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "machine", label: "Mac" },
   { value: "triage", label: "Triage" },
   { value: "folder", label: "Folder" },
   { value: "conductor", label: "Tree" },
   { value: "time", label: "Time" },
-  { value: "history", label: "History" },
 ];
 const KEY = "swarmz.sidebarGroupBy";
 
@@ -157,7 +156,7 @@ export const TIME_BUCKETS: { key: string; title: string; upTo: number }[] = [
 
 /** The list's groups for `groupBy`; Triage and Tree draw their own (see `triage`, ConductorTree). */
 export function groupRows(order: string[], infos: Map<string, RowInfo>, groupBy: GroupBy, now: number = Date.now()): Group[] {
-  if (groupBy === "triage" || groupBy === "conductor" || groupBy === "history") return [];
+  if (groupBy === "triage" || groupBy === "conductor") return [];
   if (groupBy === "time") {
     const sort = byActivity(infos);
     const out: Group[] = TIME_BUCKETS.map((b) => ({ key: b.key, title: b.title, ids: [] as string[] }));
