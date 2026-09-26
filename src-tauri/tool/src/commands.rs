@@ -189,7 +189,7 @@ pub fn row(env: &Env, tile: &str) -> Result<Value, CliError> {
 /// `stats` (activity bar and machines spec §4): this Mac's CPU, memory, disk, uptime and Claude
 /// sessions.
 pub fn stats(env: &Env) -> Result<Value, CliError> {
-    Ok(crate::stats::gather(&rows(env), crate::paths::build_id()))
+    Ok(crate::stats::gather(&env.home, &rows(env), crate::paths::build_id()))
 }
 
 pub fn ls(env: &Env) -> Result<Value, CliError> {

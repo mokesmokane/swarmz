@@ -109,8 +109,13 @@ export function applyAgentEvent(prev: AgentState | undefined, ev: AgentEvent, fo
 export const STATUS_COLORS = { working: "#25BF35", needsYou: "#FFB21B", idle: "#475569", error: "#FF0303" } as const;
 
 /** Blocked, or finished while nobody was looking. */
+/**
+ * Whether the agent is stuck on the user right now: a permission prompt it is waiting on. A
+ * finished turn, or Claude's "waiting for input" nudge, is not (the board's questions are what
+ * ask the user something; `rowStatus` counts those).
+ */
 export function needsYou(state: AgentState | undefined): boolean {
-  return !!state && (state.status === "blocked" || (state.status === "idle" && state.unseen));
+  return !!state && state.status === "blocked" && state.lastEvent === "PermissionRequest";
 }
 
 /** The dot colour for an agent state, or null when there is no live session. */

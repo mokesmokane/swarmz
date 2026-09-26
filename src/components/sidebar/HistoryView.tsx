@@ -3,7 +3,7 @@ import { knownMacs, useStore } from "../../store";
 import { machineAccent } from "../../lib/themes";
 import { rowInfo } from "../../lib/sidebarGroups";
 import { displayTitle } from "../../lib/card";
-import { historyRows } from "../../lib/board";
+import { historyRows, questionCount } from "../../lib/board";
 import { relativeActivity, type RowInfo } from "../../lib/sidebarGroups";
 import { MacChip } from "./Parts";
 
@@ -75,6 +75,7 @@ export function HistoryPanel() {
   const terminals = useStore((s) => s.terminals);
   const settings = useStore((s) => s.settings);
   const agentState = useStore((s) => s.agentState);
+  const boards = useStore((s) => s.boards);
   const selfMachine = useStore((s) => s.selfMachine);
   const machines = useStore((s) => s.machines);
   const peers = useStore((s) => s.tailscale?.peers ?? null);
@@ -92,7 +93,7 @@ export function HistoryPanel() {
     const t = terminals[id];
     if (!t) continue;
     const st = settings[id];
-    infos.set(id, rowInfo({ id, name: t.name, cwd: t.cwd, exited: t.exited, ssh: st?.ssh ?? null, foreign: st?.foreign ?? null, sessions: st?.sessions, agent: agentState[id] }, { selfMachine, machines, online, colorOf: (m) => machineAccent(m, machines[m], known) }));
+    infos.set(id, rowInfo({ id, name: t.name, cwd: t.cwd, exited: t.exited, ssh: st?.ssh ?? null, foreign: st?.foreign ?? null, sessions: st?.sessions, agent: agentState[id], questions: questionCount(boards[id]) }, { selfMachine, machines, online, colorOf: (m) => machineAccent(m, machines[m], known) }));
   }
   return (
     <div className="flex h-full flex-col bg-panel" data-testid="history-panel">

@@ -150,7 +150,9 @@ describe("ActivityBar", () => {
     useStore.setState({
       order: ["t1"],
       terminals: { t1: { id: "t1", name: "t", cwd: "/", exited: null, error: null } },
-      agentState: { t1: { status: "blocked", sessionId: "s", since: "t", lastEvent: "Notification", unseen: false, title: null, firstPrompt: null } },
+      agentState: { t1: { status: "idle", sessionId: "s", since: "t", lastEvent: "Stop", unseen: true, title: null, firstPrompt: null } },
+      // Only the board's questions (or a waiting permission) make a tile need you.
+      boards: { t1: { board: { questions: [{ q: "Ship it?" }] }, at: "t" } },
       machineStats: { gone: { name: "gone", self: false, online: false, stats: null, error: null, ping: null, at: "t" } },
       conductorsPanel: false,
     });

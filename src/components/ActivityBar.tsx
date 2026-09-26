@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useStore } from "../store";
 import type { SideView } from "../lib/activityBar";
 import { rowStatus } from "../lib/sidebarGroups";
+import { questionCount } from "../lib/board";
 import { BellIcon, HistoryIcon, PhoneIcon, TerminalIcon, TreeIcon } from "./sidebar/icons";
 
 /**
@@ -14,7 +15,7 @@ export function ActivityBar({ view, folded, onPick }: { view: SideView; folded: 
   const needs = useStore((s) =>
     s.order.filter((id) => {
       const t = s.terminals[id];
-      return t && rowStatus(s.agentState[id], t.exited) === "needs you";
+      return t && rowStatus(s.agentState[id], t.exited, questionCount(s.boards[id])) === "needs you";
     }).length,
   );
   const trouble = useStore((s) => Object.values(s.machineStats).some((m) => !m.online || (m.stats?.disk.freePercent ?? 100) < 5));

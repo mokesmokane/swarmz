@@ -37,6 +37,8 @@ export interface RowInfo {
   machine: { key: string; glyph: string; label: string; alias: string | null; color: string | null; self: boolean; online: boolean | null };
   folder: string;
   status: RowStatus;
+  /** Open questions on the tile's board; with any, the tile needs you. */
+  questions: number;
   /** ISO time of the last hook event, else the newest session's activity; null when neither. */
   since: string | null;
 }
@@ -50,6 +52,8 @@ export interface RowSource {
   foreign: { cwd: string } | null;
   sessions: SessionRecord[] | undefined;
   agent: AgentState | undefined;
+  /** How many questions the tile's board asks (0 or absent: none). */
+  questions?: number;
 }
 
 export interface RowContext {
@@ -65,10 +69,14 @@ function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? p;
 }
 
-export function rowStatus(agent: AgentState | undefined, exited: number | null): RowStatus {
+/**
+ * A tile needs you only when its board asks questions or a permission prompt is waiting; a turn
+ * that finished while you were away is just idle.
+ */
+export function rowStatus(agent: AgentState | undefined, exited: number | null, questions = 0): RowStatus {
   if (exited !== null) return exited === 0 ? "stopped" : `exited ${exited}`;
+  if (questions > 0 || needsYou(agent)) return "needs you";
   if (!agent || agent.status === "offline") return "stopped";
-  if (needsYou(agent)) return "needs you";
   return agent.status === "working" ? "working" : "idle";
 }
 
@@ -102,7 +110,13 @@ export function rowInfo(t: RowSource, ctx: RowContext): RowInfo {
   }
   const folder = basename(t.foreign?.cwd ?? t.ssh?.cwd ?? t.cwd);
   const since = t.agent?.since || t.sessions?.[0]?.lastActiveAt || null;
-  return { id: t.id, machine, folder, status: rowStatus(t.agent, t.exited), since };
+  const questions = t.questions ?? 0;
+  return { id: t.id, machine, folder, status: rowStatus(t.agent, t.exited, questions), questions, since };
+}
+
+/** The status word for a tile that needs you: its questions counted, else the permission. */
+export function needsLabel(questions: number): string {
+  return questions > 0 ? `${questions} question${questions === 1 ? "" : "s"}` : "permission";
 }
 
 /** `now`, `3m`, `2h`, `1d`, the phone's shape (spec §2); empty for a missing or future time. */

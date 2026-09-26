@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { OFFLINE, type AgentState } from "./agentState";
-import { groupRows, triage, loadGroupBy, relativeActivity, rowInfo, rowStatus, saveGroupBy, type RowContext, type RowSource } from "./sidebarGroups";
+import { groupRows, triage, loadGroupBy, needsLabel, relativeActivity, rowInfo, rowStatus, saveGroupBy, type RowContext, type RowSource } from "./sidebarGroups";
 
 const ctx: RowContext = {
   selfMachine: "mini",
@@ -30,11 +30,17 @@ describe("row info", () => {
     expect(rowInfo(local("c", { foreign: { cwd: "/f/deep/er" } }), ctx).folder).toBe("er");
   });
 
-  it("ranks status: exit code, then blocked or unseen, then working, idle, stopped", () => {
+  it("ranks status: exit code, then board questions or a waiting permission, then working, idle, stopped", () => {
     expect(rowStatus(agent("working", "t"), 1)).toBe("exited 1");
     expect(rowStatus(agent("working", "t"), 0)).toBe("stopped");
-    expect(rowStatus(agent("blocked", "t"), null)).toBe("needs you");
-    expect(rowStatus(agent("idle", "t", true), null)).toBe("needs you");
+    const permission = { ...agent("blocked", "t"), lastEvent: "PermissionRequest" };
+    expect(rowStatus(permission, null)).toBe("needs you");
+    // Board questions need you whatever the agent is doing.
+    expect(rowStatus(agent("working", "t"), null, 2)).toBe("needs you");
+    expect(rowStatus(undefined, null, 1)).toBe("needs you");
+    // A finished turn, or Claude's idle nudge, is not a reason to flag the tile.
+    expect(rowStatus(agent("idle", "t", true), null)).toBe("idle");
+    expect(rowStatus({ ...agent("blocked", "t"), lastEvent: "Notification" }, null)).toBe("idle");
     expect(rowStatus(agent("working", "t"), null)).toBe("working");
     expect(rowStatus(agent("idle", "t"), null)).toBe("idle");
     expect(rowStatus(agent("offline", "t"), null)).toBe("stopped");
@@ -46,6 +52,13 @@ describe("row info", () => {
     const s = { sessionId: "s", cwd: "/p/a", skipPermissions: false, startedAt: "t0", lastActiveAt: "2026-09-22T09:00:00Z" };
     expect(rowInfo(local("a", { sessions: [s] }), ctx).since).toBe("2026-09-22T09:00:00Z");
     expect(rowInfo(local("a"), ctx).since).toBeNull();
+  });
+
+  it("counts the questions in the status word", () => {
+    expect(rowInfo(local("a", { questions: 3 }), ctx).questions).toBe(3);
+    expect(needsLabel(1)).toBe("1 question");
+    expect(needsLabel(3)).toBe("3 questions");
+    expect(needsLabel(0)).toBe("permission");
   });
 
   it("renders relative activity like the phone", () => {
@@ -62,7 +75,7 @@ describe("row info", () => {
 describe("grouping", () => {
   const rows: RowSource[] = [
     remote("r1", "box", { agent: agent("working", "2026-09-23T10:00:00Z") }),
-    local("l1", { agent: agent("blocked", "2026-09-23T11:00:00Z") }),
+    local("l1", { agent: agent("idle", "2026-09-23T11:00:00Z"), questions: 2 }),
     local("l2", { agent: agent("idle", "2026-09-23T09:00:00Z") }),
     remote("r2", "box", { exited: 0 }),
     local("l3"),

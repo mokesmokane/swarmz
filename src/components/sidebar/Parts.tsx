@@ -253,9 +253,10 @@ export function NeedsCard({ id, info, now }: { id: string; info: RowInfo | undef
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!t) return null;
+  const firstQuestion = useStore((s) => s.boards[id]?.board?.questions?.[0]?.q ?? null);
   const permission = agent?.status === "blocked" && agent.lastEvent === "PermissionRequest";
-  const finished = agent?.status === "idle";
-  const body = card?.recap || agent?.firstPrompt || (permission ? "Waiting for a permission." : finished ? "Finished while you were away." : "Waiting for your answer.");
+  // What it asks: the board's first question, else the permission it waits on.
+  const body = firstQuestion ?? (card?.recap || agent?.firstPrompt || (permission ? "Waiting for a permission." : "Waiting for your answer."));
   const answer = (choice: "yes" | "no") => {
     setBusy(true);
     setError(null);
@@ -303,7 +304,7 @@ export function NeedsCard({ id, info, now }: { id: string; info: RowInfo | undef
               focusTerminal(id);
             }}
           >
-            {finished ? "Open" : "Answer"}
+            Answer
           </button>
         )}
       </div>
