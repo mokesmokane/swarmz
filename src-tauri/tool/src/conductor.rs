@@ -175,6 +175,10 @@ pub fn allowed(ws: &Workspace, caller: Option<&str>, sub: &str, target: Option<&
         return if tree.is_conductor(caller) { Ok(()) } else { denied(none_set()) };
     }
     let Some(target) = target else { return Ok(()) };
+    // A tile this Mac's workspace does not have is not "not under you": say what is wrong.
+    if (SCREEN.contains(&sub) || ACT.contains(&sub)) && def_of(ws, target).is_none() {
+        return denied(format!("no tile {target} in this Mac's workspace; give its full id or its name (swarmz fleet lists them)"));
+    }
     if SCREEN.contains(&sub) {
         return if tree.ancestors(ws, target).iter().any(|a| a == caller) { Ok(()) } else if tree.is_conductor(caller) { denied(format!("{} is not under you", title_of(ws, target))) } else { denied(none_set()) };
     }
