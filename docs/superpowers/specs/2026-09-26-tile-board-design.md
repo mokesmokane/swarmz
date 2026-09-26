@@ -88,4 +88,6 @@ The board's line has **Refresh**: it asks the tile's Claude to update its board 
 (`board --request --tile <id>`, run on the tile's Mac, which types a short request with
 `send`). It never types into a prompt on screen, over text in the input box, or into a tile
 where Claude is not running; it says which instead, on the line, for a few seconds. For tiles it
-is a conductor's act, like `send`.
+is a conductor's act, like `send`. Text in the box counts only when it is a draft: Claude's
+suggested next prompt (plain text with the cursor still right after `❯ `) and past messages
+echo'd on a shaded background do not.
