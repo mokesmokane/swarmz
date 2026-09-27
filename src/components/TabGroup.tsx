@@ -11,6 +11,7 @@ import { dotPresentation } from "../lib/agentState";
 import { displayTitle } from "../lib/card";
 import { TerminalPane } from "./TerminalPane";
 import { ConductorBadge } from "./ConductorBadge";
+import { AgentLogo } from "./AgentLogo";
 
 export const DRAG_MIME = "application/x-swarmz-terminal";
 
@@ -252,6 +253,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
               } ${mark ? "ring-2 ring-inset ring-amber-400" : ""}`}
             >
               {mark && mark !== "●" && <span className="rounded bg-amber-400 px-1 text-[10px] font-bold text-neutral-950" data-testid={`tab-mark-${id}`}>{mark}</span>}
+              {settings[id]?.claude?.enabled && <AgentLogo agent={agentKindOf(settings[id]?.claude)} size={12} />}
               <TabDot id={id} exitCode={t?.exited ?? null} />
               {isConductorTile({ conductor, conductors }, id) && <ConductorBadge />}
               <span className="max-w-[160px] truncate" title={t?.name ?? id}>{t ? displayTitle(settings[id]?.card, agentState[id], t.name) : id}</span>

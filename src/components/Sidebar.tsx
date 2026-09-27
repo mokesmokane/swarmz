@@ -16,7 +16,8 @@ import { identifyMark } from "./IdentifyLabel";
 import { CaretIcon, CheckIcon, CloseIcon, HistoryIcon, MoreIcon, PlusIcon, ReloadIcon, TreeIcon } from "./sidebar/icons";
 import { NewRemoteTerminal } from "./NewRemoteTerminal";
 import { displayTitle, hasTitle } from "../lib/card";
-import { agentName } from "../lib/workspace";
+import { agentKindOf, agentName } from "../lib/workspace";
+import { AgentLogo } from "./AgentLogo";
 import { SessionHistory } from "./SessionHistory";
 import { loadFoldedSections, saveFoldedSections } from "../lib/activityBar";
 import { buildConductorTree, descendants, findNode } from "../lib/conductorTree";
@@ -206,6 +207,7 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
   const machineOffline = info?.machine.online === false;
   const skip = !!(settings?.claude?.enabled && settings.claude.skipPermissions);
   const codex = !!(settings?.claude?.enabled && settings.claude.agent === "codex");
+  const agentKind = settings?.claude?.enabled ? agentKindOf(settings.claude) : null;
   const showName = hasTitle(card, agent) && info && t.name !== info.folder;
   const tip = `${state === "needs you" ? `Needs you: ${info?.questions ? needsLabel(info.questions) : "a permission is waiting"}` : state[0].toUpperCase() + state.slice(1)}${info?.since ? ` · ${relativeActivity(info.since, now)}` : ""}${shownIn ? "" : " · running, not open in any window"}`;
   const stopClick = (e: { stopPropagation(): void }) => e.stopPropagation();
@@ -278,9 +280,17 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
         >
           {selected && <CheckIcon />}
         </div>
+        {/* The agent's logo leads the row; a plain shell leaves the slot empty. */}
+        {agentKind && (
+          <span className={`${anySelected ? "hidden" : "flex group-hover:hidden"}`} data-testid={`row-logo-${id}`}>
+            <AgentLogo agent={agentKind} />
+          </span>
+        )}
+      </div>
+      <div className="flex h-[18px] w-2 flex-none items-center justify-center">
         <span
           data-testid={`agent-dot-${id}`}
-          className={`${anySelected ? "hidden" : "block group-hover:hidden"} h-2 w-2 rounded-full border-[1.5px]`}
+          className="block h-2 w-2 rounded-full border-[1.5px]"
           style={{
             borderColor: dotColor,
             backgroundColor: hollow ? "transparent" : dotColor,
