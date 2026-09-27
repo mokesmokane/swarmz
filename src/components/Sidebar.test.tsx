@@ -411,6 +411,22 @@ describe("the conductor", () => {
     expect(screen.getByTitle("Codex runs with --dangerously-bypass-approvals-and-sandbox").textContent).toBe("no-prompt");
   });
 
+  it("leads agent rows with their logo and the status dot after it; a shell has none", () => {
+    useStore.setState({ settings: { [ID]: { ssh: null, claude: { enabled: true, sessionId: "s", skipPermissions: false, started: true }, command: null, extra: {} } } });
+    const { unmount } = render(<Sidebar />);
+    expect(within(screen.getByTestId(`row-logo-${ID}`)).getByTestId("agent-logo-claude")).toBeTruthy();
+    expect(screen.getByTestId(`agent-dot-${ID}`)).toBeTruthy();
+    unmount();
+    useStore.setState({ settings: { [ID]: { ssh: null, claude: { enabled: true, sessionId: "", skipPermissions: false, started: false, agent: "codex" }, command: null, extra: {} } } });
+    const second = render(<Sidebar />);
+    expect(within(screen.getByTestId(`row-logo-${ID}`)).getByTestId("agent-logo-codex")).toBeTruthy();
+    second.unmount();
+    useStore.setState({ settings: { [ID]: { ssh: null, claude: null, command: null, extra: {} } } });
+    render(<Sidebar />);
+    expect(screen.queryByTestId(`row-logo-${ID}`)).toBeNull();
+    expect(screen.getByTestId(`agent-dot-${ID}`)).toBeTruthy();
+  });
+
   it("keeps the + menu to terminals and the conductor", () => {
     render(<Sidebar />);
     fireEvent.click(screen.getByLabelText("New terminal"));
