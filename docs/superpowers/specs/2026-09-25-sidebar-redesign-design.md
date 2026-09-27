@@ -52,3 +52,11 @@ board spec) or a permission prompt is waiting. The status word says which: "2 qu
 The dot is amber only for a waiting permission. The activity bar badge, group and Tree counts and
 the Machines footer's count (`swarmz stats`) follow the same rule. Every tile's board is fetched
 once so the count is known for tiles not open in a pane.
+
+## Amendment: agent logos (2026-09-27)
+
+An agent tile's row and tab start with its agent's logo (Claude's spark, Codex's mark; LobeHub's
+MIT icon set, `AgentLogo`), and the status dot follows it. A plain shell leaves the logo's place
+empty, so titles stay aligned. The row's pick checkbox still takes the first place on hover. The
+conductor's mark on tabs and in the conductors panel is the sidebar's network icon (`TreeIcon`),
+no longer 🎛.
