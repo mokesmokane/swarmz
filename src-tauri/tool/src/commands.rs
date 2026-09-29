@@ -471,7 +471,7 @@ pub fn board(env: &Env, tile: Option<&str>, get: bool, clear: bool, history: boo
     Ok(json!({"v": 1, "tile": tile, "at": at, "sessionId": session, "board": kept}))
 }
 
-pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&str>, agent: Agent) -> Result<Value, CliError> {
+pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&str>, agent: Option<Agent>) -> Result<Value, CliError> {
     check_folder(folder)?;
     let machine = env.machine.clone().ok_or_else(|| CliError::new("no_machine", "this Mac's name is unknown (is Tailscale running?)"))?;
     let base = name.map(str::to_string).unwrap_or_else(|| Path::new(folder).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
@@ -482,7 +482,9 @@ pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&s
     let config = ClaudeConfig { enabled: true, session_id: new_uuid(), skip_permissions, started: false };
     // Held and typed before the workspace names the tile: an app that adopts it then finds the
     // session running and never types a second agent line.
-    let Some(pid) = hold_and_type(env, &id, &tentative, folder, Some(&agent_line(agent, &config)))? else {
+    // A plain shell (no agent) types nothing.
+    let line = agent.map(|a| agent_line(a, &config));
+    let Some(pid) = hold_and_type(env, &id, &tentative, folder, line.as_deref())? else {
         return Err(failed(format!("a session for the new tile {id} was already running")));
     };
     // Reloaded just before saving, so changes made while the session started are kept.
@@ -492,8 +494,9 @@ pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&s
         let def = TerminalDef { id: id.clone(), name, cwd: folder.to_string(), ssh: None, claude: None, codex: None, command: None, extra: Map::new() };
         let mut def = def;
         match agent {
-            Agent::Claude => def.claude = Some(config),
-            Agent::Codex => def.codex = Some(config),
+            Some(Agent::Claude) => def.claude = Some(config),
+            Some(Agent::Codex) => def.codex = Some(config),
+            None => {}
         }
         add_def(&mut ws, def.clone(), &machine, &now_iso_ms());
         save_to(&workspace_file(&env.home), &ws).map_err(failed)?;

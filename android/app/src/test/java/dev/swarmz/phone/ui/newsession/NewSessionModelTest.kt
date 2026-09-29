@@ -103,4 +103,27 @@ class NewSessionModelTest {
         assertTrue(newCmd in conn.ran)
         assertEquals("Codex will run commands and edit files without asking, outside its sandbox.", skipWarning(Agent.Codex))
     }
+
+    @Test
+    fun aPlainShellStartsWithNoAgentEvenWithSkipLeftOn() = runTest {
+        val newCmd = Cmd.newTile("/Users/me", skipPermissions = false, agent = Agent.None)
+        val conn = FakeConn { cmd ->
+            when (cmd) {
+                Cmd.machines() -> """{"machines":[],"v":1}"""
+                Cmd.folders(null) -> """{"dirs":[],"parent":"/Users","path":"/Users/me","v":1}"""
+                newCmd -> """{"tile":{"cwd":"/Users/me","id":"s1","kind":"shell","name":"me","running":true},"v":1}"""
+                else -> VERSION_OK
+            }
+        }
+        val settings = MemorySettings().also { it.setPaired(Paired("mini", "me", "Fold")) }
+        val repo = Repository(settings, { PhoneKey(Ed25519.generate()) }, HostConnector(mapOf("mini" to ArrayDeque(listOf(conn)))), backgroundScope)
+        repo.start()
+        val model = NewSessionModel(repo, backgroundScope)
+        model.setSkip(true)
+        model.setAgent(Agent.None)
+        model.pickMac("mini")
+        model.state.first { it.folders != null }
+        assertEquals(TileKey("mini", "s1"), model.start())
+        assertTrue("a shell is started without --skip-permissions", newCmd in conn.ran)
+    }
 }

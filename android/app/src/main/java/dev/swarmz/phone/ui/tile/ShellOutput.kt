@@ -7,12 +7,14 @@ import android.net.Uri
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -157,16 +159,19 @@ internal fun ShellLines(
     // Held here, not in LinkMenu: dismissing the menu takes its composable, and with it any scope of its own,
     // out of the composition before a Copy launched from it could run.
     val scope = rememberCoroutineScope()
-    LazyColumn(
-        modifier.horizontalScroll(rememberScrollState()),
-        state = listState,
-        reverseLayout = true,
-        contentPadding = PaddingValues(12.dp),
-        verticalArrangement = Arrangement.spacedBy(0.dp),
-    ) {
-        if (exit != null) item(key = "exit") { Text(exit, style = MonoBody.copy(color = Sw.Secondary)) }
-        itemsIndexed(lines.reversed(), key = { j, _ -> dropped + (lines.size - 1 - j) }) { _, line ->
-            Text(line.annotated { tapped = it }, style = MonoBody, softWrap = false)
+    // Long-press selects text, with handles and the system Copy bar; a tap on a URL still opens its menu.
+    SelectionContainer(modifier) {
+        LazyColumn(
+            Modifier.fillMaxSize().horizontalScroll(rememberScrollState()),
+            state = listState,
+            reverseLayout = true,
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
+        ) {
+            if (exit != null) item(key = "exit") { Text(exit, style = MonoBody.copy(color = Sw.Secondary)) }
+            itemsIndexed(lines.reversed(), key = { j, _ -> dropped + (lines.size - 1 - j) }) { _, line ->
+                Text(line.annotated { tapped = it }, style = MonoBody, softWrap = false)
+            }
         }
     }
     tapped?.let { url -> LinkMenu(url, scope, onNotice) { tapped = null } }

@@ -2119,6 +2119,21 @@ fn a_codex_tile_is_started_recorded_under_codex_and_restarted_afresh() {
     let (code, bad) = tool_env(&h.path, &["new", "--folder", &folder, "--agent", "gemini"], MINI);
     assert_eq!((code, bad["code"].as_str()), (1, Some("usage")));
 
+    // A plain shell: no agent recorded, nothing typed.
+    let (code, v) = tool_env(&h.path, &["new", "--folder", &folder, "--agent", "none", "--name", "plain"], MINI);
+    let plain = v["tile"]["id"].as_str().unwrap_or_default().to_string();
+    let plain_paths = swarmz_tool::paths::session_paths(&h.path.join(".swarmz/sessions"), &plain).unwrap();
+    h.track(plain_paths.socket.to_str().unwrap());
+    assert_eq!((code, v["tile"]["kind"].as_str(), v["tile"]["name"].as_str()), (0, Some("shell"), Some("plain")), "{v}");
+    let ws: serde_json::Value = serde_json::from_slice(&std::fs::read(h.path.join(".swarmz/workspace.json")).unwrap()).unwrap();
+    let def = ws["terminals"].as_array().unwrap().iter().find(|d| d["id"] == plain.as_str()).unwrap().clone();
+    assert!(def["claude"].is_null() && def.get("codex").is_none(), "{def}");
+    let pc = tool_client(plain_paths.socket.to_str().unwrap());
+    assert!(wait_until(|| pc.info(Duration::from_secs(2)).and_then(|i| i.foreground_busy) == Some(false)));
+    assert!(!screen_has(&pc, "claude") && !screen_has(&pc, "codex"));
+    drop(pc);
+    tool_env(&h.path, &["close", &plain], MINI);
+
     let (code, v) = tool_env(&h.path, &["new", "--folder", &folder, "--agent", "codex", "--skip-permissions"], MINI);
     let id = v["tile"]["id"].as_str().unwrap_or_default().to_string();
     let paths = swarmz_tool::paths::session_paths(&h.path.join(".swarmz/sessions"), &id).unwrap();
@@ -2126,7 +2141,7 @@ fn a_codex_tile_is_started_recorded_under_codex_and_restarted_afresh() {
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["tile"]["kind"], "codex");
     let ws: serde_json::Value = serde_json::from_slice(&std::fs::read(h.path.join(".swarmz/workspace.json")).unwrap()).unwrap();
-    let def = &ws["terminals"][0];
+    let def = ws["terminals"].as_array().unwrap().iter().find(|d| d["id"] == id.as_str()).unwrap();
     assert!(def.get("claude").map_or(true, |c| c.is_null()), "{def}");
     assert_eq!((def["codex"]["started"].as_bool(), def["codex"]["skipPermissions"].as_bool()), (Some(false), Some(true)));
 
