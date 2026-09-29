@@ -40,6 +40,8 @@ class CmdTest {
         assertEquals("swarmz 'new' '--folder' '/p'", Cmd.newTile("/p", skipPermissions = false, agent = Agent.Claude))
         assertEquals("swarmz 'new' '--folder' '/p' '--agent' 'codex'", Cmd.newTile("/p", skipPermissions = false, agent = Agent.Codex))
         assertEquals("swarmz 'new' '--folder' '/p' '--agent' 'codex' '--skip-permissions'", Cmd.newTile("/p", skipPermissions = true, agent = Agent.Codex))
+        // A plain shell: named, and never with skipped permissions.
+        assertEquals("swarmz 'new' '--folder' '/p' '--agent' 'none'", Cmd.newTile("/p", skipPermissions = true, agent = Agent.None))
         assertEquals("swarmz 'restart' '$t'", Cmd.restart(t))
         assertEquals("swarmz 'image' '$t' 'u2-1'", Cmd.image(t, "u2-1"))
         assertEquals("swarmz 'phone' 'revoke' 'Galaxy Fold'", Cmd.phoneRevoke("Galaxy Fold"))

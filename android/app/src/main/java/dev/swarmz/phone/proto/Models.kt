@@ -131,7 +131,8 @@ data class AnswerReply(val answered: Boolean = false, val option: Opt? = null, v
 @Serializable data class SessionClosed(val closed: Boolean)
 
 /** The agents a new session can start (`swarmz new --agent`, Codex tiles spec §3). */
-enum class Agent(val arg: String, val label: String) { Claude("claude", "Claude"), Codex("codex", "Codex") }
+/** What a new tile runs: a plain shell (None, as on the desktop's remote form), Claude or Codex. */
+enum class Agent(val arg: String, val label: String) { None("none", "None"), Claude("claude", "Claude"), Codex("codex", "Codex") }
 
 /** The display name of a tile kind's agent: Codex for `codex`, else Claude. */
 fun agentLabel(kind: String): String = if (kind == Agent.Codex.arg) Agent.Codex.label else Agent.Claude.label

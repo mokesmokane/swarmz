@@ -120,6 +120,7 @@ class NewSessionModel(private val repo: Repository, private val scope: Coroutine
 
 /** What skipping permissions means for [agent] (Codex: `--dangerously-bypass-approvals-and-sandbox`). */
 fun skipWarning(agent: Agent): String = when (agent) {
+    Agent.None -> ""
     Agent.Claude -> "Claude will run commands and edit files without asking."
     Agent.Codex -> "Codex will run commands and edit files without asking, outside its sandbox."
 }
@@ -179,14 +180,17 @@ fun NewSessionScreen(model: NewSessionModel, macs: List<MacInfo>, onStarted: (Ti
                         )
                     }
                 }
-                Row(
-                    Modifier.fillMaxWidth().clickable { model.setSkip(!s.skip) },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Skip permissions", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                    Switch(checked = s.skip, onCheckedChange = model::setSkip, colors = SwitchDefaults.colors(checkedTrackColor = Sw.ErrorLine))
+                // A plain shell has no permissions to skip.
+                if (s.agent != Agent.None) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { model.setSkip(!s.skip) },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Skip permissions", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                        Switch(checked = s.skip, onCheckedChange = model::setSkip, colors = SwitchDefaults.colors(checkedTrackColor = Sw.ErrorLine))
+                    }
+                    if (s.skip) Text(skipWarning(s.agent), color = Sw.ErrorLine, style = MaterialTheme.typography.bodySmall)
                 }
-                if (s.skip) Text(skipWarning(s.agent), color = Sw.ErrorLine, style = MaterialTheme.typography.bodySmall)
                 PrimaryButton(
                     "Start in ${folderName(f.path)}",
                     enabled = !s.starting && !s.loading,

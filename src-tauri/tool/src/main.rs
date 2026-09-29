@@ -422,13 +422,15 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             Ok(Some(cmd::folders(&cmd::Env::from_process()?, a.positional.get(1).map(String::as_str))?))
         }
         Some("new") => {
-            a.expect_positional(1, "new --folder <dir> [--skip-permissions] [--name <name>] [--agent claude|codex]")?;
+            a.expect_positional(1, "new --folder <dir> [--skip-permissions] [--name <name>] [--agent claude|codex|none]")?;
             guard("new", None)?;
             let folder = a.opt("--folder").ok_or_else(|| CliError::new("usage", "missing --folder"))?;
+            // `none` is a plain shell (the phone's New session, like the desktop's remote form).
             let agent = match a.opt("--agent") {
-                None | Some("claude") => swarmz_tool::workspace::Agent::Claude,
-                Some("codex") => swarmz_tool::workspace::Agent::Codex,
-                Some(other) => return Err(CliError::new("usage", format!("unknown agent {other:?}: use claude or codex"))),
+                None | Some("claude") => Some(swarmz_tool::workspace::Agent::Claude),
+                Some("codex") => Some(swarmz_tool::workspace::Agent::Codex),
+                Some("none") => None,
+                Some(other) => return Err(CliError::new("usage", format!("unknown agent {other:?}: use claude, codex or none"))),
             };
             let env = cmd::Env::from_process()?;
             let made = cmd::new_tile(&env, folder, a.flag("--skip-permissions"), a.opt("--name"), agent)?;

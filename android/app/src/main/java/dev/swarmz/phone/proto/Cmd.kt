@@ -56,9 +56,10 @@ object Cmd {
 
     fun newTile(folder: String, skipPermissions: Boolean, name: String? = null, agent: Agent = Agent.Claude): String {
         val words = mutableListOf("new", "--folder", folder)
-        // Claude is the tool's default, so only Codex is named (an older tool knows no `--agent`).
-        if (agent == Agent.Codex) words += listOf("--agent", agent.arg)
-        if (skipPermissions) words += "--skip-permissions"
+        // Claude is the tool's default, so only the others are named (an older tool knows no `--agent`).
+        if (agent != Agent.Claude) words += listOf("--agent", agent.arg)
+        // A plain shell has no permissions to skip.
+        if (skipPermissions && agent != Agent.None) words += "--skip-permissions"
         if (name != null) words += listOf("--name", name)
         return of(*words.toTypedArray())
     }
