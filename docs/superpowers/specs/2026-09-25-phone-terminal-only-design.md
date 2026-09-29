@@ -32,3 +32,11 @@ Screen/Conversation toggle and dictation are removed), §4.1 (the phone no longe
 - The controller follows output for every kind and reopens it when it ends; restarted and
   offline-then-online tiles still recover.
 - `Cmd.output` asks for 3000 lines; the tool accepts `--follow --lines 5000`.
+
+## Amendment: copying text, and plain shells (2026-09-29)
+
+- The terminal's text is selectable: a long press selects, with handles and the system Copy bar
+  (`SelectionContainer` around the lines). A tap on a URL still opens its Open/Copy menu.
+- New session's Agent choice is None, Claude or Codex, as on the desktop's remote form. None
+  starts a plain shell (`swarmz new --agent none`: no agent recorded, nothing typed) and hides
+  Skip permissions.
