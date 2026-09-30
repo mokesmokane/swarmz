@@ -108,6 +108,7 @@ vi.mock("./ipc", () => ({
     terminalBracketedPaste: vi.fn(async () => null as boolean | null),
     setTerminalCwd: vi.fn(async (id: string, cwd: string) => ({ id, name: "x", cwd, exited: null, error: null })),
     pasteImageToRemote: vi.fn(async () => null as string | null),
+    pasteImageLocal: vi.fn(async () => null as string | null),
     remoteTileInfo: vi.fn(async () => ({ running: false }) as { running: boolean; cwd?: string | null }),
     remoteTileClose: vi.fn(async () => false),
     localSessions: vi.fn(async () => []),
@@ -652,6 +653,7 @@ describe("⌘V with only an image on the clipboard", () => {
   beforeEach(() => {
     vi.mocked(ipc.writeTerminal).mockClear();
     vi.mocked(ipc.pasteImageToRemote).mockReset().mockResolvedValue(null);
+    vi.mocked(ipc.pasteImageLocal).mockReset().mockResolvedValue(null);
   });
 
   it("tells an image-only paste from a text one", () => {
@@ -660,15 +662,33 @@ describe("⌘V with only an image on the clipboard", () => {
     expect(isImageOnlyPaste(pasteEvent("", ["application/pdf"]) as unknown as ClipboardEvent)).toBe(false);
   });
 
-  it("sends Ctrl+V to a local tile, so its agent reads the image", () => {
+  it("saves the image on this Mac and pastes its path into a local tile", async () => {
+    // macOS 26 keeps the tile's agent from reading the clipboard itself.
+    vi.mocked(ipc.pasteImageLocal).mockResolvedValue("/Users/me/.swarmz/paste/paste-9.png");
     const term = tile("v1", false);
     try {
       const e = pasteEvent("", ["image/png"]);
       term.element!.dispatchEvent(e);
       expect(e.defaultPrevented).toBe(true);
-      expect(ipc.writeTerminal).toHaveBeenCalledWith("v1", IMAGE_PASTE_KEY);
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("v1", "/Users/me/.swarmz/paste/paste-9.png"));
+      // With bracketed paste on, it arrives as a paste, which Claude and Codex attach as an image.
+      vi.mocked(ipc.writeTerminal).mockClear();
+      (term as unknown as { modes: { bracketedPasteMode: boolean } }).modes.bracketedPasteMode = true;
+      term.element!.dispatchEvent(pasteEvent("", ["image/png"]));
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("v1", "\x1b[200~/Users/me/.swarmz/paste/paste-9.png\x1b[201~"));
+      expect(ipc.pasteImageToRemote).not.toHaveBeenCalled();
     } finally {
       dispose("v1");
+    }
+  });
+
+  it("falls back to Ctrl+V in a local tile when there is no image to save", async () => {
+    const term = tile("v4", false);
+    try {
+      term.element!.dispatchEvent(pasteEvent("", ["image/png"]));
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("v4", IMAGE_PASTE_KEY));
+    } finally {
+      dispose("v4");
     }
   });
 

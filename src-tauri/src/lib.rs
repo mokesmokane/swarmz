@@ -86,6 +86,7 @@ pub fn run() {
             commands::agents_watch,
             commands::agents_unwatch,
             commands::paste_image_to_remote,
+            commands::paste_image_local,
             commands::open_view,
             commands::close_view,
         ])

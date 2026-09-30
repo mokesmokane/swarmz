@@ -162,20 +162,20 @@ describe("TerminalPane connect card", () => {
     }
   });
 
-  it("shows an Image sent pill for about a second after a remote paste", () => {
+  it("shows an Image pasted pill for about a second after an image paste", () => {
     vi.useFakeTimers();
     try {
       useStore.setState({ startupPending: { [ID]: false }, copiedAt: {}, pastedAt: {} });
       render(<TerminalPane id={ID} />);
-      expect(screen.queryByText("Image sent to remote")).toBeNull();
+      expect(screen.queryByText("Image pasted")).toBeNull();
       act(() => {
         useStore.setState({ pastedAt: { [ID]: Date.now() } });
       });
-      expect(screen.getByText("Image sent to remote")).toBeTruthy();
+      expect(screen.getByText("Image pasted")).toBeTruthy();
       act(() => {
         vi.advanceTimersByTime(1200);
       });
-      expect(screen.queryByText("Image sent to remote")).toBeNull();
+      expect(screen.queryByText("Image pasted")).toBeNull();
     } finally {
       vi.useRealTimers();
     }

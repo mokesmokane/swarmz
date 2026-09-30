@@ -182,34 +182,40 @@ function connectedSshHost(id: string): string | null {
  * a second upload or leaking a raw `\x16` into the prompt the first one is about to type into. */
 const pasting = new Set<string>();
 
-/** Pushes the clipboard image to `host` and types the remote path it landed at, so the user can
- * add their prompt and press Enter. With no image on the clipboard, or when the push fails,
- * Ctrl+V goes through to Claude, whose own paste handling then takes over. */
-async function sendImageOrForward(id: string, host: string): Promise<void> {
+/** Hands the clipboard image to the tile's agent as a file: pushed to `host` for an ssh tile,
+ * else saved on this Mac (on macOS 26 an agent inside a tile cannot read the clipboard itself,
+ * so its own Ctrl+V finds no image). The path goes in as a paste, which Claude and Codex turn
+ * into an attached image, and the user adds their prompt. With no image on the clipboard, or
+ * when saving or pushing fails, Ctrl+V goes through to the agent's own paste handling. */
+async function sendImageOrForward(id: string, host: string | null): Promise<void> {
   if (pasting.has(id)) return;
   pasting.add(id);
   let path: string | null = null;
   try {
-    path = await ipc.pasteImageToRemote(host);
+    path = host ? await ipc.pasteImageToRemote(host) : await ipc.pasteImageLocal();
   } catch {
     // not reachable, no clipboard access, …
   } finally {
     pasting.delete(id);
   }
   if (path) {
-    await ipc.writeTerminal(id, path).catch(() => {});
+    await ipc.writeTerminal(id, asPaste(id, path)).catch(() => {});
     useStore.getState().flashPasted(id);
   } else {
     await ipc.writeTerminal(id, IMAGE_PASTE_KEY).catch(() => {});
   }
 }
 
-/** Pastes the clipboard's image into a tile, as Ctrl+V does: pushed to a connected ssh tile's
- * Mac with its path typed, else Ctrl+V itself, whose agent (Claude, Codex) reads the clipboard. */
+/** `text` as the program in the tile takes a paste: bracketed when it has turned bracketed paste
+ * on (Claude and Codex then attach an image path as an image), else as typed. */
+function asPaste(id: string, text: string): string {
+  return entries.get(id)?.term.modes.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text;
+}
+
+/** Pastes the clipboard's image into a tile, as Ctrl+V does: saved as a file (on a connected ssh
+ * tile's Mac, else this one) whose path is pasted in, else Ctrl+V itself. */
 function sendImagePaste(id: string): void {
-  const host = connectedSshHost(id);
-  if (host) void sendImageOrForward(id, host);
-  else void ipc.writeTerminal(id, IMAGE_PASTE_KEY).catch(() => {});
+  void sendImageOrForward(id, connectedSshHost(id));
 }
 
 /** A paste that carries an image and no text: ⌘V with a screenshot on the clipboard. xterm.js

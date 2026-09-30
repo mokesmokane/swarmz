@@ -54,7 +54,7 @@ export function TerminalPane({ id }: { id: string }) {
         : null;
   const bar = overlay === "pending" ? null : overlay;
   // Both pills sit in the same corner, so only the newer one shows.
-  const pill = pastedVisible ? "Image sent to remote" : copiedVisible ? "Copied" : null;
+  const pill = pastedVisible ? "Image pasted" : copiedVisible ? "Copied" : null;
 
   useEffect(() => {
     const el = ref.current;
