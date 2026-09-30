@@ -67,6 +67,20 @@ pub fn push_png(host: &str, png: &[u8]) -> Result<String, String> {
     Ok(path.to_string())
 }
 
+/// Saves `png` under `<home>/.swarmz/paste/` on this Mac, returning its path. For local tiles:
+/// macOS 26 keeps a tile's agent from reading the clipboard itself, but the app, which the user
+/// is typing into, can; the agent is then handed the file (the same folder the phone's uploads
+/// use, which `swarmz upload`'s prune sweeps).
+pub fn save_png_in(home: &std::path::Path, png: &[u8], now_ms: u128) -> Result<String, String> {
+    let dir = home.join(".swarmz").join("paste");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let path = dir.join(paste_name(now_ms));
+    let tmp = dir.join(format!("{}.tmp.{}", paste_name(now_ms), std::process::id()));
+    std::fs::write(&tmp, png).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("could not save {}: {e}", path.display()))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 fn ssh_command(host: &str) -> Result<Command, String> {
     crate::remote::ensure_ssh_dir()?;
     let mut cmd = Command::new("ssh");
@@ -82,6 +96,20 @@ fn ssh_command(host: &str) -> Result<Command, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_local_paste_is_saved_whole_under_the_paste_folder() {
+        let home = std::env::temp_dir().join(format!("swarmz-paste-local-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let png = png_from_rgba(1, 1, &RED).unwrap();
+        let path = save_png_in(&home, &png, 1790000000123).unwrap();
+        assert_eq!(path, home.join(".swarmz/paste/paste-1790000000123.png").to_string_lossy());
+        assert_eq!(std::fs::read(&path).unwrap(), png);
+        assert!(usable_path(&path));
+        // Nothing half-written is left beside it.
+        assert_eq!(std::fs::read_dir(home.join(".swarmz/paste")).unwrap().count(), 1);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 
     const RED: [u8; 4] = [255, 0, 0, 255];
     const BLUE: [u8; 4] = [0, 0, 255, 255];
