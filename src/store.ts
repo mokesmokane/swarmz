@@ -661,7 +661,7 @@ export interface WorkbenchState {
   setWindowFocused(focused: boolean): void;
   flashCopied(id: string): void;
   flashPasted(id: string): void;
-  setTerminalCwd(id: string, cwd: string, source: "poll" | "osc7" | "hook" | "remote"): Promise<void>;
+  setTerminalCwd(id: string, cwd: string, source: "poll" | "osc7" | "hook" | "remote" | "pick"): Promise<void>;
   selectSession(id: string, sessionId: string, opts: { connect: boolean }): Promise<void>;
   watchResume(id: string, sessionId: string): void;
   noteResumeFailure(id: string, sessionId: string): void;
@@ -2818,6 +2818,18 @@ export const useStore = create<WorkbenchState>((set) => ({
       if (source === "poll") return;
       if ((source === "osc7" || source === "remote") && s.sshConnected[id] !== true) return;
     }
+    // A session's own folder (SessionStart) says where that conversation lives, which can differ
+    // from where the tile's shell is (a session resumed from another folder). Where the shell's
+    // folder can be read (a local tile's holder, or a remote one through its Mac's tool), that is
+    // the tile's folder: taking both flipped it back and forth, and on every Mac viewing the tile
+    // remotely each flip re-armed the connect card with a new session. The session's folder is
+    // kept in its history record either way.
+    if (source === "hook") {
+      const host = settings.ssh?.host?.trim();
+      const remoteReadable = !!host && s.sshConnected[id] === true && s.toolReady[host] === true;
+      if (!settings.ssh && !settings.foreign) return;
+      if (remoteReadable) return;
+    }
     if (settings.foreign) {
       if (settings.foreign.cwd === cwd) return;
       set((st) => {
@@ -2865,7 +2877,8 @@ export const useStore = create<WorkbenchState>((set) => ({
         startupNotes: omit(st.startupNotes, id),
       };
     });
-    await useStore.getState().setTerminalCwd(id, rec.cwd, "hook");
+    // The user picked this session: its folder is where the tile goes (`pick` always applies).
+    await useStore.getState().setTerminalCwd(id, rec.cwd, "pick");
     const after = useStore.getState();
     const isSsh = !!after.settings[id]?.ssh;
     if (isSsh && attachModeFor(id)) {

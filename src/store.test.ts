@@ -2486,13 +2486,31 @@ describe("agent state", () => {
     expect(useStore.getState().settings[id].claude?.started).toBe(false);
   });
 
-  it("SessionStart with a new session id adopts it, records it, and applies its folder", async () => {
+  it("SessionStart with a new session id adopts it and records its folder, leaving a local tile's folder to its shell", async () => {
     const id = await useStore.getState().createTerminal("/tmp/a");
     useStore.getState().applyAgentEvent(ev(id, "SessionStart", { sessionId: "new1", cwd: "/tmp/sub", permissionMode: "bypassPermissions" }));
-    await vi.waitFor(() => expect(useStore.getState().terminals[id].cwd).toBe("/tmp/sub"));
+    await vi.waitFor(() => expect(useStore.getState().settings[id].claude?.sessionId).toBe("new1"));
+    // The holder reports the shell's folder; a session resumed from elsewhere must not flip it.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useStore.getState().terminals[id].cwd).toBe("/tmp/a");
     const s = useStore.getState().settings[id];
     expect(s.claude).toEqual({ enabled: true, sessionId: "new1", skipPermissions: true, started: false });
     expect(s.sessions?.[0]).toMatchObject({ sessionId: "new1", cwd: "/tmp/sub", skipPermissions: true });
+  });
+
+  it("a session's folder moves a remote tile only while nothing can read its shell's folder", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/a");
+    useStore.setState((st) => ({
+      settings: { ...st.settings, [id]: { ...st.settings[id], ssh: { host: "me@box", cwd: "/p" } } },
+      sshConnected: { ...st.sshConnected, [id]: true },
+      toolReady: { "me@box": true },
+    }));
+    await useStore.getState().setTerminalCwd(id, "/p/other", "hook");
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p");
+    // Plain ssh (no tool on that Mac): the session's folder is all there is.
+    useStore.setState({ toolReady: {} });
+    await useStore.getState().setTerminalCwd(id, "/p/other", "hook");
+    expect(useStore.getState().settings[id].ssh?.cwd).toBe("/p/other");
   });
 
   it("SessionStart with the current session id only bumps the record", async () => {
