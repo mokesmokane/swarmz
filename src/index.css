@@ -46,4 +46,7 @@ html, body, #root {
   overflow: hidden;
 }
 
-.xterm { height: 100%; }
+.xterm { height: 100%; padding: 4px; }
+
+/* No scrollbars in panes: the wheel and trackpad scroll the terminal (xterm.js 6 draws its own). */
+.xterm .xterm-scrollable-element > .scrollbar { display: none !important; }
