@@ -204,6 +204,22 @@ async function sendImageOrForward(id: string, host: string): Promise<void> {
   }
 }
 
+/** Pastes the clipboard's image into a tile, as Ctrl+V does: pushed to a connected ssh tile's
+ * Mac with its path typed, else Ctrl+V itself, whose agent (Claude, Codex) reads the clipboard. */
+function sendImagePaste(id: string): void {
+  const host = connectedSshHost(id);
+  if (host) void sendImageOrForward(id, host);
+  else void ipc.writeTerminal(id, IMAGE_PASTE_KEY).catch(() => {});
+}
+
+/** A paste that carries an image and no text: ⌘V with a screenshot on the clipboard. xterm.js
+ * pastes only text, so such a paste would otherwise do nothing. */
+export function isImageOnlyPaste(e: Pick<ClipboardEvent, "clipboardData">): boolean {
+  const dt = e.clipboardData;
+  if (!dt || dt.getData("text/plain")) return false;
+  return Array.from(dt.items ?? []).some((i) => i.kind === "file" && i.type.startsWith("image/"));
+}
+
 function endRemoteReplay(entry: Entry): void {
   entry.remoteReplay = false;
   entry.remoteReplayMarked = false;
@@ -313,9 +329,8 @@ function createEntry(id: string): Entry {
     // Fallback for a tool without the end marker: input from the user (keys, pastes, mouse
     // reports) means the replay is on screen.
     userInput(entry);
-    const host = data === IMAGE_PASTE_KEY ? connectedSshHost(id) : null;
     // Writes to an already-exited pane are expected to fail; ignore.
-    if (host) void sendImageOrForward(id, host);
+    if (data === IMAGE_PASTE_KEY) sendImagePaste(id);
     else void ipc.writeTerminal(id, data).catch(() => {});
     if (data.includes("\r")) scheduleEnterPoll(id, entry);
   });
@@ -517,6 +532,19 @@ export function attach(id: string, container: HTMLElement): { term: Terminal; fi
     entry.opened = true;
     entry.onMouseUp = () => copySelection(id, entry.term);
     entry.term.element?.addEventListener("mouseup", entry.onMouseUp);
+    // ⌘V with only an image on the clipboard pastes it the way Ctrl+V does (before xterm.js,
+    // whose own paste handler would drop it for having no text).
+    entry.term.element?.addEventListener(
+      "paste",
+      (e) => {
+        if (!isImageOnlyPaste(e)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        userInput(entry);
+        sendImagePaste(id);
+      },
+      true,
+    );
     // Background ticks are pure overhead while the user is in another app; an Enter in this
     // tile always polls (scheduleEnterPoll), focused or not.
     entry.pollTimer = setInterval(() => {

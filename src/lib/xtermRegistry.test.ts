@@ -126,6 +126,7 @@ import {
   CWD_POLL_AFTER_ENTER_MS,
   CWD_POLL_INTERVAL_MS,
   IMAGE_PASTE_KEY,
+  isImageOnlyPaste,
   REMOTE_REPLAY_MARKED_MAX_MS,
   REMOTE_REPLAY_MAX_MS,
   REPLAY_END_MARKER,
@@ -628,6 +629,69 @@ describe("Ctrl+V in an ssh tile", () => {
       expect(ipc.pasteImageToRemote).not.toHaveBeenCalled();
     } finally {
       dispose("p6");
+    }
+  });
+});
+
+describe("⌘V with only an image on the clipboard", () => {
+  // jsdom has no ClipboardEvent with data, so the event carries a stand-in clipboardData.
+  function pasteEvent(text: string, types: string[]) {
+    const e = new Event("paste", { bubbles: true, cancelable: true }) as Event & { clipboardData: unknown };
+    e.clipboardData = { getData: (t: string) => (t === "text/plain" ? text : ""), items: types.map((type) => ({ kind: "file", type })) };
+    return e;
+  }
+  function tile(id: string, ssh: boolean) {
+    useStore.setState({
+      terminals: { [id]: { id, name: id, cwd: "/a", exited: null, error: null } },
+      settings: { [id]: { ssh: ssh ? { host: "me@box", cwd: "/p" } : null, claude: null, command: null, extra: {} } },
+      sshConnected: ssh ? { [id]: true } : {},
+      pastedAt: {},
+    });
+    return attach(id, document.createElement("div")).term;
+  }
+  beforeEach(() => {
+    vi.mocked(ipc.writeTerminal).mockClear();
+    vi.mocked(ipc.pasteImageToRemote).mockReset().mockResolvedValue(null);
+  });
+
+  it("tells an image-only paste from a text one", () => {
+    expect(isImageOnlyPaste(pasteEvent("", ["image/png"]) as unknown as ClipboardEvent)).toBe(true);
+    expect(isImageOnlyPaste(pasteEvent("hello", ["image/png"]) as unknown as ClipboardEvent)).toBe(false);
+    expect(isImageOnlyPaste(pasteEvent("", ["application/pdf"]) as unknown as ClipboardEvent)).toBe(false);
+  });
+
+  it("sends Ctrl+V to a local tile, so its agent reads the image", () => {
+    const term = tile("v1", false);
+    try {
+      const e = pasteEvent("", ["image/png"]);
+      term.element!.dispatchEvent(e);
+      expect(e.defaultPrevented).toBe(true);
+      expect(ipc.writeTerminal).toHaveBeenCalledWith("v1", IMAGE_PASTE_KEY);
+    } finally {
+      dispose("v1");
+    }
+  });
+
+  it("pushes the image to a connected ssh tile's Mac and types its path", async () => {
+    vi.mocked(ipc.pasteImageToRemote).mockResolvedValue("/Users/me/.swarmz/paste/p.png");
+    const term = tile("v2", true);
+    try {
+      term.element!.dispatchEvent(pasteEvent("", ["image/png"]));
+      await vi.waitFor(() => expect(ipc.writeTerminal).toHaveBeenCalledWith("v2", "/Users/me/.swarmz/paste/p.png"));
+    } finally {
+      dispose("v2");
+    }
+  });
+
+  it("leaves a text paste to xterm", () => {
+    const term = tile("v3", false);
+    try {
+      const e = pasteEvent("hello", []);
+      term.element!.dispatchEvent(e);
+      expect(e.defaultPrevented).toBe(false);
+      expect(ipc.writeTerminal).not.toHaveBeenCalled();
+    } finally {
+      dispose("v3");
     }
   });
 });
