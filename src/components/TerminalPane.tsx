@@ -104,7 +104,7 @@ export function TerminalPane({ id }: { id: string }) {
   return (
     <div className="flex h-full w-full flex-col" style={{ backgroundColor: background }}>
       <BoardHeader id={id} />
-      <div className="relative min-h-0 w-full flex-1">
+      <div className="relative min-h-0 w-full flex-1 overflow-hidden">
       {color && <div className="absolute inset-x-0 top-0 z-20 h-0.5" style={{ backgroundColor: color }} />}
       {overlay === "pending" && (
         <div className="absolute inset-0 z-10 flex items-center justify-center p-6">
@@ -162,7 +162,11 @@ export function TerminalPane({ id }: { id: string }) {
       {pill && (
         <div className="pointer-events-none absolute right-3 top-3 z-20 rounded bg-neutral-800/95 px-2 py-0.5 text-xs text-neutral-200 shadow">{pill}</div>
       )}
-      <div ref={ref} data-testid="terminal-mount" className={`absolute inset-0 p-1 ${bar ? "pt-9" : ""} ${overlay === "pending" ? "invisible" : ""}`} />
+      {/* No padding here: the fit addon sizes the terminal to this box's full width and height, so
+          padding on the box made the terminal overflow it, and the scrollbars that overflow
+          brought on changed its size and set off another fit, over and over. The terminal's own
+          padding (.xterm in index.css) is the kind the fit addon subtracts. */}
+      <div ref={ref} data-testid="terminal-mount" className={`absolute inset-x-0 bottom-0 overflow-hidden ${bar ? "top-9" : "top-0"} ${overlay === "pending" ? "invisible" : ""}`} />
       {info?.exited !== null && info?.exited !== undefined && (
         <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-neutral-900/95 px-3 py-2 text-sm text-neutral-300 border-t border-neutral-700">
           <span>
