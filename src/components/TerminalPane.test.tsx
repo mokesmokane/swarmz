@@ -47,9 +47,11 @@ vi.mock("../lib/xtermRegistry", () => ({
   attach: vi.fn(() => ({ term: {}, fit: { fit: vi.fn() } })),
   fitAndFocus: vi.fn(),
   claimSize: vi.fn(),
+  jumpToMessage: vi.fn(),
 }));
 
 import { ipc } from "../lib/ipc";
+import { jumpToMessage } from "../lib/xtermRegistry";
 import { __stopAllPolling, useStore } from "../store";
 import { TerminalPane } from "./TerminalPane";
 
@@ -224,5 +226,21 @@ describe("identify label", () => {
     expect(screen.getByTestId(`identify-${ID}`).textContent).toContain("2");
     act(() => useStore.setState({ identify: null }));
     expect(screen.queryByTestId(`identify-${ID}`)).toBeNull();
+  });
+});
+
+describe("jumping to your messages", () => {
+  it("offers ↑ and ↓ on an agent tile's pane and leaves a plain shell without them", () => {
+    // Connected and running: no card over the pane.
+    useStore.setState((st) => ({ startupPending: { ...st.startupPending, [ID]: false }, sshConnected: { ...st.sshConnected, [ID]: true } }));
+    const { unmount } = render(<TerminalPane id={ID} />);
+    fireEvent.click(screen.getByRole("button", { name: "Previous message (⌘↑)" }));
+    expect(jumpToMessage).toHaveBeenCalledWith(ID, -1);
+    fireEvent.click(screen.getByRole("button", { name: "Next message (⌘↓)" }));
+    expect(jumpToMessage).toHaveBeenLastCalledWith(ID, 1);
+    unmount();
+    useStore.setState((st) => ({ settings: { ...st.settings, [ID]: { ...st.settings[ID], claude: null } } }));
+    render(<TerminalPane id={ID} />);
+    expect(screen.queryByTestId("message-jumps")).toBeNull();
   });
 });

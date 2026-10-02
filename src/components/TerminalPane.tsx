@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore, terminalColor, tileTheme } from "../store";
-import { attach, claimSize, fitAndFocus } from "../lib/xtermRegistry";
+import { attach, claimSize, fitAndFocus, jumpToMessage } from "../lib/xtermRegistry";
 import { agentName, EMPTY_SETTINGS, needsRemoteFolder, startupLine, startupSummary } from "../lib/workspace";
 import { RemoteDirPicker } from "./RemoteDirPicker";
 import { SessionHistory } from "./SessionHistory";
@@ -104,7 +104,7 @@ export function TerminalPane({ id }: { id: string }) {
   return (
     <div className="flex h-full w-full flex-col" style={{ backgroundColor: background }}>
       <BoardHeader id={id} />
-      <div className="relative min-h-0 w-full flex-1 overflow-hidden">
+      <div className="group/pane relative min-h-0 w-full flex-1 overflow-hidden">
       {color && <div className="absolute inset-x-0 top-0 z-20 h-0.5" style={{ backgroundColor: color }} />}
       {overlay === "pending" && (
         <div className="absolute inset-0 z-10 flex items-center justify-center p-6">
@@ -167,6 +167,31 @@ export function TerminalPane({ id }: { id: string }) {
           brought on changed its size and set off another fit, over and over. The terminal's own
           padding (.xterm in index.css) is the kind the fit addon subtracts. */}
       <div ref={ref} data-testid="terminal-mount" className={`absolute inset-x-0 bottom-0 overflow-hidden ${bar ? "top-9" : "top-0"} ${overlay === "pending" ? "invisible" : ""}`} />
+      {/* Step through your messages (jump to messages spec §1): agent tiles only, on hover. */}
+      {settings.claude?.enabled && info?.exited === null && !overlay && (
+        <div className="absolute bottom-3 right-4 z-10 hidden flex-col gap-1.5 group-hover/pane:flex" data-testid="message-jumps">
+          {(
+            [
+              [-1, "Previous message (⌘↑)", "M4 10l4-4 4 4"],
+              [1, "Next message (⌘↓)", "M4 6l4 4 4-4"],
+            ] as const
+          ).map(([dir, label, d]) => (
+            <button
+              key={dir}
+              type="button"
+              className="flex h-7 w-7 items-center justify-center rounded-full border border-neutral-700 bg-neutral-900/90 text-neutral-300 shadow hover:border-neutral-500 hover:text-white"
+              title={label}
+              aria-label={label}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => jumpToMessage(id, dir)}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d={d} />
+              </svg>
+            </button>
+          ))}
+        </div>
+      )}
       {info?.exited !== null && info?.exited !== undefined && (
         <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-3 bg-neutral-900/95 px-3 py-2 text-sm text-neutral-300 border-t border-neutral-700">
           <span>
