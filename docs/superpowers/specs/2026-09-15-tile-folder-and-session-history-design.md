@@ -222,3 +222,18 @@ the list and see `--resume` typed in its folder.
 2. Folder tracking: `setTerminalCwd`, poll on Enter and interval, OSC 7.
 3. Session records: `sessions.ts`, adoption on hook events, sync equality.
 4. Going back: connect card list, settings panel list, dead-session note.
+
+## Amendment: one folder per tile, whoever looks (2026-10-02)
+
+A tile's folder is where its shell is, and the Mac that runs the shell says so:
+
+- **The home Mac keeps it current.** It reads each of its local tiles' shell folders every 5 s
+  while a pane shows the tile in a focused window, and every 20 s otherwise (shown or not,
+  focused or not). A workspace file that names another folder for one of its own tiles is never
+  taken as is: the shell is asked at once, and its answer is what the next save writes. Before
+  this, the home Mac saved its stale folder back over a viewer's newer one and the tile's folder
+  flipped between the two, in the sidebar and on every card.
+- **A folder change never re-arms the connect card.** Moving a running tile (a `cd`, a peer's
+  copy catching up) is not a reason to connect again; the card's trigger ignores folders.
+- **A session's folder is its own.** A `SessionStart` folder goes into that session's history and
+  moves the tile only where nothing can read the shell's folder (an ssh tile without a ready tool).
