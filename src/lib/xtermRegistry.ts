@@ -9,6 +9,10 @@ import { paneLinkProvider } from "./paneLinkProvider";
 
 export const CWD_POLL_AFTER_ENTER_MS = 300;
 export const CWD_POLL_INTERVAL_MS = 5000;
+/** While the window is in the background a tile's folder is still read, less often: this Mac's
+ * folder for its own tiles is what the shared workspace carries, and a stale one would be saved
+ * back over a peer's newer one. */
+export const CWD_POLL_BACKGROUND_EVERY = 4;
 
 /** Ctrl+V. Claude Code reads it as "paste the image on my clipboard", which for an ssh tile is
  * the remote Mac's clipboard, not the one the user just copied into. */
@@ -609,6 +613,34 @@ beforeSpawn.hook = prepare;
 beforeSpawn.size = size;
 beforeSpawn.claimSize = claimSize;
 beforeSpawn.resetModes = resetTerminalModes;
+beforeSpawn.pollCwd = (id) => void readLocalCwd(id);
+
+/** Reads a local tile's shell folder from its holder, whether or not a pane shows the tile. */
+async function readLocalCwd(id: string): Promise<void> {
+  if (!localTileAlive(id)) return;
+  try {
+    const cwd = await ipc.terminalCwd(id);
+    if (cwd && localTileAlive(id)) await useStore.getState().setTerminalCwd(id, cwd, "poll");
+  } catch {
+    // the holder did not answer; the next pass will try again
+  }
+}
+
+// The background pass (folder tracking, as amended): every local tile this Mac runs, shown in a
+// pane or not and focused or not, so the folder this Mac saves for its own tiles is never stale
+// for long. Only the main window keeps the store; others mirror it.
+let backgroundTick = 0;
+setInterval(() => {
+  const s = useStore.getState();
+  if (s.windowLabel !== "main") return;
+  backgroundTick += 1;
+  if (backgroundTick % CWD_POLL_BACKGROUND_EVERY !== 0) return;
+  for (const id of s.order) {
+    // A pane on screen in a focused window already polls every tick.
+    if (entries.get(id)?.opened && s.windowFocused !== false) continue;
+    void readLocalCwd(id);
+  }
+}, CWD_POLL_INTERVAL_MS);
 
 useStore.subscribe((state, prev) => {
   if (state.terminals === prev.terminals) return;

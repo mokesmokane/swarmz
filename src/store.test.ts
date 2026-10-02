@@ -862,6 +862,38 @@ describe("reloadWorkspace", () => {
     expect(useStore.getState().startupPending[a]).toBe(false);
   });
 
+  it("does not re-arm the startup bar when only a tile's folder moved (someone cd'd in it)", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    useStore.getState().updateSettings(a, { ssh: { host: "h", cwd: "/srv/one" } });
+    useStore.getState().skipStartup(a);
+    vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+      version: 1,
+      terminals: [{ id: a, name: "a", cwd: "/tmp/a", ssh: { host: "h", cwd: "/srv/two" }, claude: null, command: null }],
+      layout: null,
+    });
+    await useStore.getState().reloadWorkspace();
+    expect(useStore.getState().settings[a].ssh?.cwd).toBe("/srv/two");
+    expect(useStore.getState().startupPending[a]).toBe(false);
+  });
+
+  it("asks a local tile's shell for its folder when a file names another one", async () => {
+    const a = await useStore.getState().createTerminal("/tmp/a");
+    const pollCwd = vi.spyOn(beforeSpawn, "pollCwd");
+    try {
+      vi.mocked(ipc.loadWorkspace).mockResolvedValueOnce({
+        version: 1,
+        terminals: [{ id: a, name: "a", cwd: "/tmp/elsewhere", ssh: null, claude: null, command: null }],
+        layout: null,
+      });
+      await useStore.getState().reloadWorkspace();
+      // The registry keeps what the shell said last; the shell is asked rather than overwritten.
+      expect(pollCwd).toHaveBeenCalledWith(a);
+      expect(useStore.getState().terminals[a].cwd).toBe("/tmp/a");
+    } finally {
+      pollCwd.mockRestore();
+    }
+  });
+
   it("does not re-arm the startup bar when only the tile's session history is in the file", async () => {
     const a = await useStore.getState().createTerminal("/tmp/a");
     useStore.getState().applyAgentEvent({

@@ -357,11 +357,14 @@ export const beforeSpawn: {
   /** After an ssh tile's connection ended: turn off the modes the remote program left on in the
    * pane (`resetTerminalModes`), writing to the xterm only. */
   resetModes: (id: string) => void;
+  /** Ask a local tile's holder for its shell's folder now (the registry's folder poll). */
+  pollCwd: (id: string) => void;
 } = {
   hook: async () => {},
   size: () => null,
   claimSize: () => {},
   resetModes: () => {},
+  pollCwd: () => {},
 };
 
 /** Where a new terminal goes: a tab in a tile, or a new tile beside one. */
@@ -1033,7 +1036,11 @@ function regenerateIfUnsafe(def: TerminalDef): { def: TerminalDef; note: string 
  * every hook event (and `extra`/`origin` are pure passthrough), so only these fields may re-arm
  * an already-open tile's startup bar when the workspace is reconciled. */
 function startupKey(x: TerminalSettings | undefined): string {
-  return JSON.stringify({ ssh: x?.ssh ?? null, claude: x?.claude ?? null, command: x?.command ?? null, origin: x?.origin ?? null, foreign: x?.foreign ?? null });
+  // Folders are left out: a tile's folder follows its shell (`cd` in a running tile, a peer's
+  // copy catching up), and re-arming the card on every move made a tile someone had just `cd`'d
+  // in flip between connect cards for its old and new folder (folder tracking, as amended).
+  const ssh = x?.ssh ? { ...x.ssh, cwd: null } : null;
+  return JSON.stringify({ ssh, claude: x?.claude ?? null, command: x?.command ?? null, origin: x?.origin ?? null, foreign: x?.foreign ? true : null });
 }
 
 async function openDefs(
@@ -3288,6 +3295,16 @@ async function applyWorkspace(
     const known = new Set(fromFile);
     return { order: [...fromFile, ...s.order.filter((id) => !known.has(id))] };
   });
+  // Folders are this Mac's to say for its own local tiles (their shells run here), and the
+  // registry keeps the folder it last read, so a peer's different folder is never taken as is:
+  // the shell is asked at once instead, and whichever is true is what the next save writes. Left
+  // to the 5 s focused poll, this Mac wrote its stale folder back over the peer's, and the two
+  // flipped the tile's folder back and forth.
+  for (const d of defs) {
+    const t = useStore.getState().terminals[d.id];
+    const st = useStore.getState().settings[d.id];
+    if (t && t.exited === null && !st?.ssh && !st?.foreign && d.cwd !== t.cwd) beforeSpawn.pollCwd(d.id);
+  }
   useStore.setState({ syncMeta: ws.sync ?? null });
   if (!anyFailed) {
     useStore.setState({ persistenceReady: true });
