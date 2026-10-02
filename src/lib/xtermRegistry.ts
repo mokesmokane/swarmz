@@ -1,4 +1,4 @@
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type IBufferCell } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -348,6 +348,11 @@ function createEntry(id: string): Entry {
   // speak the kitty keyboard protocol Claude probes for, so send LF instead: Claude inserts a
   // newline for it, and a shell treats it exactly like Enter.
   term.attachCustomKeyEventHandler((e) => {
+    // ⌘↑ / ⌘↓ in an agent tile step through the user's messages (jump to messages spec §1).
+    if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && useStore.getState().settings[id]?.claude?.enabled) {
+      if (e.type === "keydown") jumpToMessage(id, e.key === "ArrowUp" ? -1 : 1);
+      return false;
+    }
     if (e.key !== "Enter" || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return true;
     if (e.type === "keydown") {
       userInput(entry);
@@ -614,6 +619,77 @@ beforeSpawn.size = size;
 beforeSpawn.claimSize = claimSize;
 beforeSpawn.resetModes = resetTerminalModes;
 beforeSpawn.pollCwd = (id) => void readLocalCwd(id);
+
+/** The prompts an agent echoes your messages behind (jump to messages spec §2): Claude's `❯`
+ * (older `>`) and Codex's `›`. */
+const MESSAGE_PROMPTS = ["❯", ">", "›"];
+
+/** The slice of an xterm buffer line the message scan reads. */
+export interface ScanLine {
+  translateToString(trimRight?: boolean): string;
+  getCell(x: number): Pick<IBufferCell, "isBgDefault" | "isDim"> | undefined;
+}
+
+/** Whether a line starts a message the user sent: a prompt and a space as its first characters,
+ * the prompt shaded (Claude's echo) or dim (Codex's). The live input box's prompt is neither. */
+export function isMessageLine(line: ScanLine | undefined): boolean {
+  if (!line) return false;
+  const text = line.translateToString(true);
+  const at = text.length - text.trimStart().length;
+  if (!MESSAGE_PROMPTS.includes(text.charAt(at)) || text.charAt(at + 1) !== " ") return false;
+  const cell = line.getCell(at);
+  return !!cell && (!cell.isBgDefault() || cell.isDim() !== 0);
+}
+
+/** Buffer rows (absolute) that start the user's messages, oldest first. */
+export function messageRows(term: Terminal): number[] {
+  const b = term.buffer.active;
+  const out: number[] = [];
+  for (let y = 0; y < b.length; y++) if (isMessageLine(b.getLine(y))) out.push(y);
+  return out;
+}
+
+/** The row a jump lands on from a pane whose top row is `top`: the last message above it, or the
+ * first below it; null when there is none that way. `bottom` is the furthest row the pane can
+ * scroll its top to. */
+export function jumpTarget(rows: number[], top: number, bottom: number, dir: -1 | 1): number | "bottom" | null {
+  if (dir < 0) {
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i] < top) return rows[i];
+    return null;
+  }
+  const next = rows.find((y) => y > top);
+  // Past the last message (or one already on the live screen): back to the bottom.
+  if (next === undefined || next >= bottom) return top >= bottom ? null : "bottom";
+  return next;
+}
+
+/** Scrolls a pane to the user's previous (-1) or next (1) message, and lights it for a moment. */
+export function jumpToMessage(id: string, dir: -1 | 1): void {
+  const entry = entries.get(id);
+  if (!entry) return;
+  const term = entry.term;
+  const b = term.buffer.active;
+  if (b.type !== "normal") return;
+  const target = jumpTarget(messageRows(term), b.viewportY, b.baseY, dir);
+  if (target === null) return;
+  if (target === "bottom") {
+    term.scrollToBottom();
+    return;
+  }
+  term.scrollToLine(target);
+  try {
+    const marker = term.registerMarker(target - (b.baseY + b.cursorY));
+    const deco = term.registerDecoration({ marker, width: term.cols, backgroundColor: "#2f6fe0" });
+    setTimeout(() => {
+      deco?.dispose();
+      marker.dispose();
+    }, MESSAGE_FLASH_MS);
+  } catch {
+    // a highlight is a nicety; the jump has happened
+  }
+}
+
+const MESSAGE_FLASH_MS = 900;
 
 /** Reads a local tile's shell folder from its holder, whether or not a pane shows the tile. */
 async function readLocalCwd(id: string): Promise<void> {

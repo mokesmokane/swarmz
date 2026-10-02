@@ -127,6 +127,8 @@ import {
   CWD_POLL_AFTER_ENTER_MS,
   CWD_POLL_INTERVAL_MS,
   IMAGE_PASTE_KEY,
+  isMessageLine,
+  jumpTarget,
   isImageOnlyPaste,
   REMOTE_REPLAY_MARKED_MAX_MS,
   REMOTE_REPLAY_MAX_MS,
@@ -1336,5 +1338,40 @@ describe("modes left on by replayed history", () => {
       useStore.setState({ remoteAttached });
       dispose("mr4");
     }
+  });
+});
+
+describe("jumping to the user's messages", () => {
+  // A buffer line with one styled cell at the prompt: shaded (Claude's echo), dim (Codex's) or plain.
+  const line = (text: string, style: "shaded" | "dim" | "plain") => ({
+    translateToString: () => text,
+    getCell: () => ({ isBgDefault: () => style !== "shaded", isDim: () => (style === "dim" ? 1 : 0) }),
+  });
+
+  it("finds Claude's and Codex's echoed messages, not their live input boxes", () => {
+    expect(isMessageLine(line("❯ fix the login redirect", "shaded"))).toBe(true);
+    expect(isMessageLine(line("> an older Claude echo", "shaded"))).toBe(true);
+    expect(isMessageLine(line("› run the tests", "dim"))).toBe(true);
+    // The live boxes, a permission option and a shell prompt.
+    expect(isMessageLine(line("❯ Try \"fix lint errors\"", "plain"))).toBe(false);
+    expect(isMessageLine(line("› Ask Codex to do anything", "plain"))).toBe(false);
+    expect(isMessageLine(line("  ❯ 1. Yes", "plain"))).toBe(false);
+    expect(isMessageLine(line("mokes@mini ~ % ls", "plain"))).toBe(false);
+    expect(isMessageLine(line("❯", "shaded"))).toBe(false);
+    expect(isMessageLine(undefined)).toBe(false);
+  });
+
+  it("steps to the message above the pane's top, or below it and back to the bottom", () => {
+    const rows = [10, 40, 90];
+    // Scrolled to the live bottom (top row 120): up finds the last message, then the ones before.
+    expect(jumpTarget(rows, 120, 120, -1)).toBe(90);
+    expect(jumpTarget(rows, 90, 120, -1)).toBe(40);
+    expect(jumpTarget(rows, 10, 120, -1)).toBeNull();
+    // Down from a message: the next one, then the live bottom once the next is on the live screen.
+    expect(jumpTarget(rows, 10, 120, 1)).toBe(40);
+    expect(jumpTarget(rows, 90, 120, 1)).toBe("bottom");
+    expect(jumpTarget([10, 125], 10, 120, 1)).toBe("bottom");
+    // Already at the bottom: nowhere further down.
+    expect(jumpTarget(rows, 120, 120, 1)).toBeNull();
   });
 });
