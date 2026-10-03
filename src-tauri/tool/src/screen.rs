@@ -41,6 +41,11 @@ pub struct Snapshot {
     /// starts above the lines returned). None from a holder that predates it.
     #[serde(rename = "visibleStart", default, skip_serializing_if = "Option::is_none")]
     pub visible_start: Option<usize>,
+    /// The program is full-screen and tracks the mouse (Claude Code's fullscreen TUI): its
+    /// history is its own, scrolled with the wheel (`key wheel-up`), not in these lines (phone
+    /// terminal-only spec, scrolling amendment). None from a holder that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wheel: Option<bool>,
 }
 
 fn color(c: vt100::Color) -> Option<Color> {
@@ -123,7 +128,8 @@ pub fn snapshot(parser: &mut vt100::Parser, max_lines: usize) -> Snapshot {
     let start = lines.len().saturating_sub(max_lines);
     let lines = lines.split_off(start);
     let cursor = (visible_start + cur_row as usize).checked_sub(start).map(|l| (l, cur_col));
-    Snapshot { cols, rows, cursor, lines, visible_start: Some(visible_start.saturating_sub(start)) }
+    let wheel = screen.alternate_screen() && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None;
+    Snapshot { cols, rows, cursor, lines, visible_start: Some(visible_start.saturating_sub(start)), wheel: Some(wheel) }
 }
 
 /// `snap` serialised to at most `max_bytes` (when it can be), dropping its oldest lines as
@@ -274,6 +280,21 @@ mod tests {
         assert_eq!(line_text(&last4.lines[0]), "l7");
         // Reading the scrollback leaves the live screen in view.
         assert_eq!(p.screen().scrollback(), 0);
+    }
+
+    #[test]
+    fn a_full_screen_mouse_program_reads_as_wheel() {
+        let mut p = vt100::Parser::new(10, 40, SCROLLBACK);
+        p.process(b"$ ls\r\n");
+        assert_eq!(snapshot(&mut p, 50).wheel, Some(false));
+        // Claude Code's fullscreen TUI: the alternate screen, then mouse tracking in SGR.
+        p.process(b"\x1b[?1049h\x1b[?1002h\x1b[?1006h");
+        assert_eq!(snapshot(&mut p, 50).wheel, Some(true));
+        // A full-screen program that ignores the mouse (less, older vim) is not scrolled this way.
+        p.process(b"\x1b[?1002l");
+        assert_eq!(snapshot(&mut p, 50).wheel, Some(false));
+        p.process(b"\x1b[?1049l");
+        assert_eq!(snapshot(&mut p, 50).wheel, Some(false));
     }
 
     #[test]

@@ -16,6 +16,15 @@ pub fn key_bytes(name: &str) -> Option<&'static [u8]> {
     })
 }
 
+/// One mouse-wheel notch as an SGR mouse report (`ESC [ < 64|65 ; col ; row M`), the encoding a
+/// full-screen program such as Claude Code turns on, at the middle of a `cols`x`rows` screen
+/// (the top-left when the size is unknown).
+pub fn wheel_bytes(up: bool, cols: u16, rows: u16) -> Vec<u8> {
+    let col = (cols / 2).max(1);
+    let row = (rows / 2).max(1);
+    format!("\x1b[<{};{col};{row}M", if up { 64 } else { 65 }).into_bytes()
+}
+
 /// The text with control characters other than newline and tab removed, so it can never end a
 /// paste early or send escape sequences of its own.
 pub fn typed_bytes(text: &str) -> Result<Vec<u8>, String> {
@@ -138,6 +147,13 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_wheel_notch_is_an_sgr_report_at_the_middle() {
+        assert_eq!(wheel_bytes(true, 120, 40), b"\x1b[<64;60;20M".to_vec());
+        assert_eq!(wheel_bytes(false, 120, 40), b"\x1b[<65;60;20M".to_vec());
+        assert_eq!(wheel_bytes(true, 0, 0), b"\x1b[<64;1;1M".to_vec());
+    }
 
     #[test]
     fn keys() {

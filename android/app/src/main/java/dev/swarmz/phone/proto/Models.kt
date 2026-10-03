@@ -98,8 +98,9 @@ data class Span(
 
 typealias Line = List<Span>
 
-@Serializable data class Screen(val cols: Int, val rows: Int, val cursor: List<Int>? = null, val lines: List<Line>)
-@Serializable data class LinesUpdate(val drop: Int, val from: Int, val lines: List<Line>, val cursor: List<Int>? = null)
+/** [wheel]: the program is full-screen and tracks the mouse, so the wheel scrolls it (absent from older holders). */
+@Serializable data class Screen(val cols: Int, val rows: Int, val cursor: List<Int>? = null, val lines: List<Line>, val wheel: Boolean = false)
+@Serializable data class LinesUpdate(val drop: Int, val from: Int, val lines: List<Line>, val cursor: List<Int>? = null, val wheel: Boolean = false)
 /** A dialog option: [description] and [checked] (a multi-select box) come with a question's options only. */
 @Serializable data class Opt(val n: Int, val label: String, val description: String? = null, val checked: Boolean? = null)
 

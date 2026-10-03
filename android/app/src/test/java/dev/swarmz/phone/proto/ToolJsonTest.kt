@@ -110,6 +110,19 @@ class ToolJsonTest {
         assertEquals(1, u.from)
         assertEquals(OutputEvent.Ping, events[2])
         assertEquals(OutputEvent.Exit, events[3])
+        assertFalse("older holders send no wheel", screen.wheel)
+        assertFalse((events[0] as OutputEvent.First).screen.wheel)
+        assertFalse(u.wheel)
+    }
+
+    @Test
+    fun outputCarriesWheel() {
+        val first = ToolJson.outputEvent("""{"cols":80,"cursor":null,"lines":[],"rows":24,"v":1,"wheel":true}""")
+        assertTrue((first as OutputEvent.First).screen.wheel)
+        val update = ToolJson.outputEvent("""{"drop":0,"from":0,"lines":[],"type":"update","v":1,"wheel":true}""")
+        assertTrue((update as OutputEvent.Update).update.wheel)
+        val off = ToolJson.outputEvent("""{"drop":0,"from":0,"lines":[],"type":"update","v":1,"wheel":false}""")
+        assertFalse((off as OutputEvent.Update).update.wheel)
     }
 
     @Test

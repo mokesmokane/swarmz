@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
@@ -24,12 +25,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -37,6 +44,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.swarmz.phone.proto.Line
@@ -45,7 +53,9 @@ import dev.swarmz.phone.proto.TileRow
 import dev.swarmz.phone.ui.theme.MonoBody
 import dev.swarmz.phone.ui.theme.MonoSmall
 import dev.swarmz.phone.ui.theme.Sw
+import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Punctuation that ends a sentence far more often than it ends a URL, so a trailing run of it is not part of one. */
@@ -150,7 +160,10 @@ internal fun ShellLines(
     listState: LazyListState,
     modifier: Modifier = Modifier,
     onNotice: (String) -> Unit = {},
+    wheel: Boolean = false,
+    onWheel: (up: Boolean) -> Unit = {},
 ) {
+    val wheelScroll = rememberWheelScroll(wheel, onWheel)
     // Keep following the newest output while the view is at the bottom.
     LaunchedEffect(lines.size, dropped, exit) {
         if (listState.firstVisibleItemIndex <= 1) listState.scrollToItem(0)
@@ -162,7 +175,7 @@ internal fun ShellLines(
     // Long-press selects text, with handles and the system Copy bar; a tap on a URL still opens its menu.
     SelectionContainer(modifier) {
         LazyColumn(
-            Modifier.fillMaxSize().horizontalScroll(rememberScrollState()),
+            Modifier.fillMaxSize().nestedScroll(wheelScroll).horizontalScroll(rememberScrollState()),
             state = listState,
             reverseLayout = true,
             contentPadding = PaddingValues(12.dp),
@@ -175,6 +188,45 @@ internal fun ShellLines(
         }
     }
     tapped?.let { url -> LinkMenu(url, scope, onNotice) { tapped = null } }
+}
+
+/**
+ * While [wheel] is on, the drag and fling the lines could not take become wheel notches (phone terminal-only
+ * spec, amendment of 2026-10-03): past the oldest line toward older content is `wheel-up`, past the newest
+ * toward newer is `wheel-down`. The list is reversed, so a downward finger (positive y) moves toward older
+ * lines, and any y the list leaves over means it could not scroll further that way. With [wheel] off this
+ * takes nothing and sends nothing.
+ */
+@Composable
+private fun rememberWheelScroll(wheel: Boolean, onWheel: (up: Boolean) -> Unit): NestedScrollConnection {
+    val on by rememberUpdatedState(wheel)
+    val send by rememberUpdatedState(onWheel)
+    val stepPx = with(LocalDensity.current) { WHEEL_NOTCH_DP.dp.toPx() }
+    val scope = rememberCoroutineScope()
+    return remember(stepPx) {
+        val notches = WheelNotches(stepPx)
+        object : NestedScrollConnection {
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (!on || source != NestedScrollSource.UserInput) return Offset.Zero
+                if (consumed.y != 0f) notches.reset()
+                val n = notches.drag(available.y, SystemClock.uptimeMillis())
+                if (n != 0) send(n > 0)
+                return Offset.Zero
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                if (!on) return Velocity.Zero
+                val n = notches.fling(available.y)
+                if (n != 0) scope.launch {
+                    repeat(abs(n)) {
+                        delay(WHEEL_MIN_INTERVAL_MS)
+                        send(n > 0)
+                    }
+                }
+                return Velocity.Zero
+            }
+        }
+    }
 }
 
 /**
@@ -210,7 +262,7 @@ private fun LinkMenu(url: String, scope: CoroutineScope, onNotice: (String) -> U
 fun ShellBody(c: TileController, row: TileRow, modifier: Modifier) {
     val screen by c.screen.collectAsStateWithLifecycle()
     val exit = if (screen.exited || !row.running) exitLine(row.exitCode) else null
-    ShellLines(screen.lines, screen.dropped, exit, c.screenListState, modifier, c::notify)
+    ShellLines(screen.lines, screen.dropped, exit, c.screenListState, modifier, c::notify, screen.wheel && exit == null, c::wheel)
 }
 
 @Composable

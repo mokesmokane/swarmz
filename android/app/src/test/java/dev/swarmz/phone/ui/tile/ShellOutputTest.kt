@@ -15,6 +15,12 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import dev.swarmz.phone.proto.Span
 import dev.swarmz.phone.ui.theme.Sw
@@ -102,6 +108,45 @@ class ShellOutputTest {
         lines = lines.drop(1) + listOf(listOf(Span("line300")))
         dropped += 1
         compose.onNodeWithText("line300").assertIsDisplayed()
+    }
+
+    private fun wheelSends(wheel: Boolean, swipe: androidx.compose.ui.test.TouchInjectionScope.() -> Unit): List<Boolean> {
+        val sent = mutableListOf<Boolean>()
+        compose.setContent {
+            SwarmzTheme {
+                ShellLines(
+                    listOf(listOf(Span("only line"))),
+                    dropped = 0,
+                    exit = null,
+                    listState = rememberLazyListState(),
+                    modifier = Modifier.testTag("lines"),
+                    wheel = wheel,
+                    onWheel = { sent += it },
+                )
+            }
+        }
+        compose.onNodeWithTag("lines").performTouchInput { swipe() }
+        compose.waitForIdle()
+        return sent
+    }
+
+    @Test
+    fun draggingPastTheOldestLineSendsWheelUp() {
+        val sent = wheelSends(true) { swipeDown(startY = top + 10f, endY = bottom - 10f, durationMillis = 1000) }
+        assertTrue(sent.isNotEmpty())
+        assertTrue(sent.all { it })
+    }
+
+    @Test
+    fun draggingPastTheNewestLineSendsWheelDown() {
+        val sent = wheelSends(true) { swipeUp(startY = bottom - 10f, endY = top + 10f, durationMillis = 1000) }
+        assertTrue(sent.isNotEmpty())
+        assertTrue(sent.none { it })
+    }
+
+    @Test
+    fun noWheelSendsNothing() {
+        assertTrue(wheelSends(false) { swipeDown(startY = top + 10f, endY = bottom - 10f, durationMillis = 1000) }.isEmpty())
     }
 
     /** The URLs [links] finds in [text], as text, which is easier to read than index ranges. */
