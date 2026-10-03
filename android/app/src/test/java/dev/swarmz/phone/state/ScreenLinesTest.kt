@@ -5,6 +5,7 @@ import dev.swarmz.phone.proto.OutputEvent
 import dev.swarmz.phone.proto.Screen
 import dev.swarmz.phone.proto.Span
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -30,5 +31,20 @@ class ScreenLinesTest {
     fun outOfRangeUpdatesAreClamped() {
         val s = ScreenState(lines = listOf(l("a"))).apply(OutputEvent.Update(LinesUpdate(drop = 5, from = 5, lines = listOf(l("z")))))
         assertEquals(listOf(l("z")), s.lines)
+    }
+
+    @Test
+    fun wheelFollowsTheFirstFrameAndEachUpdate() {
+        var s = ScreenState().apply(OutputEvent.First(Screen(80, 24, null, listOf(l("a")), wheel = true)))
+        assertTrue(s.wheel)
+        s = s.apply(OutputEvent.Update(LinesUpdate(drop = 0, from = 1, lines = emptyList(), wheel = true)))
+        assertTrue(s.wheel)
+        s = s.apply(OutputEvent.Ping)
+        assertTrue(s.wheel)
+        s = s.apply(OutputEvent.Update(LinesUpdate(drop = 0, from = 1, lines = emptyList())))
+        assertFalse("an update without wheel turns it off", s.wheel)
+        s = s.apply(OutputEvent.Update(LinesUpdate(drop = 0, from = 1, lines = emptyList(), wheel = true)))
+        s = s.apply(OutputEvent.First(Screen(80, 24, null, emptyList())))
+        assertFalse("a new first frame starts over", s.wheel)
     }
 }

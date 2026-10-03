@@ -1135,8 +1135,20 @@ fn text_still_in_box(c: &HolderClient, text: &str) -> Option<bool> {
 }
 
 pub fn key(env: &Env, tile: &str, name: &str) -> Result<Value, CliError> {
-    let bytes = key_bytes(name).ok_or_else(|| CliError::new("usage", format!("unknown key {name:?}: use esc, ctrl-c, tab, shift-tab, up, down or enter")))?;
-    connect_tool(env, tile)?.write(bytes).map_err(failed)?;
+    let c = connect_tool(env, tile)?;
+    // A wheel notch for a full-screen program (phone spec, scrolling): at the screen's middle.
+    let wheel = |up: bool| {
+        let w = c.welcome();
+        crate::input::wheel_bytes(up, w.cols, w.rows)
+    };
+    let bytes: Vec<u8> = match name {
+        "wheel-up" => wheel(true),
+        "wheel-down" => wheel(false),
+        _ => key_bytes(name)
+            .ok_or_else(|| CliError::new("usage", format!("unknown key {name:?}: use esc, ctrl-c, tab, shift-tab, up, down, enter, wheel-up or wheel-down")))?
+            .to_vec(),
+    };
+    c.write(&bytes).map_err(failed)?;
     Ok(json!({"v": 1, "sent": true}))
 }
 
@@ -1237,12 +1249,17 @@ pub fn output(env: &Env, tile: &str, lines: usize, follow: bool, out: &mut dyn W
     };
     let c = connect_tool_with_exit(env, tile, true, on_exit)?;
     let snap = c.screen(lines, Duration::from_secs(3)).ok_or_else(|| failed("the session did not answer"))?;
-    let first = json!({"v": 1, "cols": snap.cols, "rows": snap.rows, "cursor": snap.cursor, "lines": snap.lines});
+    let mut first = json!({"v": 1, "cols": snap.cols, "rows": snap.rows, "cursor": snap.cursor, "lines": snap.lines});
+    // Whether the program is full-screen and scrolls with the wheel (phone spec, scrolling).
+    if let Some(w) = snap.wheel {
+        first["wheel"] = json!(w);
+    }
     if !emit(out, &first) || !follow {
         return Ok(());
     }
     let mut prev = snap.lines;
     let mut prev_cursor = snap.cursor;
+    let mut prev_wheel = snap.wheel;
     let mut last_ping = Instant::now();
     let mut misses = 0;
     loop {
@@ -1261,14 +1278,20 @@ pub fn output(env: &Env, tile: &str, lines: usize, follow: bool, out: &mut dyn W
         };
         misses = 0;
         // Only the cursor moved: an update that keeps every line and adds none.
-        let update = diff_lines(&prev, &s.lines).or_else(|| (s.cursor != prev_cursor).then(|| LinesUpdate { drop: 0, from: prev.len(), lines: vec![] }));
+        // Only the cursor moved, or the program went full-screen or left it: an update that keeps
+        // every line and adds none.
+        let update = diff_lines(&prev, &s.lines).or_else(|| (s.cursor != prev_cursor || s.wheel != prev_wheel).then(|| LinesUpdate { drop: 0, from: prev.len(), lines: vec![] }));
         if let Some(u) = update {
-            let ev = json!({"v": 1, "type": "update", "drop": u.drop, "from": u.from, "lines": u.lines, "cursor": s.cursor});
+            let mut ev = json!({"v": 1, "type": "update", "drop": u.drop, "from": u.from, "lines": u.lines, "cursor": s.cursor});
+            if let Some(w) = s.wheel {
+                ev["wheel"] = json!(w);
+            }
             if !emit(out, &ev) {
                 return Ok(());
             }
             prev = s.lines;
             prev_cursor = s.cursor;
+            prev_wheel = s.wheel;
         }
         if last_ping.elapsed() >= PING_EVERY {
             if !emit(out, &json!({"v": 1, "type": "ping"})) {

@@ -358,6 +358,21 @@ class TileController(
         }
     }
 
+    /**
+     * One wheel notch to the full-screen program in the tile (`up`: toward older content). Fire and forget: a
+     * lost notch is just a scroll that did not happen, so failures say nothing.
+     */
+    fun wheel(up: Boolean) {
+        scope.launch {
+            try {
+                repo.key(key, if (up) Key.WheelUp else Key.WheelDown)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     /** The user typed a title for this tile's card (conversation cards spec §6); empty hands it back. */
     fun setTitle(title: String) {
         scope.launch {

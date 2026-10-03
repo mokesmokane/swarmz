@@ -33,6 +33,8 @@ class CmdTest {
         assertEquals("swarmz 'output' '$t' '--lines' '300' '--follow'", Cmd.output(t, lines = 300, follow = true))
         assertEquals("swarmz 'send' '$t' '--' '--rm it'\\''s'", Cmd.send(t, "--rm it's"))
         assertEquals("swarmz 'key' '$t' 'shift-tab'", Cmd.key(t, Key.ShiftTab))
+        assertEquals("swarmz 'key' '$t' 'wheel-up'", Cmd.key(t, Key.WheelUp))
+        assertEquals("swarmz 'key' '$t' 'wheel-down'", Cmd.key(t, Key.WheelDown))
         assertEquals("swarmz 'answer' '$t' 'yes' '--summary' '--x'", Cmd.answer(t, "yes", "--x"))
         assertEquals("swarmz 'new' '--folder' '/p' '--skip-permissions'", Cmd.newTile("/p", skipPermissions = true))
         assertEquals("swarmz 'new' '--folder' '/p' '--name' 'api'", Cmd.newTile("/p", skipPermissions = false, name = "api"))

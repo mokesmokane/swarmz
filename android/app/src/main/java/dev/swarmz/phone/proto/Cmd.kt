@@ -1,6 +1,6 @@
 package dev.swarmz.phone.proto
 
-enum class Key(val word: String) { Esc("esc"), CtrlC("ctrl-c"), Tab("tab"), ShiftTab("shift-tab"), Up("up"), Down("down"), Enter("enter") }
+enum class Key(val word: String) { Esc("esc"), CtrlC("ctrl-c"), Tab("tab"), ShiftTab("shift-tab"), Up("up"), Down("down"), Enter("enter"), WheelUp("wheel-up"), WheelDown("wheel-down") }
 
 private val TILE = Regex("^[A-Za-z0-9-]{1,64}$")
 private val DEVICE = Regex("^[A-Za-z0-9._-]+( [A-Za-z0-9._-]+)*$")
