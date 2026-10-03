@@ -40,3 +40,21 @@ Screen/Conversation toggle and dictation are removed), §4.1 (the phone no longe
 - New session's Agent choice is None, Claude or Codex, as on the desktop's remote form. None
   starts a plain shell (`swarmz new --agent none`: no agent recorded, nothing typed) and hides
   Skip permissions.
+
+## Amendment: scrolling a full-screen program (2026-10-03)
+
+Claude Code now runs full-screen (the terminal's alternate screen, `"tui": "fullscreen"`): it
+keeps the conversation itself and draws one screen of it, so a tile's terminal has no history
+beyond that screen and the phone showed only it. On the Mac, the wheel scrolls Claude, which
+redraws; the phone now does the same.
+
+- `output` reports `wheel: true` (first frame and every update) while the program in the tile
+  is full-screen and tracks the mouse (the holder's screen model: alternate screen and a mouse
+  mode on); absent from older holders, which the phone treats as false.
+- `swarmz key <tile> wheel-up|wheel-down` sends one wheel notch as the program asked for it (SGR
+  `ESC [ < 64/65 ; col ; row M`, at the middle of the screen).
+- On the phone, while `wheel` is true, dragging past the top of the lines sends `wheel-up` (one
+  per notch of drag, at most a few a second) and dragging back past the bottom sends
+  `wheel-down`; the view shows what the program redraws. With `wheel` false, the lines scroll as
+  before.
+- The tile's screen is shared: scrolling it from the phone scrolls it on every Mac showing it.
