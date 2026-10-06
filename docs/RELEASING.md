@@ -58,6 +58,15 @@ the build if any of the three is missing. It has to happen there: signing the in
 Tauri has signed the `.app` would invalidate the outer signature. **Local builds are unchanged** —
 with no `APPLE_SIGNING_IDENTITY` the script just builds and says so.
 
+**Microphone access for terminal programs.** `bundle.macOS.infoPlist` merges
+`src-tauri/Info.plist` into the app's metadata, including `NSMicrophoneUsageDescription`, and
+`bundle.macOS.entitlements` signs the app with the audio-input entitlement in
+`src-tauri/Entitlements.plist`. Keep both so programs such as Codex voice mode can request
+microphone access. Check a CI-built app with `plutil -p swarmz.app/Contents/Info.plist` and
+`codesign -d --entitlements - swarmz.app`, then try voice input in a local tile on a Mac.
+The user still grants access through the macOS prompt or System Settings → Privacy & Security →
+Microphone; these declarations do not grant it automatically.
+
 **Notarisation uses an App Store Connect API key, not an Apple ID.** Apple ID authentication
 returns 401 on this account. `tauri-bundler` tries `APPLE_ID` + `APPLE_PASSWORD` + `APPLE_TEAM_ID`
 *first* and only falls through to the key when that triple is incomplete — and an empty-but-set
