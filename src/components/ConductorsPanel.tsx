@@ -133,7 +133,7 @@ export function ConductorsPanel() {
             />
           )}
         </div>
-        {error && <div className="border-t border-neutral-800 px-3 py-2 text-red-400">{error}</div>}
+        {error && <div className="border-t border-neutral-800 px-3 py-2 text-exited">{error}</div>}
       </div>
     </div>
   );
@@ -232,14 +232,14 @@ function Node(p: NodeProps) {
           p.onDrop(id);
         }}
         style={{ paddingLeft: 8 + depth * 20 }}
-        className={`group flex items-center gap-2 rounded py-1 pr-2 ${highlighted ? "bg-amber-900/40 ring-1 ring-amber-600" : "hover:bg-neutral-800"} ${
+        className={`group flex items-center gap-2 rounded py-1 pr-2 ${highlighted ? "bg-needs/12 ring-1 ring-amber-600" : "hover:bg-neutral-800"} ${
           p.dragging === id ? "opacity-40" : ""
         } ${isTop ? "" : "cursor-grab"}`}
       >
         {depth > 0 && <span className="text-neutral-700">└</span>}
         {isConductor ? <ConductorBadge /> : <span className="w-4" />}
         <TileLabel id={id} />
-        {isTop && <span className="shrink-0 rounded bg-amber-900/50 px-1.5 text-amber-200">top</span>}
+        {isTop && <span className="shrink-0 rounded bg-needs/12 px-1.5 text-needs">top</span>}
         {!isTop && (
           <select
             aria-label={`Move ${id} under`}
@@ -256,7 +256,7 @@ function Node(p: NodeProps) {
         )}
         {!isTop && !isConductor && isClaude && owner && (
           <button
-            className="shrink-0 rounded px-1.5 py-0.5 text-neutral-400 opacity-0 hover:bg-neutral-700 hover:text-amber-200 group-hover:opacity-100 disabled:opacity-50"
+            className="shrink-0 rounded px-1.5 py-0.5 text-neutral-400 opacity-0 hover:bg-neutral-700 hover:text-needs group-hover:opacity-100 disabled:opacity-50"
             disabled={p.busy}
             onClick={() => p.run(() => setSubConductor(id, owner))}
             title="Make it a conductor where it stands"

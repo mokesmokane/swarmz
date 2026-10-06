@@ -100,7 +100,15 @@ export function schemeOf(tile: string, agentScheme: string | undefined, override
 }
 
 /** The scheme's colours, as the design derives them from its hue. */
-export function schemeColors(hue: number) {
+export function schemeColors(hue: number, light = false) {
+  if (light) return {
+    acc: `oklch(0.42 0.09 ${hue})`,
+    headBg: `oklch(0.96 0.018 ${hue})`,
+    border: `oklch(0.8 0.035 ${hue})`,
+    soft: `oklch(0.88 0.035 ${hue} / 0.5)`,
+    current: `oklch(0.48 0.1 ${hue})`,
+    currentTitle: `oklch(0.35 0.07 ${hue})`,
+  };
   return {
     acc: `oklch(0.8 0.12 ${hue})`,
     headBg: `oklch(0.185 0.028 ${hue})`,
@@ -111,7 +119,7 @@ export function schemeColors(hue: number) {
   };
 }
 
-export const NEEDS_COLOR = "oklch(0.82 0.14 60)";
+export const NEEDS_COLOR = "var(--ui-needs, oklch(0.82 0.14 60))";
 
 export type BoardTab = "overview" | "plan" | "changes" | "questions" | "swarm";
 export const BOARD_TABS: [BoardTab, string][] = [

@@ -115,13 +115,13 @@ export function TerminalPane({ id }: { id: string }) {
           >
             <div className="text-base font-medium text-neutral-100">{summary ?? "Run startup"}</div>
             <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded bg-neutral-950 px-3 py-2 font-mono text-xs text-neutral-400" title={line ?? undefined}>{line}</pre>
-            {note && <div className="text-xs text-amber-300">{note}</div>}
+            {note && <div className="text-xs text-needs">{note}</div>}
             <SessionHistory id={id} />
             <div className="flex items-center gap-2 pt-1">
               <button className="rounded bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-500" onClick={() => void runStartup(id)}>{dropped ? "Reconnect" : "Connect"}</button>
               <button className="rounded px-3 py-1.5 text-neutral-300 hover:bg-neutral-800" onClick={() => skipStartup(id)} title="Open a plain local shell instead">Skip</button>
               <span className="flex-1" />
-              <button className="rounded px-3 py-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-red-300" onClick={() => closeTerminal(id).catch(() => {})} title="Remove this terminal from the workspace">Close</button>
+              <button className="rounded px-3 py-1.5 text-neutral-400 hover:bg-neutral-800 hover:text-exited" onClick={() => closeTerminal(id).catch(() => {})} title="Remove this terminal from the workspace">Close</button>
             </div>
           </div>
         </div>
@@ -179,7 +179,7 @@ export function TerminalPane({ id }: { id: string }) {
             <button
               key={dir}
               type="button"
-              className="flex h-7 w-7 items-center justify-center rounded-full border border-neutral-700 bg-neutral-900/90 text-neutral-300 shadow hover:border-neutral-500 hover:text-white"
+              className="flex h-7 w-7 items-center justify-center rounded-full border border-neutral-700 bg-neutral-900/90 text-neutral-300 shadow hover:border-neutral-500 hover:text-ink"
               title={label}
               aria-label={label}
               onMouseDown={(e) => e.preventDefault()}
@@ -197,7 +197,7 @@ export function TerminalPane({ id }: { id: string }) {
           <span>
             Process exited with code {info.exited}
             {info.error ? `: ${info.error}` : ""}
-            {restartError && <span className="text-red-400"> — {restartError}</span>}
+            {restartError && <span className="text-exited"> — {restartError}</span>}
           </span>
           <button
             className="rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-500"

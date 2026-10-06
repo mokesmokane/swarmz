@@ -84,8 +84,8 @@ function HoverCard({ id }: { id: string }) {
     >
       <div className="truncate text-sm font-medium text-neutral-100">{displayTitle(card, agent, t.name)}</div>
       <div className="truncate text-neutral-500">{`${t.name} · ${where}`}</div>
-      {isTop && <div className="text-amber-300">🎛 Conductor · acts on the tiles under it</div>}
-      {sub && <div className="text-amber-300">{`🎛 Conductor · answers to ${ownerTitle}`}</div>}
+      {isTop && <div className="text-needs">🎛 Conductor · acts on the tiles under it</div>}
+      {sub && <div className="text-needs">{`🎛 Conductor · answers to ${ownerTitle}`}</div>}
       {!isTop && !sub && owner && <div className="text-neutral-500">{`Answers to 🎛 ${ownerTitle}`}</div>}
       <div className="mt-1 whitespace-pre-wrap break-words text-neutral-300">{body ?? "No recap yet"}</div>
       {card?.updatedAt && (
@@ -211,7 +211,7 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
   const showName = hasTitle(card, agent) && info && t.name !== info.folder;
   const tip = `${state === "needs you" ? `Needs you: ${info?.questions ? needsLabel(info.questions) : "a permission is waiting"}` : state[0].toUpperCase() + state.slice(1)}${info?.since ? ` · ${relativeActivity(info.since, now)}` : ""}${shownIn ? "" : " · running, not open in any window"}`;
   const stopClick = (e: { stopPropagation(): void }) => e.stopPropagation();
-  const iconBtn = "flex h-5 w-[22px] items-center justify-center rounded text-[#a4a7ae] hover:bg-[#2e3137] hover:text-ink";
+  const iconBtn = "flex h-5 w-[22px] items-center justify-center rounded text-ink-3 hover:bg-focus hover:text-ink";
 
   // One tile (sidebar redesign spec, TileRow): a dot that turns into a checkbox, the title with the
   // status word and age (actions on hover), and a second line with the Mac chip and the folder.
@@ -261,7 +261,7 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
       style={{ paddingLeft: pad }}
     >
       {Array.from({ length: depth }, (_, i) => (
-        <div key={i} className="absolute inset-y-0 w-px bg-[#2b2d33]" style={{ left: 8 + i * 16 + 7 }} />
+        <div key={i} className="absolute inset-y-0 w-px bg-line" style={{ left: 8 + i * 16 + 7 }} />
       ))}
       <div className={`absolute inset-y-0 left-0 w-0.5 ${needs ? "bg-needs" : selected ? "bg-pick" : ""}`} />
       <div
@@ -272,7 +272,7 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
         }}
       >
         <div
-          className={`${anySelected ? "flex" : "hidden group-hover:flex"} h-3 w-3 items-center justify-center rounded-[3px] border-[1.5px] ${selected ? "border-pick bg-pick" : "border-[#7d8087]"}`}
+          className={`${anySelected ? "flex" : "hidden group-hover:flex"} h-3 w-3 items-center justify-center rounded-[3px] border-[1.5px] ${selected ? "border-pick bg-pick" : "border-faint"}`}
           role="checkbox"
           aria-checked={selected}
           aria-label="Pick for a layout"
@@ -346,14 +346,14 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
                   <CaretIcon />
                 </button>
               )}
-              {mark && mark !== "●" && <span className="shrink-0 rounded bg-needs px-1 text-[10px] font-bold text-[#1a1405]" data-testid={`row-mark-${id}`}>{mark}</span>}
+              {mark && mark !== "●" && <span className="shrink-0 rounded bg-needs px-1 text-[10px] font-bold text-[var(--ui-badge-ink)]" data-testid={`row-mark-${id}`}>{mark}</span>}
               {isConductor && (
                 <span className="flex-none text-needs" aria-label="Conductor" title="Conductor">
                   <TreeIcon size={13} strokeWidth={1.4} />
                 </span>
               )}
               <div
-                className={`min-w-0 flex-1 truncate text-[13px] leading-[18px] ${needs ? "font-semibold" : "font-medium"} ${shownIn ? "text-ink" : "text-[#7d8087]"}`}
+                className={`min-w-0 flex-1 truncate text-[13px] leading-[18px] ${needs ? "font-semibold" : "font-medium"} ${shownIn ? "text-ink" : "text-faint"}`}
                 data-testid={`title-${id}`}
                 onDoubleClick={(e) => {
                   e.stopPropagation();
@@ -410,7 +410,7 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
                   <MoreIcon />
                 </button>
                 <button
-                  className="flex h-5 w-[22px] items-center justify-center rounded text-[#a4a7ae] hover:bg-exited/20 hover:text-exited"
+                  className="flex h-5 w-[22px] items-center justify-center rounded text-ink-3 hover:bg-exited/20 hover:text-exited"
                   onClick={(e) => {
                     e.stopPropagation();
                     closeTerminal(id).catch(() => {});
@@ -435,7 +435,7 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
               {tree?.summary && <span className="flex-none">{tree.summary}</span>}
               {tree?.summaryNeeds && <span className="flex-none font-semibold text-needs">{tree.summaryNeeds}</span>}
               {showName && !tree?.summary && (
-                <span className="max-w-[45%] flex-none truncate font-mono text-[10px] text-[#7d8087]" title="Tile name">{t.name}</span>
+                <span className="max-w-[45%] flex-none truncate font-mono text-[10px] text-faint" title="Tile name">{t.name}</span>
               )}
               {skip && (
                 <span
@@ -491,7 +491,7 @@ export function Row({ id, info, now, visible, depth = 0, tree }: { id: string; i
           <div className="my-1 border-t border-neutral-800" />
           <button
             role="menuitem"
-            className="block w-full rounded px-2 py-1 text-left text-red-300 hover:bg-red-950/60"
+            className="block w-full rounded px-2 py-1 text-left text-exited hover:bg-exited/12"
             onClick={() => {
               setMenuOpen(false);
               closeTerminal(id).catch(() => {});
@@ -611,7 +611,7 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
     }
   };
 
-  const headerBtn = "flex h-6 w-[26px] items-center justify-center rounded-[5px] text-[#a4a7ae] hover:bg-[#24262b] hover:text-ink disabled:opacity-50";
+  const headerBtn = "flex h-6 w-[26px] items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink disabled:opacity-50";
   const renderRow = (id: string, extra?: { depth?: number; tree?: RowTree }) => (
     <Row key={id} id={id} info={infos.get(id)} now={now} visible={visible} depth={extra?.depth} tree={extra?.tree} />
   );
@@ -672,7 +672,7 @@ export function Sidebar({ width = 256, onShowMachines }: { width?: number; onSho
               <>
                 <div className="flex items-center gap-1.5 px-3 pb-1.5 pt-2 text-[10.5px] font-semibold tracking-[0.05em] text-needs" data-testid="triage-needs">
                   <span>NEEDS YOU</span>
-                  <span className="rounded-[7px] bg-needs px-[5px] text-[10px] font-bold leading-[14px] text-[#1a1405]">{tri.needs.length + (claimOpen ? 1 : 0)}</span>
+                  <span className="rounded-[7px] bg-needs px-[5px] text-[10px] font-bold leading-[14px] text-[var(--ui-badge-ink)]">{tri.needs.length + (claimOpen ? 1 : 0)}</span>
                 </div>
                 <div className="flex flex-col gap-1.5 px-2">
                   <ClaimCard />

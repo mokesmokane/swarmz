@@ -68,7 +68,7 @@ export function RemoteDirPicker({
         <button className="rounded border border-neutral-700 px-2 hover:bg-neutral-800" onClick={() => void load(null)} title="Home">~</button>
       </div>
       {error && (
-        <div className="mb-2 flex items-center gap-2 text-red-400">
+        <div className="mb-2 flex items-center gap-2 text-exited">
           <span className="flex-1">{error}</span>
           <button className="rounded border border-neutral-700 px-2 text-neutral-300 hover:bg-neutral-800" onClick={() => void load(listing?.path ?? initialPath)}>Retry</button>
         </div>

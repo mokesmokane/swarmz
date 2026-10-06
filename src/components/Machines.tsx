@@ -77,7 +77,7 @@ function sessionsText(m: MachineStatus | undefined): ReactNode {
     <>
       <span>{`${live} Claude`}</span>
       {codexLive > 0 && <span>{` · ${codexLive} Codex`}</span>}
-      {needs > 0 && <span className="ml-1 rounded bg-red-900/60 px-1 text-red-200">{`${needs} need${needs === 1 ? "s" : ""} you`}</span>}
+      {needs > 0 && <span className="ml-1 rounded bg-exited/12 px-1 text-exited">{`${needs} need${needs === 1 ? "s" : ""} you`}</span>}
     </>
   );
 }
@@ -227,7 +227,7 @@ function MachineCard({ name }: { name: string }) {
             row("Codex", `${s.codex.working} working · ${s.codex.needsYou} need you · ${s.codex.idle} idle · ${s.codex.stopped} stopped`)}
           {row("Up", uptimeText(s.uptimeSeconds))}
           {row("swarmz", `${s.app ? `app ${s.app} · ` : ""}tool ${s.tool}`)}
-          {m?.error && <div className="text-amber-400">{`Last ask failed: ${st.word}`}</div>}
+          {m?.error && <div className="text-needs">{`Last ask failed: ${st.word}`}</div>}
         </div>
       )}
       <ThemeRow name={name} />

@@ -42,7 +42,7 @@ describe("FileViewer", () => {
     const body = screen.getByTestId("file-body");
     const rows = body.querySelectorAll("tr");
     expect(rows.length).toBe(2);
-    expect(rows[1].className).toContain("bg-amber");
+    expect(rows[1].className).toContain("bg-needs");
     expect(rows[1].textContent).toContain("const b = 2;");
     // Coloured: a keyword span from highlight.js.
     expect(body.querySelector(".hljs-keyword")).toBeTruthy();

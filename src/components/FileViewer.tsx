@@ -192,7 +192,7 @@ export function FileViewer() {
             </button>
           )}
           {file?.kind === "text" && (!isMarkdown || raw) && (
-            <button className={`rounded border px-1.5 py-0.5 hover:bg-neutral-800 ${wrap ? "border-blue-600 text-blue-300" : "border-neutral-700 text-neutral-300"}`} onClick={() => setWrap((w) => !w)}>
+            <button className={`rounded border px-1.5 py-0.5 hover:bg-neutral-800 ${wrap ? "border-blue-600 text-link" : "border-neutral-700 text-neutral-300"}`} onClick={() => setWrap((w) => !w)}>
               Wrap
             </button>
           )}
@@ -239,7 +239,7 @@ export function FileViewer() {
           <button className="ml-1 text-neutral-500 hover:text-neutral-200" onClick={closeFile} title="Close (Esc)" aria-label="Close">×</button>
         </div>
         <div ref={bodyRef} className="min-h-0 flex-1 overflow-auto" data-testid="file-body">
-          {error && <div className="p-3 text-red-400">{error}</div>}
+          {error && <div className="p-3 text-exited">{error}</div>}
           {!file && !error && <div className="p-3 text-neutral-500">Reading…</div>}
           {file?.kind === "dir" && (
             <ul className="p-2 font-mono" data-testid="dir-listing">
@@ -276,7 +276,7 @@ export function FileViewer() {
                   const n = i + 1;
                   const marked = view.line === n;
                   return (
-                    <tr key={n} data-line={n} className={marked ? "bg-amber-900/40" : undefined}>
+                    <tr key={n} data-line={n} className={marked ? "bg-needs/12" : undefined}>
                       <td className="select-none border-r border-neutral-800 px-2 text-right align-top text-neutral-600">{n}</td>
                       <td className={`px-2 align-top text-neutral-200 ${wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}`} dangerouslySetInnerHTML={{ __html: html || " " }} />
                     </tr>

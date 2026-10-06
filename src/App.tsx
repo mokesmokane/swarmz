@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useUiTheme } from "./lib/uiTheme";
 import { clampSidebarWidth, loadSidebarWidth, saveSidebarWidth, SIDEBAR_DEFAULT } from "./lib/sidebarWidth";
 import { Sidebar } from "./components/Sidebar";
 import { Workbench } from "./components/Workbench";
@@ -18,6 +19,7 @@ import "./lib/xtermRegistry";
 import "./lib/windows";
 
 export default function App() {
+  useUiTheme();
   useEffect(() => {
     void useStore
       .getState()

@@ -26,7 +26,7 @@ export function ActivityBar({ view, folded, onPick }: { view: SideView; folded: 
     return (
       <button
         key={label}
-        className={`relative flex h-10 w-11 items-center justify-center ${active ? "text-ink" : "text-[#7d8087] hover:text-ink-2"}`}
+        className={`relative flex h-10 w-11 items-center justify-center ${active ? "text-ink" : "text-faint hover:text-ink-2"}`}
         onClick={onClick}
         title={label}
         aria-label={label}
@@ -48,7 +48,7 @@ export function ActivityBar({ view, folded, onPick }: { view: SideView; folded: 
         "Terminals",
         <TerminalIcon />,
         needs > 0 && (view !== "terminals" || folded) ? (
-          <span className="absolute right-1 top-1.5 min-w-4 rounded-full bg-needs px-1 text-[10px] font-bold leading-4 text-[#1a1405]" data-testid="badge-needs">
+          <span className="absolute right-1 top-1.5 min-w-4 rounded-full bg-needs px-1 text-[10px] font-bold leading-4 text-[var(--ui-badge-ink)]" data-testid="badge-needs">
             {needs}
           </span>
         ) : trouble ? (

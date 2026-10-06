@@ -3,45 +3,56 @@
 @import "highlight.js/styles/github-dark-dimmed.css";
 
 /* The sidebar redesign's palette (direction 2a): state colours and the panel greys. */
-@theme {
-  --color-needs: oklch(0.80 0.15 75);
-  --color-working: oklch(0.76 0.15 150);
-  --color-exited: oklch(0.66 0.19 25);
-  --color-pick: oklch(0.68 0.14 250);
-  --color-link: oklch(0.72 0.12 250);
-  --color-panel: #121316;
-  --color-rail: #0c0d0f;
-  --color-line: #1f2125;
-  --color-well: #0d0e10;
-  --color-hover: #1c1e22;
-  --color-focus: #25272c;
-  --color-chip: #26282d;
-  --color-ink: #e8e9ec;
-  --color-ink-2: #c4c6cc;
-  --color-ink-3: #9a9ca3;
-  --color-muted: #8b8e95;
-  --color-faint: #6f727a;
+@theme inline {
+  --color-needs: var(--ui-needs, oklch(0.80 0.15 75));
+  --color-working: var(--ui-working, oklch(0.76 0.15 150));
+  --color-exited: var(--ui-exited, oklch(0.66 0.19 25));
+  --color-pick: var(--ui-pick, oklch(0.68 0.14 250));
+  --color-link: var(--ui-link, oklch(0.72 0.12 250));
+  --color-panel: var(--ui-panel, #121316);
+  --color-rail: var(--ui-rail, #0c0d0f);
+  --color-line: var(--ui-line, #1f2125);
+  --color-well: var(--ui-well, #0d0e10);
+  --color-hover: var(--ui-hover, #1c1e22);
+  --color-focus: var(--ui-focus, #25272c);
+  --color-chip: var(--ui-chip, #26282d);
+  --color-ink: var(--ui-ink, #e8e9ec);
+  --color-ink-2: var(--ui-ink-2, #c4c6cc);
+  --color-ink-3: var(--ui-ink-3, #9a9ca3);
+  --color-muted: var(--ui-muted, #8b8e95);
+  --color-faint: var(--ui-faint, #6f727a);
+  --color-neutral-50: var(--ui-neutral-50, #fafafa);
+  --color-neutral-100: var(--ui-neutral-100, #f5f5f5);
+  --color-neutral-200: var(--ui-neutral-200, #e5e5e5);
+  --color-neutral-300: var(--ui-neutral-300, #d4d4d4);
+  --color-neutral-400: var(--ui-neutral-400, #a3a3a3);
+  --color-neutral-500: var(--ui-neutral-500, #737373);
+  --color-neutral-600: var(--ui-neutral-600, #525252);
+  --color-neutral-700: var(--ui-neutral-700, #404040);
+  --color-neutral-800: var(--ui-neutral-800, #262626);
+  --color-neutral-900: var(--ui-neutral-900, #171717);
+  --color-neutral-950: var(--ui-neutral-950, #0a0a0a);
 }
 
 /* Rendered markdown in the file viewer (file viewing spec §3). */
-.md-body { color: #d4d4d8; line-height: 1.55; }
-.md-body h1, .md-body h2, .md-body h3, .md-body h4 { color: #f4f4f5; font-weight: 600; margin: 1.2em 0 0.5em; }
+.md-body { color: var(--ui-ink, #d4d4d8); line-height: 1.55; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 { color: var(--ui-ink, #f4f4f5); font-weight: 600; margin: 1.2em 0 0.5em; }
 .md-body h1 { font-size: 1.5em; } .md-body h2 { font-size: 1.25em; } .md-body h3 { font-size: 1.1em; }
 .md-body p, .md-body ul, .md-body ol, .md-body pre, .md-body blockquote, .md-body table { margin: 0.6em 0; }
 .md-body ul { list-style: disc; padding-left: 1.4em; } .md-body ol { list-style: decimal; padding-left: 1.4em; }
-.md-body code { font-family: Menlo, Monaco, monospace; font-size: 0.9em; background: #27272a; border-radius: 3px; padding: 0 3px; }
-.md-body pre { background: #18181b; border: 1px solid #3f3f46; border-radius: 6px; padding: 8px 10px; overflow: auto; }
+.md-body code { font-family: Menlo, Monaco, monospace; font-size: 0.9em; background: var(--ui-chip, #27272a); border-radius: 3px; padding: 0 3px; }
+.md-body pre { background: var(--ui-well, #18181b); border: 1px solid var(--ui-line, #3f3f46); border-radius: 6px; padding: 8px 10px; overflow: auto; }
 .md-body pre code { background: none; padding: 0; }
-.md-body a { color: #93c5fd; text-decoration: underline; }
-.md-body blockquote { border-left: 3px solid #3f3f46; color: #a1a1aa; padding-left: 10px; }
-.md-body table { border-collapse: collapse; } .md-body th, .md-body td { border: 1px solid #3f3f46; padding: 2px 8px; }
-.md-body hr { border-color: #3f3f46; margin: 1em 0; }
+.md-body a { color: var(--ui-link, #93c5fd); text-decoration: underline; }
+.md-body blockquote { border-left: 3px solid var(--ui-line, #3f3f46); color: var(--ui-muted, #a1a1aa); padding-left: 10px; }
+.md-body table { border-collapse: collapse; } .md-body th, .md-body td { border: 1px solid var(--ui-line, #3f3f46); padding: 2px 8px; }
+.md-body hr { border-color: var(--ui-line, #3f3f46); margin: 1em 0; }
 
 html, body, #root {
   height: 100%;
   margin: 0;
-  background: #0f1115;
-  color: #d4d4d8;
+  background: var(--ui-background, #0f1115);
+  color: var(--ui-ink, #d4d4d8);
   font-family: ui-sans-serif, system-ui, sans-serif;
   overflow: hidden;
 }
@@ -50,3 +61,20 @@ html, body, #root {
 
 /* No scrollbars in panes: the wheel and trackpad scroll the terminal (xterm.js 6 draws its own). */
 .xterm .xterm-scrollable-element > .scrollbar { display: none !important; }
+
+/* Syntax colours in the file viewer must also contrast against light paper. */
+:root[data-appearance="light"] .hljs { color: var(--ui-ink); background: var(--ui-well); }
+:root[data-appearance="light"] :is(.hljs-comment, .hljs-quote) { color: #57606a; }
+:root[data-appearance="light"] :is(.hljs-keyword, .hljs-selector-tag, .hljs-deletion) { color: #b4232e; }
+:root[data-appearance="light"] :is(.hljs-string, .hljs-regexp, .hljs-addition) { color: #116329; }
+:root[data-appearance="light"] :is(.hljs-number, .hljs-literal, .hljs-attr, .hljs-built_in) { color: #0969da; }
+:root[data-appearance="light"] :is(.hljs-title, .hljs-type, .hljs-symbol) { color: #8250df; }
+
+:root[data-appearance="light"] :is(.hljs-doctag, .hljs-template-tag, .hljs-template-variable, .hljs-variable.language_) { color: #b4232e; }
+:root[data-appearance="light"] :is(.hljs-attribute, .hljs-meta, .hljs-operator, .hljs-variable, .hljs-selector-attr, .hljs-selector-class, .hljs-selector-id, .hljs-section) { color: #0969da; }
+:root[data-appearance="light"] :is(.hljs-code, .hljs-formula) { color: #57606a; }
+:root[data-appearance="light"] :is(.hljs-name, .hljs-selector-pseudo) { color: #116329; }
+:root[data-appearance="light"] :is(.hljs-subst, .hljs-emphasis, .hljs-strong) { color: var(--ui-ink); }
+:root[data-appearance="light"] .hljs-bullet { color: #9a6700; }
+:root[data-appearance="light"] .hljs-addition { background-color: #dafbe1; }
+:root[data-appearance="light"] .hljs-deletion { background-color: #ffebe9; }

@@ -69,7 +69,7 @@ export function NewRemoteTerminal({ onClose }: { onClose: () => void }) {
       <div className="border-b border-neutral-800 p-2 text-xs text-neutral-300">
         {rearmed ? (
           <>
-            <div className="text-amber-300">{connectNote ?? "Connection not detected."}</div>
+            <div className="text-needs">{connectNote ?? "Connection not detected."}</div>
             <div className="mt-2 flex justify-end gap-2">
               <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={onClose}>Close</button>
               <button className="rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-500" onClick={() => void runStartup(createdId)}>Retry</button>
@@ -112,8 +112,8 @@ export function NewRemoteTerminal({ onClose }: { onClose: () => void }) {
   if (!tailscale || !tailscale.running) {
     return (
       <div className="border-b border-neutral-800 p-2 text-xs text-neutral-300">
-        <div className="text-amber-300">{tailscale?.message ?? tailscaleError ?? "Checking Tailscale…"}</div>
-        {error && <div className="mt-1 text-red-400">{error}</div>}
+        <div className="text-needs">{tailscale?.message ?? tailscaleError ?? "Checking Tailscale…"}</div>
+        {error && <div className="mt-1 text-exited">{error}</div>}
         <div className="mt-2 flex justify-end gap-2">
           <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={onClose}>Cancel</button>
           <button
@@ -183,11 +183,11 @@ export function NewRemoteTerminal({ onClose }: { onClose: () => void }) {
           </div>
           <label className="mt-1 flex items-center gap-2 text-neutral-300">
             <input type="checkbox" checked={skip} disabled={agent === "none"} onChange={(e) => setSkip(e.target.checked)} />
-            Skip permissions <span className="text-red-400">(dangerous)</span>
+            Skip permissions <span className="text-exited">(dangerous)</span>
           </label>
         </>
       )}
-      {error && <div className="mt-1 text-red-400">{error}</div>}
+      {error && <div className="mt-1 text-exited">{error}</div>}
       <div className="mt-2 flex justify-end gap-2">
         <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={onClose} disabled={busy}>Cancel</button>
         <button className="rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-500 disabled:opacity-50" onClick={() => void connect()} disabled={busy || !selected}>Connect</button>

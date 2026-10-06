@@ -90,3 +90,9 @@ describe("Refresh", () => {
     expect(screen.getByLabelText("Open the board")).toBeTruthy();
   });
 });
+
+it("uses a light board surface when this Mac uses Daylight, even for a dark remote tile", () => {
+  useStore.setState({ selfMachine: "local", machines: { local: { lastUsed: "", theme: "daylight" }, "mini-3": { lastUsed: "", theme: "neon" } } });
+  render(<BoardHeader id="t1" />);
+  expect(screen.getByTestId("board-t1").style.background).toContain("0.96");
+});

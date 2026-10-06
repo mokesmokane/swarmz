@@ -69,8 +69,8 @@ export function ConductorMenu({ id, onClose, onOpenTree }: { id: string; onClose
 
   return (
     <div className="text-xs" data-testid={`conductor-menu-${id}`}>
-      {isTop && <div className="px-2 pb-1 text-amber-300">🎛 The top conductor</div>}
-      {isSub && <div className="px-2 pb-1 text-amber-300">{`🎛 A conductor with ${tileCount} tile${tileCount === 1 ? "" : "s"}`}</div>}
+      {isTop && <div className="px-2 pb-1 text-needs">🎛 The top conductor</div>}
+      {isSub && <div className="px-2 pb-1 text-needs">{`🎛 A conductor with ${tileCount} tile${tileCount === 1 ? "" : "s"}`}</div>}
       {top && !isTop && (
         <label className="block px-2 pb-1">
           <span className="text-neutral-400">Answers to</span>
@@ -109,7 +109,7 @@ export function ConductorMenu({ id, onClose, onOpenTree }: { id: string; onClose
           Arrange conductors…
         </button>
       )}
-      {error && <div className="px-2 pt-1 text-red-400">{error}</div>}
+      {error && <div className="px-2 pt-1 text-exited">{error}</div>}
     </div>
   );
 }

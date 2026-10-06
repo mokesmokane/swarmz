@@ -62,7 +62,7 @@ export function MachineSettings({ name, onClose }: { name: string; onClose: () =
       </div>
       <label className={label}>Terminal theme (applies at once)</label>
       <ThemePicker name={name} />
-      {error && <div className="mt-1 text-red-400">{error}</div>}
+      {error && <div className="mt-1 text-exited">{error}</div>}
       <div className="mt-2 flex justify-end gap-2">
         <button className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800" onClick={onClose}>Cancel</button>
         <button className="rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-500" onClick={() => void save()}>Save</button>

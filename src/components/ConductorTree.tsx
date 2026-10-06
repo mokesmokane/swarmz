@@ -49,7 +49,7 @@ export function ConductorTree({ order, infos, renderRow }: { order: string[]; in
   return (
     <div data-testid="conductor-tree">
       {error && (
-        <div className="mx-1 mb-1 flex items-start gap-2 rounded bg-red-950/40 px-2 py-1 text-xs text-red-300">
+        <div className="mx-1 mb-1 flex items-start gap-2 rounded bg-exited/12 px-2 py-1 text-xs text-exited">
           <span className="flex-1">{error}</span>
           <button className="text-neutral-500 hover:text-neutral-200" onClick={() => setError(null)} aria-label="Dismiss">×</button>
         </div>
@@ -134,7 +134,7 @@ function Node(p: NodeProps) {
           ))}
           {node.children.length === 0 && id !== tree.id && (
             <div
-              className="my-0.5 mr-2 rounded border border-dashed border-[#2b2d33] px-2 py-1 text-[11px] text-faint"
+              className="my-0.5 mr-2 rounded border border-dashed border-line px-2 py-1 text-[11px] text-faint"
               style={{ marginLeft: 8 + (depth + 1) * 16 }}
               data-testid={`tree-empty-${id}`}
             >

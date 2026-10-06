@@ -175,10 +175,10 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
           </button>
         )}
       </div>
-      {note && <div className="mt-1 text-emerald-300">{note}</div>}
-      {error && <div className="mt-1 text-red-400">{error}</div>}
+      {note && <div className="mt-1 text-working">{note}</div>}
+      {error && <div className="mt-1 text-exited">{error}</div>}
       {pushed.map((p) => (
-        <div key={p.machine} className={p.ok ? "text-neutral-500" : "text-amber-300"}>
+        <div key={p.machine} className={p.ok ? "text-neutral-500" : "text-needs"}>
           {p.ok ? `${p.machine}: updated` : `${p.machine}: ${p.error ?? "not updated"}`}
         </div>
       ))}

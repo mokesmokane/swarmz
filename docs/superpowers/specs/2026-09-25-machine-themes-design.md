@@ -25,3 +25,12 @@ Daylight sky, Neon pink; a Mac on Plain takes the accent its place would give) f
 badges in the sidebar, the Machines view and the remote picker, so every Mac is colourful and its
 chip matches its panes. A picked colour still wins; the colour picker's first swatch is
 "Automatic".
+
+## Amendment: the whole window follows its Mac (2026-10-06)
+
+The selected theme also controls the surrounding UI: sidebar, activity bar, tabs, menus, dialogs,
+file viewer and board surfaces. Each window follows the theme of the Mac running swarmz, including
+its automatic selection, and updates immediately when that choice changes. Remote terminal panes
+retain their own Mac's palette. Light themes use light surfaces and dark ink throughout the UI;
+board scheme hues remain distinct with colours suitable for that appearance. This follows the
+machine theme choice, not the operating system's light/dark preference.

@@ -5,6 +5,7 @@ import { ipc } from "../lib/ipc";
 import { applyMirror, installMirror, labelFromLocation, manageViewers } from "../lib/windowClient";
 import { resolveDrop } from "../lib/windowDrop";
 import { useWorkbenchShortcuts } from "../lib/useWorkbenchShortcuts";
+import { useUiTheme } from "../lib/uiTheme";
 import { Workbench } from "./Workbench";
 import { FileViewer } from "./FileViewer";
 import { ClosedNoticeBar } from "./ClosedNoticeBar";
@@ -14,6 +15,7 @@ import { ClosedNoticeBar } from "./ClosedNoticeBar";
  * drawn from the main window's mirror of it, with every change sent back to the main window.
  */
 export function WindowApp({ label = labelFromLocation(window.location.search) }: { label?: string | null } = {}) {
+  useUiTheme();
   const [ready, setReady] = useState(false);
   useWorkbenchShortcuts();
 

@@ -42,7 +42,7 @@ export function SessionHistory({ id, onPick }: { id: string; onPick?: () => void
           }}
         >
           <span className="min-w-0 flex-1 truncate">{basename(r.cwd)}</span>
-          {r.skipPermissions && <span className="rounded bg-red-900/60 px-1 text-[10px] text-red-300">skip-perms</span>}
+          {r.skipPermissions && <span className="rounded bg-exited/12 px-1 text-[10px] text-exited">skip-perms</span>}
           <span className="shrink-0 text-xs text-neutral-500">{relative(r.lastActiveAt)}</span>
         </button>
       ))}

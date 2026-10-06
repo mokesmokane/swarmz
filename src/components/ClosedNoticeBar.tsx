@@ -26,7 +26,7 @@ export function ClosedNoticeBar() {
       <span>
         {what} still running. Remove {n === 1 ? "it" : "them"} from the sidebar to stop {n === 1 ? "it" : "them"}.
       </span>
-      <button className="rounded px-2 py-0.5 font-medium text-blue-300 hover:bg-neutral-800" onClick={() => void undo()}>
+      <button className="rounded px-2 py-0.5 font-medium text-link hover:bg-neutral-800" onClick={() => void undo()}>
         Undo
       </button>
       <button className="rounded px-1 text-neutral-500 hover:text-neutral-200" onClick={dismiss} aria-label="Dismiss" title="Dismiss">

@@ -89,7 +89,7 @@ export function Notices({ localError, onClearLocalError }: { localError: string 
             summary
           )}
         </span>
-        {count > 0 && <span className="flex-none rounded-lg bg-[#2a2c31] px-1.5 py-px text-[10px] font-semibold text-ink" data-testid="notices-count">{count}</span>}
+        {count > 0 && <span className="flex-none rounded-lg bg-chip px-1.5 py-px text-[10px] font-semibold text-ink" data-testid="notices-count">{count}</span>}
       </button>
       {open && (
         <div className="mx-2 mt-1 flex flex-none flex-col overflow-hidden rounded-md border border-chip" data-testid="notices-list">
@@ -128,7 +128,7 @@ export function ViewPicker({ value, onChange }: { value: GroupBy; onChange: (v: 
           key={o.value}
           role="radio"
           aria-checked={value === o.value}
-          className={`flex-1 rounded py-1 text-center text-[11px] ${value === o.value ? "bg-[#2e3137] font-semibold text-ink" : "text-muted hover:text-ink-2"}`}
+          className={`flex-1 rounded py-1 text-center text-[11px] ${value === o.value ? "bg-focus font-semibold text-ink" : "text-muted hover:text-ink-2"}`}
           onClick={() => onChange(o.value)}
         >
           {o.label}
@@ -159,10 +159,10 @@ export function GroupHeader({ label, count, needs, chip, onSelectAll, testId }: 
       {chip}
       <span className="truncate uppercase">{label}</span>
       <span className="font-medium text-faint">{count}</span>
-      {needs > 0 && <span className="rounded-[7px] bg-needs px-[5px] text-[10px] font-bold leading-[14px] text-[#1a1405]">{needs}</span>}
+      {needs > 0 && <span className="rounded-[7px] bg-needs px-[5px] text-[10px] font-bold leading-[14px] text-[var(--ui-badge-ink)]">{needs}</span>}
       <span className="flex-1" />
       <button
-        className="flex h-[18px] w-[18px] items-center justify-center rounded text-faint hover:bg-[#24262b] hover:text-ink"
+        className="flex h-[18px] w-[18px] items-center justify-center rounded text-faint hover:bg-hover hover:text-ink"
         onClick={onSelectAll}
         title={`Select these ${count} to show them together in a layout`}
         aria-label={`Select ${label}`}
@@ -214,7 +214,7 @@ export function ClaimCard() {
       .finally(() => setBusy(false));
   };
   return (
-    <div className="flex flex-col gap-1.5 rounded-[7px] border border-dashed border-needs/45 bg-[#1a1b1f] px-2.5 py-2" data-testid="claim-bar">
+    <div className="flex flex-col gap-1.5 rounded-[7px] border border-dashed border-needs/45 bg-panel px-2.5 py-2" data-testid="claim-bar">
       <div className="flex items-start gap-[7px] text-xs leading-[1.4] text-ink">
         <span className="mt-0.5 flex-none text-needs">
           <TreeIcon size={13} strokeWidth={1.4} />
@@ -225,10 +225,10 @@ export function ClaimCard() {
       </div>
       {error && <div className="text-[11px] text-exited">{error}</div>}
       <div className="flex justify-end gap-1.5">
-        <button className="rounded bg-chip px-2.5 py-[3px] text-[11px] text-ink-2 hover:bg-[#2e3137] disabled:opacity-50" disabled={busy} onClick={() => answer(false)}>
+        <button className="rounded bg-chip px-2.5 py-[3px] text-[11px] text-ink-2 hover:bg-focus disabled:opacity-50" disabled={busy} onClick={() => answer(false)}>
           Deny
         </button>
-        <button className="rounded bg-needs px-2.5 py-[3px] text-[11px] font-semibold text-[#1a1405] disabled:opacity-50" disabled={busy} onClick={() => answer(true)}>
+        <button className="rounded bg-needs px-2.5 py-[3px] text-[11px] font-semibold text-[var(--ui-badge-ink)] disabled:opacity-50" disabled={busy} onClick={() => answer(true)}>
           Approve
         </button>
       </div>
@@ -280,25 +280,25 @@ export function NeedsCard({ id, info, now }: { id: string; info: RowInfo | undef
           </span>
         )}
         <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{displayTitle(card, agent, t.name)}</span>
-        <span className="flex-none font-mono text-[10.5px] text-[#7d8087]">{relativeActivity(info?.since ?? null, now)}</span>
+        <span className="flex-none font-mono text-[10.5px] text-faint">{relativeActivity(info?.since ?? null, now)}</span>
       </div>
-      <div className="line-clamp-2 text-[11.5px] leading-[1.45] text-[#b9bbc1]">{body}</div>
+      <div className="line-clamp-2 text-[11.5px] leading-[1.45] text-ink-2">{body}</div>
       {error && <div className="text-[11px] text-exited">{error}</div>}
       <div className="flex items-center gap-1.5 text-[11px] text-muted">
         <MacChip glyph={info?.machine.glyph ?? "?"} color={info?.machine.color ?? null} offline={info?.machine.online === false} />
         <span className="min-w-0 flex-1 truncate">{info?.folder ?? ""}</span>
         {permission ? (
           <span className="flex flex-none gap-1" onClick={stop}>
-            <button className="rounded bg-chip px-2 py-0.5 text-ink-2 hover:bg-[#2e3137] disabled:opacity-50" disabled={busy} onClick={() => answer("no")}>
+            <button className="rounded bg-chip px-2 py-0.5 text-ink-2 hover:bg-focus disabled:opacity-50" disabled={busy} onClick={() => answer("no")}>
               Deny
             </button>
-            <button className="rounded bg-ink px-2 py-0.5 font-semibold text-[#111] disabled:opacity-50" disabled={busy} onClick={() => answer("yes")}>
+            <button className="rounded bg-ink px-2 py-0.5 font-semibold text-well disabled:opacity-50" disabled={busy} onClick={() => answer("yes")}>
               Allow
             </button>
           </span>
         ) : (
           <button
-            className="flex-none rounded bg-ink px-2 py-0.5 font-semibold text-[#111]"
+            className="flex-none rounded bg-ink px-2 py-0.5 font-semibold text-well"
             onClick={(e) => {
               stop(e);
               focusTerminal(id);
@@ -361,15 +361,15 @@ function MachineLine({ name, onOpen }: { name: string; onOpen: () => void }) {
   const needs = (m?.stats?.claude.needsYou ?? 0) + (m?.stats?.codex?.needsYou ?? 0);
   const ping = m?.ping?.ms != null ? `${m.ping.direct ? "" : "↯ "}${m.ping.ms} ms` : "";
   return (
-    <button className="flex w-full items-center gap-[7px] px-3 py-1 text-left text-[11px] text-[#b9bbc1] hover:bg-hover" onClick={onOpen} data-testid={`machine-line-${name}`} title={name}>
+    <button className="flex w-full items-center gap-[7px] px-3 py-1 text-left text-[11px] text-ink-2 hover:bg-hover" onClick={onOpen} data-testid={`machine-line-${name}`} title={name}>
       <span className={`h-1.5 w-1.5 flex-none rounded-full ${macDot(m)}`} />
       <MacChip glyph={glyph} color={color} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
       <span className="h-1 w-9 flex-none overflow-hidden rounded-sm bg-chip" title={m?.stats ? `CPU ${m.stats.cpu.percent}%` : undefined}>
         <span className="block h-full bg-muted" style={{ width: `${Math.max(0, Math.min(100, m?.stats?.cpu.percent ?? 0))}%` }} />
       </span>
-      <span className="w-[50px] flex-none text-right font-mono text-[10px] text-[#7d8087]">{m?.online === false ? "offline" : ping}</span>
-      {needs > 0 && <span className="flex-none rounded-[7px] bg-needs px-[5px] text-[10px] font-bold leading-[14px] text-[#1a1405]">{needs}</span>}
+      <span className="w-[50px] flex-none text-right font-mono text-[10px] text-faint">{m?.online === false ? "offline" : ping}</span>
+      {needs > 0 && <span className="flex-none rounded-[7px] bg-needs px-[5px] text-[10px] font-bold leading-[14px] text-[var(--ui-badge-ink)]">{needs}</span>}
     </button>
   );
 }

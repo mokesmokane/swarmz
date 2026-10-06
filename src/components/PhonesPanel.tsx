@@ -48,7 +48,7 @@ export function PhonesPanel({ onClose }: { onClose: () => void }) {
         <span>Phones</span>
         <button className="text-neutral-500 hover:text-neutral-200" onClick={onClose} title="Close">×</button>
       </div>
-      {error && <div className="text-red-400">{error}</div>}
+      {error && <div className="text-exited">{error}</div>}
       {phones && phones.length === 0 && <div className="text-neutral-500">No phones paired</div>}
       {phones?.map((p) => (
         <div key={`${p.device}-${p.keyEnd}`} className="flex items-center gap-2 py-0.5">
@@ -64,7 +64,7 @@ export function PhonesPanel({ onClose }: { onClose: () => void }) {
         </div>
       ))}
       {failures.map((f) => (
-        <div key={f.machine} className="text-amber-300">
+        <div key={f.machine} className="text-needs">
           {`${f.machine}: ${f.error ?? "not updated"}`}
         </div>
       ))}
@@ -121,7 +121,7 @@ function LinkDeviceDialog({ onClose }: { onClose: () => void }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-3 text-neutral-400">Link a device</div>
-        {error && <div className="text-red-400">{error}</div>}
+        {error && <div className="text-exited">{error}</div>}
         {!keys && !error && <div className="text-neutral-500">Reading this Mac's host keys…</div>}
         {keys && uri && svg && (
           <>

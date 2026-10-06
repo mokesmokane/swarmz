@@ -99,7 +99,7 @@ export function HistoryPanel() {
     <div className="flex h-full flex-col bg-panel" data-testid="history-panel">
       <div className="flex h-9 flex-none items-center pl-3 pr-1.5">
         <span className="flex-1 text-[11px] font-semibold tracking-[0.07em] text-ink-3">HISTORY</span>
-        <button className="flex h-6 w-[26px] items-center justify-center rounded-[5px] text-[#a4a7ae] hover:bg-[#24262b] hover:text-ink" onClick={() => void useStore.getState().loadConversationBoards()} title="Ask every Mac again" aria-label="Refresh history">
+        <button className="flex h-6 w-[26px] items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink" onClick={() => void useStore.getState().loadConversationBoards()} title="Ask every Mac again" aria-label="Refresh history">
           ↻
         </button>
       </div>

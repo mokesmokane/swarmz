@@ -60,7 +60,7 @@ function TabMenu({ id, at, onClose }: { id: string; at: { x: number; y: number }
     <button
       key={label}
       role="menuitem"
-      className={`block w-full rounded px-2 py-1 text-left text-xs ${danger ? "text-red-300 hover:bg-red-950/60" : "text-neutral-200 hover:bg-neutral-800"}`}
+      className={`block w-full rounded px-2 py-1 text-left text-xs ${danger ? "text-exited hover:bg-exited/12" : "text-neutral-200 hover:bg-neutral-800"}`}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={() => {
         onClose();
@@ -249,10 +249,10 @@ export function TabGroup({ group }: { group: GroupNode }) {
               onContextMenu={openMenu(id)}
               data-testid={`tab-${id}`}
               className={`group flex shrink-0 cursor-default select-none items-center gap-2 border-r border-neutral-800 px-3 text-xs ${
-                hovered === id ? "bg-pick/30 text-neutral-100" : active ? "bg-[#0f1115] text-neutral-100" : "text-neutral-400 hover:bg-neutral-800"
+                hovered === id ? "bg-pick/30 text-neutral-100" : active ? "bg-[var(--ui-background)] text-neutral-100" : "text-neutral-400 hover:bg-neutral-800"
               } ${mark ? "ring-2 ring-inset ring-amber-400" : ""}`}
             >
-              {mark && mark !== "●" && <span className="rounded bg-amber-400 px-1 text-[10px] font-bold text-neutral-950" data-testid={`tab-mark-${id}`}>{mark}</span>}
+              {mark && mark !== "●" && <span className="rounded bg-needs px-1 text-[10px] font-bold text-[var(--ui-badge-ink)]" data-testid={`tab-mark-${id}`}>{mark}</span>}
               {settings[id]?.claude?.enabled && <AgentLogo agent={agentKindOf(settings[id]?.claude)} size={12} />}
               <TabDot id={id} exitCode={t?.exited ?? null} />
               {isConductorTile({ conductor, conductors }, id) && <ConductorBadge />}
@@ -317,7 +317,7 @@ export function TabGroup({ group }: { group: GroupNode }) {
             </button>
           )}
           <button
-            className={`rounded px-1.5 hover:bg-neutral-800 hover:text-neutral-200 ${zoomed ? "text-blue-300" : "text-neutral-500"}`}
+            className={`rounded px-1.5 hover:bg-neutral-800 hover:text-neutral-200 ${zoomed ? "text-link" : "text-neutral-500"}`}
             title={zoomed ? "Put it back (⌘⇧↩)" : "Zoom: fill the window (⌘⇧↩)"}
             aria-label={zoomed ? "Unzoom" : "Zoom"}
             aria-pressed={zoomed}

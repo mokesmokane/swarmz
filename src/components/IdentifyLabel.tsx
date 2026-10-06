@@ -30,7 +30,7 @@ export function IdentifyLabel({ id }: { id: string }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-black/30" data-testid={`identify-${id}`}>
       <div className="flex max-w-[80%] flex-col items-center gap-1 rounded-2xl border-2 border-amber-400 bg-neutral-950/90 px-6 py-4 text-center shadow-2xl">
-        {mark !== "●" && <div className="text-6xl font-bold leading-none text-amber-300">{mark}</div>}
+        {mark !== "●" && <div className="text-6xl font-bold leading-none text-needs">{mark}</div>}
         <div className="max-w-full truncate text-lg font-semibold text-neutral-100">{title}</div>
         {where && <div className="max-w-full truncate text-sm text-neutral-400">{where}</div>}
       </div>
