@@ -292,6 +292,17 @@ export function sshMasterLine(host: string): string {
   return `ssh -fN ${SSH_SHARED_OPTS} ${host}`;
 }
 
+/** The line a remote tile's scratch shell types (scratch terminal spec §3): a login shell in the
+ * tile's folder on that Mac, over the shared master. `dir` is quoted for the remote shell, then
+ * the whole remote command for this one; a leading `~` stays unquoted so it expands there. */
+export function scratchSshLine(host: string, dir: string | null): string {
+  let cd = "";
+  if (dir === "~") cd = "cd ~ && ";
+  else if (dir?.startsWith("~/")) cd = `cd ~/${shellQuote(dir.slice(2))} && `;
+  else if (dir) cd = `cd ${shellQuote(dir)} && `;
+  return `${sshLine(host)} ${shellQuote(`${cd}exec "$SHELL" -l`)}`;
+}
+
 const REMOTE_TOOL = "~/.swarmz/bin/swarmz";
 
 /** The ssh line for a tile that attaches to its session holder on `host`. The remote command is

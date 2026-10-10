@@ -26,6 +26,9 @@ export interface AgentEvent {
   prompt?: string | null;
   /** A `Board` event's board (tile board spec §2); null when it was cleared. */
   board?: unknown;
+  /** A `Scratch` request's note and suggested command (scratch terminal spec §4). */
+  note?: string | null;
+  command?: string | null;
   /** `"codex"` when Codex's hook logged the event (Codex tiles spec §4); absent for Claude. */
   agent?: string | null;
 }

@@ -33,6 +33,7 @@ import {
   sanitizeLayout,
   shellQuote,
   sshLine,
+  scratchSshLine,
   sshMasterLine,
   startupIsSsh,
   startupLine,
@@ -814,5 +815,22 @@ describe("Codex tiles", () => {
     expect(sameWorkspaceContent(base({ codex: fileCodex }), base({ codex: { ...fileCodex, started: false } }))).toBe(false);
     // The same config as Claude's is a different tile.
     expect(sameWorkspaceContent(base({ codex: fileCodex }), base({ claude: fileCodex }))).toBe(false);
+  });
+});
+
+describe("scratchSshLine", () => {
+  it("opens a login shell in the folder over the shared connection", () => {
+    expect(scratchSshLine("me@box", "/srv/my app")).toBe(`${sshLine("me@box")} 'cd '\\''/srv/my app'\\'' && exec "$SHELL" -l'`);
+  });
+  it("survives a quote in the folder", () => {
+    // The local shell unquotes this to the remote command: cd '/srv/it'\''s' && exec "$SHELL" -l
+    expect(scratchSshLine("me@box", "/srv/it's")).toBe(`${sshLine("me@box")} 'cd '\\''/srv/it'\\''\\'\\'''\\''s'\\'' && exec "$SHELL" -l'`);
+  });
+  it("keeps ~ unquoted so it expands on the remote", () => {
+    expect(scratchSshLine("me@box", "~/code")).toBe(`${sshLine("me@box")} 'cd ~/'\\''code'\\'' && exec "$SHELL" -l'`);
+    expect(scratchSshLine("me@box", "~")).toBe(`${sshLine("me@box")} 'cd ~ && exec "$SHELL" -l'`);
+  });
+  it("with no folder, opens the remote home", () => {
+    expect(scratchSshLine("me@box", null)).toBe(`${sshLine("me@box")} 'exec "$SHELL" -l'`);
   });
 });
