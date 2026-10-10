@@ -52,6 +52,13 @@ export const PROXIED_ACTIONS = [
   "identifyTile",
   "loadBoard",
   "answerBoard",
+  // Scratch shells live in the main window's store (scratch terminal spec §2).
+  "openScratch",
+  "hideScratch",
+  "endScratch",
+  "setScratchRect",
+  "typeScratchCommand",
+  "dismissScratchRequest",
 ] as const;
 export type ProxiedAction = (typeof PROXIED_ACTIONS)[number];
 
@@ -108,6 +115,7 @@ export const MIRRORED_KEYS = [
   "identify",
   "boards",
   "hoveredTile",
+  "scratch",
 ] as const satisfies readonly (keyof WorkbenchState)[];
 
 export type WindowMirror = Pick<WorkbenchState, (typeof MIRRORED_KEYS)[number]> & {

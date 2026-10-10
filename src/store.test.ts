@@ -4427,6 +4427,30 @@ describe("scratch shell", () => {
     expect(useStore.getState().scratch[id]).toBeUndefined();
   });
 
+  it("a tile closed while its scratch shell starts leaves no holder, even if the start lands first", async () => {
+    const id = await agentTile();
+    let releaseCreate!: () => void;
+    vi.mocked(ipc.createTerminal).mockImplementationOnce(
+      (sid: string, cwd: string) => new Promise((r) => (releaseCreate = () => r({ id: sid, name: "x", cwd, exited: null, error: null }))),
+    );
+    // The tile's own close takes a while, and the scratch start lands during it.
+    let releaseClose!: () => void;
+    vi.mocked(ipc.closeTerminal).mockImplementation(async (cid: string) => {
+      if (cid === id) await new Promise<void>((r) => (releaseClose = r));
+    });
+    const opening = useStore.getState().openScratch(id);
+    await vi.waitFor(() => expect(ipc.createTerminal).toHaveBeenCalled());
+    const closing = useStore.getState().closeTerminal(id);
+    await vi.waitFor(() => expect(releaseClose).toBeTypeOf("function"));
+    releaseCreate();
+    await opening;
+    releaseClose();
+    await closing;
+    vi.mocked(ipc.closeTerminal).mockImplementation(async () => {});
+    expect(ipc.closeTerminal).toHaveBeenCalledWith(scratchIdFor(id));
+    expect(useStore.getState().scratch[id]).toBeUndefined();
+  });
+
   it("a missing folder opens in home and says so", async () => {
     const id = await agentTile();
     vi.mocked(ipc.createTerminal).mockRejectedValueOnce("/tmp/proj is not a directory");

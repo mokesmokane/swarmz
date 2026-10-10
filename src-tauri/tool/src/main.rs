@@ -331,6 +331,10 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         }
         Some("attach") => {
             a.expect_positional(2, "attach <tile> [--cwd D] [--name N] [--env K=V]...")?;
+            // Attaching would replay a scratch shell and let the caller type into it.
+            if a.positional.get(1).is_some_and(|t| swarmz_tool::paths::is_scratch_id(t)) {
+                return Err(CliError::new("scratch", "a scratch shell is the user's; no command can read or drive it"));
+            }
             let tile = tile_arg(&a)?;
             let req = HoldRequest {
                 name: a.opt("--name").unwrap_or(&tile).to_string(),

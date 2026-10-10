@@ -2213,3 +2213,11 @@ fn scratch_asks_the_app_and_says_nothing_else() {
     let payload: serde_json::Value = serde_json::from_str(parts[3]).unwrap();
     assert_eq!(payload, serde_json::json!({"note": "Please log in to GitHub", "command": "gh auth login --web"}));
 }
+
+#[test]
+fn attach_refuses_scratch_shells() {
+    let h = home("scratchatt");
+    let env: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "")];
+    let (code, v) = tool_env(&h.path, &["attach", "scratch-c1"], env);
+    assert_eq!((code, v["code"].as_str()), (1, Some("scratch")), "{v}");
+}

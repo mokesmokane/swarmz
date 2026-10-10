@@ -166,6 +166,8 @@ const joinedTiles = new Map<string, number | null>();
 
 /** Scratch shells being started, so a second click does not start another. */
 const scratchStarting = new Map<string, Promise<string | null>>();
+/** Tiles whose scratch shell was ended while it was still starting: the start closes it. */
+const scratchEndedEarly = new Set<string>();
 
 function patchScratch(s: WorkbenchState, tileId: string, patch: Partial<ScratchState>): Partial<WorkbenchState> {
   const cur = s.scratch[tileId] ?? { started: false, open: false, rect: null, request: null, focusToken: 0, pulse: false, inHome: false, label: "" };
@@ -2259,8 +2261,9 @@ export const useStore = create<WorkbenchState>((set) => ({
         await ipc.createTerminal(id, home, dims.cols, dims.rows, name);
         inHome = true;
       }
-      // The tile may have closed while the holder came up: end the shell rather than keep it.
-      if (!useStore.getState().terminals[tileId]) {
+      // The tile may have closed (or the shell been ended) while the holder came up: end the
+      // shell rather than keep it.
+      if (scratchEndedEarly.delete(tileId) || !useStore.getState().terminals[tileId]) {
         await ipc.closeTerminal(id).catch(() => {});
         beforeSpawn.dispose(id);
         return "The tile closed";
@@ -2287,6 +2290,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   async endScratch(tileId) {
     const id = scratchIdFor(tileId);
     const had = useStore.getState().scratch[tileId]?.started;
+    if (scratchStarting.has(tileId)) scratchEndedEarly.add(tileId);
     set((x) => {
       if (!x.scratch[tileId]) return {};
       const scratch = { ...x.scratch };

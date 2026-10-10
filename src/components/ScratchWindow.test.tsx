@@ -24,7 +24,11 @@ afterEach(() => cleanup());
 
 describe("ScratchWindow", () => {
   it("mounts the scratch xterm and takes the keyboard when asked", () => {
-    render(<ScratchWindow tileId={ID} />);
+    // The pane renders it hidden first; the user's click opens it and raises the token.
+    useStore.setState({ scratch: { [ID]: { ...base, open: false, focusToken: 0 } } });
+    const { rerender } = render(<ScratchWindow tileId={ID} />);
+    useStore.setState({ scratch: { [ID]: { ...base, open: true, focusToken: 1 } } });
+    rerender(<ScratchWindow tileId={ID} />);
     expect(screen.getByTestId("scratch-window").textContent).toContain("scratch · /tmp/proj");
     expect(attach).toHaveBeenCalledWith("scratch-t1", screen.getByTestId("scratch-mount"));
     expect(fitAndFocus).toHaveBeenCalledWith("scratch-t1");
@@ -61,5 +65,19 @@ describe("ScratchWindow", () => {
     useStore.setState({ scratch: { [ID]: { ...base, inHome: true, label: "~" } } });
     render(<ScratchWindow tileId={ID} />);
     expect(screen.getByTestId("scratch-window").textContent).toContain("folder missing, opened in ~");
+  });
+
+  it("showing a hidden window again does not take the keyboard unless asked", () => {
+    useStore.setState({ scratch: { [ID]: { ...base, open: false, focusToken: 1 } } });
+    const { rerender } = render(<ScratchWindow tileId={ID} />);
+    vi.mocked(fitAndFocus).mockClear();
+    // An agent reopens it while the user is in another tile: same token, no focus.
+    useStore.setState({ scratch: { [ID]: { ...base, open: true, focusToken: 1 } } });
+    rerender(<ScratchWindow tileId={ID} />);
+    expect(fitAndFocus).not.toHaveBeenCalled();
+    // The user asks for it: the token goes up, and it takes the keyboard.
+    useStore.setState({ scratch: { [ID]: { ...base, open: true, focusToken: 2 } } });
+    rerender(<ScratchWindow tileId={ID} />);
+    expect(fitAndFocus).toHaveBeenCalledWith("scratch-t1");
   });
 });

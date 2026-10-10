@@ -43,8 +43,16 @@ export function ScratchWindow({ tileId }: { tileId: string }) {
     return () => ro.disconnect();
   }, [visible, id]);
 
+  // Take the keyboard only when asked (the token went up), never just because the window shows
+  // again: an agent reopening it must not pull the user's typing out of another tile.
+  // Starts at the token the pane mounts with, so a remount (switching back to the tab) does not
+  // take it either.
+  const handledToken = useRef(st?.focusToken ?? 0);
   useEffect(() => {
-    if (visible && st && st.focusToken > 0) fitAndFocus(id);
+    const token = st?.focusToken ?? 0;
+    if (!visible || token <= handledToken.current) return;
+    handledToken.current = token;
+    fitAndFocus(id);
   }, [visible, st?.focusToken, id]);
 
   if (!visible || !st) return <div ref={box} hidden />;
