@@ -89,8 +89,9 @@ An agent can pop up its tile's scratch shell when it needs the user to run somet
 - **Remote tile not connected.** The request is kept in the `scratch` map and shown the next time
   the user opens that tile's scratch window.
 - **Hidden from agents.** Every tool command that resolves a tile (`output`, `pending`, `answer`,
-  `send`, `info`, `close`, `watch` and the rest) refuses ids starting `scratch-`, and `ls`/`tiles`
-  never list them. This is courtesy, not security: the agent runs as the same macOS user and could
+  `send`, `info`, `watch` and the rest) refuses ids starting `scratch-`, and `ls`/`tiles` never
+  list them. `close` still accepts one: the app's own leftover sweep runs `swarmz close`, and
+  ending a scratch shell reveals nothing. This is courtesy, not security: the agent runs as the same macOS user and could
   read that user's sockets and files directly.
 - **Agents are told.** `briefing.rs` gains one line describing `swarmz scratch` and when to use it,
   and `AGENT_PERMISSIONS` (`agents.rs`) pre-approves it next to `card` and `board`.
