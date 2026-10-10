@@ -116,6 +116,7 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app.try_state::<AppState>() {
                     state.watchers.lock().unwrap().clear();
+                    commands::end_scratch_sessions(&state);
                     // Tiles live in their holders: quitting only detaches from them.
                     state.sessions.lock().unwrap().clear();
                 }

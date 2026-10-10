@@ -489,6 +489,11 @@ pub struct AgentEvent {
     /// A `Board` event's board (tile board spec §2): null when it was cleared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub board: Option<Value>,
+    /// A `Scratch` request's note and suggested command (scratch terminal spec §4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     /// `codex` for an event from Codex's hooks (Codex tiles spec §4); absent for Claude.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -517,6 +522,8 @@ pub fn parse_line(line: &str) -> Option<AgentEvent> {
         permission_mode: s("permission_mode"),
         prompt: if event == "UserPromptSubmit" { s("prompt").map(|p| p.chars().take(500).collect()) } else { None },
         board: if event == "Board" { Some(v.get("board").cloned().unwrap_or(Value::Null)) } else { None },
+        note: if event == "Scratch" { s("note") } else { None },
+        command: if event == "Scratch" { s("command") } else { None },
         agent: s("agent"),
     })
 }
@@ -612,6 +619,17 @@ pub fn spawn_watcher(app: AppHandle, host: Option<String>, gen: u64) -> Result<W
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+
+    #[test]
+    fn parses_a_scratch_request() {
+        let e = parse_line("2026-10-10T10:00:00.000Z\tc1\tScratch\t{\"note\":\"Log in\",\"command\":\"gh auth login\"}").unwrap();
+        assert_eq!((e.event.as_str(), e.note.as_deref(), e.command.as_deref()), ("Scratch", Some("Log in"), Some("gh auth login")));
+        let bare = parse_line("2026-10-10T10:00:00.000Z\tc1\tScratch\t{\"note\":null,\"command\":null}").unwrap();
+        assert_eq!((bare.note, bare.command), (None, None));
+        // Other events never carry them, whatever their JSON says.
+        let other = parse_line("2026-10-10T10:00:00.000Z\tc1\tStop\t{\"note\":\"x\",\"command\":\"y\"}").unwrap();
+        assert_eq!((other.note, other.command), (None, None));
+    }
 
     #[test]
     fn parse_line_carries_a_board() {
