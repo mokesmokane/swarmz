@@ -21,7 +21,7 @@ pub const BRIEFING_MARKER: &str = ".swarmz/briefing.md";
 /// The Bash rules that let an agent keep its card (conversation cards spec §4.2) and its board
 /// (tile board spec §2) without a prompt in modes that ask: as the briefing types them, and as a
 /// bare `swarmz` on a PATH that has it.
-pub const AGENT_PERMISSIONS: [&str; 4] = ["Bash(~/.swarmz/bin/swarmz card:*)", "Bash(swarmz card:*)", "Bash(~/.swarmz/bin/swarmz board:*)", "Bash(swarmz board:*)"];
+pub const AGENT_PERMISSIONS: [&str; 6] = ["Bash(~/.swarmz/bin/swarmz card:*)", "Bash(swarmz card:*)", "Bash(~/.swarmz/bin/swarmz board:*)", "Bash(swarmz board:*)", "Bash(~/.swarmz/bin/swarmz scratch:*)", "Bash(swarmz scratch:*)"];
 
 /// The Codex events swarmz logs (Codex tiles spec §4); Codex has no `Notification` or `StopFailure`.
 pub const CODEX_EVENTS: [&str; 6] = ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "PermissionRequest", "PostToolUse"];
@@ -38,7 +38,9 @@ pub const CODEX_RULES: &str = "# installed by swarmz; reinstalling overwrites th
 prefix_rule(pattern=[\"~/.swarmz/bin/swarmz\", \"card\"], decision=\"allow\")\n\
 prefix_rule(pattern=[\"swarmz\", \"card\"], decision=\"allow\")\n\
 prefix_rule(pattern=[\"~/.swarmz/bin/swarmz\", \"board\"], decision=\"allow\")\n\
-prefix_rule(pattern=[\"swarmz\", \"board\"], decision=\"allow\")\n";
+prefix_rule(pattern=[\"swarmz\", \"board\"], decision=\"allow\")\n\
+prefix_rule(pattern=[\"~/.swarmz/bin/swarmz\", \"scratch\"], decision=\"allow\")\n\
+prefix_rule(pattern=[\"swarmz\", \"scratch\"], decision=\"allow\")\n";
 
 pub const HOOK_SCRIPT: &str = r#"#!/bin/sh
 # installed by swarmz; reinstalling overwrites this file.

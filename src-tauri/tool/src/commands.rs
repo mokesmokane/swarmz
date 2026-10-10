@@ -522,6 +522,33 @@ pub fn new_tile(env: &Env, folder: &str, skip_permissions: bool, name: Option<&s
 /// `card` (conversation cards spec §3.1): read a tile's card, or set its title and/or recap as
 /// its agent. Setting re-reads the workspace (a concurrent change is kept), merges the fields
 /// (`card::merged`), bumps the sync revision and writes atomically.
+/// `scratch [--note TEXT] [--command TEXT]` (scratch terminal spec §4): asks the app to open this
+/// tile's scratch shell for the user. Says nothing about the shell, ever.
+pub fn scratch(env: &Env, note: Option<&str>, command: Option<&str>) -> Result<Value, CliError> {
+    let tile = match std::env::var("SWARMZ_TERMINAL_ID") {
+        Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
+        _ => return Err(CliError::new("no_tile", "swarmz scratch runs from an agent's tile: SWARMZ_TERMINAL_ID is not set")),
+    };
+    if crate::paths::is_scratch_id(&tile) {
+        return Err(CliError::new("self", "this is already the scratch shell"));
+    }
+    if !valid_tile_id(&tile) {
+        return Err(CliError::new("invalid", format!("invalid tile id {tile:?}")));
+    }
+    let bad = |field: &str, code: &'static str, max: usize| match code {
+        "too_long" => CliError::new(code, format!("{field} is longer than {max} characters")),
+        _ => CliError::new(code, format!("{field} must be one line with no control characters")),
+    };
+    let note = crate::scratch::check_text(note, crate::scratch::NOTE_MAX).map_err(|c| bad("--note", c, crate::scratch::NOTE_MAX))?;
+    let command = crate::scratch::check_text(command, crate::scratch::COMMAND_MAX).map_err(|c| bad("--command", c, crate::scratch::COMMAND_MAX))?;
+    let dir = env.home.join(".swarmz").join("agents");
+    std::fs::create_dir_all(&dir).map_err(failed)?;
+    let line = format!("{}\t{tile}\tScratch\t{}\n", now_iso_ms(), json!({"note": note, "command": command}));
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("events.log")).map_err(failed)?;
+    std::io::Write::write_all(&mut f, line.as_bytes()).map_err(failed)?;
+    Ok(json!({"v": 1, "asked": true}))
+}
+
 pub fn card(env: &Env, tile: Option<&str>, title: Option<&str>, recap: Option<&str>, by_user: bool) -> Result<Value, CliError> {
     let tile = match tile {
         Some(t) => tile_arg(t)?,

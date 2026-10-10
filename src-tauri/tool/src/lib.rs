@@ -18,6 +18,7 @@ pub mod proc;
 pub mod proto;
 pub mod pty;
 pub mod ring;
+pub mod scratch;
 pub mod screen;
 pub mod stats;
 pub mod server;

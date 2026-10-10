@@ -2186,3 +2186,30 @@ fn tile_commands_refuse_scratch_shells() {
     let (code, v) = tool_env(&h.path, &["close", sid], MINI);
     assert_eq!((code, v["closed"].as_bool()), (0, Some(false)), "{v}");
 }
+
+#[test]
+fn scratch_asks_the_app_and_says_nothing_else() {
+    let h = home("scratch");
+    let env = |id: &'static str| -> Vec<(&'static str, &'static str)> { vec![("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", id)] };
+    let (code, v) = tool_env(&h.path, &["scratch"], &env(""));
+    assert_eq!((code, v["code"].as_str()), (1, Some("no_tile")), "{v}");
+    let (code, v) = tool_env(&h.path, &["scratch"], &env("scratch-c1"));
+    assert_eq!((code, v["code"].as_str()), (1, Some("self")), "{v}");
+    let long = "x".repeat(201);
+    let (code, v) = tool_env(&h.path, &["scratch", "--note", &long], &env("c1"));
+    assert_eq!((code, v["code"].as_str()), (1, Some("too_long")), "{v}");
+    let (code, v) = tool_env(&h.path, &["scratch", "--command", "ls\nrm -rf ~"], &env("c1"));
+    assert_eq!((code, v["code"].as_str()), (1, Some("bad_text")), "{v}");
+    // Nothing was logged for the refusals.
+    assert!(!h.path.join(".swarmz/agents/events.log").exists());
+
+    let (code, v) = tool_env(&h.path, &["scratch", "--note", "Please log in to GitHub", "--command", "gh auth login --web"], &env("c1"));
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v, serde_json::json!({"v": 1, "asked": true}));
+    let log = std::fs::read_to_string(h.path.join(".swarmz/agents/events.log")).unwrap();
+    let line = log.lines().last().unwrap();
+    let parts: Vec<&str> = line.splitn(4, '\t').collect();
+    assert_eq!((parts[1], parts[2]), ("c1", "Scratch"), "{line}");
+    let payload: serde_json::Value = serde_json::from_str(parts[3]).unwrap();
+    assert_eq!(payload, serde_json::json!({"note": "Please log in to GitHub", "command": "gh auth login --web"}));
+}
