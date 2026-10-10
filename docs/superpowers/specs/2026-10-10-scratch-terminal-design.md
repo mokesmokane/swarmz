@@ -1,7 +1,8 @@
 # Scratch terminal (design)
 
 Date: 2026-10-10. In a Claude or Codex tile, open a small plain shell in the agent's folder to run
-a few commands outside the agent, then close it.
+a few commands outside the agent, then close it. The agent can also open it for the user, and
+never sees it.
 
 ## 1. What the user sees
 
@@ -64,7 +65,37 @@ line.
 - `exit` in the remote shell ends ssh and leaves the local scratch shell, as any terminal would;
   ✕ ends both.
 
-## 4. Testing
+## 4. Agents can open it for the user
+
+An agent can pop up its tile's scratch shell when it needs the user to run something themselves
+(a login, a password, anything outside its sandbox). It never sees the shell.
+
+- **Command.** `swarmz scratch [--note "…"] [--command "…"]`. The tile comes from
+  `SWARMZ_TERMINAL_ID`. Refusals: no tile id (`no_tile`); run from a scratch shell, an id starting
+  `scratch-` (`self`); a note over 200 characters or a command over 500 (`too_long`); a newline or
+  any other control character in either (`bad_text`), so the agent cannot send Enter. The reply
+  is `{"v":1,"asked":true}` and nothing else.
+- **Delivery.** The tool appends `<at>\t<tile>\tScratch\t{"note":…,"command":…}` to
+  `~/.swarmz/agents/events.log`, as `board` does, so `agents.rs` delivers it as an `agent:event`
+  for local and remote tiles alike. The app acts only on live events: a `Scratch` line replayed
+  from history (before launch, or a remote log's backlog) never opens a window.
+- **What the user sees.** The tile's scratch window opens (starting the shell if needed) with a
+  banner under the title bar: "*<agent name>* asks: *note*", then the command in monospace with
+  **Type it**. Type it writes the command at the prompt without Enter. The banner has its own ✕,
+  a newer request replaces it, and ending the shell clears it.
+- **Focus.** The scratch shell takes the keyboard only when the agent's tile is the focused tile.
+  Otherwise the window opens without focus and the tile's `>_` button pulses, so an agent can never
+  redirect the user's typing in another tile.
+- **Remote tile not connected.** The request is kept in the `scratch` map and shown the next time
+  the user opens that tile's scratch window.
+- **Hidden from agents.** Every tool command that resolves a tile (`output`, `pending`, `answer`,
+  `send`, `info`, `close`, `watch` and the rest) refuses ids starting `scratch-`, and `ls`/`tiles`
+  never list them. This is courtesy, not security: the agent runs as the same macOS user and could
+  read that user's sockets and files directly.
+- **Agents are told.** `briefing.rs` gains one line describing `swarmz scratch` and when to use it,
+  and `AGENT_PERMISSIONS` (`agents.rs`) pre-approves it next to `card` and `board`.
+
+## 5. Testing
 
 - `workspace.test.ts`: `scratchSshLine` quoting, with folders containing spaces and `'`.
 - `store.test.ts` (fake ipc registry):
@@ -78,4 +109,10 @@ line.
   disconnected ssh tile; `ScratchWindow` hides, ends, and stays inside the tile while dragged or
   resized.
 - Rust: a unit test for the `scratch-` id filter used on quit.
+- Tool CLI tests (`tool/tests/cli.rs`): `swarmz scratch` refusals (`no_tile`, `self`,
+  `too_long`, `bad_text`), the `Scratch` event line it appends, and tile commands refusing
+  `scratch-` ids.
+- `store.test.ts`: a live `Scratch` event opens the window with the banner, a replayed one does
+  nothing; focus moves only when the agent's tile is focused; Type it writes the command with no
+  CR or LF; a request for a disconnected remote tile waits for the next open.
 - By hand in `npm run tauri dev`: a local Claude tile and an ssh tile.
