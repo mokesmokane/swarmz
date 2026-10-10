@@ -4457,3 +4457,80 @@ describe("scratch shell", () => {
     expect(useStore.getState().outsideSessions).toEqual([]);
   });
 });
+
+describe("scratch requests from agents", () => {
+  const agentTile = async () => {
+    const id = await useStore.getState().createTerminal("/tmp/proj");
+    useStore.setState((s) => ({ settings: { ...s.settings, [id]: { ...s.settings[id], claude: { enabled: true, sessionId: "s1", skipPermissions: false, started: true } } } }));
+    vi.mocked(ipc.createTerminal).mockClear();
+    vi.mocked(ipc.writeTerminal).mockClear();
+    __setLaunchedAt(new Date(Date.now() - 60_000).toISOString());
+    return id;
+  };
+  const scratchEvent = (terminal: string, ts: string, extra: Record<string, unknown> = {}) => ({
+    host: null as string | null,
+    event: { ts, terminal, event: "Scratch", sessionId: null, notificationType: null, source: null, cwd: null, permissionMode: null, note: "Log in to GitHub", command: "gh auth login --web", ...extra },
+  });
+
+  it("a live request opens the window with the banner; replayed history does not", async () => {
+    const id = await agentTile();
+    useStore.setState({ focusedTerminalId: id, windowFocused: true });
+    useStore.getState().applyAgentEvent(scratchEvent(id, new Date(Date.now() - 120_000).toISOString()));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ipc.createTerminal).not.toHaveBeenCalled();
+
+    useStore.getState().applyAgentEvent(scratchEvent(id, new Date().toISOString()));
+    await vi.waitFor(() => expect(useStore.getState().scratch[id]?.open).toBe(true));
+    expect(useStore.getState().scratch[id].request).toMatchObject({ note: "Log in to GitHub", command: "gh auth login --web", agent: "Claude" });
+    expect(useStore.getState().scratch[id].focusToken).toBeGreaterThan(0);
+    expect(useStore.getState().scratch[id].pulse).toBe(false);
+  });
+
+  it("never takes the keyboard from another tile", async () => {
+    const id = await agentTile();
+    useStore.setState({ focusedTerminalId: "someone-else", windowFocused: true });
+    useStore.getState().applyAgentEvent(scratchEvent(id, new Date().toISOString()));
+    await vi.waitFor(() => expect(useStore.getState().scratch[id]?.open).toBe(true));
+    expect(useStore.getState().scratch[id]).toMatchObject({ focusToken: 0, pulse: true });
+  });
+
+  it("a burst of the same request opens one shell", async () => {
+    const id = await agentTile();
+    const ts = new Date().toISOString();
+    for (let i = 0; i < 3; i++) useStore.getState().applyAgentEvent(scratchEvent(id, ts));
+    await vi.waitFor(() => expect(useStore.getState().scratch[id]?.open).toBe(true));
+    expect(ipc.createTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("Type it types the command without Enter", async () => {
+    const id = await agentTile();
+    useStore.getState().applyAgentEvent(scratchEvent(id, new Date().toISOString()));
+    await vi.waitFor(() => expect(useStore.getState().scratch[id]?.started).toBe(true));
+    vi.mocked(ipc.writeTerminal).mockClear();
+    useStore.getState().typeScratchCommand(id);
+    expect(ipc.writeTerminal).toHaveBeenCalledWith(scratchIdFor(id), "gh auth login --web");
+    const typed = vi.mocked(ipc.writeTerminal).mock.calls.map((c) => c[1]).join("");
+    expect(typed).not.toMatch(/[\r\n]/);
+  });
+
+  it("a request for a disconnected remote tile waits for the next open", async () => {
+    const id = await agentTile();
+    useStore.setState((s) => ({ settings: { ...s.settings, [id]: { ...s.settings[id], ssh: { host: "me@box", cwd: "/srv/app", machine: "box" } } } }));
+    useStore.getState().applyAgentEvent({ ...scratchEvent(id, new Date().toISOString()), host: "me@box" });
+    await vi.waitFor(() => expect(useStore.getState().scratch[id]?.request?.command).toBe("gh auth login --web"));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ipc.createTerminal).not.toHaveBeenCalled();
+    expect(useStore.getState().scratch[id]).toMatchObject({ started: false, open: false, pulse: true });
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    await useStore.getState().openScratch(id);
+    expect(useStore.getState().scratch[id]).toMatchObject({ started: true, open: true });
+    expect(useStore.getState().scratch[id].request?.command).toBe("gh auth login --web");
+  });
+
+  it("a request from the wrong Mac is ignored", async () => {
+    const id = await agentTile();
+    useStore.getState().applyAgentEvent({ ...scratchEvent(id, new Date().toISOString()), host: "me@elsewhere" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useStore.getState().scratch[id]).toBeUndefined();
+  });
+});

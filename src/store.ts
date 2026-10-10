@@ -68,7 +68,7 @@ import {
   tintBackground,
   scratchSshLine,
 } from "./lib/workspace";
-import { isScratchId, oneLine, scratchIdFor, scratchParent, type ScratchRect, type ScratchState } from "./lib/scratch";
+import { isScratchId, oneLine, scratchEventIsLive, scratchIdFor, scratchParent, type ScratchRect, type ScratchRequest, type ScratchState } from "./lib/scratch";
 import { withUserTitle } from "./lib/card";
 import {
   MAIN,
@@ -170,6 +170,32 @@ const scratchStarting = new Map<string, Promise<string | null>>();
 function patchScratch(s: WorkbenchState, tileId: string, patch: Partial<ScratchState>): Partial<WorkbenchState> {
   const cur = s.scratch[tileId] ?? { started: false, open: false, rect: null, request: null, focusToken: 0, pulse: false, inHome: false, label: "" };
   return { scratch: { ...s.scratch, [tileId]: { ...cur, ...patch } } };
+}
+
+/** `Scratch` events already acted on (host|tile|ts): the remote tail re-sends its backlog after
+ * every reconnect, and an agent may retry. */
+const seenScratch = new Set<string>();
+
+/** An agent asked for its tile's scratch shell (scratch terminal spec §4). */
+function handleScratchRequest({ host, event }: AgentEventPayload): void {
+  if (!scratchEventIsLive(event.ts, Date.now(), APP_LAUNCHED_AT)) return;
+  const key = `${host ?? ""}|${event.terminal}|${event.ts}`;
+  if (seenScratch.has(key)) return;
+  seenScratch.add(key);
+  const s = useStore.getState();
+  const tileId = event.terminal;
+  const settings = s.settings[tileId];
+  if (!s.terminals[tileId] || !settings?.claude?.enabled) return;
+  // Same rule as every hook event: a log only speaks for the Mac it lives on.
+  if (host === null ? settings.ssh != null : settings.ssh?.host?.trim() !== host) return;
+  const request: ScratchRequest = { note: event.note ?? null, command: event.command ?? null, agent: agentName(settings.claude), at: event.ts };
+  const here = s.windowFocused !== false && s.focusedTerminalId === tileId;
+  useStore.setState((x) => patchScratch(x, tileId, { request, pulse: !here }));
+  void useStore.getState().openScratch(tileId, { focus: here }).then((err) => {
+    // Not connected yet: the request waits in the map for the next open, and the button pulses
+    // since no window can show it (even in the focused tile).
+    if (err && !useStore.getState().scratch[tileId]?.started) useStore.setState((x) => patchScratch(x, tileId, { open: false, pulse: true }));
+  });
 }
 
 function noteJoined(info: TerminalInfo) {
@@ -2837,6 +2863,10 @@ export const useStore = create<WorkbenchState>((set) => ({
     const { host, event } = payload;
     // The log reached us, so whatever watcher is tailing it is up.
     agentWatchSurvived(host);
+    if (event.event === "Scratch") {
+      handleScratchRequest(payload);
+      return;
+    }
     // This Mac's history, before the first load has said which tiles rejoined running sessions:
     // keep it until then (see `finishLaunchReplay`).
     if (host === null && event.ts < APP_LAUNCHED_AT && launchReplay !== null) {
