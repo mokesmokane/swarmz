@@ -70,6 +70,8 @@ beforeEach(() => {
     zoomed: {},
     selectedTiles: [],
     closedNotice: null,
+    scratch: {},
+    sshConnected: {},
   });
 });
 
@@ -203,5 +205,41 @@ describe("hovering a sidebar row", () => {
     expect(screen.getByTestId(`tab-${ID}`).className).toContain("bg-pick");
     act(() => useStore.setState({ hoveredTile: null }));
     expect(screen.queryByTestId("hover-outline-g1")).toBeNull();
+  });
+});
+
+describe("scratch button", () => {
+  const agent = { enabled: true, sessionId: "s", skipPermissions: false, started: true };
+  it("shows on agent tiles only, and opens the scratch shell", () => {
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
+    expect(screen.queryByTestId("scratch-toggle")).toBeNull();
+    cleanup();
+    const open = vi.fn(async () => null);
+    useStore.setState({ openScratch: open, settings: { [ID]: { ssh: null, claude: agent, command: null, extra: {} } } });
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
+    fireEvent.click(screen.getByTestId("scratch-toggle"));
+    expect(open).toHaveBeenCalledWith(ID);
+  });
+
+  it("is greyed out on a disconnected ssh tile", () => {
+    useStore.setState({ sshConnected: {}, settings: { [ID]: { ssh: { host: "me@box", cwd: "/srv" }, claude: agent, command: null, extra: {} } } });
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
+    const b = screen.getByTestId("scratch-toggle") as HTMLButtonElement;
+    expect(b.disabled).toBe(true);
+    expect(b.title).toBe("Connect the tile first");
+  });
+
+  it("hides an open window, and pulses after an agent asked", () => {
+    const hide = vi.fn();
+    useStore.setState({
+      hideScratch: hide,
+      settings: { [ID]: { ssh: null, claude: agent, command: null, extra: {} } },
+      scratch: { [ID]: { started: true, open: true, rect: null, request: null, focusToken: 0, pulse: true, inHome: false, label: "/home/me" } },
+    });
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
+    const b = screen.getByTestId("scratch-toggle");
+    expect(b.className).toContain("animate-pulse");
+    fireEvent.click(b);
+    expect(hide).toHaveBeenCalledWith(ID);
   });
 });

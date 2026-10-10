@@ -120,6 +120,16 @@ export function TabGroup({ group }: { group: GroupNode }) {
   const moveGroupToNewWindow = useStore((s) => s.moveGroupToNewWindow);
   const applyPreset = useStore((s) => s.applyPreset);
   const toggleZoom = useStore((s) => s.toggleZoom);
+  // The scratch shell of the active tab, when it is an agent's (scratch terminal spec §1).
+  const activeId = group.active;
+  const isAgent = useStore((s) => !!activeId && s.settings[activeId]?.claude?.enabled === true);
+  const remote = useStore((s) => !!activeId && !!s.settings[activeId]?.ssh?.host);
+  const connected = useStore((s) => !!activeId && s.sshConnected[activeId] === true);
+  const scratchOpen = useStore((s) => !!activeId && s.scratch[activeId]?.open === true && s.scratch[activeId]?.started === true);
+  const scratchRunning = useStore((s) => !!activeId && s.scratch[activeId]?.started === true);
+  const scratchPulse = useStore((s) => !!activeId && s.scratch[activeId]?.pulse === true);
+  const openScratch = useStore((s) => s.openScratch);
+  const hideScratch = useStore((s) => s.hideScratch);
   const removeSlot = useStore((s) => s.removeSlot);
   const zoomed = useStore((s) => s.zoomed[s.windowLabel] === group.id);
   const windowTiles = useStore((s) => allGroups(s.layout).reduce((n, g) => n + g.tabs.length, 0));
@@ -314,6 +324,20 @@ export function TabGroup({ group }: { group: GroupNode }) {
               onClick={() => void moveGroupToNewWindow(group.id)}
             >
               ⧉
+            </button>
+          )}
+          {isAgent && (
+            <button
+              type="button"
+              data-testid="scratch-toggle"
+              className={`rounded px-1.5 font-mono text-xs hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40 ${scratchRunning ? "text-link" : "text-neutral-500"} ${scratchPulse ? "animate-pulse" : ""}`}
+              disabled={remote && !connected}
+              title={remote && !connected ? "Connect the tile first" : scratchOpen ? "Hide the scratch shell" : "Scratch shell: a plain terminal here, outside the agent"}
+              aria-label="Scratch shell"
+              aria-pressed={scratchOpen}
+              onClick={() => (scratchOpen ? hideScratch(activeId) : void openScratch(activeId))}
+            >
+              &gt;_
             </button>
           )}
           <button
