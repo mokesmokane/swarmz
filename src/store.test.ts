@@ -82,8 +82,9 @@ import {
   machineFor,
   terminalColor,
   useStore, windowHooks, telegramFollowWanted } from "./store";
+import { scratchIdFor } from "./lib/scratch";
 import { allGroups, findGroup, findGroupOf, type GroupNode, type Layout, type SplitNode } from "./lib/layout";
-import { EMPTY_SETTINGS, needsRemoteFolder, sshLine, sshMasterLine, shellQuote, toWorkspace, type TerminalDef, type Workspace } from "./lib/workspace";
+import { EMPTY_SETTINGS, needsRemoteFolder, scratchSshLine, sshLine, sshMasterLine, shellQuote, toWorkspace, type TerminalDef, type Workspace } from "./lib/workspace";
 
 const omitKey = <T,>(o: Record<string, T>, k: string): Record<string, T> => {
   const { [k]: _drop, ...rest } = o;
@@ -136,6 +137,8 @@ beforeEach(async () => {
     selectedTiles: [],
     closedNotice: null,
     focusedWindow: "main",
+    scratch: {},
+    outsideSessions: [],
   });
   beforeSpawn.hook = async () => {};
   beforeSpawn.size = () => null;
@@ -4341,5 +4344,116 @@ describe("Codex tiles", () => {
   it("a remote Codex tile is created with the agent", async () => {
     const id = await useStore.getState().createSshTerminal({ host: "me@box", cwd: "/w", claude: { skipPermissions: false, agent: "codex" } });
     expect(useStore.getState().settings[id].claude).toEqual({ enabled: true, sessionId: "", skipPermissions: false, started: false, agent: "codex" });
+  });
+});
+
+describe("scratch shell", () => {
+  const agentTile = async () => {
+    const id = await useStore.getState().createTerminal("/tmp/proj");
+    useStore.setState((s) => ({ settings: { ...s.settings, [id]: { ...s.settings[id], claude: { enabled: true, sessionId: "s1", skipPermissions: false, started: true } } } }));
+    vi.mocked(ipc.createTerminal).mockClear();
+    vi.mocked(ipc.closeTerminal).mockClear();
+    vi.mocked(ipc.closeSession).mockClear();
+    vi.mocked(ipc.writeTerminal).mockClear();
+    return id;
+  };
+
+  it("opens in the tile's folder and stays out of the workspace", async () => {
+    const id = await agentTile();
+    // Let the save the new tile itself scheduled land first.
+    await new Promise((r) => setTimeout(r, SAVE_DEBOUNCE_MS + 20));
+    vi.mocked(ipc.saveWorkspace).mockClear();
+    const before = useStore.getState();
+    expect(await useStore.getState().openScratch(id)).toBeNull();
+    expect(ipc.createTerminal).toHaveBeenCalledWith(scratchIdFor(id), "/tmp/proj", expect.any(Number), expect.any(Number), `${before.terminals[id].name}-scratch`);
+    const s = useStore.getState();
+    expect(s.terminals).toBe(before.terminals);
+    expect(s.order).toBe(before.order);
+    expect(s.settings).toBe(before.settings);
+    expect(s.layout).toBe(before.layout);
+    expect(s.scratch[id]).toMatchObject({ started: true, open: true, inHome: false, label: "/tmp/proj" });
+    await new Promise((r) => setTimeout(r, SAVE_DEBOUNCE_MS + 20));
+    expect(ipc.saveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("is only for agent tiles", async () => {
+    const id = await useStore.getState().createTerminal("/tmp/plain");
+    expect(await useStore.getState().openScratch(id)).not.toBeNull();
+    expect(useStore.getState().scratch[id]).toBeUndefined();
+  });
+
+  it("two quick clicks start one shell", async () => {
+    const id = await agentTile();
+    await Promise.all([useStore.getState().openScratch(id), useStore.getState().openScratch(id)]);
+    expect(ipc.createTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("hide keeps the shell; ✕, exit and closing the tile end it", async () => {
+    const id = await agentTile();
+    await useStore.getState().openScratch(id);
+    useStore.getState().hideScratch(id);
+    expect(useStore.getState().scratch[id]).toMatchObject({ started: true, open: false });
+    expect(ipc.closeTerminal).not.toHaveBeenCalled();
+    await useStore.getState().openScratch(id);
+    expect(ipc.createTerminal).toHaveBeenCalledTimes(1);
+
+    await useStore.getState().endScratch(id);
+    expect(ipc.closeTerminal).toHaveBeenCalledWith(scratchIdFor(id));
+    expect(useStore.getState().scratch[id]).toBeUndefined();
+
+    await useStore.getState().openScratch(id);
+    useStore.getState().markExited(scratchIdFor(id), 0);
+    await vi.waitFor(() => expect(useStore.getState().scratch[id]).toBeUndefined());
+
+    await useStore.getState().openScratch(id);
+    vi.mocked(ipc.closeTerminal).mockClear();
+    await useStore.getState().closeTerminal(id);
+    expect(ipc.closeTerminal).toHaveBeenCalledWith(scratchIdFor(id));
+    expect(useStore.getState().scratch[id]).toBeUndefined();
+  });
+
+  it("a tile closed while its scratch shell starts leaves no holder behind", async () => {
+    const id = await agentTile();
+    let release!: () => void;
+    vi.mocked(ipc.createTerminal).mockImplementationOnce(
+      (sid: string, cwd: string) => new Promise((r) => (release = () => r({ id: sid, name: "x", cwd, exited: null, error: null }))),
+    );
+    const opening = useStore.getState().openScratch(id);
+    await vi.waitFor(() => expect(ipc.createTerminal).toHaveBeenCalled());
+    await useStore.getState().closeTerminal(id);
+    release();
+    await opening;
+    expect(ipc.closeTerminal).toHaveBeenCalledWith(scratchIdFor(id));
+    expect(useStore.getState().scratch[id]).toBeUndefined();
+  });
+
+  it("a missing folder opens in home and says so", async () => {
+    const id = await agentTile();
+    vi.mocked(ipc.createTerminal).mockRejectedValueOnce("/tmp/proj is not a directory");
+    expect(await useStore.getState().openScratch(id)).toBeNull();
+    expect(vi.mocked(ipc.createTerminal).mock.calls[1][1]).toBe("/home/me");
+    expect(useStore.getState().scratch[id]).toMatchObject({ inHome: true, label: "~" });
+  });
+
+  it("an ssh tile types the remote line, and waits for its connection", async () => {
+    const id = await agentTile();
+    useStore.setState((s) => ({ settings: { ...s.settings, [id]: { ...s.settings[id], ssh: { host: "me@box", cwd: "/srv/app", machine: "box" } } } }));
+    expect(await useStore.getState().openScratch(id)).toBe("Connect the tile first");
+    expect(ipc.createTerminal).not.toHaveBeenCalled();
+    useStore.setState((s) => ({ sshConnected: { ...s.sshConnected, [id]: true } }));
+    expect(await useStore.getState().openScratch(id)).toBeNull();
+    expect(vi.mocked(ipc.createTerminal).mock.calls[0][1]).toBe("/home/me");
+    expect(ipc.writeTerminal).toHaveBeenCalledWith(scratchIdFor(id), scratchSshLine("me@box", "/srv/app") + "\r");
+    expect(useStore.getState().scratch[id].label).toBe("box:/srv/app");
+  });
+
+  it("leftover scratch holders are closed and never listed as outside sessions", async () => {
+    vi.mocked(ipc.closeSession).mockClear();
+    vi.mocked(ipc.localSessions).mockResolvedValueOnce([
+      { id: "scratch-gone", name: "x-scratch", running: true, pid: 1, startedAt: "2026-01-01T00:00:00Z", exitedAt: null, exitCode: null, known: false },
+    ] as never);
+    await useStore.getState().refreshOutsideSessions();
+    expect(ipc.closeSession).toHaveBeenCalledWith("scratch-gone");
+    expect(useStore.getState().outsideSessions).toEqual([]);
   });
 });
