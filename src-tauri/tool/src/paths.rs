@@ -11,6 +11,14 @@ pub fn valid_tile_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
+/// The id prefix of a tile's scratch shell (scratch terminal spec §2): a holder the user runs
+/// beside an agent, never a tile, and never shown to agents.
+pub const SCRATCH_PREFIX: &str = "scratch-";
+
+pub fn is_scratch_id(id: &str) -> bool {
+    id.starts_with(SCRATCH_PREFIX)
+}
+
 pub fn home_dir() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".to_string()))
 }
@@ -257,5 +265,19 @@ mod tests {
         assert_eq!(format_iso(0), "1970-01-01T00:00:00Z");
         assert_eq!(format_iso(1_789_466_669), "2026-09-15T10:04:29Z");
         assert!(now_iso().ends_with('Z'));
+    }
+}
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::*;
+
+    #[test]
+    fn scratch_ids_are_recognised_and_valid_holder_ids() {
+        let id = format!("{SCRATCH_PREFIX}0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0");
+        assert!(is_scratch_id(&id));
+        assert!(valid_tile_id(&id), "{id} must be usable as a holder id");
+        assert!(!is_scratch_id("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"));
+        assert!(!is_scratch_id("scratchpad"));
     }
 }

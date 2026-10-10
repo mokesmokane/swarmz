@@ -2162,3 +2162,27 @@ fn a_codex_tile_is_started_recorded_under_codex_and_restarted_afresh() {
     assert_eq!((code, t["code"].as_str()), (1, Some("unsupported")));
     tool_env(&h.path, &["close", &id], MINI);
 }
+
+#[test]
+fn tile_commands_refuse_scratch_shells() {
+    let h = home("scratchref");
+    let cwd = h.path.to_string_lossy().into_owned();
+    write_ws(&h.path, serde_json::json!([{"id": "c1", "name": "api", "cwd": cwd, "origin": "mini"}]), serde_json::json!({}));
+    let sid = "scratch-c1";
+    // Not from a tile (the test itself may run inside one, and `close` checks the caller).
+    const MINI: &[(&str, &str)] = &[("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", "")];
+    for args in [
+        vec!["output", sid],
+        vec!["pending", sid],
+        vec!["send", sid, "--", "ls"],
+        vec!["transcript", sid],
+        vec!["info", sid],
+        vec!["card", "--tile", sid],
+    ] {
+        let (code, v) = tool_env(&h.path, &args, MINI);
+        assert_eq!((code, v["code"].as_str()), (1, Some("scratch")), "{args:?}: {v}");
+    }
+    // Ending one is still allowed (the app's own sweep uses it); nothing is running here.
+    let (code, v) = tool_env(&h.path, &["close", sid], MINI);
+    assert_eq!((code, v["closed"].as_bool()), (0, Some(false)), "{v}");
+}

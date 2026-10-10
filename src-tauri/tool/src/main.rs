@@ -289,6 +289,9 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         Some("info") => {
             a.expect_positional(2, "info <tile>")?;
             let tile = tile_arg(&a)?;
+            if swarmz_tool::paths::is_scratch_id(&tile) {
+                return Err(CliError::new("scratch", "a scratch shell is the user's; no command can read or drive it"));
+            }
             let paths = session_paths(&sessions_dir(), &tile).map_err(|e| CliError::new("invalid", e))?;
             if live_session(&paths).is_none() {
                 return Ok(Some(json!({ "v": 1, "running": false })));

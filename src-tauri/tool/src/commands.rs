@@ -96,6 +96,10 @@ pub fn tile_arg(s: &str) -> Result<String, CliError> {
 /// `tile_arg` against a given workspace (None: none readable, the argument as it stands).
 pub fn resolve_tile(ws: Option<&Workspace>, s: &str) -> Result<String, CliError> {
     let s = s.trim();
+    // A scratch shell belongs to the user, not to any agent (scratch terminal spec §4).
+    if crate::paths::is_scratch_id(s) {
+        return Err(CliError::new("scratch", "a scratch shell is the user's; no command can read or drive it"));
+    }
     let Some(ws) = ws else {
         return if valid_tile_id(s) { Ok(s.to_string()) } else { Err(CliError::new("invalid", format!("invalid tile id {s:?}"))) };
     };
