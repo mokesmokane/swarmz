@@ -4,6 +4,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { ipc } from "./ipc";
 import { beforeSpawn, tileTheme, useStore } from "../store";
+import { scratchParent } from "./scratch";
 import { paneLinkProvider } from "./paneLinkProvider";
 
 
@@ -586,7 +587,7 @@ export function applyColor(id: string): void {
   const entry = entries.get(id);
   if (!entry) return;
   // The theme of the Mac the tile runs on (machine themes spec).
-  const theme = tileTheme(useStore.getState(), id);
+  const theme = tileTheme(useStore.getState(), scratchParent(id) ?? id);
   const cur = entry.term.options.theme;
   if (cur?.background !== theme.background || cur?.foreground !== theme.foreground || cur?.red !== theme.red) entry.term.options.theme = theme;
 }
@@ -619,6 +620,7 @@ beforeSpawn.size = size;
 beforeSpawn.claimSize = claimSize;
 beforeSpawn.resetModes = resetTerminalModes;
 beforeSpawn.pollCwd = (id) => void readLocalCwd(id);
+beforeSpawn.dispose = dispose;
 
 /** The prompts an agent echoes your messages behind (jump to messages spec §2): Claude's `❯`
  * (older `>`) and Codex's `›`. */

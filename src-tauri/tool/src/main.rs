@@ -21,7 +21,7 @@ const STALE_ENV: &[&str] = &["SSH_AUTH_SOCK", "SSH_TTY", "SSH_CONNECTION", "SSH_
 /// The most lines `output --follow` watches.
 const MAX_FOLLOW_LINES: usize = 5000;
 
-const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set", "--parent", "--remove", "--assign", "--to", "--agent"];
+const VALUED: &[&str] = &["--cwd", "--name", "--cols", "--rows", "--env", "--dir", "--before", "--after", "--limit", "--lines", "--folder", "--key", "--summary", "--tile", "--title", "--recap", "--size", "--on", "--set", "--parent", "--remove", "--assign", "--to", "--agent", "--note", "--command"];
 const ALLOWED_FLAGS: &[&str] = &["--require-cwd", "--cwd-fallback", "--follow", "--skip-permissions", "--local", "--user", "--claim", "--clear", "--deny", "--once", "--sub", "--top", "--get", "--history", "--all", "--request"];
 
 /// The conductor guard (conductor spec §3) for a command run from a tile: `sub` against
@@ -289,6 +289,9 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         Some("info") => {
             a.expect_positional(2, "info <tile>")?;
             let tile = tile_arg(&a)?;
+            if swarmz_tool::paths::is_scratch_id(&tile) {
+                return Err(CliError::new("scratch", "a scratch shell is the user's; no command can read or drive it"));
+            }
             let paths = session_paths(&sessions_dir(), &tile).map_err(|e| CliError::new("invalid", e))?;
             if live_session(&paths).is_none() {
                 return Ok(Some(json!({ "v": 1, "running": false })));
@@ -328,6 +331,10 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
         }
         Some("attach") => {
             a.expect_positional(2, "attach <tile> [--cwd D] [--name N] [--env K=V]...")?;
+            // Attaching would replay a scratch shell and let the caller type into it.
+            if a.positional.get(1).is_some_and(|t| swarmz_tool::paths::is_scratch_id(t)) {
+                return Err(CliError::new("scratch", "a scratch shell is the user's; no command can read or drive it"));
+            }
             let tile = tile_arg(&a)?;
             let req = HoldRequest {
                 name: a.opt("--name").unwrap_or(&tile).to_string(),
@@ -482,6 +489,10 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             guard(if a.flag("--get") || a.flag("--history") { "board-get" } else { "board" }, tile.as_deref())?;
             Ok(Some(cmd::board(&cmd::Env::from_process()?, tile.as_deref(), a.flag("--get"), a.flag("--clear"), a.flag("--history"), a.flag("--all"), &mut std::io::stdin())?))
         }
+        Some("scratch") => {
+            a.expect_positional(1, "scratch [--note TEXT] [--command TEXT]")?;
+            Ok(Some(cmd::scratch(&cmd::Env::from_process()?, a.opt("--note"), a.opt("--command"))?))
+        }
         Some("card") => {
             a.expect_positional(1, "card [--tile ID] [--title TEXT] [--recap TEXT] [--user]")?;
             Ok(Some(cmd::card(&cmd::Env::from_process()?, a.opt("--tile"), a.opt("--title"), a.opt("--recap"), a.flag("--user"))?))
@@ -552,7 +563,7 @@ fn run(raw: &[String]) -> Result<Option<serde_json::Value>, CliError> {
             a.expect_positional(1, "ssh-gate")?;
             Err(cmd::ssh_gate(&cmd::Env::for_gate()?))
         }
-        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|card|upload|conductor|fleet|ask|reply|briefing|transcript|image|phone|host-keys|ssh-gate> …")),
+        _ => Err(CliError::new("usage", "usage: swarmz <version|hold|info|close|attach|ls|watch|machines|sessions|prune|folders|new|restart|output|send|key|pending|answer|card|scratch|upload|conductor|fleet|ask|reply|briefing|transcript|image|phone|host-keys|ssh-gate> …")),
     }
 }
 

@@ -8,6 +8,7 @@ vi.mock("./xtermRegistry", () => ({ prepare: vi.fn(async () => {}), dispose: vi.
 import { useStore } from "../store";
 import { dispose, prepare } from "./xtermRegistry";
 import { installMirror, labelFromLocation, manageViewers } from "./windowClient";
+import { MIRRORED_KEYS } from "./windowMirror";
 
 const t = (id: string, exited: number | null = null) => ({ id, name: id, cwd: "/", exited, error: null });
 
@@ -60,6 +61,34 @@ describe("another window's store", () => {
     expect(api.close).toHaveBeenCalledWith("a");
     expect(dispose).toHaveBeenCalledWith("a");
     expect(prepare).toHaveBeenCalledWith("a");
+    stop();
+  });
+});
+
+describe("scratch shells in another window", () => {
+  it("mirrors scratch state and sends scratch actions to the main window", async () => {
+    expect(MIRRORED_KEYS).toContain("scratch");
+    const sent: { name: string }[] = [];
+    installMirror("win-abcd", async (a) => void sent.push(a));
+    const s = useStore.getState();
+    await s.openScratch("a");
+    s.hideScratch("a");
+    await s.endScratch("a");
+    s.setScratchRect("a", { x: 0, y: 0, w: 300, h: 200 });
+    s.typeScratchCommand("a");
+    s.dismissScratchRequest("a");
+    expect(sent.map((a) => a.name)).toEqual(["openScratch", "hideScratch", "endScratch", "setScratchRect", "typeScratchCommand", "dismissScratchRequest"]);
+  });
+
+  it("opens a viewer of a shown tile's scratch shell, and closes it when the shell ends", async () => {
+    const api = { open: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+    const scratch = { started: true, open: true, rect: null, request: null, focusToken: 0, pulse: false, inHome: false, label: "/" };
+    useStore.setState({ terminals: { a: t("a") }, layout: { kind: "group", id: "g", tabs: ["a"], active: "a" }, scratch: { a: scratch } });
+    const stop = manageViewers(api);
+    await vi.waitFor(() => expect(api.open).toHaveBeenCalledWith("scratch-a"));
+    useStore.setState({ scratch: {} });
+    expect(api.close).toHaveBeenCalledWith("scratch-a");
+    expect(dispose).toHaveBeenCalledWith("scratch-a");
     stop();
   });
 });

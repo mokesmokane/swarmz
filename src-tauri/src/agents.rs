@@ -21,7 +21,7 @@ pub const BRIEFING_MARKER: &str = ".swarmz/briefing.md";
 /// The Bash rules that let an agent keep its card (conversation cards spec §4.2) and its board
 /// (tile board spec §2) without a prompt in modes that ask: as the briefing types them, and as a
 /// bare `swarmz` on a PATH that has it.
-pub const AGENT_PERMISSIONS: [&str; 4] = ["Bash(~/.swarmz/bin/swarmz card:*)", "Bash(swarmz card:*)", "Bash(~/.swarmz/bin/swarmz board:*)", "Bash(swarmz board:*)"];
+pub const AGENT_PERMISSIONS: [&str; 6] = ["Bash(~/.swarmz/bin/swarmz card:*)", "Bash(swarmz card:*)", "Bash(~/.swarmz/bin/swarmz board:*)", "Bash(swarmz board:*)", "Bash(~/.swarmz/bin/swarmz scratch:*)", "Bash(swarmz scratch:*)"];
 
 /// The Codex events swarmz logs (Codex tiles spec §4); Codex has no `Notification` or `StopFailure`.
 pub const CODEX_EVENTS: [&str; 6] = ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "PermissionRequest", "PostToolUse"];
@@ -38,7 +38,9 @@ pub const CODEX_RULES: &str = "# installed by swarmz; reinstalling overwrites th
 prefix_rule(pattern=[\"~/.swarmz/bin/swarmz\", \"card\"], decision=\"allow\")\n\
 prefix_rule(pattern=[\"swarmz\", \"card\"], decision=\"allow\")\n\
 prefix_rule(pattern=[\"~/.swarmz/bin/swarmz\", \"board\"], decision=\"allow\")\n\
-prefix_rule(pattern=[\"swarmz\", \"board\"], decision=\"allow\")\n";
+prefix_rule(pattern=[\"swarmz\", \"board\"], decision=\"allow\")\n\
+prefix_rule(pattern=[\"~/.swarmz/bin/swarmz\", \"scratch\"], decision=\"allow\")\n\
+prefix_rule(pattern=[\"swarmz\", \"scratch\"], decision=\"allow\")\n";
 
 pub const HOOK_SCRIPT: &str = r#"#!/bin/sh
 # installed by swarmz; reinstalling overwrites this file.
@@ -487,6 +489,11 @@ pub struct AgentEvent {
     /// A `Board` event's board (tile board spec §2): null when it was cleared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub board: Option<Value>,
+    /// A `Scratch` request's note and suggested command (scratch terminal spec §4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     /// `codex` for an event from Codex's hooks (Codex tiles spec §4); absent for Claude.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -515,6 +522,8 @@ pub fn parse_line(line: &str) -> Option<AgentEvent> {
         permission_mode: s("permission_mode"),
         prompt: if event == "UserPromptSubmit" { s("prompt").map(|p| p.chars().take(500).collect()) } else { None },
         board: if event == "Board" { Some(v.get("board").cloned().unwrap_or(Value::Null)) } else { None },
+        note: if event == "Scratch" { s("note") } else { None },
+        command: if event == "Scratch" { s("command") } else { None },
         agent: s("agent"),
     })
 }
@@ -610,6 +619,17 @@ pub fn spawn_watcher(app: AppHandle, host: Option<String>, gen: u64) -> Result<W
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+
+    #[test]
+    fn parses_a_scratch_request() {
+        let e = parse_line("2026-10-10T10:00:00.000Z\tc1\tScratch\t{\"note\":\"Log in\",\"command\":\"gh auth login\"}").unwrap();
+        assert_eq!((e.event.as_str(), e.note.as_deref(), e.command.as_deref()), ("Scratch", Some("Log in"), Some("gh auth login")));
+        let bare = parse_line("2026-10-10T10:00:00.000Z\tc1\tScratch\t{\"note\":null,\"command\":null}").unwrap();
+        assert_eq!((bare.note, bare.command), (None, None));
+        // Other events never carry them, whatever their JSON says.
+        let other = parse_line("2026-10-10T10:00:00.000Z\tc1\tStop\t{\"note\":\"x\",\"command\":\"y\"}").unwrap();
+        assert_eq!((other.note, other.command), (None, None));
+    }
 
     #[test]
     fn parse_line_carries_a_board() {

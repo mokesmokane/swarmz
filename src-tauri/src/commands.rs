@@ -412,6 +412,18 @@ pub fn close_terminal(state: State<'_, AppState>, id: String) -> Result<(), Stri
     Ok(())
 }
 
+/// On quit (scratch terminal spec §2): scratch shells end with the app, while tiles only detach.
+pub fn end_scratch_sessions(state: &AppState) {
+    let ids: Vec<String> = state.sessions.lock().unwrap().keys().filter(|id| swarmz_tool::paths::is_scratch_id(id)).cloned().collect();
+    for id in ids {
+        state.registry.lock().unwrap().remove(&id);
+        let session = state.sessions.lock().unwrap().remove(&id);
+        if let Some((_, session)) = session {
+            session.terminate();
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn restart_terminal(app: AppHandle, id: String, cols: u16, rows: u16) -> Result<TerminalInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -479,6 +491,38 @@ pub async fn ssh_list_dir(host: String, path: Option<String>) -> Result<crate::r
 
 #[cfg(test)]
 mod tests {
+
+    struct Fake(std::sync::atomic::AtomicBool);
+    impl crate::session::TerminalSession for Fake {
+        fn write(&self, _: &[u8]) -> Result<(), String> { Ok(()) }
+        fn resize(&self, _: u16, _: u16) -> Result<(), String> { Ok(()) }
+        fn terminate(&self) { self.0.store(true, std::sync::atomic::Ordering::SeqCst); }
+        fn foreground_busy(&self) -> Option<bool> { None }
+        fn cwd(&self) -> Option<String> { None }
+    }
+
+    #[test]
+    fn quitting_ends_scratch_shells_and_only_them() {
+        let state = super::AppState::default();
+        let tile = std::sync::Arc::new(Fake(Default::default()));
+        let scratch = std::sync::Arc::new(Fake(Default::default()));
+        {
+            let mut reg = state.registry.lock().unwrap();
+            reg.add("t1".into(), None, "/tmp".into()).unwrap();
+            reg.add("scratch-t1".into(), Some("t1-scratch".into()), "/tmp".into()).unwrap();
+        }
+        {
+            let mut sessions = state.sessions.lock().unwrap();
+            sessions.insert("t1".into(), (1, tile.clone()));
+            sessions.insert("scratch-t1".into(), (2, scratch.clone()));
+        }
+        super::end_scratch_sessions(&state);
+        assert!(scratch.0.load(std::sync::atomic::Ordering::SeqCst), "the scratch shell ends");
+        assert!(!tile.0.load(std::sync::atomic::Ordering::SeqCst), "the tile only detaches later");
+        assert!(state.sessions.lock().unwrap().contains_key("t1"));
+        assert!(!state.sessions.lock().unwrap().contains_key("scratch-t1"));
+        assert!(state.registry.lock().unwrap().get("scratch-t1").is_none());
+    }
 
     #[test]
     fn answering_from_the_sidebar_only_passes_safe_arguments() {

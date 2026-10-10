@@ -7,6 +7,7 @@
 import { useStore, type WorkbenchState } from "../store";
 import { ipc } from "./ipc";
 import { tilesOf } from "./layout";
+import { scratchIdFor } from "./scratch";
 import { dispose, prepare } from "./xtermRegistry";
 import { MAIN_ONLY_ACTIONS, PROXIED_ACTIONS, type WindowAction, type WindowMirror } from "./windowMirror";
 
@@ -49,20 +50,29 @@ export function manageViewers(api: { open: (id: string) => Promise<unknown>; clo
     gen.set(id, n);
     return n;
   };
+  // Each shown tile, and the scratch shell of each shown tile that has one (scratch terminal
+  // spec §2), with whether it is running.
+  const wanted = (s: WorkbenchState): Map<string, boolean> => {
+    const out = new Map<string, boolean>();
+    for (const id of tilesOf(s.layout)) {
+      const t = s.terminals[id];
+      if (!t) continue;
+      out.set(id, t.exited === null);
+      if (s.scratch?.[id]?.started) out.set(scratchIdFor(id), true);
+    }
+    return out;
+  };
   const sync = (s: WorkbenchState) => {
-    const now = new Set(tilesOf(s.layout));
+    const now = wanted(s);
     for (const [id] of shown) {
-      if (!now.has(id) || !s.terminals[id]) {
+      if (!now.has(id)) {
         shown.delete(id);
         bump(id);
         void api.close(id).catch(() => {});
         dispose(id);
       }
     }
-    for (const id of now) {
-      const t = s.terminals[id];
-      if (!t) continue;
-      const running = t.exited === null;
+    for (const [id, running] of now) {
       const before = shown.get(id);
       if (before === running) continue;
       shown.set(id, running);
@@ -82,6 +92,6 @@ export function manageViewers(api: { open: (id: string) => Promise<unknown>; clo
   };
   sync(useStore.getState());
   return useStore.subscribe((s, prev) => {
-    if (s.layout !== prev.layout || s.terminals !== prev.terminals) sync(s);
+    if (s.layout !== prev.layout || s.terminals !== prev.terminals || s.scratch !== prev.scratch) sync(s);
   });
 }

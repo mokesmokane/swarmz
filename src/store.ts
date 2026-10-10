@@ -66,7 +66,9 @@ import {
   type ConductorClaim,
   type SubConductors,
   tintBackground,
+  scratchSshLine,
 } from "./lib/workspace";
+import { isScratchId, oneLine, scratchEventIsLive, scratchIdFor, scratchParent, type ScratchRect, type ScratchRequest, type ScratchState } from "./lib/scratch";
 import { withUserTitle } from "./lib/card";
 import {
   MAIN,
@@ -161,6 +163,42 @@ export let APP_LAUNCHED_AT = new Date().toISOString();
  * holder started (ms, or null when unknown): their shells (and any Claude in them) outlived the
  * last run, so their events from before launch still describe them, back to the holder's start. */
 const joinedTiles = new Map<string, number | null>();
+
+/** Scratch shells being started, so a second click does not start another. */
+const scratchStarting = new Map<string, Promise<string | null>>();
+/** Tiles whose scratch shell was ended while it was still starting: the start closes it. */
+const scratchEndedEarly = new Set<string>();
+
+function patchScratch(s: WorkbenchState, tileId: string, patch: Partial<ScratchState>): Partial<WorkbenchState> {
+  const cur = s.scratch[tileId] ?? { started: false, open: false, rect: null, request: null, focusToken: 0, pulse: false, inHome: false, label: "" };
+  return { scratch: { ...s.scratch, [tileId]: { ...cur, ...patch } } };
+}
+
+/** `Scratch` events already acted on (host|tile|ts): the remote tail re-sends its backlog after
+ * every reconnect, and an agent may retry. */
+const seenScratch = new Set<string>();
+
+/** An agent asked for its tile's scratch shell (scratch terminal spec §4). */
+function handleScratchRequest({ host, event }: AgentEventPayload): void {
+  if (!scratchEventIsLive(event.ts, Date.now(), APP_LAUNCHED_AT)) return;
+  const key = `${host ?? ""}|${event.terminal}|${event.ts}`;
+  if (seenScratch.has(key)) return;
+  seenScratch.add(key);
+  const s = useStore.getState();
+  const tileId = event.terminal;
+  const settings = s.settings[tileId];
+  if (!s.terminals[tileId] || !settings?.claude?.enabled) return;
+  // Same rule as every hook event: a log only speaks for the Mac it lives on.
+  if (host === null ? settings.ssh != null : settings.ssh?.host?.trim() !== host) return;
+  const request: ScratchRequest = { note: event.note ?? null, command: event.command ?? null, agent: agentName(settings.claude), at: event.ts };
+  const here = s.windowFocused !== false && s.focusedTerminalId === tileId;
+  useStore.setState((x) => patchScratch(x, tileId, { request, pulse: !here }));
+  void useStore.getState().openScratch(tileId, { focus: here }).then((err) => {
+    // Not connected yet: the request waits in the map for the next open, and the button pulses
+    // since no window can show it (even in the focused tile).
+    if (err && !useStore.getState().scratch[tileId]?.started) useStore.setState((x) => patchScratch(x, tileId, { open: false, pulse: true }));
+  });
+}
 
 function noteJoined(info: TerminalInfo) {
   if (!info.existed) {
@@ -359,12 +397,15 @@ export const beforeSpawn: {
   resetModes: (id: string) => void;
   /** Ask a local tile's holder for its shell's folder now (the registry's folder poll). */
   pollCwd: (id: string) => void;
+  /** Disposes a pane's xterm (the registry's `dispose`), for a scratch shell the store ends. */
+  dispose: (id: string) => void;
 } = {
   hook: async () => {},
   size: () => null,
   claimSize: () => {},
   resetModes: () => {},
   pollCwd: () => {},
+  dispose: () => {},
 };
 
 /** Where a new terminal goes: a tab in a tile, or a new tile beside one. */
@@ -535,6 +576,14 @@ export interface WorkbenchState {
   resumeWatch: Record<string, { sessionId: string; until: number }>;
   /** Ids of running sessions on this Mac that are not in the workspace and have no open tile. */
   outsideSessions: string[];
+  /** Each agent tile's scratch shell (scratch terminal spec); never saved. */
+  scratch: Record<string, ScratchState>;
+  openScratch(tileId: string, opts?: { focus?: boolean }): Promise<string | null>;
+  hideScratch(tileId: string): void;
+  endScratch(tileId: string): Promise<void>;
+  setScratchRect(tileId: string, rect: ScratchRect): void;
+  typeScratchCommand(tileId: string): void;
+  dismissScratchRequest(tileId: string): void;
   update: UpdateState;
 
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
@@ -1737,6 +1786,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   pastedAt: {},
   resumeWatch: {},
   outsideSessions: [],
+  scratch: {},
   update: EMPTY_UPDATE,
 
   async createTerminal(cwd, placement) {
@@ -1807,6 +1857,8 @@ export const useStore = create<WorkbenchState>((set) => ({
 
   async closeTerminal(id) {
     stopPolling(id);
+    // A tile's scratch shell ends with it (one still starting is caught after its start).
+    void useStore.getState().endScratch(id);
     forgetAttach(id);
     // A tile whose home is another Mac has a session holder there too (§3.6): end it alongside
     // the local one, best effort and without waiting (the host may be asleep or offline).
@@ -1890,6 +1942,11 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   markExited(id, code) {
+    const parent = scratchParent(id);
+    if (parent) {
+      void useStore.getState().endScratch(parent);
+      return;
+    }
     stopPolling(id);
     set((s) => {
       const t = s.terminals[id];
@@ -2141,8 +2198,13 @@ export const useStore = create<WorkbenchState>((set) => ({
     }
     const settled = Date.now() - OUTSIDE_SETTLE_MS;
     const s = useStore.getState();
+    // A scratch holder nobody here owns is a leftover from a crash: end it (scratch terminal
+    // spec §2). One this app shows is refused by the core, so the call is safe for every row.
+    for (const r of rows) {
+      if (r.running && isScratchId(r.id) && !s.scratch[scratchParent(r.id) ?? ""]?.started) void ipc.closeSession(r.id).catch(() => {});
+    }
     const ids = rows
-      .filter((r) => r.running && !r.known && !s.terminals[r.id] && r.startedAt !== null && Date.parse(r.startedAt) < settled)
+      .filter((r) => r.running && !r.known && !isScratchId(r.id) && !s.terminals[r.id] && r.startedAt !== null && Date.parse(r.startedAt) < settled)
       .map((r) => r.id);
     set({ outsideSessions: ids });
   },
@@ -2165,6 +2227,95 @@ export const useStore = create<WorkbenchState>((set) => ({
     set({ outsideSessions: [] });
     await useStore.getState().refreshOutsideSessions();
     return firstError;
+  },
+
+  async openScratch(tileId, opts = {}) {
+    const focus = opts.focus ?? true;
+    const s = useStore.getState();
+    const st = s.settings[tileId];
+    const t = s.terminals[tileId];
+    if (!t || !st?.claude?.enabled) return "Only an agent's tile has a scratch shell";
+    const host = st.ssh?.host?.trim() || null;
+    if (host && s.sshConnected[tileId] !== true) return "Connect the tile first";
+    if (s.scratch[tileId]?.started) {
+      set((x) => patchScratch(x, tileId, { open: true, ...(focus ? { pulse: false } : {}), focusToken: (x.scratch[tileId]?.focusToken ?? 0) + (focus ? 1 : 0) }));
+      return null;
+    }
+    const inflight = scratchStarting.get(tileId);
+    if (inflight) return inflight;
+    const run = (async (): Promise<string | null> => {
+      const id = scratchIdFor(tileId);
+      await beforeSpawn.hook(id);
+      const dims = beforeSpawn.size(id) ?? { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
+      const home = await homeDir();
+      const folder = host ? home : t.cwd;
+      const name = `${t.name}-scratch`;
+      let inHome = false;
+      try {
+        await ipc.createTerminal(id, folder, dims.cols, dims.rows, name);
+      } catch (e) {
+        if (host || !String(e).includes("is not a directory")) {
+          beforeSpawn.dispose(id);
+          return typeof e === "string" ? e : String(e);
+        }
+        await ipc.createTerminal(id, home, dims.cols, dims.rows, name);
+        inHome = true;
+      }
+      // The tile may have closed (or the shell been ended) while the holder came up: end the
+      // shell rather than keep it.
+      if (scratchEndedEarly.delete(tileId) || !useStore.getState().terminals[tileId]) {
+        await ipc.closeTerminal(id).catch(() => {});
+        beforeSpawn.dispose(id);
+        return "The tile closed";
+      }
+      if (host) void ipc.writeTerminal(id, scratchSshLine(host, st.ssh?.cwd ?? null) + "\r").catch(() => {});
+      const where = host ? (st.ssh?.cwd ?? "~") : inHome ? "~" : t.cwd;
+      const label = host ? `${st.ssh?.machine ?? host}:${where}` : where;
+      set((x) => patchScratch(x, tileId, { started: true, open: true, ...(focus ? { pulse: false } : {}), inHome, label, focusToken: (x.scratch[tileId]?.focusToken ?? 0) + (focus ? 1 : 0) }));
+      return null;
+    })();
+    scratchStarting.set(tileId, run);
+    try {
+      return await run;
+    } finally {
+      scratchStarting.delete(tileId);
+    }
+  },
+
+  hideScratch(tileId) {
+    if (!useStore.getState().scratch[tileId]) return;
+    set((x) => patchScratch(x, tileId, { open: false }));
+  },
+
+  async endScratch(tileId) {
+    const id = scratchIdFor(tileId);
+    const had = useStore.getState().scratch[tileId]?.started;
+    if (scratchStarting.has(tileId)) scratchEndedEarly.add(tileId);
+    set((x) => {
+      if (!x.scratch[tileId]) return {};
+      const scratch = { ...x.scratch };
+      delete scratch[tileId];
+      return { scratch };
+    });
+    if (had) await ipc.closeTerminal(id).catch(() => {});
+    beforeSpawn.dispose(id);
+  },
+
+  setScratchRect(tileId, rect) {
+    set((x) => patchScratch(x, tileId, { rect }));
+  },
+
+  typeScratchCommand(tileId) {
+    const c = useStore.getState().scratch[tileId]?.request?.command;
+    if (!c) return;
+    // Typed, never submitted: the user reads it and presses Enter themselves.
+    void ipc.writeTerminal(scratchIdFor(tileId), oneLine(c)).catch(() => {});
+    set((x) => patchScratch(x, tileId, { focusToken: (x.scratch[tileId]?.focusToken ?? 0) + 1 }));
+  },
+
+  dismissScratchRequest(tileId) {
+    if (!useStore.getState().scratch[tileId]) return;
+    set((x) => patchScratch(x, tileId, { request: null }));
   },
 
   windowLabel: MAIN,
@@ -2716,6 +2867,10 @@ export const useStore = create<WorkbenchState>((set) => ({
     const { host, event } = payload;
     // The log reached us, so whatever watcher is tailing it is up.
     agentWatchSurvived(host);
+    if (event.event === "Scratch") {
+      handleScratchRequest(payload);
+      return;
+    }
     // This Mac's history, before the first load has said which tiles rejoined running sessions:
     // keep it until then (see `finishLaunchReplay`).
     if (host === null && event.ts < APP_LAUNCHED_AT && launchReplay !== null) {

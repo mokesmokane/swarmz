@@ -6,6 +6,7 @@ import { RemoteDirPicker } from "./RemoteDirPicker";
 import { SessionHistory } from "./SessionHistory";
 import { IdentifyLabel } from "./IdentifyLabel";
 import { BoardHeader } from "./BoardHeader";
+import { ScratchWindow } from "./ScratchWindow";
 
 /** How long the "Copied" and "Image sent to remote" pills stay after a copy or a remote paste. */
 export const COPIED_FLASH_MS = 1000;
@@ -211,6 +212,7 @@ export function TerminalPane({ id }: { id: string }) {
           </button>
         </div>
       )}
+      {settings.claude?.enabled && <ScratchWindow tileId={id} />}
       </div>
     </div>
   );
