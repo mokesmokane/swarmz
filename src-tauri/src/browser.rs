@@ -40,6 +40,12 @@ pub struct Rect {
     pub h: f64,
 }
 
+/// The frame measures its page box in its own page's coordinates; a child view is placed in the
+/// window's, where that page itself sits at `origin` (below the title bar on macOS).
+pub fn in_window(r: Rect, origin: (f64, f64)) -> (f64, f64) {
+    (r.x + origin.0, r.y + origin.1)
+}
+
 #[derive(Serialize, Clone)]
 struct Page {
     tile: String,
@@ -169,7 +175,17 @@ fn builder(app: &AppHandle, tile: &str, url: Url) -> WebviewBuilder<tauri::Wry> 
 #[tauri::command]
 pub async fn browser_show(app: AppHandle, tile: String, window: String, url: String, rect: Rect, visible: bool) -> Result<(), String> {
     safe_tile(&tile)?;
-    let pos = LogicalPosition::new(rect.x, rect.y);
+    // Where the window's own page sits, in the coordinates child views are placed in.
+    let origin = app
+        .get_webview(&window)
+        .and_then(|w| Some((w.position().ok()?, w.window().scale_factor().ok()?)))
+        .map(|(p, scale)| {
+            let l = p.to_logical::<f64>(scale);
+            (l.x, l.y)
+        })
+        .unwrap_or((0.0, 0.0));
+    let (x, y) = in_window(rect, origin);
+    let pos = LogicalPosition::new(x, y);
     let size = LogicalSize::new(rect.w.max(1.0), rect.h.max(1.0));
     let view = app.get_webview(&view_label(&tile));
     let at = view.as_ref().map(|v| v.window().label().to_string());
@@ -282,6 +298,13 @@ mod tests {
         assert_eq!(show_step(Some("win-1"), "main", true), Step::Place { reparent: true });
         // The window the tile left hides it late, after the new window took it: leave it there.
         assert_eq!(show_step(Some("main"), "win-1", false), Step::Nothing);
+    }
+
+    #[test]
+    fn page_coordinates_are_moved_by_where_the_windows_own_page_sits() {
+        let r = Rect { x: 10.0, y: 40.0, w: 300.0, h: 200.0 };
+        assert_eq!(in_window(r, (0.0, 28.0)), (10.0, 68.0));
+        assert_eq!(in_window(r, (0.0, 0.0)), (10.0, 40.0));
     }
 
     #[test]

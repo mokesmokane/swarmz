@@ -4629,6 +4629,12 @@ describe("tile browser", () => {
     expect(useStore.getState().browser[id].focusToken).toBe(1);
   });
 
+  it("an agent's request also tells the core the browser is open", async () => {
+    const id = await agentTile();
+    useStore.getState().applyAgentEvent(browseEvent(id, new Date().toISOString()));
+    await vi.waitFor(() => expect(ipc.browserGo).toHaveBeenCalledWith(id, "open"));
+  });
+
   it("never takes the keyboard from another tile, and pulses", async () => {
     const id = await agentTile();
     useStore.setState({ focusedTerminalId: "someone-else", windowFocused: true });
