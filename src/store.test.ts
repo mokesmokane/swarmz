@@ -4592,6 +4592,17 @@ describe("tile browser", () => {
     await vi.waitFor(() => expect(ipc.browserClose).toHaveBeenCalledWith(id));
   });
 
+  it("opening tells the core its view may exist again, before any show", async () => {
+    const id = await agentTile();
+    useStore.getState().openBrowser(id);
+    await vi.waitFor(() => expect(ipc.browserGo).toHaveBeenCalledWith(id, "open"));
+    vi.mocked(ipc.browserGo).mockClear();
+    useStore.getState().hideBrowser(id);
+    useStore.getState().openBrowser(id);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ipc.browserGo).not.toHaveBeenCalledWith(id, "open");
+  });
+
   it("closing the tile, or turning its agent off, closes its browser", async () => {
     const a = await agentTile();
     const b = await agentTile();
@@ -4631,10 +4642,17 @@ describe("tile browser", () => {
     useStore.getState().applyAgentEvent(browseEvent(id, new Date().toISOString()));
     expect(useStore.getState().browser[id].url).toBe("https://news.example.com");
     expect(useStore.getState().browser[id].request?.url).toBe("https://appstoreconnect.apple.com/apps");
-    expect(ipc.browserGo).not.toHaveBeenCalled();
+    expect(ipc.browserGo).not.toHaveBeenCalledWith(id, "load", expect.anything());
     useStore.getState().navigateBrowser(id, useStore.getState().browser[id].request!.url);
     await vi.waitFor(() => expect(ipc.browserGo).toHaveBeenCalledWith(id, "load", "https://appstoreconnect.apple.com/apps"));
     expect(useStore.getState().browser[id].url).toBe("https://appstoreconnect.apple.com/apps");
+  });
+
+  it("Open in Safari sends the address the store knows, so it works without a view", async () => {
+    const id = await agentTile();
+    useStore.getState().openBrowser(id, { url: "https://example.com/" });
+    useStore.getState().browserGo(id, "safari");
+    await vi.waitFor(() => expect(ipc.browserGo).toHaveBeenCalledWith(id, "safari", "https://example.com/"));
   });
 
   it("a request for a remote tile's log only counts for that tile's Mac", async () => {

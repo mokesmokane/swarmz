@@ -2366,6 +2366,9 @@ export const useStore = create<WorkbenchState>((set) => ({
     const s = useStore.getState();
     if (!s.terminals[tileId] || !s.settings[tileId]?.claude?.enabled) return;
     const focus = opts.focus !== false;
+    // A browser closed before may have a create still on its way from another window, which the
+    // core refuses until it hears the browser is open again (before this window's first show).
+    if (!s.browser[tileId]) void queued(tileId, () => ipc.browserGo(tileId, "open"));
     set((x) =>
       patchBrowser(x, tileId, {
         open: true,
@@ -2404,8 +2407,10 @@ export const useStore = create<WorkbenchState>((set) => ({
   },
 
   browserGo(tileId, action) {
-    if (!useStore.getState().browser[tileId]) return;
-    void queued(tileId, () => ipc.browserGo(tileId, action));
+    const b = useStore.getState().browser[tileId];
+    if (!b) return;
+    // Safari gets the address the store knows, so it works when no view could be made.
+    void queued(tileId, () => (action === "safari" ? ipc.browserGo(tileId, action, b.url) : ipc.browserGo(tileId, action)));
   },
 
   browserPage({ tile, url, title, loading }) {

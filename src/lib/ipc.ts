@@ -242,7 +242,7 @@ export const ipc = {
   /** Creates (when visible), moves, shows or hides a tile's browser view in `window` (tile browser spec §3). */
   browserShow: (tile: string, window: string, url: string, rect: { x: number; y: number; w: number; h: number }, visible: boolean) =>
     invoke<void>("browser_show", { tile, window, url, rect, visible }),
-  browserGo: (tile: string, action: "load" | "back" | "forward" | "reload" | "focus" | "safari", url?: string) =>
+  browserGo: (tile: string, action: "open" | "load" | "back" | "forward" | "reload" | "focus" | "safari", url?: string) =>
     invoke<void>("browser_go", { tile, action, url: url ?? null }),
   browserClose: (tile: string) => invoke<void>("browser_close", { tile }),
   onBrowserPage: (cb: (p: BrowserPage) => void): Promise<UnlistenFn> => listen<BrowserPage>("browser:page", (e) => cb(e.payload)),

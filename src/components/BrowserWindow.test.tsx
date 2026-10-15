@@ -73,6 +73,49 @@ describe("BrowserWindow", () => {
     expect(screen.getByText("This page hasn't finished loading")).toBeTruthy();
   });
 
+  it("follows the page box when the pane moves without the frame changing", async () => {
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => setTimeout(() => cb(0), 5) as unknown as number);
+    vi.stubGlobal("cancelAnimationFrame", (h: number) => clearTimeout(h));
+    const box = { left: 100, top: 50, width: 400, height: 300 };
+    const spy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(() => ({ ...box, right: 0, bottom: 0, x: box.left, y: box.top, toJSON: () => ({}) }) as DOMRect);
+    render(<BrowserWindow tileId="t1" blocked={false} />);
+    await vi.waitFor(() => expect(lastShow()?.[3]).toEqual({ x: 102, y: 52, w: 396, h: 296 }));
+    box.left = 300;
+    await vi.waitFor(() => expect(lastShow()?.[3]).toEqual({ x: 302, y: 52, w: 396, h: 296 }));
+    spy.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("hides the page while the tile's scratch window overlaps it", async () => {
+    const w = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(900);
+    const h = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
+    useStore.setState({ scratch: { t1: { started: true, open: true, rect: null, request: null, focusToken: 0, pulse: false, inHome: false, label: "/tmp" } } });
+    render(<div><BrowserWindow tileId="t1" blocked={false} /></div>);
+    await vi.waitFor(() => expect(lastShow()?.[4]).toBe(false));
+    act(() => useStore.setState({ scratch: { t1: { started: true, open: false, rect: null, request: null, focusToken: 0, pulse: false, inHome: false, label: "/tmp" } } }));
+    await vi.waitFor(() => expect(lastShow()?.[4]).toBe(true));
+    w.mockRestore();
+    h.mockRestore();
+  });
+
+  it("keeps the resize corner on a strip below the page", () => {
+    render(<BrowserWindow tileId="t1" blocked={false} />);
+    const corner = screen.getByTestId("browser-resize");
+    expect(screen.getByTestId("browser-footer").contains(corner)).toBe(true);
+    expect(screen.getByTestId("browser-page").contains(corner)).toBe(false);
+  });
+
+  it("Retry loads the page that was asked for and places the view again", async () => {
+    useStore.setState({ browser: { t1: { ...emptyBrowser(), open: true, url: "https://slow.example.com/", error: "no window main" } } });
+    const navigate = vi.spyOn(useStore.getState(), "navigateBrowser");
+    render(<BrowserWindow tileId="t1" blocked={false} />);
+    await vi.waitFor(() => expect(ipc.browserShow).toHaveBeenCalled());
+    const before = vi.mocked(ipc.browserShow).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(navigate).toHaveBeenCalledWith("t1", "https://slow.example.com/");
+    await vi.waitFor(() => expect(vi.mocked(ipc.browserShow).mock.calls.length).toBeGreaterThan(before));
+  });
+
   it("renders nothing visible when the browser is hidden", () => {
     useStore.setState({ browser: { t1: { ...emptyBrowser(), open: false } } });
     render(<BrowserWindow tileId="t1" blocked={false} />);

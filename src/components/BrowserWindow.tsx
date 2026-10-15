@@ -3,10 +3,14 @@ import { useStore } from "../store";
 import { ipc } from "../lib/ipc";
 import { useBrowserBlock } from "../lib/browserBlock";
 import { addressFor, BLANK, defaultBrowserRect, LOAD_STALL_MS, queued } from "../lib/browser";
-import { clampRect, type ScratchRect } from "../lib/scratch";
+import { clampRect, defaultRect, type ScratchRect } from "../lib/scratch";
 
 /** The native page sits this far inside the frame's page box, so the frame stays clickable. */
 const INSET = 2;
+
+function overlaps(a: ScratchRect, b: ScratchRect): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
 
 /** A tile's built-in browser, floating over the agent's output (tile browser spec §1). */
 export function BrowserWindow({ tileId, blocked }: { tileId: string; blocked: boolean }) {
@@ -14,6 +18,7 @@ export function BrowserWindow({ tileId, blocked }: { tileId: string; blocked: bo
   const windowLabel = useStore((s) => s.windowLabel);
   const dragging = useStore((s) => s.draggingTerminalId !== null);
   const overlays = useBrowserBlock((s) => s.count);
+  const scratch = useStore((s) => s.scratch[tileId]);
   const hide = useStore((s) => s.hideBrowser);
   const close = useStore((s) => s.closeBrowser);
   const setRect = useStore((s) => s.setBrowserRect);
@@ -28,10 +33,8 @@ export function BrowserWindow({ tileId, blocked }: { tileId: string; blocked: bo
   const [typed, setTyped] = useState<string | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
   const [, tick] = useState(0);
+  const [retries, setRetries] = useState(0);
   const open = !!st?.open;
-  // The native page is drawn above everything this window draws: it shows only while nothing
-  // of ours should be on top of it (spec §3).
-  const showing = open && !blocked && !dragging && overlays === 0;
 
   // The pane this window floats in is its parent: watch its size.
   useEffect(() => {
@@ -46,13 +49,25 @@ export function BrowserWindow({ tileId, blocked }: { tileId: string; blocked: bo
 
   // Place the native page over the page box whenever anything about it changes; hide it otherwise.
   const rect: ScratchRect | null = st && bounds.w > 0 ? clampRect(st.rect ?? defaultBrowserRect(bounds), bounds) : null;
+  // The tile's scratch window floats in the same pane, under the native page where they meet.
+  const scratchRect = scratch?.started && scratch.open && bounds.w > 0 ? clampRect(scratch.rect ?? defaultRect(bounds), bounds) : null;
+  const underScratch = !!rect && !!scratchRect && overlaps(rect, scratchRect);
+  // The native page is drawn above everything this window draws: it shows only while nothing
+  // of ours should be on top of it (spec §3).
+  const showing = open && !blocked && !dragging && overlays === 0 && !underScratch;
   const url = st?.url ?? "";
   const exists = !!st;
   useEffect(() => {
     if (!exists) return;
-    const place = () => {
+    let sent = "";
+    const measure = () => {
       const r = page.current?.getBoundingClientRect();
-      const at = r ? { x: r.left + INSET, y: r.top + INSET, w: Math.max(r.width - 2 * INSET, 1), h: Math.max(r.height - 2 * INSET, 1) } : { x: 0, y: 0, w: 1, h: 1 };
+      return r ? { x: r.left + INSET, y: r.top + INSET, w: Math.max(r.width - 2 * INSET, 1), h: Math.max(r.height - 2 * INSET, 1) } : null;
+    };
+    const place = () => {
+      const r = measure();
+      const at = r ?? { x: 0, y: 0, w: 1, h: 1 };
+      sent = JSON.stringify(at);
       void queued(tileId, () =>
         ipc.browserShow(tileId, windowLabel, url, at, showing && !!r).catch((e) => {
           if (showing) setError(tileId, typeof e === "string" ? e : String(e));
@@ -61,16 +76,18 @@ export function BrowserWindow({ tileId, blocked }: { tileId: string; blocked: bo
       );
     };
     place();
-    const el = page.current;
-    const ro = el ? new ResizeObserver(place) : null;
-    if (el && ro) ro.observe(el);
-    window.addEventListener("resize", place);
-    return () => {
-      ro?.disconnect();
-      window.removeEventListener("resize", place);
+    // The pane moves under the frame for many reasons (the board header, the sidebar, split
+    // dividers): while the page shows, follow its box every frame and send only real moves.
+    let frame = 0;
+    const follow = () => {
+      const r = measure();
+      if (r && JSON.stringify(r) !== sent) place();
+      frame = requestAnimationFrame(follow);
     };
+    if (showing) frame = requestAnimationFrame(follow);
+    return () => cancelAnimationFrame(frame);
     // `url` is left out: it is only the address a view not created yet starts on.
-  }, [tileId, windowLabel, showing, rect?.x, rect?.y, rect?.w, rect?.h, exists]);
+  }, [tileId, windowLabel, showing, rect?.x, rect?.y, rect?.w, rect?.h, exists, retries]);
 
   // Leaving the pane (tab switch, zoom, another window) hides the page; it keeps running.
   useEffect(() => () => void queued(tileId, () => ipc.browserShow(tileId, windowLabel, BLANK, { x: 0, y: 0, w: 1, h: 1 }, false)), [tileId, windowLabel]);
@@ -204,9 +221,12 @@ export function BrowserWindow({ tileId, blocked }: { tileId: string; blocked: bo
               type="button"
               className={iconButton}
               onClick={() => {
+                // The address asked for, not `reload` (which reloads the page before a stalled
+                // load), and placement again, which creates a view that failed to be made.
                 setRefused(null);
                 setError(tileId, null);
-                go(tileId, "reload");
+                setRetries((n) => n + 1);
+                navigate(tileId, st.url);
               }}
             >
               Retry
@@ -217,7 +237,10 @@ export function BrowserWindow({ tileId, blocked }: { tileId: string; blocked: bo
           </div>
         )}
         <div ref={page} data-testid="browser-page" className="relative min-h-0 flex-1 bg-white" />
-        <div className="absolute bottom-0 right-0 h-3 w-3 cursor-se-resize" onPointerDown={drag("size")} aria-hidden="true" />
+        {/* Below the page, which the native view covers: the corner must stay reachable. */}
+        <div data-testid="browser-footer" className="relative h-3 shrink-0 bg-neutral-900">
+          <div data-testid="browser-resize" className="absolute bottom-0 right-0 h-3 w-3 cursor-se-resize" onPointerDown={drag("size")} aria-hidden="true" />
+        </div>
       </div>
     </div>
   );
