@@ -108,6 +108,31 @@ impl Closed {
 
 static CLOSED: LazyLock<Closed> = LazyLock::new(Closed::default);
 
+/// `~/.swarmz/browser.log`: where views were asked to go and where they went, for checking the
+/// native placement by hand (nothing else can see it). Started afresh past 256 KiB.
+fn trace(line: String) {
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let path = std::path::Path::new(&home).join(".swarmz").join("browser.log");
+    if std::fs::metadata(&path).map(|m| m.len() > 256 * 1024).unwrap_or(false) {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = std::io::Write::write_all(&mut f, format!("{} {line}\n", swarmz_tool::util::now_iso_ms()).as_bytes());
+    }
+}
+
+/// Where a webview is and how big, as `x,y wxh` in logical pixels.
+fn where_is(view: &tauri::Webview) -> String {
+    let scale = view.window().scale_factor().unwrap_or(1.0);
+    match (view.position(), view.size()) {
+        (Ok(p), Ok(s)) => {
+            let (p, s) = (p.to_logical::<f64>(scale), s.to_logical::<f64>(scale));
+            format!("{:.0},{:.0} {:.0}x{:.0}", p.x, p.y, s.width, s.height)
+        }
+        _ => "?".into(),
+    }
+}
+
 fn safe_tile(tile: &str) -> Result<(), String> {
     if !tile.is_empty() && tile.len() <= 64 && tile.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         Ok(())
@@ -133,6 +158,7 @@ fn builder(app: &AppHandle, tile: &str, url: Url) -> WebviewBuilder<tauri::Wry> 
         .on_navigation(may_navigate)
         .on_page_load(move |view, p| {
             let loading = matches!(p.event(), PageLoadEvent::Started);
+            trace(format!("{} page {} {}", load_tile, if loading { "started" } else { "finished" }, p.url()));
             let _ = view.app_handle().emit("browser:page", Page { tile: load_tile.clone(), url: p.url().to_string(), title: None, loading: Some(loading) });
         })
         .on_document_title_changed(move |view, title| {
@@ -189,6 +215,22 @@ pub async fn browser_show(app: AppHandle, tile: String, window: String, url: Str
     let size = LogicalSize::new(rect.w.max(1.0), rect.h.max(1.0));
     let view = app.get_webview(&view_label(&tile));
     let at = view.as_ref().map(|v| v.window().label().to_string());
+    let page = app.get_webview(&window);
+    let inner = page.as_ref().and_then(|p| {
+        let w = p.window();
+        Some(w.inner_size().ok()?.to_logical::<f64>(w.scale_factor().ok()?))
+    });
+    trace(format!(
+        "{tile} show window={window} visible={visible} css={:.0},{:.0} {:.0}x{:.0} page={} inner={} step={:?}",
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        page.as_ref().map(where_is).unwrap_or_else(|| "none".into()),
+        inner.map(|s| format!("{:.0}x{:.0}", s.width, s.height)).unwrap_or_else(|| "?".into()),
+        show_step(at.as_deref(), &window, visible),
+    ));
+    let placed = |v: &tauri::Webview| trace(format!("{tile} placed at {} hidden={}", where_is(v), !visible));
     match show_step(at.as_deref(), &window, visible) {
         Step::Nothing => Ok(()),
         Step::Place { reparent } => {
@@ -200,6 +242,7 @@ pub async fn browser_show(app: AppHandle, tile: String, window: String, url: Str
             view.set_position(pos).map_err(|e| e.to_string())?;
             view.set_size(size).map_err(|e| e.to_string())?;
             let shown = if visible { view.show() } else { view.hide() };
+            placed(&view);
             shown.map_err(|e| e.to_string())
         }
         Step::Create => {
@@ -210,7 +253,11 @@ pub async fn browser_show(app: AppHandle, tile: String, window: String, url: Str
             if closed.contains(&tile) {
                 return Ok(());
             }
-            win.add_child(builder(&app, &tile, start), pos, size).map_err(|e| e.to_string())?;
+            let made = win.add_child(builder(&app, &tile, start), pos, size).map_err(|e| {
+                trace(format!("{tile} create failed: {e}"));
+                e.to_string()
+            })?;
+            trace(format!("{tile} created at {}", where_is(&made)));
             Ok(())
         }
     }
