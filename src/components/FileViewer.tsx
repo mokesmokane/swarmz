@@ -24,6 +24,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { ipc, type FileView } from "../lib/ipc";
 import { useStore } from "../store";
 import { hostLabel, machineLabel } from "../lib/workspace";
+import { useBlocksBrowsers } from "../lib/browserBlock";
 
 /** The languages the viewer colours, by file extension (file viewing spec §3). */
 export const HIGHLIGHT_LANGUAGES: Record<string, string> = {
@@ -83,6 +84,7 @@ const message = (e: unknown) => (typeof e === "string" ? e : String(e));
 /** The file a tile named, over the workbench (file viewing spec §3). */
 export function FileViewer() {
   const view = useStore((s) => s.fileView);
+  useBlocksBrowsers(view !== null);
   const closeFile = useStore((s) => s.closeFile);
   const host = useStore((s) => {
     if (!view) return null;

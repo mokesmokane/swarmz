@@ -77,6 +77,7 @@ export default function App() {
   useEffect(() => {
     const unlisten: Array<() => void> = [];
     void ipc.onAgentEvent((p) => useStore.getState().applyAgentEvent(p)).then((fn) => unlisten.push(fn));
+    void ipc.onBrowserPage((p) => useStore.getState().browserPage(p)).then((fn) => unlisten.push(fn));
     void ipc.onAgentWatchEnded((p) => void useStore.getState().agentWatchEnded(p)).then((fn) => unlisten.push(fn));
     const onFocus = () => useStore.getState().setWindowFocused(true);
     const onBlur = () => useStore.getState().setWindowFocused(false);

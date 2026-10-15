@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { ipc, type HostKeys, type MachineResult, type PhoneKey } from "../lib/ipc";
 import { pairUri, qrSvg } from "../lib/pairing";
+import { useBlocksBrowsers } from "../lib/browserBlock";
 
 const message = (e: unknown) => (typeof e === "string" ? e : String(e));
 
 /** The phones paired with this Mac (their keys run only swarmz commands). */
 export function PhonesPanel({ onClose }: { onClose: () => void }) {
+  useBlocksBrowsers(true);
   const [phones, setPhones] = useState<PhoneKey[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [failures, setFailures] = useState<MachineResult[]>([]);

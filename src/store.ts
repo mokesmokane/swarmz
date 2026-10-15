@@ -70,6 +70,7 @@ import {
 } from "./lib/workspace";
 import { isScratchId, oneLine, scratchEventIsLive, scratchIdFor, scratchParent, type ScratchRect, type ScratchRequest, type ScratchState } from "./lib/scratch";
 import { withUserTitle } from "./lib/card";
+import { BLANK, emptyBrowser, queued, type BrowserRequest, type BrowserState } from "./lib/browser";
 import {
   MAIN,
   dedupeLayouts,
@@ -134,7 +135,7 @@ export interface ClosedNotice {
   undo: { kind: "tiles"; places: { id: string; groupId: string | null }[] } | { kind: "window"; layout: Layout; bounds: Bounds | null };
 }
 import { applyAgentEvent as foldAgentEvent, OFFLINE, type AgentState } from "./lib/agentState";
-import type { AgentEventPayload } from "./lib/ipc";
+import type { AgentEventPayload, BrowserPage } from "./lib/ipc";
 import { bumpSession, isSafeFolder, promoteSession, removeSession, sanitizeSessions, upsertSession } from "./lib/sessions";
 
 const DEFAULT_COLS = 80;
@@ -198,6 +199,36 @@ function handleScratchRequest({ host, event }: AgentEventPayload): void {
     // since no window can show it (even in the focused tile).
     if (err && !useStore.getState().scratch[tileId]?.started) useStore.setState((x) => patchScratch(x, tileId, { open: false, pulse: true }));
   });
+}
+
+function patchBrowser(s: WorkbenchState, tileId: string, patch: Partial<BrowserState>): Partial<WorkbenchState> {
+  const cur = s.browser[tileId] ?? emptyBrowser();
+  return { browser: { ...s.browser, [tileId]: { ...cur, ...patch } } };
+}
+
+/** `Browse` events already acted on (host|tile|ts), as for `Scratch`. */
+const seenBrowse = new Set<string>();
+
+/** An agent asked to open a page in its tile's browser (tile browser spec §4). */
+function handleBrowseRequest({ host, event }: AgentEventPayload): void {
+  if (!event.url || !scratchEventIsLive(event.ts, Date.now(), APP_LAUNCHED_AT)) return;
+  const key = `${host ?? ""}|${event.terminal}|${event.ts}`;
+  if (seenBrowse.has(key)) return;
+  seenBrowse.add(key);
+  const s = useStore.getState();
+  const tileId = event.terminal;
+  const settings = s.settings[tileId];
+  if (!s.terminals[tileId] || !settings?.claude?.enabled) return;
+  if (host === null ? settings.ssh != null : settings.ssh?.host?.trim() !== host) return;
+  const request: BrowserRequest = { url: event.url, note: event.note ?? null, agent: agentName(settings.claude), at: event.ts };
+  const here = s.windowFocused !== false && s.focusedTerminalId === tileId;
+  const cur = s.browser[tileId];
+  // The user is reading another page: it stays, and the banner offers Go there.
+  const reading = !!cur?.open && cur.url !== BLANK && cur.url !== event.url;
+  useStore.setState((x) => patchBrowser(x, tileId, { request, pulse: !here }));
+  if (reading) return;
+  useStore.getState().openBrowser(tileId, { url: event.url, focus: here });
+  if (!here) useStore.setState((x) => patchBrowser(x, tileId, { pulse: true }));
 }
 
 function noteJoined(info: TerminalInfo) {
@@ -584,6 +615,17 @@ export interface WorkbenchState {
   setScratchRect(tileId: string, rect: ScratchRect): void;
   typeScratchCommand(tileId: string): void;
   dismissScratchRequest(tileId: string): void;
+  /** Each agent tile's built-in browser (tile browser spec); never saved. */
+  browser: Record<string, BrowserState>;
+  openBrowser(tileId: string, opts?: { url?: string; focus?: boolean }): void;
+  hideBrowser(tileId: string): void;
+  closeBrowser(tileId: string): void;
+  setBrowserRect(tileId: string, rect: ScratchRect): void;
+  navigateBrowser(tileId: string, url: string): void;
+  browserGo(tileId: string, action: "back" | "forward" | "reload" | "safari"): void;
+  browserPage(page: BrowserPage): void;
+  dismissBrowserRequest(tileId: string): void;
+  setBrowserError(tileId: string, error: string | null): void;
   update: UpdateState;
 
   createTerminal(cwd: string, placement?: Placement): Promise<string>;
@@ -1787,6 +1829,7 @@ export const useStore = create<WorkbenchState>((set) => ({
   resumeWatch: {},
   outsideSessions: [],
   scratch: {},
+  browser: {},
   update: EMPTY_UPDATE,
 
   async createTerminal(cwd, placement) {
@@ -1859,6 +1902,7 @@ export const useStore = create<WorkbenchState>((set) => ({
     stopPolling(id);
     // A tile's scratch shell ends with it (one still starting is caught after its start).
     void useStore.getState().endScratch(id);
+    useStore.getState().closeBrowser(id);
     forgetAttach(id);
     // A tile whose home is another Mac has a session holder there too (§3.6): end it alongside
     // the local one, best effort and without waiting (the host may be asleep or offline).
@@ -2316,6 +2360,79 @@ export const useStore = create<WorkbenchState>((set) => ({
   dismissScratchRequest(tileId) {
     if (!useStore.getState().scratch[tileId]) return;
     set((x) => patchScratch(x, tileId, { request: null }));
+  },
+
+  openBrowser(tileId, opts = {}) {
+    const s = useStore.getState();
+    if (!s.terminals[tileId] || !s.settings[tileId]?.claude?.enabled) return;
+    const focus = opts.focus !== false;
+    // A browser closed before may have a create still on its way from another window, which the
+    // core refuses until it hears the browser is open again (before this window's first show).
+    if (!s.browser[tileId]) void queued(tileId, () => ipc.browserGo(tileId, "open"));
+    set((x) =>
+      patchBrowser(x, tileId, {
+        open: true,
+        ...(opts.url ? { url: opts.url, error: null } : {}),
+        ...(focus ? { pulse: false, focusToken: (x.browser[tileId]?.focusToken ?? 0) + 1 } : {}),
+      }),
+    );
+    // A view that already exists goes to the new address; a new one starts on it (BrowserWindow).
+    const url = opts.url;
+    if (url && s.browser[tileId]) void queued(tileId, () => ipc.browserGo(tileId, "load", url));
+  },
+
+  hideBrowser(tileId) {
+    if (!useStore.getState().browser[tileId]) return;
+    set((x) => patchBrowser(x, tileId, { open: false }));
+  },
+
+  closeBrowser(tileId) {
+    if (!useStore.getState().browser[tileId]) return;
+    set((x) => {
+      const browser = { ...x.browser };
+      delete browser[tileId];
+      return { browser };
+    });
+    void queued(tileId, () => ipc.browserClose(tileId));
+  },
+
+  setBrowserRect(tileId, rect) {
+    set((x) => patchBrowser(x, tileId, { rect }));
+  },
+
+  navigateBrowser(tileId, url) {
+    if (!useStore.getState().browser[tileId]) return;
+    set((x) => patchBrowser(x, tileId, { url, error: null }));
+    void queued(tileId, () => ipc.browserGo(tileId, "load", url));
+  },
+
+  browserGo(tileId, action) {
+    const b = useStore.getState().browser[tileId];
+    if (!b) return;
+    // Safari gets the address the store knows, so it works when no view could be made.
+    void queued(tileId, () => (action === "safari" ? ipc.browserGo(tileId, action, b.url) : ipc.browserGo(tileId, action)));
+  },
+
+  browserPage({ tile, url, title, loading }) {
+    if (!useStore.getState().browser[tile]) return;
+    set((x) =>
+      patchBrowser(x, tile, {
+        url,
+        ...(title !== undefined ? { title } : {}),
+        ...(loading === true ? { loading: true, loadingSince: Date.now() } : {}),
+        ...(loading === false ? { loading: false, loadingSince: null, error: null } : {}),
+      }),
+    );
+  },
+
+  dismissBrowserRequest(tileId) {
+    if (!useStore.getState().browser[tileId]) return;
+    set((x) => patchBrowser(x, tileId, { request: null }));
+  },
+
+  setBrowserError(tileId, error) {
+    if (!useStore.getState().browser[tileId]) return;
+    set((x) => patchBrowser(x, tileId, { error }));
   },
 
   windowLabel: MAIN,
@@ -2869,6 +2986,10 @@ export const useStore = create<WorkbenchState>((set) => ({
     agentWatchSurvived(host);
     if (event.event === "Scratch") {
       handleScratchRequest(payload);
+      return;
+    }
+    if (event.event === "Browse") {
+      handleBrowseRequest(payload);
       return;
     }
     // This Mac's history, before the first load has said which tiles rejoined running sessions:
@@ -3720,6 +3841,14 @@ function scheduleSave() {
     void runSave();
   }, SAVE_DEBOUNCE_MS);
 }
+
+// A browser outlives neither its tile nor the tile's agent (tile browser spec §2).
+useStore.subscribe((s) => {
+  if (s.windowLabel !== MAIN) return;
+  for (const tile of Object.keys(s.browser)) {
+    if (!s.terminals[tile] || !s.settings[tile]?.claude?.enabled) queueMicrotask(() => useStore.getState().closeBrowser(tile));
+  }
+});
 
 useStore.subscribe((s, prev) => {
   if (!s.persistenceReady) return;

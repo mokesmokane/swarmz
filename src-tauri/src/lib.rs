@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod browser;
 pub mod commands;
 pub mod files;
 pub mod paste;
@@ -31,6 +32,9 @@ pub fn run() {
     builder
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
+            browser::browser_show,
+            browser::browser_go,
+            browser::browser_close,
             commands::create_terminal,
             commands::list_terminals,
             commands::write_terminal,

@@ -12,6 +12,7 @@ import { displayTitle } from "../lib/card";
 import { TerminalPane } from "./TerminalPane";
 import { ConductorBadge } from "./ConductorBadge";
 import { AgentLogo } from "./AgentLogo";
+import { useBlocksBrowsers } from "../lib/browserBlock";
 
 export const DRAG_MIME = "application/x-swarmz-terminal";
 
@@ -40,6 +41,7 @@ export async function endTabDrag(id: string, e: { dataTransfer: DataTransfer; sc
 
 /** A tab's right-click menu (spec §4): move it to another window or a new one, close it, or stop it. */
 function TabMenu({ id, at, onClose }: { id: string; at: { x: number; y: number }; onClose: () => void }) {
+  useBlocksBrowsers(true);
   const here = useStore((s) => s.windowLabel);
   const namesKey = useStore((s) => JSON.stringify(windowNames(s)));
   const names = JSON.parse(namesKey) as { label: string; name: string }[];
@@ -130,6 +132,12 @@ export function TabGroup({ group }: { group: GroupNode }) {
   const scratchPulse = useStore((s) => !!activeId && s.scratch[activeId]?.pulse === true);
   const openScratch = useStore((s) => s.openScratch);
   const hideScratch = useStore((s) => s.hideScratch);
+  // The tile's built-in browser (tile browser spec §1).
+  const browserOpen = useStore((s) => !!activeId && s.browser[activeId]?.open === true);
+  const browserAround = useStore((s) => !!activeId && !!s.browser[activeId]);
+  const browserPulse = useStore((s) => !!activeId && s.browser[activeId]?.pulse === true);
+  const openBrowser = useStore((s) => s.openBrowser);
+  const hideBrowser = useStore((s) => s.hideBrowser);
   const removeSlot = useStore((s) => s.removeSlot);
   const zoomed = useStore((s) => s.zoomed[s.windowLabel] === group.id);
   const windowTiles = useStore((s) => allGroups(s.layout).reduce((n, g) => n + g.tabs.length, 0));
@@ -327,18 +335,31 @@ export function TabGroup({ group }: { group: GroupNode }) {
             </button>
           )}
           {isAgent && (
-            <button
-              type="button"
-              data-testid="scratch-toggle"
-              className={`rounded px-1.5 font-mono text-xs hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40 ${scratchRunning ? "text-link" : "text-neutral-500"} ${scratchPulse ? "animate-pulse" : ""}`}
-              disabled={remote && !connected}
-              title={remote && !connected ? "Connect the tile first" : scratchOpen ? "Hide the scratch shell" : "Scratch shell: a plain terminal here, outside the agent"}
-              aria-label="Scratch shell"
-              aria-pressed={scratchOpen}
-              onClick={() => (scratchOpen ? hideScratch(activeId) : void openScratch(activeId))}
-            >
-              &gt;_
-            </button>
+            <>
+              <button
+                type="button"
+                data-testid="scratch-toggle"
+                className={`rounded px-1.5 font-mono text-xs hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40 ${scratchRunning ? "text-link" : "text-neutral-500"} ${scratchPulse ? "animate-pulse" : ""}`}
+                disabled={remote && !connected}
+                title={remote && !connected ? "Connect the tile first" : scratchOpen ? "Hide the scratch shell" : "Scratch shell: a plain terminal here, outside the agent"}
+                aria-label="Scratch shell"
+                aria-pressed={scratchOpen}
+                onClick={() => (scratchOpen ? hideScratch(activeId) : void openScratch(activeId))}
+              >
+                &gt;_
+              </button>
+              <button
+                type="button"
+                data-testid="browser-toggle"
+                className={`rounded px-1.5 text-xs hover:bg-neutral-800 hover:text-neutral-200 ${browserAround ? "text-link" : "text-neutral-500"} ${browserPulse ? "animate-pulse" : ""}`}
+                title={browserOpen ? "Hide the browser" : "Browser: a web page over this tile"}
+                aria-label="Browser"
+                aria-pressed={browserOpen}
+                onClick={() => (browserOpen ? hideBrowser(activeId) : openBrowser(activeId))}
+              >
+                🌐
+              </button>
+            </>
           )}
           <button
             className={`rounded px-1.5 hover:bg-neutral-800 hover:text-neutral-200 ${zoomed ? "text-link" : "text-neutral-500"}`}

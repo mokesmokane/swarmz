@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { PRESETS, presetDrawing, slotCount, type Rect } from "../lib/presets";
+import { useBlocksBrowsers } from "../lib/browserBlock";
 
 /** A layout drawn small (windows and layouts spec §6): its slots as rounded boxes, numbered. */
 export function LayoutThumb({ rects, width = 72, height = 46, active = false }: { rects: Rect[]; width?: number; height?: number; active?: boolean }) {
@@ -61,6 +62,7 @@ export function LayoutGallery({ onPick, fit, compact = false }: { onPick: (prese
 /** The ▦ button in a tab strip, with the gallery in a popover; choosing arranges the window's tiles. */
 export function GalleryButton({ onPick, count }: { onPick: (presetId: string) => void; count: number }) {
   const [open, setOpen] = useState(false);
+  useBlocksBrowsers(open);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;

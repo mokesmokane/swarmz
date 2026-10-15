@@ -1,5 +1,6 @@
 import { useStore } from "../store";
 import { displayTitle } from "../lib/card";
+import { useBlocksBrowsers } from "../lib/browserBlock";
 
 /**
  * The reminder after closing tabs or a window (windows and layouts spec §3): the tiles still run
@@ -7,6 +8,7 @@ import { displayTitle } from "../lib/card";
  */
 export function ClosedNoticeBar() {
   const notice = useStore((s) => (s.closedNotice && s.closedNotice.window === s.windowLabel ? s.closedNotice : null));
+  useBlocksBrowsers(notice !== null);
   const first = useStore((s) => {
     const id = s.closedNotice?.ids[0];
     const t = id ? s.terminals[id] : undefined;

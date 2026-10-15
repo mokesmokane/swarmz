@@ -54,6 +54,10 @@ vi.mock("./lib/ipc", () => {
       agentsUnwatch: vi.fn(async () => {}),
       onAgentEvent: vi.fn(async () => () => {}),
       onAgentWatchEnded: vi.fn(async () => () => {}),
+      browserShow: vi.fn(async () => {}),
+      browserGo: vi.fn(async () => {}),
+      browserClose: vi.fn(async () => {}),
+      onBrowserPage: vi.fn(async () => () => {}),
     },
   };
 });
@@ -138,6 +142,7 @@ beforeEach(async () => {
     closedNotice: null,
     focusedWindow: "main",
     scratch: {},
+    browser: {},
     outsideSessions: [],
   });
   beforeSpawn.hook = async () => {};
@@ -4556,5 +4561,124 @@ describe("scratch requests from agents", () => {
     useStore.getState().applyAgentEvent({ ...scratchEvent(id, new Date().toISOString()), host: "me@elsewhere" });
     await new Promise((r) => setTimeout(r, 0));
     expect(useStore.getState().scratch[id]).toBeUndefined();
+  });
+});
+
+describe("tile browser", () => {
+  const agentTile = async () => {
+    const id = await useStore.getState().createTerminal("/tmp/proj");
+    useStore.setState((s) => ({ settings: { ...s.settings, [id]: { ...s.settings[id], claude: { enabled: true, sessionId: "s1", skipPermissions: false, started: true } } } }));
+    __setLaunchedAt(new Date(Date.now() - 60_000).toISOString());
+    vi.mocked(ipc.browserGo).mockClear();
+    vi.mocked(ipc.browserClose).mockClear();
+    return id;
+  };
+  const browseEvent = (terminal: string, ts: string, extra: Record<string, unknown> = {}) => ({
+    host: null as string | null,
+    event: { ts, terminal, event: "Browse", sessionId: null, notificationType: null, source: null, cwd: null, permissionMode: null, url: "https://appstoreconnect.apple.com/apps", note: "Create the app", ...extra },
+  });
+
+  it("opens, hides and closes; only agent tiles have one", async () => {
+    const id = await agentTile();
+    const shell = await useStore.getState().createTerminal("/tmp/other");
+    useStore.getState().openBrowser(shell);
+    expect(useStore.getState().browser[shell]).toBeUndefined();
+    useStore.getState().openBrowser(id);
+    expect(useStore.getState().browser[id]).toMatchObject({ open: true, url: "about:blank" });
+    useStore.getState().hideBrowser(id);
+    expect(useStore.getState().browser[id].open).toBe(false);
+    useStore.getState().closeBrowser(id);
+    expect(useStore.getState().browser[id]).toBeUndefined();
+    await vi.waitFor(() => expect(ipc.browserClose).toHaveBeenCalledWith(id));
+  });
+
+  it("opening tells the core its view may exist again, before any show", async () => {
+    const id = await agentTile();
+    useStore.getState().openBrowser(id);
+    await vi.waitFor(() => expect(ipc.browserGo).toHaveBeenCalledWith(id, "open"));
+    vi.mocked(ipc.browserGo).mockClear();
+    useStore.getState().hideBrowser(id);
+    useStore.getState().openBrowser(id);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ipc.browserGo).not.toHaveBeenCalledWith(id, "open");
+  });
+
+  it("closing the tile, or turning its agent off, closes its browser", async () => {
+    const a = await agentTile();
+    const b = await agentTile();
+    useStore.getState().openBrowser(a);
+    useStore.getState().openBrowser(b);
+    await useStore.getState().closeTerminal(a);
+    expect(useStore.getState().browser[a]).toBeUndefined();
+    useStore.setState((s) => ({ settings: { ...s.settings, [b]: { ...s.settings[b], claude: { ...s.settings[b].claude!, enabled: false } } } }));
+    await vi.waitFor(() => expect(useStore.getState().browser[b]).toBeUndefined());
+    expect(ipc.browserClose).toHaveBeenCalledWith(a);
+    expect(ipc.browserClose).toHaveBeenCalledWith(b);
+  });
+
+  it("a live request opens the page with its note; history and repeats do nothing", async () => {
+    const id = await agentTile();
+    useStore.setState({ focusedTerminalId: id, windowFocused: true });
+    useStore.getState().applyAgentEvent(browseEvent(id, new Date(Date.now() - 120_000).toISOString()));
+    expect(useStore.getState().browser[id]).toBeUndefined();
+    const ts = new Date().toISOString();
+    useStore.getState().applyAgentEvent(browseEvent(id, ts));
+    useStore.getState().applyAgentEvent(browseEvent(id, ts, { url: "https://example.com" }));
+    expect(useStore.getState().browser[id]).toMatchObject({ open: true, url: "https://appstoreconnect.apple.com/apps", pulse: false });
+    expect(useStore.getState().browser[id].request).toMatchObject({ note: "Create the app", agent: "Claude", url: "https://appstoreconnect.apple.com/apps" });
+    expect(useStore.getState().browser[id].focusToken).toBe(1);
+  });
+
+  it("never takes the keyboard from another tile, and pulses", async () => {
+    const id = await agentTile();
+    useStore.setState({ focusedTerminalId: "someone-else", windowFocused: true });
+    useStore.getState().applyAgentEvent(browseEvent(id, new Date().toISOString()));
+    expect(useStore.getState().browser[id]).toMatchObject({ open: true, focusToken: 0, pulse: true });
+  });
+
+  it("does not change the page the user is reading: Go there does", async () => {
+    const id = await agentTile();
+    useStore.getState().openBrowser(id, { url: "https://news.example.com" });
+    useStore.getState().applyAgentEvent(browseEvent(id, new Date().toISOString()));
+    expect(useStore.getState().browser[id].url).toBe("https://news.example.com");
+    expect(useStore.getState().browser[id].request?.url).toBe("https://appstoreconnect.apple.com/apps");
+    expect(ipc.browserGo).not.toHaveBeenCalledWith(id, "load", expect.anything());
+    useStore.getState().navigateBrowser(id, useStore.getState().browser[id].request!.url);
+    await vi.waitFor(() => expect(ipc.browserGo).toHaveBeenCalledWith(id, "load", "https://appstoreconnect.apple.com/apps"));
+    expect(useStore.getState().browser[id].url).toBe("https://appstoreconnect.apple.com/apps");
+  });
+
+  it("Open in Safari sends the address the store knows, so it works without a view", async () => {
+    const id = await agentTile();
+    useStore.getState().openBrowser(id, { url: "https://example.com/" });
+    useStore.getState().browserGo(id, "safari");
+    await vi.waitFor(() => expect(ipc.browserGo).toHaveBeenCalledWith(id, "safari", "https://example.com/"));
+  });
+
+  it("a request for a remote tile's log only counts for that tile's Mac", async () => {
+    const id = await agentTile();
+    useStore.getState().applyAgentEvent({ ...browseEvent(id, new Date().toISOString()), host: "studio" });
+    expect(useStore.getState().browser[id]).toBeUndefined();
+  });
+
+  it("page reports update the address and title, and a finished load clears the error", async () => {
+    const id = await agentTile();
+    useStore.getState().openBrowser(id);
+    useStore.getState().setBrowserError(id, "This page hasn't finished loading");
+    useStore.getState().browserPage({ tile: id, url: "https://example.com/", loading: true });
+    expect(useStore.getState().browser[id]).toMatchObject({ url: "https://example.com/", loading: true });
+    expect(useStore.getState().browser[id].loadingSince).not.toBeNull();
+    useStore.getState().browserPage({ tile: id, url: "https://example.com/", title: "Example" });
+    useStore.getState().browserPage({ tile: id, url: "https://example.com/", loading: false });
+    expect(useStore.getState().browser[id]).toMatchObject({ title: "Example", loading: false, loadingSince: null, error: null });
+    useStore.getState().browserPage({ tile: "gone", url: "https://x/" });
+    expect(useStore.getState().browser.gone).toBeUndefined();
+  });
+
+  it("is never saved", async () => {
+    const id = await agentTile();
+    useStore.getState().openBrowser(id, { url: "https://example.com" });
+    const s = useStore.getState();
+    expect(JSON.stringify(toWorkspace({ order: s.order, terminals: s.terminals, settings: s.settings, layout: s.layout, machines: s.machines }))).not.toContain("example.com");
   });
 });

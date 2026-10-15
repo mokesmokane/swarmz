@@ -2221,3 +2221,35 @@ fn attach_refuses_scratch_shells() {
     let (code, v) = tool_env(&h.path, &["attach", "scratch-c1"], env);
     assert_eq!((code, v["code"].as_str()), (1, Some("scratch")), "{v}");
 }
+
+#[test]
+fn browse_asks_the_app_and_says_nothing_else() {
+    let h = home("browse");
+    let env = |id: &'static str| -> Vec<(&'static str, &'static str)> { vec![("SWARMZ_MACHINE", "mini"), ("SWARMZ_TERMINAL_ID", id)] };
+    let (code, v) = tool_env(&h.path, &["browse", "--url", "https://example.com"], &env(""));
+    assert_eq!((code, v["code"].as_str()), (1, Some("no_tile")), "{v}");
+    let (code, v) = tool_env(&h.path, &["browse", "--url", "https://example.com"], &env("scratch-c1"));
+    assert_eq!((code, v["code"].as_str()), (1, Some("no_tile")), "{v}");
+    let (code, v) = tool_env(&h.path, &["browse"], &env("c1"));
+    assert_eq!((code, v["code"].as_str()), (1, Some("invalid")), "{v}");
+    let (code, v) = tool_env(&h.path, &["browse", "--url", "javascript:alert(1)"], &env("c1"));
+    assert_eq!((code, v["code"].as_str()), (1, Some("invalid")), "{v}");
+    let long = format!("https://x.com/{}", "a".repeat(2000));
+    let (code, v) = tool_env(&h.path, &["browse", "--url", &long], &env("c1"));
+    assert_eq!((code, v["code"].as_str()), (1, Some("too_long")), "{v}");
+    let (code, v) = tool_env(&h.path, &["browse", "--url", "https://example.com", "--note", "a\nb"], &env("c1"));
+    assert_eq!((code, v["code"].as_str()), (1, Some("bad_text")), "{v}");
+    let note = "x".repeat(201);
+    let (code, v) = tool_env(&h.path, &["browse", "--url", "https://example.com", "--note", &note], &env("c1"));
+    assert_eq!((code, v["code"].as_str()), (1, Some("too_long")), "{v}");
+    assert!(!h.path.join(".swarmz/agents/events.log").exists(), "refusals log nothing");
+
+    let (code, v) = tool_env(&h.path, &["browse", "--url", "https://appstoreconnect.apple.com/apps", "--note", "Create the app: Apps → + → New App"], &env("c1"));
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v, serde_json::json!({"v": 1, "asked": true}));
+    let log = std::fs::read_to_string(h.path.join(".swarmz/agents/events.log")).unwrap();
+    let parts: Vec<&str> = log.lines().last().unwrap().splitn(4, '\t').collect();
+    assert_eq!((parts[1], parts[2]), ("c1", "Browse"));
+    let payload: serde_json::Value = serde_json::from_str(parts[3]).unwrap();
+    assert_eq!(payload, serde_json::json!({"url": "https://appstoreconnect.apple.com/apps", "note": "Create the app: Apps → + → New App"}));
+}

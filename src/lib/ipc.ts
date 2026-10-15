@@ -6,6 +6,14 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import type { ConductorClaim, SubConductors, Workspace } from "./workspace";
 import type { AgentEvent } from "./agentState";
 
+/** A tile browser's page report from the core (tile browser spec §3). */
+export interface BrowserPage {
+  tile: string;
+  url: string;
+  title?: string;
+  loading?: boolean;
+}
+
 export interface TerminalInfo {
   id: string;
   name: string;
@@ -231,6 +239,13 @@ export const ipc = {
   tailscalePing: (name: string) => invoke<PingResult | null>("tailscale_ping", { name }),
   /** A URL from a pane, in the browser (file viewing spec §2). */
   openUrl: (url: string) => invoke<void>("open_url", { url }),
+  /** Creates (when visible), moves, shows or hides a tile's browser view in `window` (tile browser spec §3). */
+  browserShow: (tile: string, window: string, url: string, rect: { x: number; y: number; w: number; h: number }, visible: boolean) =>
+    invoke<void>("browser_show", { tile, window, url, rect, visible }),
+  browserGo: (tile: string, action: "open" | "load" | "back" | "forward" | "reload" | "focus" | "safari", url?: string) =>
+    invoke<void>("browser_go", { tile, action, url: url ?? null }),
+  browserClose: (tile: string) => invoke<void>("browser_close", { tile }),
+  onBrowserPage: (cb: (p: BrowserPage) => void): Promise<UnlistenFn> => listen<BrowserPage>("browser:page", (e) => cb(e.payload)),
   /** Opens `path` outside swarmz (spec §4): the default app, or Finder with `reveal`; a remote file is copied here first. Resolves with the path opened. */
   openPath: (host: string | null, path: string, reveal: boolean) => invoke<string>("open_path", { host, path, reveal }),
   /** Whether VS Code's `code` command is on this Mac. */

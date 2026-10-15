@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "windows",
   "description": "Capability for every window of tabs other than the main one (windows and layouts spec §4)",
-  "windows": ["win-*"],
+  "webviews": ["win-*"],
   "permissions": [
     "core:default",
     "core:event:default",

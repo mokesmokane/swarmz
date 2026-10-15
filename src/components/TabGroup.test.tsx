@@ -46,6 +46,7 @@ vi.mock("../lib/xtermRegistry", () => ({ attach: vi.fn(() => ({ term: {}, fit: {
 
 import { __stopAllPolling, useStore } from "../store";
 import { TabGroup } from "./TabGroup";
+import { emptyBrowser } from "../lib/browser";
 
 const ID = "t1";
 class FakeResizeObserver { observe() {} disconnect() {} }
@@ -71,6 +72,7 @@ beforeEach(() => {
     selectedTiles: [],
     closedNotice: null,
     scratch: {},
+    browser: {},
     sshConnected: {},
   });
 });
@@ -238,6 +240,28 @@ describe("scratch button", () => {
     });
     render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
     const b = screen.getByTestId("scratch-toggle");
+    expect(b.className).toContain("animate-pulse");
+    fireEvent.click(b);
+    expect(hide).toHaveBeenCalledWith(ID);
+  });
+});
+
+describe("browser button", () => {
+  const agent = { enabled: true, sessionId: "s", skipPermissions: false, started: true };
+  it("shows on agent tiles only, opens, hides, and pulses after an agent asked", () => {
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
+    expect(screen.queryByTestId("browser-toggle")).toBeNull();
+    cleanup();
+    const open = vi.fn();
+    const hide = vi.fn();
+    useStore.setState({ openBrowser: open, hideBrowser: hide, settings: { [ID]: { ssh: null, claude: agent, command: null, extra: {} } } });
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
+    fireEvent.click(screen.getByTestId("browser-toggle"));
+    expect(open).toHaveBeenCalledWith(ID);
+    cleanup();
+    useStore.setState({ browser: { [ID]: { ...emptyBrowser(), open: true, pulse: true } } });
+    render(<TabGroup group={{ kind: "group", id: "g1", tabs: [ID], active: ID }} />);
+    const b = screen.getByTestId("browser-toggle");
     expect(b.className).toContain("animate-pulse");
     fireEvent.click(b);
     expect(hide).toHaveBeenCalledWith(ID);
