@@ -59,6 +59,15 @@ export const PROXIED_ACTIONS = [
   "setScratchRect",
   "typeScratchCommand",
   "dismissScratchRequest",
+  // So do tile browsers' states; each window places its own views (tile browser spec §3).
+  "openBrowser",
+  "hideBrowser",
+  "closeBrowser",
+  "setBrowserRect",
+  "navigateBrowser",
+  "browserGo",
+  "dismissBrowserRequest",
+  "setBrowserError",
 ] as const;
 export type ProxiedAction = (typeof PROXIED_ACTIONS)[number];
 
@@ -116,6 +125,7 @@ export const MIRRORED_KEYS = [
   "boards",
   "hoveredTile",
   "scratch",
+  "browser",
 ] as const satisfies readonly (keyof WorkbenchState)[];
 
 export type WindowMirror = Pick<WorkbenchState, (typeof MIRRORED_KEYS)[number]> & {
