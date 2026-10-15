@@ -7,6 +7,7 @@ import { SessionHistory } from "./SessionHistory";
 import { IdentifyLabel } from "./IdentifyLabel";
 import { BoardHeader } from "./BoardHeader";
 import { ScratchWindow } from "./ScratchWindow";
+import { BrowserWindow } from "./BrowserWindow";
 
 /** How long the "Copied" and "Image sent to remote" pills stay after a copy or a remote paste. */
 export const COPIED_FLASH_MS = 1000;
@@ -213,6 +214,7 @@ export function TerminalPane({ id }: { id: string }) {
         </div>
       )}
       {settings.claude?.enabled && <ScratchWindow tileId={id} />}
+      {settings.claude?.enabled && <BrowserWindow tileId={id} blocked={overlay !== null} />}
       </div>
     </div>
   );

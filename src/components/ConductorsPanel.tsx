@@ -4,6 +4,7 @@ import { displayTitle } from "../lib/card";
 import { hostLabel, liveSubs, machineLabel } from "../lib/workspace";
 import { ConductorBadge } from "./ConductorBadge";
 import { useConductorChoices } from "./ConductorMenu";
+import { useBlocksBrowsers } from "../lib/browserBlock";
 
 const message = (e: unknown) => (typeof e === "string" ? e : String(e));
 const DRAG_TYPE = "application/x-swarmz-tile";
@@ -53,6 +54,7 @@ function buildTree(top: string, edges: string): TreeNode {
  */
 export function ConductorsPanel() {
   const open = useStore((s) => s.conductorsPanel);
+  useBlocksBrowsers(open);
   const close = useStore((s) => s.setConductorsPanel);
   const top = useStore((s) => s.conductor);
   const edges = useTreeEdges();
