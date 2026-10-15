@@ -549,6 +549,32 @@ pub fn scratch(env: &Env, note: Option<&str>, command: Option<&str>) -> Result<V
     Ok(json!({"v": 1, "asked": true}))
 }
 
+/// `browse --url URL [--note TEXT]` (tile browser spec §4): asks the app to open this tile's
+/// browser on an address for the user. Says nothing about the page, ever.
+pub fn browse(env: &Env, url: Option<&str>, note: Option<&str>) -> Result<Value, CliError> {
+    let tile = match std::env::var("SWARMZ_TERMINAL_ID") {
+        Ok(t) if !t.trim().is_empty() && !crate::paths::is_scratch_id(t.trim()) => t.trim().to_string(),
+        _ => return Err(CliError::new("no_tile", "swarmz browse runs from an agent's tile: SWARMZ_TERMINAL_ID is not set")),
+    };
+    if !valid_tile_id(&tile) {
+        return Err(CliError::new("invalid", format!("invalid tile id {tile:?}")));
+    }
+    let url = crate::browse::check_url(url.unwrap_or("")).map_err(|c| match c {
+        "too_long" => CliError::new(c, format!("--url is longer than {} characters", crate::browse::URL_MAX)),
+        _ => CliError::new(c, "--url must be an http or https address with no spaces"),
+    })?;
+    let note = crate::scratch::check_text(note, crate::browse::NOTE_MAX).map_err(|c| match c {
+        "too_long" => CliError::new(c, format!("--note is longer than {} characters", crate::browse::NOTE_MAX)),
+        _ => CliError::new(c, "--note must be one line with no control characters"),
+    })?;
+    let dir = env.home.join(".swarmz").join("agents");
+    std::fs::create_dir_all(&dir).map_err(failed)?;
+    let line = format!("{}\t{tile}\tBrowse\t{}\n", now_iso_ms(), json!({"url": url, "note": note}));
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("events.log")).map_err(failed)?;
+    std::io::Write::write_all(&mut f, line.as_bytes()).map_err(failed)?;
+    Ok(json!({"v": 1, "asked": true}))
+}
+
 pub fn card(env: &Env, tile: Option<&str>, title: Option<&str>, recap: Option<&str>, by_user: bool) -> Result<Value, CliError> {
     let tile = match tile {
         Some(t) => tile_arg(t)?,
