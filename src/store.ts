@@ -225,6 +225,8 @@ function handleBrowseRequest({ host, event }: AgentEventPayload): void {
   const cur = s.browser[tileId];
   // The user is reading another page: it stays, and the banner offers Go there.
   const reading = !!cur?.open && cur.url !== BLANK && cur.url !== event.url;
+  // The state is made here, before `openBrowser` runs, so the core hears of it here too.
+  if (!cur) void queued(tileId, () => ipc.browserGo(tileId, "open"));
   useStore.setState((x) => patchBrowser(x, tileId, { request, pulse: !here }));
   if (reading) return;
   useStore.getState().openBrowser(tileId, { url: event.url, focus: here });
