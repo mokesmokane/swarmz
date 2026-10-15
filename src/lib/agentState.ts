@@ -29,6 +29,8 @@ export interface AgentEvent {
   /** A `Scratch` request's note and suggested command (scratch terminal spec §4). */
   note?: string | null;
   command?: string | null;
+  /** A `Browse` request's address (tile browser spec §4). */
+  url?: string | null;
   /** `"codex"` when Codex's hook logged the event (Codex tiles spec §4); absent for Claude. */
   agent?: string | null;
 }
